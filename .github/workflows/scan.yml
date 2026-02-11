@@ -1,0 +1,33 @@
+name: CryptoCroc Scan
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install deps
+        run: npm ci || npm install
+
+      - name: Run scan
+        run: node cryptocroc-terminal/scanner/scan.js
+
+      - name: Commit results
+        run: |
+          git config user.name "cryptocroc-bot"
+          git config user.email "bot@cryptocroc.ai"
+          git add cryptocroc-terminal/output || true
+          git commit -m "auto scan update" || echo "No changes"
+          git push
