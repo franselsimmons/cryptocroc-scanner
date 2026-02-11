@@ -1,0 +1,12 @@
+{
+  "name": "cryptocroc-scanner",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "start": "node -e \"console.log('Use Vercel. Locally: npm run dev (vercel dev)')\""
+  },
+  "dependencies": {
+    "@vercel/kv": "^2.0.0"
+  }
+}

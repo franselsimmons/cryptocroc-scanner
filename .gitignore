@@ -1,0 +1,5 @@
+node_modules
+.vercel
+cryptocroc-terminal/output
+*.log
+.DS_Store
