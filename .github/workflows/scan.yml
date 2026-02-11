@@ -1,4 +1,4 @@
-name: CryptoCroc Scan
+name: scan
 
 on:
   schedule:
@@ -6,28 +6,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  scan:
+  ping:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-
-      - name: Install deps
-        run: npm ci || npm install
-
-      - name: Run scan
-        run: node cryptocroc-terminal/scanner/scan.js
-
-      - name: Commit results
+      - name: Call /api/scan
         run: |
-          git config user.name "cryptocroc-bot"
-          git config user.email "bot@cryptocroc.ai"
-          git add cryptocroc-terminal/output || true
-          git commit -m "auto scan update" || echo "No changes"
-          git push
+          echo "Pinging scan url..."
+          curl -sS -L "${{ secrets.SCAN_URL }}" | head -c 500

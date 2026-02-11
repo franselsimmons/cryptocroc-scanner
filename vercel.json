@@ -8,6 +8,9 @@
   ],
   "routes": [
     { "src": "/api/(.*)", "dest": "/api/$1" },
+
+    { "src": "/bull", "dest": "/index.html" },
+    { "src": "/bear", "dest": "/index.html" },
     { "src": "/", "dest": "/index.html" }
   ]
 }

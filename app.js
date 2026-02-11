@@ -1,5 +1,8 @@
 const API = { bull:"/api/bull", bear:"/api/bear", portfolio:"/api/portfolio", action:"/api/action" };
-let SIDE = (location.hash === "#bear") ? "bear" : "bull";
+let SIDE =
+  (location.pathname === "/bear" || location.hash === "#bear") ? "bear" :
+  (location.pathname === "/bull" || location.hash === "#bull") ? "bull" :
+  "bull";
 
 const $ = (s)=>document.querySelector(s);
 const elTables = $("#tables");
