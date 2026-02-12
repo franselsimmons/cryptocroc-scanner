@@ -1,18 +1,12 @@
 import { kv } from "@vercel/kv";
+
 export const config = { runtime: "nodejs" };
 
-export default async function handler(req, res){
-  const u = new URL(req.url, "http://localhost");
-  const mode = (u.searchParams.get("mode") || "bull").toLowerCase()==="bear" ? "bear":"bull";
-  const obj = await kv.get(`latest:${mode}`);
-  res.statusCode = 200;
-  res.setHeader("content-type","application/json; charset=utf-8");
-  res.end(JSON.stringify(obj || {
-    ts: Date.now(),
-    mode,
-    hedgeMode: true,
-    poolSize: 0,
-    bands: { low:null, high:null },
-    funnel: { entry:[], almost:[], buildup:[], radar:[] }
-  }));
+export default async function handler(req,res){
+  const u = new URL(req.url,"http://localhost");
+  const mode = u.searchParams.get("mode") || "bull";
+  const data = await kv.get(`latest:${mode}`);
+
+  res.statusCode=200;
+  res.end(JSON.stringify(data||{}));
 }
