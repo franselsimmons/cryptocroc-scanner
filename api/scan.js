@@ -1,18 +1,24 @@
-import { getRedis } from "./_lib/redis.js";
-import { json } from "./_lib/utils.js";
-import { runFullScan } from "./_lib/scanCore.js";
+import { getMarkets } from "../lib/coingecko.js";
+import { runFunnel, tryLock, unlock } from "../lib/funnel.js";
 
 export default async function handler(req, res) {
-  try {
-    const secret = (req.query?.secret || "").toString();
-    const envSecret = (process.env.CRON_SECRET || "").toString();
-    if (envSecret && secret !== envSecret) return json(res, { ok: false, error: "unauthorized" }, 401);
+  const side = (req.query?.side || "bull").toString().toLowerCase();
+  if (!["bull","bear"].includes(side)) {
+    return res.status(400).json({ ok:false, error:"side must be bull or bear" });
+  }
 
-    const redis = getRedis();
-    const result = await runFullScan(redis);
-    return json(res, result, 200);
+  const locked = await tryLock(side);
+  if (!locked) {
+    return res.status(200).json({ ok:true, message:"scan running", side });
+  }
+
+  try {
+    const coins = await getMarkets({ perPage: 250, page: 1 });
+    const out = await runFunnel(side, coins);
+    return res.status(200).json({ ok:true, out });
   } catch (e) {
-    console.error("scan error:", e);
-    return json(res, { ok: false, error: String(e?.message || e) }, 500);
+    return res.status(500).json({ ok:false, error:e.message });
+  } finally {
+    await unlock(side);
   }
 }

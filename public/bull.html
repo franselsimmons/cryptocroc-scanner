@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>CryptoCroc - BULL</title>
+  <style>
+    body{font-family:Arial;margin:20px;}
+    .top{display:flex;gap:10px;align-items:center;margin-bottom:15px;}
+    button{padding:8px 12px;cursor:pointer;}
+    table{width:100%;border-collapse:collapse;margin:12px 0;}
+    th,td{border:1px solid #ddd;padding:6px;font-size:13px;}
+    th{background:#f2f2f2;}
+    h2{margin-top:22px;}
+    .small{color:#666;font-size:12px;}
+  </style>
+</head>
+<body>
+  <div class="top">
+    <b>CryptoCroc</b>
+    <a href="/bear.html">BEAR</a>
+    <button onclick="CC.scan('bull')">Scan nu</button>
+    <span id="status" class="small"></span>
+  </div>
+
+  <h2>RADAR</h2><table><thead><tr><th>SYM</th><th>Name</th><th>Price</th><th>1h</th><th>24h</th><th>7d</th><th>VM</th><th>Orderbook</th></tr></thead><tbody id="RADAR"></tbody></table>
+  <h2>BUILDUP</h2><table><thead><tr><th>SYM</th><th>Name</th><th>Price</th><th>1h</th><th>24h</th><th>7d</th><th>VM</th><th>Orderbook</th></tr></thead><tbody id="BUILDUP"></tbody></table>
+  <h2>ALMOST</h2><table><thead><tr><th>SYM</th><th>Name</th><th>Price</th><th>1h</th><th>24h</th><th>7d</th><th>VM</th><th>Orderbook</th></tr></thead><tbody id="ALMOST"></tbody></table>
+  <h2>ENTRY</h2><table><thead><tr><th>SYM</th><th>Name</th><th>Price</th><th>1h</th><th>24h</th><th>7d</th><th>VM</th><th>Orderbook</th></tr></thead><tbody id="ENTRY"></tbody></table>
+  <h2>HOLD</h2><table><thead><tr><th>SYM</th><th>Name</th><th>Price</th><th>1h</th><th>24h</th><th>7d</th><th>VM</th><th>Orderbook</th></tr></thead><tbody id="HOLD"></tbody></table>
+  <h2>SELL</h2><table><thead><tr><th>SYM</th><th>Name</th><th>Price</th><th>1h</th><th>24h</th><th>7d</th><th>VM</th><th>Orderbook</th></tr></thead><tbody id="SELL"></tbody></table>
+
+  <script src="/app.js"></script>
+  <script>CC.load('bull');</script>
+</body>
+</html>

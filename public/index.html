@@ -1,47 +1,8 @@
 <!doctype html>
-<html lang="nl">
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>CryptoCroc Scanner</title>
-  <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto; margin:20px; background:#0b1020; color:#e8eefc;}
-    a{color:#7bb0ff}
-    .row{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;}
-    button{padding:10px 14px; border-radius:10px; border:1px solid rgba(255,255,255,.15); background:rgba(255,255,255,.06); color:#e8eefc; cursor:pointer;}
-    pre{white-space:pre-wrap; background:rgba(255,255,255,.05); padding:14px; border-radius:14px; border:1px solid rgba(255,255,255,.10);}
-  </style>
-</head>
+<html>
+<head><meta charset="utf-8"><title>CryptoCroc</title></head>
 <body>
-  <h1>🐊 CryptoCroc Scanner</h1>
-
-  <div class="row">
-    <button onclick="load('bull')">BULL</button>
-    <button onclick="load('bear')">BEAR</button>
-    <button onclick="scan()">Scan nu</button>
-  </div>
-
-  <div id="meta"></div>
-  <pre id="out">Klik op BULL/BEAR of draai eerst “Scan nu”.</pre>
-
-<script>
-const out = document.getElementById('out');
-const meta = document.getElementById('meta');
-
-async function scan(){
-  meta.textContent = "Scanning...";
-  const r = await fetch('/api/scan?secret=' + encodeURIComponent(prompt("CRON_SECRET? (zelfde als in Vercel env)")), {cache:"no-store"});
-  const j = await r.json();
-  meta.textContent = JSON.stringify(j);
-}
-
-async function load(side){
-  meta.textContent = "Loading...";
-  const r = await fetch('/api/' + side, {cache:"no-store"});
-  const j = await r.json();
-  meta.textContent = j.ts ? ("Last scan: " + j.ts + " | OB calls: " + j.obCalls) : "";
-  out.textContent = JSON.stringify(j, null, 2);
-}
-</script>
+  <h2>CryptoCroc</h2>
+  <p><a href="/bull.html">Bull</a> | <a href="/bear.html">Bear</a></p>
 </body>
 </html>
