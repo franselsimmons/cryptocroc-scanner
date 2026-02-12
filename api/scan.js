@@ -1,184 +1,148 @@
+import { kv } from "@vercel/kv";
 import {
-  config,
-  fetchCoinGeckoMarket,
-  getBitgetSymbolsUSDT,
-  poolFilter,
-  timingScore,
-  loadMem,
-  saveMem,
-  calcDerived,
-  fetchOrderbookBitget,
-  zScoreFromHist,
-  obGate,
-  obStatusFromScore,
-  riskGateDummy,
-  stageLogic,
-  makeSnapshot
+  CFG, json, now,
+  getBitgetUsdtSet,
+  fetchCoinGeckoMarkets, mapCoin, poolPass,
+  computeSideBands, sideFor,
+  loadMem, saveMem, computeDerived, timingScore, enginePick, stageAdvance,
+  loadRisk, updateRiskFromSignals, riskGate
 } from "./_core.js";
 
-export { config };
-
-export default async function handler(req, res){
+export default async function handler(req){
   try{
-    const side = (req.query.side || "bull").toLowerCase();
-    if (side !== "bull" && side !== "bear") {
-      res.status(400).json({ ok:false, error:"side moet bull of bear zijn" });
-      return;
-    }
+    const url = new URL(req.url);
+    const side = (url.searchParams.get("side") || "bull").toLowerCase();
+    if(side!=="bull" && side!=="bear") return json({ ok:false, error:"side must be bull|bear" }, 400);
 
-    // 1) Data ophalen
-    const [cg, bitgetSet] = await Promise.all([
-      fetchCoinGeckoMarket(),
-      getBitgetSymbolsUSDT()
-    ]);
+    // 1) Fetch + map
+    const markets = await fetchCoinGeckoMarkets();
+    const mapped = markets.map(mapCoin);
 
-    // 2) Poolfilter + bitget-only gate
-    const pool = [];
-    for (const c of cg){
-      const sym = (c.symbol || "").toUpperCase();
-      const symbolUSDT = `${sym}USDT`;
-      if (!bitgetSet.has(symbolUSDT)) continue; // ✅ alleen Bitget coins
+    // 2) Pool filter
+    const pool = mapped.filter(poolPass);
 
-      const pf = poolFilter(c);
-      if (!pf.ok) continue;
+    // 3) Bands on pool
+    const bands = computeSideBands(pool.map(x=>x.ch24));
+    const lowBand = bands.lowBand;
+    const highBand = bands.highBand;
 
-      pool.push({
-        id: c.id,
-        symbol: sym,
-        symbolUSDT,
-        price: c.current_price ?? 0,
-        ch24: c.price_change_percentage_24h ?? 0,
-        vol: pf.vol,
-        mcap: pf.mcap,
-        vm: pf.vm,
-        high: c.high_24h ?? null,
-        low: c.low_24h ?? null
-      });
-    }
+    // 4) Bitget-only set
+    const usdtSet = await getBitgetUsdtSet();
 
-    // 3) Dynamische bands
-    const chArr = pool.map(x=>x.ch24);
-    const lowBand = (chArr.length ? percentile(chArr, 0.10) : -999);
-    const highBand = (chArr.length ? percentile(chArr, 0.90) : 999);
-
-    // 4) Side select
+    // 5) Build list for this side (and only if Bitget has SYMBOLUSDT)
     const picked = [];
-    for (const c of pool){
-      const passSide = (side === "bull") ? (c.ch24 >= highBand) : (c.ch24 <= lowBand);
-      if (!passSide) continue;
-      picked.push({ ...c, passSide });
+    for(const c0 of pool){
+      const s = sideFor(c0, {lowBand,highBand});
+      if(s !== side) continue;
+
+      const bitgetSym = (c0.symbol || "").toUpperCase() + "USDT";
+      if(!usdtSet.has(bitgetSym)) continue;
+
+      picked.push(c0);
+      if(picked.length >= 60) break; // hard cap for speed
     }
 
-    // 5) Funnel + memory
+    // 6) Memory update + stage machine
+    const bySymbol = {};
     const out = [];
-    for (const c of picked){
-      const mem = await loadMem(side, c.symbol);
+    for(const c0 of picked){
+      const sym = c0.symbol;
+      const mem = await loadMem(side, sym);
 
-      const t = timingScore(side, c, c.vm);
-      const snap = {
-        ts: Date.now(),
-        price: c.price,
-        vol: c.vol,
-        vm: c.vm,
-        ch24: c.ch24,
-        passSide: c.passSide,
-        timingScore: t.score
+      mem.totalScans = (mem.totalScans || 0) + 1;
+      mem.scansInStage = (mem.scansInStage || 0) + 1;
+
+      const passSide = true; // we already filtered by side
+      mem.hist = (mem.hist || []).concat([{
+        ts: now(),
+        price: c0.price,
+        vol: c0.vol,
+        vm: c0.vm,
+        passSide
+      }]).slice(-30);
+
+      const d = computeDerived(mem);
+
+      const c = {
+        symbol: sym,
+        price: c0.price,
+        vol: c0.vol,
+        mcap: c0.mcap,
+        vm: c0.vm,
+        ch24: c0.ch24,
+        range24: c0.range24,
+        ctl: c0.ctl,
+
+        passSide,
+        totalScans: mem.totalScans,
+
+        consistency: d.consistency,
+        volAcc: d.volAcc,
+        flatness: d.flatness,
+
+        engine: "EXPLOSIE", // temp, set below
+        timingScore: 0,
+        stage: mem.stage
       };
 
-      // hist update
-      mem.hist.push({ ts: snap.ts, price: snap.price, vol: snap.vol, vm: snap.vm, passSide: snap.passSide });
-      if (mem.hist.length > 30) mem.hist = mem.hist.slice(-30);
+      c.engine = enginePick(c);
+      c.timingScore = timingScore(side, c);
 
-      mem.totalScans += 1;
+      // advance stage (max 1 step)
+      stageAdvance(side, c, mem, d);
+      c.stage = mem.stage;
 
-      const d = calcDerived(mem);
-      snap.consistency = d.consistency;
-      snap.volAcc = d.volAcc;
-      snap.flat = d.flat;
+      // reset scansInStage if stage changed by stageAdvance
+      // (we detect by keeping stage in mem already set; if changed, scansInStage was set to 0 inside stageAdvance)
+      mem.stage = c.stage;
 
-      // stage move
-      const proposed = stageLogic(side, mem, snap);
+      await saveMem(side, sym, mem);
 
-      // OB gate only when ALMOST -> ENTRY
-      let stage = proposed;
-      let obScore = null, z = null, spreadPct = null, obErr = null, obStatus = null;
-
-      if (proposed === "ENTRY"){
-        // risk gate (placeholder ok)
-        const risk = riskGateDummy();
-        if (!risk.ok){
-          stage = "ALMOST";
-        } else {
-          try{
-            const ob = await fetchOrderbookBitget(c.symbolUSDT);
-            obScore = Number(ob.obScore.toFixed(4));
-            spreadPct = ob.spreadPct == null ? null : Number(ob.spreadPct.toFixed(4));
-
-            // update obHist
-            mem.obHist.push(obScore);
-            if (mem.obHist.length > 50) mem.obHist = mem.obHist.slice(-50);
-
-            z = Number(zScoreFromHist(mem.obHist, obScore).toFixed(3));
-            const okGate = obGate(side, z);
-            if (!okGate){
-              stage = "ALMOST";
-            }
-            obStatus = obStatusFromScore(side, obScore, spreadPct);
-          } catch(e){
-            obErr = String(e.message || e);
-            stage = "ALMOST";
-          }
-        }
-      }
-
-      // stageScans
-      if (stage !== mem.stage){
-        mem.stage = stage;
-        mem.stageScans = 1;
-      } else {
-        mem.stageScans = (mem.stageScans || 0) + 1;
-      }
-
-      await saveMem(mem);
-
-      out.push({
-        symbol: c.symbol,
-        symbolUSDT: c.symbolUSDT,
-        stage,
-        obStatus,
-        obScore,
-        zScore: z,
-        spreadPct,
-        obErr,
-        price: c.price,
-        ch24: c.ch24,
-        vol: c.vol,
-        vm: c.vm,
-        timingScore: t.score,
-        totalScans: mem.totalScans,
-        consistency: Number((snap.consistency||0).toFixed(3)),
-        volAcc: Number((snap.volAcc||0).toFixed(3)),
-        flat: snap.flat == null ? null : Number(snap.flat.toFixed(3))
-      });
+      bySymbol[sym] = c;
+      out.push(c);
     }
 
-    // 6) Snapshot opslaan voor UI + cron
-    const snapshot = makeSnapshot(Date.now(), lowBand, highBand, out);
-    await kv.set(`latest:${side}`, snapshot);
+    // 7) Funnel buckets
+    const funnel = { ENTRY:[], ALMOST:[], BUILDUP:[], RADAR:[] };
+    for(const c of out){
+      funnel[c.stage]?.push(c);
+    }
 
-    res.status(200).json({ ok:true, snapshot });
+    // sort: hoogste timing eerst
+    for(const k of Object.keys(funnel)){
+      funnel[k].sort((a,b)=> (b.timingScore-a.timingScore) || (b.vm-a.vm));
+    }
 
-  } catch(e){
-    res.status(500).json({ ok:false, error: String(e.message || e) });
+    // 8) Risk engine (light) + hedge indicator (global)
+    // We store both sides latest to compute hedge info.
+    const latestBull = await kv.get("latest:bull");
+    const latestBear = await kv.get("latest:bear");
+
+    const tmpThis = { funnel };
+    const risk = await updateRiskFromSignals(
+      side==="bull" ? tmpThis : latestBull,
+      side==="bear" ? tmpThis : latestBear
+    );
+
+    // If risk gate says no, we keep the data, but UI will show LOCK
+    const gate = riskGate(side, risk);
+
+    const data = {
+      ok:true,
+      ts: now(),
+      side,
+      items: out.length,
+      lowBand, highBand,
+      hedgeMode: CFG.hedgeMode,
+      risk: { ...risk, gate },
+      funnel,
+      bySymbol
+    };
+
+    await kv.set(`latest:${side}`, data);
+
+    return json({ ok:true, data });
+  }catch(e){
+    return json({ ok:false, error: e.message || String(e) }, 500);
   }
-}
-
-function percentile(arr, p){
-  const s = [...arr].sort((a,b)=>a-b);
-  const idx = (s.length - 1) * p;
-  const lo = Math.floor(idx);
-  const hi = Math.ceil(idx);
-  if (lo === hi) return s[lo] ?? 0;
-  const w = idx - lo;
-  return s[lo]*(1-w) + s[hi]*w;
 }

@@ -1,38 +1,90 @@
 import { kv } from "@vercel/kv";
-import { fetchOrderbookBitget, zScoreFromHist, obStatusFromScore } from "./_core.js";
+import { CFG, json, avg, std } from "./_core.js";
 
-export const config = { runtime: "nodejs" };
+const fetchFn = globalThis.fetch;
 
-export default async function handler(req, res){
+function meanMid(bids, asks){
+  const bid = bids?.[0]?.[0] ? Number(bids[0][0]) : 0;
+  const ask = asks?.[0]?.[0] ? Number(asks[0][0]) : 0;
+  if(bid>0 && ask>0) return (bid+ask)/2;
+  return bid || ask || 0;
+}
+
+function depthSum(levels, mid, pct, isBid){
+  // levels: [[price, size], ...]
+  const lim = mid * (1 + (isBid ? -pct : pct));
+  let usd = 0;
+  for(const lv of (levels||[])){
+    const p = Number(lv[0]);
+    const s = Number(lv[1]);
+    if(!(p>0 && s>0)) continue;
+    if(isBid){
+      if(p < lim) break;
+    }else{
+      if(p > lim) break;
+    }
+    usd += p*s;
+  }
+  return usd;
+}
+
+export default async function handler(req){
   try{
-    const side = (req.query.side || "bull").toLowerCase();
-    const symbol = String(req.query.symbol || "").toUpperCase();
-    if (!symbol) return res.status(400).json({ ok:false, error:"symbol ontbreekt" });
+    const url = new URL(req.url);
+    const side = (url.searchParams.get("side") || "bull").toLowerCase();
+    const symbol = (url.searchParams.get("symbol") || "").toLowerCase();
+    if(!symbol) return json({ ok:false, error:"missing symbol" }, 400);
 
-    const mem = await kv.get(`mem:${side}:${symbol}`);
-    if (!mem) return res.status(200).json({ ok:true, note:"Geen memory voor deze coin (nog niet gezien).", raw:{} });
+    // Bitget symbol: XXXUSDT
+    const bitgetSymbol = symbol.toUpperCase() + "USDT";
 
-    const symbolUSDT = `${symbol}USDT`;
-    const ob = await fetchOrderbookBitget(symbolUSDT);
+    const obUrl = `https://api.bitget.com/api/v2/spot/market/orderbook?symbol=${encodeURIComponent(bitgetSymbol)}&limit=100`;
+    const r = await fetchFn(obUrl);
+    const j = await r.json();
 
-    const obScore = Number(ob.obScore.toFixed(4));
-    const z = Number(zScoreFromHist(mem.obHist || [], obScore).toFixed(3));
-    const spreadPct = ob.spreadPct == null ? null : Number(ob.spreadPct.toFixed(4));
-    const obStatus = obStatusFromScore(side, obScore, spreadPct);
+    const data = j?.data;
+    const bids = data?.bids;
+    const asks = data?.asks;
+    if(!Array.isArray(bids) || !Array.isArray(asks) || bids.length===0 || asks.length===0){
+      return json({ ok:false, error:`Bitget orderbook missing for ${bitgetSymbol}` }, 502);
+    }
 
-    res.status(200).json({
+    const mid = meanMid(bids, asks);
+    if(!(mid>0)) return json({ ok:false, error:"mid price invalid" }, 502);
+
+    const bidUsd = depthSum(bids, mid, CFG.depthPct, true);
+    const askUsd = depthSum(asks, mid, CFG.depthPct, false);
+
+    const obScore = (bidUsd + askUsd) > 0 ? (bidUsd - askUsd) / (bidUsd + askUsd) : 0;
+
+    // store history for z-score
+    const hKey = `ob:${side}:${symbol}`;
+    const hist = (await kv.get(hKey)) || [];
+    const newHist = Array.isArray(hist) ? hist.concat([obScore]).slice(-CFG.obHistMax) : [obScore];
+    await kv.set(hKey, newHist);
+
+    const sdev = std(newHist);
+    const mean = avg(newHist);
+    const zScore = (sdev>0) ? (obScore - mean)/sdev : 0;
+
+    const passed = side==="bull" ? (zScore >= CFG.obZBull) : (zScore <= CFG.obZBear);
+
+    // note voor UI
+    let note = "ok";
+    if(newHist.length < CFG.obMinSamples) note = `warming up (${newHist.length}/${CFG.obMinSamples})`;
+
+    return json({
       ok:true,
-      stage: mem.stage,
-      timingScore: null,
-      obScore,
-      zScore: z,
-      spreadPct,
-      obStatus,
-      note: "Orderbook live via Bitget.",
-      raw: ob.raw
+      data: {
+        symbol,
+        bitgetSymbol,
+        obScore,
+        zScore,
+        passed,
+        note
+      }
     });
-
-  } catch(e){
-    res.status(500).json({ ok:false, error: String(e.message || e) });
+  }catch(e){
+    return json({ ok:false, error: e.message || String(e) }, 500);
   }
 }

@@ -1,19 +1,26 @@
-import { kv } from "@vercel/kv";
+import scan from "./scan.js";
+import { json } from "./_core.js";
 
-export const config = { runtime: "nodejs" };
-
-export default async function handler(req, res){
+export default async function handler(req){
   try{
-    // Vercel Cron roept dit endpoint aan. We triggeren beide kanten.
-    const base = `https://${req.headers.host}`;
+    // Optional: als je later een secret wil:
+    // const auth = req.headers.get("authorization") || "";
+    // if(process.env.CRON_SECRET && auth !== `Bearer ${process.env.CRON_SECRET}`) return json({ok:false,error:"unauthorized"},401);
 
-    // scan bull
-    await fetch(`${base}/api/scan?side=bull`, { method: "GET" });
-    // scan bear
-    await fetch(`${base}/api/scan?side=bear`, { method: "GET" });
+    // Run bull + bear scans back-to-back
+    // We call the scan handler by faking req.url
+    const base = new URL(req.url);
+    const bullUrl = new URL(base.toString()); bullUrl.searchParams.set("side","bull");
+    const bearUrl = new URL(base.toString()); bearUrl.searchParams.set("side","bear");
 
-    res.status(200).json({ ok:true, ts: Date.now() });
-  } catch(e){
-    res.status(500).json({ ok:false, error: String(e.message || e) });
+    const bullRes = await scan(new Request(bullUrl.toString(), { method:"GET" }));
+    const bearRes = await scan(new Request(bearUrl.toString(), { method:"GET" }));
+
+    const b1 = await bullRes.json();
+    const b2 = await bearRes.json();
+
+    return json({ ok:true, bull:b1.ok, bear:b2.ok, ts: Date.now() });
+  }catch(e){
+    return json({ ok:false, error: e.message || String(e) }, 500);
   }
 }

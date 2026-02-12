@@ -1,16 +1,17 @@
 import { kv } from "@vercel/kv";
-export const config = { runtime: "nodejs" };
+import { json } from "./_core.js";
 
-export default async function handler(req, res){
+export default async function handler(req){
   try{
-    const side = (req.query.side || "bull").toLowerCase();
-    const snap = await kv.get(`latest:${side}`);
-    if (!snap){
-      res.status(200).json({ ok:false, error:"Nog geen snapshot. Druk op Scan nu of wacht op cron." });
-      return;
-    }
-    res.status(200).json({ ok:true, snapshot: snap });
-  } catch(e){
-    res.status(500).json({ ok:false, error: String(e.message || e) });
+    const url = new URL(req.url);
+    const side = (url.searchParams.get("side") || "bull").toLowerCase();
+    if(side!=="bull" && side!=="bear") return json({ ok:false, error:"side must be bull|bear" }, 400);
+
+    const data = await kv.get(`latest:${side}`);
+    if(!data) return json({ ok:true, data: null });
+
+    return json({ ok:true, data });
+  }catch(e){
+    return json({ ok:false, error: e.message || String(e) }, 500);
   }
 }

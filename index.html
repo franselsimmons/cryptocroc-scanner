@@ -7,110 +7,289 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <div class="bg"></div>
+
   <header class="top">
     <div class="brand">
       <div class="logo">🐊</div>
-      <div class="title">
-        <h1>CryptoCroc Scanner</h1>
-        <div class="sub">memory · funnel · Bitget orderbook z-score · cron 10m</div>
+      <div>
+        <div class="title">CryptoCroc Scanner</div>
+        <div class="subtitle">Funnel • KV memory • Bitget OB z-score • Cron 10m</div>
       </div>
     </div>
 
-    <div class="actions">
-      <button id="btnBull" class="pill on">BULL</button>
+    <div class="controls">
+      <button id="btnBull" class="pill active">BULL</button>
       <button id="btnBear" class="pill">BEAR</button>
       <button id="btnScan" class="pill primary">Scan nu</button>
       <button id="btnRefresh" class="pill">↻</button>
-      <div class="meta" id="meta">—</div>
+      <span id="badge" class="badge">…</span>
     </div>
   </header>
 
-  <!-- Dit is die "balk": die MOET weg als alles ok is. -->
-  <div id="toast" class="toast hidden"></div>
-
-  <main class="grid">
-    <section class="panel">
+  <main class="wrap">
+    <section class="panel left">
       <div class="panelHead">
-        <div>
-          <div class="panelTitle">Funnel</div>
-          <div class="panelHint" id="bands">—</div>
+        <div class="panelTitle">Funnel</div>
+        <div class="panelMeta" id="meta">—</div>
+      </div>
+
+      <div class="stage" id="stageENTRY">
+        <div class="stageHead">
+          <div class="stageName">ENTRY</div><div class="count" id="cENTRY">0</div>
         </div>
-        <div class="badge" id="count">0</div>
+        <div class="stageBody" id="listENTRY"></div>
       </div>
 
-      <!-- ENTRY boven, RADAR onder -->
-      <div class="stage">
-        <div class="stageHead"><span>ENTRY</span><span class="chip" id="c_entry">0</span></div>
-        <div class="list" id="entry"></div>
+      <div class="stage" id="stageALMOST">
+        <div class="stageHead">
+          <div class="stageName">ALMOST</div><div class="count" id="cALMOST">0</div>
+        </div>
+        <div class="stageBody" id="listALMOST"></div>
       </div>
 
-      <div class="stage">
-        <div class="stageHead"><span>HOLD</span><span class="chip" id="c_hold">0</span></div>
-        <div class="list" id="hold"></div>
+      <div class="stage" id="stageBUILDUP">
+        <div class="stageHead">
+          <div class="stageName">BUILDUP</div><div class="count" id="cBUILDUP">0</div>
+        </div>
+        <div class="stageBody" id="listBUILDUP"></div>
       </div>
 
-      <div class="stage">
-        <div class="stageHead"><span>SELL</span><span class="chip" id="c_sell">0</span></div>
-        <div class="list" id="sell"></div>
-      </div>
-
-      <div class="stage">
-        <div class="stageHead"><span>ALMOST</span><span class="chip" id="c_almost">0</span></div>
-        <div class="list" id="almost"></div>
-      </div>
-
-      <div class="stage">
-        <div class="stageHead"><span>BUILDUP</span><span class="chip" id="c_buildup">0</span></div>
-        <div class="list" id="buildup"></div>
-      </div>
-
-      <div class="stage">
-        <div class="stageHead"><span>RADAR</span><span class="chip" id="c_radar">0</span></div>
-        <div class="list" id="radar"></div>
+      <div class="stage" id="stageRADAR">
+        <div class="stageHead">
+          <div class="stageName">RADAR</div><div class="count" id="cRADAR">0</div>
+        </div>
+        <div class="stageBody" id="listRADAR"></div>
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel right">
       <div class="panelHead">
-        <div>
-          <div class="panelTitle">Orderbook</div>
-          <div class="panelHint">Bitget-only · gebruikt bij ALMOST→ENTRY en status (HOLD/SELL)</div>
+        <div class="panelTitle">Orderbook</div>
+        <div class="panelMeta">Wordt alleen gebruikt bij ALMOST/ENTRY</div>
+      </div>
+
+      <div class="obBox" id="obBox">
+        <div class="obTitle" id="obTitle">Geen coin geselecteerd</div>
+        <div class="obGrid">
+          <div class="k">Stage</div><div class="v" id="obStage">—</div>
+          <div class="k">TimingScore</div><div class="v" id="obTiming">—</div>
+          <div class="k">VM / Vol</div><div class="v" id="obVmVol">—</div>
+          <div class="k">Flat / VolAcc</div><div class="v" id="obFlatAcc">—</div>
+          <div class="k">OB Score</div><div class="v" id="obScore">—</div>
+          <div class="k">Z-Score</div><div class="v" id="obZ">—</div>
+          <div class="k">Gate</div><div class="v" id="obGate">—</div>
+          <div class="k">OB Status</div><div class="v" id="obErr">—</div>
+        </div>
+
+        <div class="tiny" id="obHint">
+          Tip: klik links op een coin om details + orderbook te zien.
         </div>
       </div>
 
-      <div class="ob" id="obBox">
-        <div class="obTitle" id="obTitle">Geen coin geselecteerd</div>
-        <div class="obGrid">
-          <div class="card">
-            <div class="k">Stage</div><div class="v" id="obStage">—</div>
-          </div>
-          <div class="card">
-            <div class="k">Timing</div><div class="v" id="obTiming">—</div>
-          </div>
-          <div class="card">
-            <div class="k">OB score</div><div class="v" id="obScore">—</div>
-          </div>
-          <div class="card">
-            <div class="k">OB z-score</div><div class="v" id="obZ">—</div>
-          </div>
-          <div class="card">
-            <div class="k">Spread</div><div class="v" id="obSpread">—</div>
-          </div>
-          <div class="card">
-            <div class="k">OB status</div><div class="v" id="obStatus">—</div>
-          </div>
+      <div class="panelFoot">
+        <div class="tiny">
+          Let op: “Bitget-only” betekent: coins worden alleen in de funnel gezet als er een Bitget USDT pair bestaat.
+          Daardoor krijg je (bijna) nooit meer “OB err”.
         </div>
-
-        <div class="obHint" id="obHint">Tip: klik op een coin om details + orderbook te zien.</div>
-        <pre class="obRaw" id="obRaw"></pre>
       </div>
     </section>
   </main>
 
-  <footer class="foot">
-    <span>Tip: Cron draait elke 10 min automatisch. “Scan nu” is handmatig.</span>
-  </footer>
+  <!-- Loader (die balk die bleef hangen) -->
+  <div id="loader" class="loader hidden">
+    <div class="loaderCard">
+      <div class="loaderBar"></div>
+      <div class="loaderText" id="loaderText">Laden…</div>
+    </div>
+  </div>
 
-  <script src="/app.js"></script>
+  <script>
+    const $ = (id)=>document.getElementById(id);
+
+    let SIDE = "bull";
+    let DATA = null;
+    let SELECTED = null;
+
+    const API_LATEST = () => `/api/latest?side=${SIDE}`;
+    const API_SCAN   = () => `/api/scan?side=${SIDE}`;
+    const API_OB     = (sym) => `/api/orderbook?side=${SIDE}&symbol=${encodeURIComponent(sym)}`;
+
+    function setLoader(on, text="Laden…"){
+      const el = $("loader");
+      $("loaderText").textContent = text;
+      el.classList.toggle("hidden", !on);
+    }
+
+    function fmtNum(n){
+      if(n===null||n===undefined||Number.isNaN(n)) return "—";
+      const abs=Math.abs(n);
+      if(abs>=1e9) return (n/1e9).toFixed(2)+"B";
+      if(abs>=1e6) return (n/1e6).toFixed(2)+"M";
+      if(abs>=1e3) return (n/1e3).toFixed(2)+"K";
+      return String(n.toFixed ? n.toFixed(4) : n);
+    }
+
+    function pillActive(){
+      $("btnBull").classList.toggle("active", SIDE==="bull");
+      $("btnBear").classList.toggle("active", SIDE==="bear");
+    }
+
+    function render(){
+      if(!DATA){
+        $("badge").textContent = "—";
+        $("meta").textContent = "—";
+        ["ENTRY","ALMOST","BUILDUP","RADAR"].forEach(s=>{
+          $("c"+s).textContent="0";
+          $("list"+s).innerHTML="";
+        });
+        return;
+      }
+
+      $("badge").textContent = `items: ${DATA.items} • bands: ${DATA.lowBand.toFixed(2)}% .. ${DATA.highBand.toFixed(2)}% • last: ${new Date(DATA.ts).toLocaleTimeString()}`;
+      $("meta").textContent  = `Bitget-only • hedgeMode: ${DATA.hedgeMode ? "aan" : "uit"} • risk: ${DATA.risk.locked ? "LOCK" : "ok"} • openBull:${DATA.risk.openBull} openBear:${DATA.risk.openBear}`;
+
+      const stages = ["ENTRY","ALMOST","BUILDUP","RADAR"];
+      stages.forEach(stage=>{
+        const list = DATA.funnel[stage] || [];
+        $("c"+stage).textContent = String(list.length);
+        const target = $("list"+stage);
+        target.innerHTML = "";
+
+        if(list.length===0){
+          const empty = document.createElement("div");
+          empty.className="empty";
+          empty.textContent="Geen coins.";
+          target.appendChild(empty);
+          return;
+        }
+
+        list.forEach(c=>{
+          const row=document.createElement("button");
+          row.className="coin";
+          row.onclick=()=>selectCoin(c.symbol);
+          row.innerHTML = `
+            <div class="coinTop">
+              <div class="sym">${c.symbol.toUpperCase()}</div>
+              <div class="tag">${c.engine}</div>
+              <div class="tag2">${c.stage}</div>
+            </div>
+            <div class="coinBot">
+              <span>prijs: <b>${fmtNum(c.price)}</b></span>
+              <span>ch24: <b>${c.ch24.toFixed(2)}%</b></span>
+              <span>vm: <b>${c.vm.toFixed(2)}</b></span>
+              <span>vol: <b>$${fmtNum(c.vol)}</b></span>
+              <span>score: <b>${c.timingScore}</b></span>
+              <span>scans: <b>${c.totalScans}</b></span>
+            </div>
+          `;
+          target.appendChild(row);
+        });
+      });
+
+      if(SELECTED){
+        // refresh selected summary box fields quickly from DATA snapshot
+        const c = DATA.bySymbol[SELECTED];
+        if(c){
+          $("obTitle").textContent = `${c.symbol.toUpperCase()} (${SIDE.toUpperCase()})`;
+          $("obStage").textContent = c.stage;
+          $("obTiming").textContent = String(c.timingScore);
+          $("obVmVol").textContent = `${c.vm.toFixed(2)} / $${fmtNum(c.vol)}`;
+          $("obFlatAcc").textContent = `${(c.flatness*100).toFixed(2)}% / ${(c.volAcc*100).toFixed(1)}%`;
+        }
+      }
+    }
+
+    async function loadLatest(){
+      setLoader(true,"Laatste data ophalen…");
+      try{
+        const r = await fetch(API_LATEST(), {cache:"no-store"});
+        const j = await r.json();
+        if(!j.ok) throw new Error(j.error || "latest failed");
+        DATA = j.data;
+        SELECTED = null;
+        $("obTitle").textContent="Geen coin geselecteerd";
+        $("obStage").textContent="—";
+        $("obTiming").textContent="—";
+        $("obVmVol").textContent="—";
+        $("obFlatAcc").textContent="—";
+        $("obScore").textContent="—";
+        $("obZ").textContent="—";
+        $("obGate").textContent="—";
+        $("obErr").textContent="—";
+        render();
+      }catch(e){
+        DATA=null;
+        render();
+        $("badge").textContent = "error";
+        alert("Fout bij latest: " + e.message);
+      }finally{
+        setLoader(false);
+      }
+    }
+
+    async function runScan(){
+      setLoader(true,"Scan draaien… (CoinGecko + Bitget check + funnel)");
+      try{
+        const r = await fetch(API_SCAN(), {cache:"no-store"});
+        const j = await r.json();
+        if(!j.ok) throw new Error(j.error || "scan failed");
+        DATA = j.data;
+        SELECTED = null;
+        render();
+      }catch(e){
+        alert("Scan fout: " + e.message);
+      }finally{
+        setLoader(false);
+      }
+    }
+
+    async function selectCoin(sym){
+      if(!DATA || !DATA.bySymbol[sym]) return;
+      SELECTED = sym;
+
+      const c = DATA.bySymbol[sym];
+      $("obTitle").textContent = `${c.symbol.toUpperCase()} (${SIDE.toUpperCase()})`;
+      $("obStage").textContent = c.stage;
+      $("obTiming").textContent = String(c.timingScore);
+      $("obVmVol").textContent = `${c.vm.toFixed(2)} / $${fmtNum(c.vol)}`;
+      $("obFlatAcc").textContent = `${(c.flatness*100).toFixed(2)}% / ${(c.volAcc*100).toFixed(1)}%`;
+
+      // Orderbook alleen echt ophalen bij ALMOST/ENTRY (anders sparen we calls)
+      if(!(c.stage==="ALMOST" || c.stage==="ENTRY")){
+        $("obScore").textContent="—";
+        $("obZ").textContent="—";
+        $("obGate").textContent="—";
+        $("obErr").textContent="(OB niet nodig in deze stage)";
+        render();
+        return;
+      }
+
+      setLoader(true,"Orderbook ophalen… (Bitget)");
+      try{
+        const r = await fetch(API_OB(sym), {cache:"no-store"});
+        const j = await r.json();
+        if(!j.ok) throw new Error(j.error || "orderbook failed");
+
+        $("obScore").textContent = j.data.obScore.toFixed(4);
+        $("obZ").textContent     = j.data.zScore.toFixed(2);
+        $("obGate").textContent  = j.data.passed ? "PASS ✅" : "FAIL ❌";
+        $("obErr").textContent   = j.data.note || "ok";
+      }catch(e){
+        $("obErr").textContent = "OB err: " + e.message;
+      }finally{
+        setLoader(false);
+      }
+      render();
+    }
+
+    $("btnBull").onclick=()=>{ SIDE="bull"; pillActive(); loadLatest(); };
+    $("btnBear").onclick=()=>{ SIDE="bear"; pillActive(); loadLatest(); };
+    $("btnScan").onclick=runScan;
+    $("btnRefresh").onclick=loadLatest;
+
+    pillActive();
+    loadLatest();
+  </script>
 </body>
 </html>
