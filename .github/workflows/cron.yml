@@ -11,5 +11,7 @@ jobs:
     steps:
       - name: Call Vercel scan endpoint
         run: |
-          curl -sS --fail "https://${{ secrets.VERCEL_URL }}/api/scan?secret=${{ secrets.CRON_SECRET }}" \
-            -H "User-Agent: GitHub-Actions" -H "Accept: application/json"
+          curl -sS --fail \
+            "https://${{ secrets.VERCEL_URL }}/api/scan?secret=${{ secrets.CRON_SECRET }}" \
+            -H "User-Agent: GitHub-Actions" \
+            -H "Accept: application/json"

@@ -1,34 +1,46 @@
 <!doctype html>
 <html lang="nl">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>CryptoCroc Scanner</title>
-  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/styles.css"/>
 </head>
 <body>
-  <div class="wrap">
-    <div class="header">
-      <div class="brand"><span class="logo">🐊</span> CryptoCroc Scanner</div>
-      <div class="small">BULL/BEAR + funnel + orderbook</div>
-    </div>
-
-    <div class="topbar">
-      <button id="btnBull" class="btn active">BULL</button>
-      <button id="btnBear" class="btn">BEAR</button>
-      <button id="btnScan" class="btn primary">Scan nu</button>
-
-      <div class="meta" id="meta">
-        <span class="chip">side: <b id="sideLabel">BULL</b></span>
+  <header class="top">
+    <div class="brand">
+      <div class="logo">🐊</div>
+      <div>
+        <div class="title">CryptoCroc Scanner</div>
+        <div class="sub">Trechter • Memory • Dynamische bands • PRO OB vanaf ALMOST</div>
       </div>
     </div>
 
-    <div id="error" class="err" style="display:none"></div>
+    <div class="tabs">
+      <button id="tabBull" class="tab">BULL</button>
+      <button id="tabBear" class="tab">BEAR</button>
+      <button id="btnScan" class="ghost">Scan nu</button>
+      <button id="btnRefresh" class="ghost">↻</button>
+    </div>
 
-    <div id="content"></div>
+    <div class="status">
+      <div id="ts" class="pill">⏳ last scan…</div>
+      <div id="meta" class="pill">📌 bands…</div>
+    </div>
+  </header>
 
-    <div class="footerNote">
-      Orderbook wordt alleen getoond bij ALMOST/ENTRY/HOLD/SELL. (Als je API OB levert.)
+  <main class="wrap">
+    <div id="loading" class="loading hidden">🔄 Data laden…</div>
+    <section id="tables"></section>
+  </main>
+
+  <div id="modal" class="modal hidden">
+    <div class="modalCard">
+      <div class="modalHead">
+        <div id="mTitle" class="mTitle"></div>
+        <button id="mClose" class="x">✕</button>
+      </div>
+      <div id="mBody" class="mBody"></div>
     </div>
   </div>
 

@@ -1,12 +1,16 @@
 {
   "name": "cryptocroc-scanner",
-  "version": "4.0.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
-  "dependencies": {
-    "@upstash/redis": "^1.28.4"
+  "scripts": {
+    "dev": "vercel dev",
+    "start": "node -e \"console.log('Vercel serverless project (no local server needed). Use: vercel dev')\""
   },
-  "engines": {
-    "node": ">=18"
+  "dependencies": {
+    "@upstash/redis": "^1.34.3"
+  },
+  "devDependencies": {
+    "vercel": "^37.0.0"
   }
 }
