@@ -1,8 +1,8 @@
 {
-  "version": 2,
-  "functions": {
-    "api/*.js": {
-      "runtime": "nodejs24.x"
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "*/10 * * * *"
     }
-  }
+  ]
 }

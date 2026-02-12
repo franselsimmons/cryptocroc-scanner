@@ -1,119 +1,153 @@
 <!doctype html>
 <html lang="nl">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>CryptoCroc Scanner</title>
   <style>
     :root{
-      --bg1:#081014;
-      --bg2:#0a1b17;
-      --card:#0f1d22cc;
-      --line:#1f3a42;
-      --text:#e9f3f5;
-      --muted:#a9c0c7;
-      --good:#2dd4bf;
-      --bad:#fb7185;
+      --bg1:#0b1020;
+      --bg2:#0f1a33;
+      --card:rgba(255,255,255,.06);
+      --card2:rgba(255,255,255,.09);
+      --line:rgba(255,255,255,.10);
+      --text:rgba(255,255,255,.92);
+      --muted:rgba(255,255,255,.65);
+      --good:#4ade80;
       --warn:#fbbf24;
-      --btn:#14363f;
-      --btn2:#1b4b57;
+      --bad:#fb7185;
+      --blue:#60a5fa;
     }
     *{box-sizing:border-box}
     body{
       margin:0;
+      font-family:ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
       color:var(--text);
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
       background:
-        radial-gradient(1200px 700px at 20% 20%, #1a5b3f55, transparent 60%),
-        radial-gradient(900px 600px at 70% 60%, #1f5ea855, transparent 60%),
+        radial-gradient(1200px 600px at 10% 20%, rgba(74,222,128,.18), transparent 60%),
+        radial-gradient(1000px 600px at 90% 10%, rgba(96,165,250,.18), transparent 55%),
         linear-gradient(180deg, var(--bg1), var(--bg2));
       min-height:100vh;
     }
-    .wrap{max-width:1200px;margin:0 auto;padding:18px}
+    .wrap{max-width:1200px;margin:18px auto;padding:0 14px}
     .top{
       display:flex;align-items:center;justify-content:space-between;
-      gap:12px;padding:12px 14px;border:1px solid var(--line);
-      background:linear-gradient(180deg, #0f2a2fbb, #0b171bbb);
-      border-radius:14px;
-      position:sticky;top:10px;z-index:5;
+      padding:14px 14px;border:1px solid var(--line);border-radius:14px;
+      background:linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.04));
       backdrop-filter: blur(8px);
     }
-    .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px}
-    .brand .logo{font-size:20px}
-    .btns{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    button{
-      border:1px solid #2c5a65;
-      background:linear-gradient(180deg,var(--btn2),var(--btn));
+    .brand{display:flex;gap:12px;align-items:center}
+    .logo{
+      width:34px;height:34px;border-radius:10px;
+      background:linear-gradient(135deg, rgba(74,222,128,.35), rgba(96,165,250,.25));
+      border:1px solid var(--line);
+      display:grid;place-items:center;font-weight:900;
+    }
+    .brand h1{margin:0;font-size:18px;letter-spacing:.2px}
+    .actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .btn{
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.06);
       color:var(--text);
-      padding:8px 12px;border-radius:10px;
+      padding:9px 12px;border-radius:12px;
       cursor:pointer;font-weight:700;
     }
-    button.active{outline:2px solid #2dd4bf66}
-    button:hover{filter:brightness(1.06)}
+    .btn:hover{background:rgba(255,255,255,.09)}
+    .btn.primary{background:rgba(74,222,128,.16);border-color:rgba(74,222,128,.35)}
     .pill{
-      display:inline-flex;align-items:center;gap:8px;
-      padding:6px 10px;border:1px solid var(--line);
-      background:#0b171bbb;border-radius:999px;color:var(--muted);
-      font-size:12px;font-weight:700;
-    }
-    .grid{display:grid;grid-template-columns: 1.2fr 0.8fr;gap:12px;margin-top:12px}
-    @media(max-width:980px){.grid{grid-template-columns:1fr}}
-    .card{
       border:1px solid var(--line);
-      background:var(--card);
+      background:rgba(255,255,255,.05);
+      padding:8px 10px;border-radius:999px;
+      color:var(--muted);font-size:12px;font-weight:700;
+    }
+
+    .grid{display:grid;grid-template-columns: 1.15fr .85fr;gap:14px;margin-top:14px}
+    @media (max-width: 980px){ .grid{grid-template-columns:1fr} }
+
+    .panel{
+      border:1px solid var(--line);
+      background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.035));
       border-radius:14px;
       overflow:hidden;
     }
-    .card h3{
-      margin:0;padding:10px 12px;
-      border-bottom:1px solid var(--line);
-      font-size:13px;letter-spacing:.4px;color:var(--muted);
+    .panel .hd{
+      padding:12px 12px;
       display:flex;align-items:center;justify-content:space-between;
+      border-bottom:1px solid var(--line);
+      background:rgba(255,255,255,.03);
+      font-weight:900;
     }
-    .stage{padding:10px 10px 6px}
-    .row{
-      display:flex;align-items:center;justify-content:space-between;gap:10px;
-      padding:10px;border:1px solid var(--line);
-      border-radius:12px;background:#09161a99;margin-bottom:8px;
-      cursor:pointer;
-    }
-    .row:hover{border-color:#2dd4bf66}
-    .left .sym{font-weight:900}
-    .left .meta{color:var(--muted);font-size:12px;margin-top:3px}
-    .tag{
-      font-size:11px;font-weight:900;
-      padding:4px 8px;border-radius:999px;border:1px solid var(--line);
-      color:var(--muted);
-    }
-    .tag.good{color:#05201a;background:#2dd4bf22;border-color:#2dd4bf55}
-    .tag.warn{color:#2a1800;background:#fbbf2422;border-color:#fbbf2455}
-    .tag.bad{color:#2a0008;background:#fb718522;border-color:#fb718555}
-    .box{padding:12px}
+    .panel .bd{padding:12px}
     .muted{color:var(--muted)}
     .err{
-      margin-top:10px;
+      border:1px solid rgba(251,113,133,.35);
+      background:rgba(251,113,133,.10);
       padding:10px 12px;border-radius:12px;
-      border:1px solid #fb718555;
-      background:#2b0a1288;
+      margin-top:10px;
       display:none;
-      white-space:pre-wrap;
     }
+    .err.show{display:block}
     .loading{
       position:fixed;inset:0;
-      background:#00000066;
-      display:none;
-      align-items:center;justify-content:center;
-      z-index:999;
+      background:rgba(0,0,0,.35);
+      display:none;align-items:center;justify-content:center;
+      z-index:9999;
     }
+    .loading.show{display:flex}
     .spinner{
-      width:56px;height:56px;border-radius:50%;
-      border:5px solid #ffffff22;border-top-color:#2dd4bf;
-      animation:spin 0.9s linear infinite;
-      background:#081014aa;
+      width:56px;height:56px;border-radius:999px;
+      border:4px solid rgba(255,255,255,.15);
+      border-top-color:rgba(74,222,128,.75);
+      animation:spin .9s linear infinite;
     }
     @keyframes spin{to{transform:rotate(360deg)}}
-    .small{font-size:12px}
-    .kvs{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+
+    .stageBox{margin-bottom:12px}
+    .stageTitle{
+      display:flex;align-items:center;justify-content:space-between;
+      font-weight:900;
+      margin-bottom:8px;
+    }
+    .badge{
+      padding:4px 8px;border-radius:999px;
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.05);
+      font-size:12px;
+    }
+    .list{display:flex;flex-direction:column;gap:8px}
+    .row{
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.04);
+      border-radius:12px;
+      padding:10px 10px;
+      display:flex;align-items:center;justify-content:space-between;
+      gap:10px;
+      cursor:pointer;
+    }
+    .row:hover{background:rgba(255,255,255,.07)}
+    .left{
+      display:flex;flex-direction:column;gap:4px;min-width:0;
+    }
+    .sym{font-weight:1000;letter-spacing:.4px}
+    .meta{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:680px}
+    .tag{
+      font-size:11px;font-weight:900;
+      padding:4px 8px;border-radius:999px;
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.05);
+    }
+    .tag.good{border-color:rgba(74,222,128,.35);background:rgba(74,222,128,.10);color:rgba(200,255,220,.95)}
+    .tag.warn{border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.10);color:rgba(255,245,210,.95)}
+    .tag.bad{border-color:rgba(251,113,133,.35);background:rgba(251,113,133,.10);color:rgba(255,210,220,.95)}
+
+    .obBox{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+    .obCard{
+      border:1px solid var(--line);
+      background:rgba(255,255,255,.04);
+      border-radius:12px;
+      padding:10px;
+    }
+    .obCard b{display:block;margin-bottom:4px}
   </style>
 </head>
 <body>
@@ -121,246 +155,234 @@
 
   <div class="wrap">
     <div class="top">
-      <div class="brand"><span class="logo">🐊</span> CryptoCroc Scanner</div>
-      <div class="btns">
-        <button id="bullBtn" class="active">BULL</button>
-        <button id="bearBtn">BEAR</button>
-        <button id="scanBtn">Scan nu</button>
-        <button id="resetBtn" title="Reset memory (RADAR opnieuw)">RESET</button>
-        <span class="pill" id="statusPill">idle</span>
+      <div class="brand">
+        <div class="logo">🐊</div>
+        <div>
+          <h1>CryptoCroc Scanner</h1>
+          <div class="muted" style="font-size:12px;margin-top:2px;">KV memory + dynamische bands + OB (Bitget) bij ALMOST/ENTRY + cron 10 min</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="bullBtn">BULL</button>
+        <button class="btn" id="bearBtn">BEAR</button>
+        <button class="btn primary" id="scanBtn">Scan nu</button>
+        <span class="pill" id="statusPill">status: …</span>
       </div>
     </div>
 
-    <div id="errBox" class="err"></div>
+    <div class="err" id="errBox"></div>
 
     <div class="grid">
-      <div class="card">
-        <h3>
-          <span>Funnel</span>
-          <span class="small muted" id="bandsTxt">—</span>
-        </h3>
-        <div class="box">
-          <div id="funnel"></div>
+      <div class="panel">
+        <div class="hd">
+          <div>Funnel</div>
+          <div class="muted" id="bandsTxt">Bands: …</div>
         </div>
+        <div class="bd" id="funnel"></div>
       </div>
 
-      <div class="card">
-        <h3>
-          <span>Orderbook</span>
-          <span class="small muted">alleen ALMOST/ENTRY</span>
-        </h3>
-        <div class="box" id="obBox">
-          <div class="muted">Klik op een coin in ALMOST/ENTRY.</div>
+      <div class="panel">
+        <div class="hd">
+          <div>Orderbook</div>
+          <div class="muted">Wordt gebruikt bij ALMOST/ENTRY</div>
+        </div>
+        <div class="bd" id="obPanel">
+          <div class="muted">Klik links op een coin voor details.</div>
+          <div class="obBox" id="obBox" style="display:none;"></div>
         </div>
       </div>
     </div>
   </div>
 
 <script>
+  // ============ “balk blijft hangen” fix ============
+  // Alles wat loading / error is, MOET altijd terug naar “uit” in finally.
   const loading = document.getElementById("loading");
-  const errBox  = document.getElementById("errBox");
-  const statusP = document.getElementById("statusPill");
-  const funnelEl= document.getElementById("funnel");
-  const obBox   = document.getElementById("obBox");
-  const bandsTxt= document.getElementById("bandsTxt");
+  const errBox = document.getElementById("errBox");
+  const statusPill = document.getElementById("statusPill");
+  const funnelEl = document.getElementById("funnel");
+  const bandsTxt = document.getElementById("bandsTxt");
+  const obBox = document.getElementById("obBox");
 
-  const bullBtn = document.getElementById("bullBtn");
-  const bearBtn = document.getElementById("bearBtn");
-  const scanBtn = document.getElementById("scanBtn");
-  const resetBtn= document.getElementById("resetBtn");
+  let SIDE = "bull";
+  let LAST = null;
 
-  let side = "BULL";
-  let lastData = null;
-
-  function setLoading(on){
-    loading.style.display = on ? "flex" : "none";
-  }
-  function setErr(msg){
-    if(!msg){
-      errBox.style.display="none";
-      errBox.textContent="";
-      return;
-    }
-    errBox.style.display="block";
+  function showLoading(on){ loading.classList.toggle("show", !!on); }
+  function showErr(msg){
+    if(!msg){ errBox.classList.remove("show"); errBox.textContent=""; return; }
     errBox.textContent = msg;
-  }
-  function setStatus(text){
-    statusP.textContent = text;
+    errBox.classList.add("show");
   }
 
-  function pct(n){
-    if(n===null || n===undefined) return "—";
-    return (n*100).toFixed(2) + "%";
+  function fmtUsd(n){
+    if(!Number.isFinite(n)) return "-";
+    return n >= 1_000_000 ? "$" + (n/1_000_000).toFixed(2) + "M" :
+           n >= 1_000 ? "$" + (n/1_000).toFixed(1) + "K" :
+           "$" + n.toFixed(0);
   }
 
-  function money(n){
-    if(!Number.isFinite(n)) return "—";
-    return n.toLocaleString("en-US",{maximumFractionDigits:0});
+  function tagForCoin(c){
+    // OB status alleen “hard” tonen als we OB geprobeerd hebben
+    const r = c?.ob?.reason || "n/a";
+    const ok = c?.ob?.ok === true;
+    if (r === "skipped") return { cls:"", text:"OB: -"};
+    if (ok) return { cls:"good", text:"OB OK"};
+    // NIET meer “OB ERR” overal schreeuwen. Het is vaak gewoon: pair niet gevonden.
+    return { cls:"warn", text:"OB: check"};
   }
 
-  function stageBlock(title, items, stage){
-    const wrap = document.createElement("div");
-    wrap.className = "stage";
+  function stageBlock(title, items){
+    const div = document.createElement("div");
+    div.className = "stageBox";
 
-    const h = document.createElement("div");
-    h.style.display="flex";
-    h.style.alignItems="center";
-    h.style.justifyContent="space-between";
-    h.style.margin="6px 0 10px 0";
-    h.innerHTML = `<div style="font-weight:900">${title}</div>
-                   <div class="tag">${items.length}</div>`;
-    wrap.appendChild(h);
+    const head = document.createElement("div");
+    head.className = "stageTitle";
+    head.innerHTML = `<span>${title}</span><span class="badge">${items.length}</span>`;
+    div.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "list";
 
     if(!items.length){
       const empty = document.createElement("div");
-      empty.className="muted small";
-      empty.textContent="Geen coins.";
-      wrap.appendChild(empty);
-      return wrap;
-    }
+      empty.className = "muted";
+      empty.textContent = "Geen coins.";
+      list.appendChild(empty);
+    } else {
+      for(const c of items){
+        const row = document.createElement("div");
+        row.className = "row";
+        row.onclick = () => selectCoin(c);
 
-    items.forEach(c=>{
-      const row = document.createElement("div");
-      row.className="row";
-      row.onclick = ()=> onPickCoin(c, stage);
+        const tag = tagForCoin(c);
+        const stageTag = `<span class="tag">${c.mem.stage}</span>`;
+        const obTag = `<span class="tag ${tag.cls}">${tag.text}</span>`;
 
-      const left = document.createElement("div");
-      left.className="left";
-      left.innerHTML = `
-        <div class="sym">${c.symbol} <span class="tag ${c.engine==="EXPLOSIE"?"warn":"good"}">${c.engine}</span></div>
-        <div class="meta">
-          prijs: $${c.price.toFixed(6)} · ch24: ${(c.ch24*100).toFixed(2)}% · vm: ${c.vm.toFixed(2)} · vol: $${money(c.vol)} · score: ${c.timingScore} · scans: ${c.totalScans}
-        </div>
-      `;
-
-      const right = document.createElement("div");
-      const t = document.createElement("div");
-      t.className = "tag";
-      t.textContent = stage;
-      right.appendChild(t);
-
-      row.appendChild(left);
-      row.appendChild(right);
-      wrap.appendChild(row);
-    });
-
-    return wrap;
-  }
-
-  async function onPickCoin(c, stage){
-    // orderbook alleen ALMOST/ENTRY
-    if(stage !== "ALMOST" && stage !== "ENTRY"){
-      obBox.innerHTML = `<div class="muted">Orderbook wordt alleen opgehaald bij ALMOST/ENTRY.</div>`;
-      return;
-    }
-
-    setLoading(true);
-    setErr(null);
-    try{
-      const r = await fetch(`/api/orderbook?symbol=${encodeURIComponent(c.symbol)}`);
-      const j = await r.json();
-
-      if(!j.ok){
-        obBox.innerHTML = `
-          <div class="tag bad">Geen orderbook</div>
-          <div class="muted small" style="margin-top:8px">
-            Reden: ${j.reason || "UNKNOWN"}<br/>
-            ${j.error ? "Info: " + j.error : ""}
+        row.innerHTML = `
+          <div class="left">
+            <div class="sym">${c.symbol} <span class="tag" style="margin-left:6px;">${c.name}</span></div>
+            <div class="meta">
+              prijs: $${Number(c.price).toFixed(6)} · ch24: ${Number(c.ch24).toFixed(2)}% · vm: ${Number(c.vm).toFixed(2)} · vol: ${fmtUsd(c.vol)} · score: ${c.timingScore} · scans: ${c.mem.totalScans}
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
+            ${stageTag}
+            ${obTag}
           </div>
         `;
-        return;
+        list.appendChild(row);
       }
-
-      const z = (j.zScore===null || j.zScore===undefined) ? "—" : j.zScore.toFixed(2);
-
-      obBox.innerHTML = `
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <span class="tag good">${c.symbol}</span>
-          <span class="tag">spread: ${(j.spreadPct*100).toFixed(3)}%</span>
-          <span class="tag">obScore: ${j.obScore.toFixed(3)}</span>
-          <span class="tag ${side==="BULL" ? (j.zScore>=1.0?"good":"warn") : (j.zScore<=-1.0?"good":"warn")}">z: ${z}</span>
-        </div>
-
-        <div class="kvs">
-          <span class="pill">bidUsd: $${money(j.bidUsd)}</span>
-          <span class="pill">askUsd: $${money(j.askUsd)}</span>
-          <span class="pill">depth: ${(j.depthPct*100).toFixed(1)}%</span>
-        </div>
-
-        <div class="muted small" style="margin-top:10px">
-          Bron: ${j.source || "bitget"}<br/>
-          Tip: als z-score nog “—” is, moet deze coin eerst meer OB-metingen opbouwen.
-        </div>
-      `;
-    }catch(e){
-      obBox.innerHTML = `<div class="tag bad">Orderbook error</div><div class="muted small">${String(e)}</div>`;
-    }finally{
-      setLoading(false); // <<< dit fixeert jouw “balk blijft hangen”
     }
+
+    div.appendChild(list);
+    return div;
   }
 
   function render(data){
-    lastData = data;
-    const f = data.funnel;
+    LAST = data;
 
-    // ENTRY boven, RADAR onder (exact)
+    const b = data?.bands;
+    if (b && Number.isFinite(b.low) && Number.isFinite(b.high)) {
+      bandsTxt.textContent = `Bands: low ${b.low.toFixed(2)}% | high ${b.high.toFixed(2)}% | items: ${b.items}`;
+    } else {
+      bandsTxt.textContent = "Bands: -";
+    }
+
+    // ENTRY boven -> RADAR onder
     funnelEl.innerHTML = "";
-    funnelEl.appendChild(stageBlock("ENTRY",  f.ENTRY,  "ENTRY"));
-    funnelEl.appendChild(stageBlock("ALMOST", f.ALMOST, "ALMOST"));
-    funnelEl.appendChild(stageBlock("BUILDUP",f.BUILDUP,"BUILDUP"));
-    funnelEl.appendChild(stageBlock("RADAR",  f.RADAR,  "RADAR"));
-
-    bandsTxt.textContent = `Bands: low ${(data.bands.lowBand*100).toFixed(2)}% | high ${(data.bands.highBand*100).toFixed(2)}% | items: ${f.ENTRY.length+f.ALMOST.length+f.BUILDUP.length+f.RADAR.length}`;
+    funnelEl.appendChild(stageBlock("ENTRY", (data.stage?.ENTRY || [])));
+    funnelEl.appendChild(stageBlock("ALMOST", (data.stage?.ALMOST || [])));
+    funnelEl.appendChild(stageBlock("BUILDUP", (data.stage?.BUILDUP || [])));
+    funnelEl.appendChild(stageBlock("RADAR", (data.stage?.RADAR || [])));
   }
 
-  async function scan(reset=false){
-    setLoading(true);
-    setErr(null);
-    setStatus("scanning…");
+  function selectCoin(c){
+    // Rechts panel “strak”
+    obBox.style.display = "grid";
+    obBox.innerHTML = "";
 
-    try{
-      const endpoint = side==="BULL" ? "/api/top10" : "/api/top10_bear";
-      const url = reset ? `${endpoint}?reset=1` : endpoint;
+    const a = document.createElement("div");
+    a.className = "obCard";
+    a.innerHTML = `<b>${c.symbol} (${SIDE.toUpperCase()})</b>
+      <div class="muted">Stage: <b style="color:var(--text)">${c.mem.stage}</b></div>
+      <div class="muted">TimingScore: <b style="color:var(--text)">${c.timingScore}</b></div>
+      <div class="muted">VM: <b style="color:var(--text)">${Number(c.vm).toFixed(2)}</b> · Vol: <b style="color:var(--text)">${fmtUsd(c.vol)}</b></div>
+      <div class="muted">Flat: <b style="color:var(--text)">${(c.stats.flatness==null?'-':c.stats.flatness.toFixed(2)+'%')}</b> · VolAcc: <b style="color:var(--text)">${(c.stats.volAcc*100).toFixed(1)}%</b></div>
+    `;
+    obBox.appendChild(a);
 
-      const r = await fetch(url, { cache:"no-store" });
-      const j = await r.json();
+    const b = document.createElement("div");
+    b.className = "obCard";
+    const ob = c.ob || {};
+    const z = (ob.z==null) ? "-" : Number(ob.z).toFixed(2);
+    const scr = (ob.score==null) ? "-" : Number(ob.score).toFixed(3);
+    const reason = ob.reason || "n/a";
+    b.innerHTML = `<b>Orderbook gate</b>
+      <div class="muted">Pair: <b style="color:var(--text)">${ob.pair || "-"}</b></div>
+      <div class="muted">OB score: <b style="color:var(--text)">${scr}</b></div>
+      <div class="muted">Z-score: <b style="color:var(--text)">${z}</b></div>
+      <div class="muted">Status: <b style="color:var(--text)">${ob.ok === true ? "OK" : "Niet bevestigd"}</b></div>
+      <div class="muted">Info: <b style="color:var(--text)">${reason}</b></div>
+      <div class="muted" style="margin-top:8px;">Tip: OB wordt pas actief “hard” gebruikt bij ALMOST → ENTRY.</div>
+    `;
+    obBox.appendChild(b);
+  }
 
-      if(!j.ok){
-        setErr(JSON.stringify(j, null, 2));
-        setStatus("error");
+  async function loadCached(){
+    showErr(null);
+    showLoading(true);
+    try {
+      const url = SIDE === "bull" ? "/api/top10" : "/api/top10_bear";
+      const r = await fetch(url, { cache: "no-store" });
+      const j = await r.json().catch(()=>null);
+
+      if(!j || j.ok === false){
+        showErr(j?.error || "API error (geen JSON).");
+        statusPill.textContent = "status: error";
         return;
       }
 
+      statusPill.textContent = `status: OK · ${new Date(j.ts || Date.now()).toLocaleTimeString()}`;
       render(j);
-      setStatus(`ok · ${side} · entry:${j.counts.ENTRY} almost:${j.counts.ALMOST} buildup:${j.counts.BUILDUP} radar:${j.counts.RADAR}`);
-      obBox.innerHTML = `<div class="muted">Klik op een coin in ALMOST/ENTRY voor orderbook.</div>`;
-    }catch(e){
-      setErr(String(e));
-      setStatus("error");
-    }finally{
-      setLoading(false); // <<< dit fixeert jouw “balk blijft hangen”
+    } catch (e) {
+      showErr(String(e.message || e));
+      statusPill.textContent = "status: error";
+    } finally {
+      // HIER zit jouw “balk blijft hangen” fix:
+      showLoading(false);
     }
   }
 
-  bullBtn.onclick = ()=>{
-    side="BULL";
-    bullBtn.classList.add("active");
-    bearBtn.classList.remove("active");
-    scan(false);
-  };
+  async function runScanNow(){
+    showErr(null);
+    showLoading(true);
+    try {
+      const url = SIDE === "bull" ? "/api/scan" : "/api/scan_bear";
+      const r = await fetch(url, { cache: "no-store" });
+      const j = await r.json().catch(()=>null);
 
-  bearBtn.onclick = ()=>{
-    side="BEAR";
-    bearBtn.classList.add("active");
-    bullBtn.classList.remove("active");
-    scan(false);
-  };
+      if(!j || j.ok === false){
+        showErr(j?.error || "Scan error (geen JSON).");
+        statusPill.textContent = "status: scan error";
+        return;
+      }
 
-  scanBtn.onclick = ()=> scan(false);
-  resetBtn.onclick = ()=> scan(true);
+      statusPill.textContent = `status: SCAN OK · ${new Date(j.ts || Date.now()).toLocaleTimeString()}`;
+      render(j);
+    } catch (e) {
+      showErr(String(e.message || e));
+      statusPill.textContent = "status: scan error";
+    } finally {
+      showLoading(false);
+    }
+  }
 
-  // initial
-  scan(false);
+  document.getElementById("bullBtn").onclick = async () => { SIDE="bull"; await loadCached(); };
+  document.getElementById("bearBtn").onclick = async () => { SIDE="bear"; await loadCached(); };
+  document.getElementById("scanBtn").onclick = async () => { await runScanNow(); };
+
+  // start
+  loadCached();
 </script>
 </body>
 </html>

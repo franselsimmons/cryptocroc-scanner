@@ -1,9 +1,10 @@
+const { scanSide } = require("./_lib/scan");
 const { kv } = require("@vercel/kv");
 
 module.exports = async (req, res) => {
   try {
-    const data = await kv.get("latest:bear");
-    if (!data) return res.status(200).json({ ok: true, side: "bear", empty: true, message: "Nog geen scan gedaan. Wacht op cron of klik Scan nu." });
+    const data = await scanSide("bull");
+    await kv.set("latest:bull", data);
     res.status(200).json(data);
   } catch (e) {
     res.status(200).json({ ok: false, error: String(e.message || e) });
