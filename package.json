@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": "18.x"
   },
   "dependencies": {
     "@vercel/kv": "^1.0.1"
