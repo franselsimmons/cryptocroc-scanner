@@ -1,0 +1,165 @@
+:root{
+  --bg1:#071018;
+  --bg2:#0b1b1c;
+  --panel:rgba(255,255,255,.06);
+  --panel2:rgba(255,255,255,.08);
+  --text:#e7f2ff;
+  --muted:rgba(231,242,255,.65);
+  --line:rgba(255,255,255,.12);
+  --good:#4ade80;
+  --warn:#fbbf24;
+  --bad:#fb7185;
+  --pill:rgba(255,255,255,.10);
+  --pill2:rgba(255,255,255,.14);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+  color:var(--text);
+  background:
+    radial-gradient(1200px 600px at 20% 20%, rgba(34,197,94,.25), transparent 60%),
+    radial-gradient(900px 500px at 85% 35%, rgba(59,130,246,.22), transparent 60%),
+    linear-gradient(180deg,var(--bg1),var(--bg2));
+  min-height:100vh;
+}
+
+.top{
+  position:sticky; top:0;
+  display:flex; gap:16px;
+  align-items:center; justify-content:space-between;
+  padding:14px 18px;
+  background:rgba(0,0,0,.25);
+  border-bottom:1px solid var(--line);
+  backdrop-filter: blur(10px);
+  z-index:10;
+}
+
+.brand{display:flex; gap:12px; align-items:center}
+.logo{font-size:28px}
+.title h1{margin:0; font-size:18px}
+.sub{font-size:12px; color:var(--muted)}
+
+.actions{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+.pill{
+  padding:8px 12px; border-radius:999px;
+  border:1px solid var(--line);
+  background:var(--pill);
+  color:var(--text);
+  cursor:pointer;
+}
+.pill:hover{background:var(--pill2)}
+.pill.primary{background:rgba(34,197,94,.20); border-color:rgba(34,197,94,.35)}
+.pill.on{outline:2px solid rgba(59,130,246,.35)}
+.meta{font-size:12px; color:var(--muted)}
+
+.toast{
+  margin:14px auto 0;
+  width:min(1120px, calc(100% - 24px));
+  border:1px solid rgba(251,113,133,.35);
+  background:rgba(251,113,133,.12);
+  padding:10px 12px;
+  border-radius:12px;
+}
+.toast.hidden{display:none}
+
+.grid{
+  width:min(1120px, calc(100% - 24px));
+  margin:14px auto 18px;
+  display:grid;
+  grid-template-columns: 1.1fr .9fr;
+  gap:14px;
+}
+
+.panel{
+  border:1px solid var(--line);
+  background:var(--panel);
+  border-radius:16px;
+  overflow:hidden;
+}
+
+.panelHead{
+  padding:12px 12px;
+  display:flex; align-items:center; justify-content:space-between;
+  border-bottom:1px solid var(--line);
+  background:rgba(0,0,0,.18);
+}
+
+.panelTitle{font-weight:700}
+.panelHint{font-size:12px; color:var(--muted)}
+.badge{
+  min-width:34px; text-align:center;
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,.06);
+}
+
+.stage{padding:10px 12px; border-bottom:1px solid rgba(255,255,255,.08)}
+.stage:last-child{border-bottom:none}
+.stageHead{display:flex; align-items:center; justify-content:space-between; font-weight:700}
+.chip{
+  padding:3px 8px;
+  border-radius:999px;
+  font-size:12px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,.06);
+}
+
+.list{margin-top:8px; display:flex; flex-direction:column; gap:8px}
+
+.item{
+  border:1px solid rgba(255,255,255,.12);
+  background:rgba(0,0,0,.20);
+  border-radius:12px;
+  padding:9px 10px;
+  display:flex; justify-content:space-between; gap:10px;
+  cursor:pointer;
+}
+.item:hover{background:rgba(0,0,0,.28)}
+.left .sym{font-weight:800}
+.left .meta{font-size:12px; color:var(--muted)}
+.tag{
+  font-size:12px; padding:4px 8px; border-radius:999px;
+  border:1px solid var(--line); background:rgba(255,255,255,.06);
+  height:fit-content;
+}
+.tag.good{border-color:rgba(74,222,128,.35); background:rgba(74,222,128,.10)}
+.tag.warn{border-color:rgba(251,191,36,.35); background:rgba(251,191,36,.10)}
+.tag.bad{border-color:rgba(251,113,133,.35); background:rgba(251,113,133,.10)}
+
+.ob{padding:12px}
+.obTitle{font-weight:800; margin-bottom:10px}
+.obGrid{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+.card{
+  border:1px solid rgba(255,255,255,.12);
+  background:rgba(0,0,0,.18);
+  border-radius:12px;
+  padding:10px;
+  display:flex; justify-content:space-between;
+}
+.k{color:var(--muted); font-size:12px}
+.v{font-weight:800}
+.obHint{margin-top:10px; font-size:12px; color:var(--muted)}
+.obRaw{
+  margin-top:10px;
+  max-height:260px;
+  overflow:auto;
+  border:1px solid rgba(255,255,255,.12);
+  background:rgba(0,0,0,.22);
+  border-radius:12px;
+  padding:10px;
+  font-size:12px;
+  color:rgba(231,242,255,.82);
+}
+
+.foot{
+  width:min(1120px, calc(100% - 24px));
+  margin:0 auto 24px;
+  color:var(--muted);
+  font-size:12px;
+}
+@media (max-width: 980px){
+  .grid{grid-template-columns:1fr}
+}

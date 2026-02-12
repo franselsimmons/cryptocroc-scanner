@@ -4,385 +4,113 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>CryptoCroc Scanner</title>
-  <style>
-    :root{
-      --bg1:#0b1020;
-      --bg2:#0f1a33;
-      --card:rgba(255,255,255,.06);
-      --card2:rgba(255,255,255,.09);
-      --line:rgba(255,255,255,.10);
-      --text:rgba(255,255,255,.92);
-      --muted:rgba(255,255,255,.65);
-      --good:#4ade80;
-      --warn:#fbbf24;
-      --bad:#fb7185;
-      --blue:#60a5fa;
-    }
-    *{box-sizing:border-box}
-    body{
-      margin:0;
-      font-family:ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
-      color:var(--text);
-      background:
-        radial-gradient(1200px 600px at 10% 20%, rgba(74,222,128,.18), transparent 60%),
-        radial-gradient(1000px 600px at 90% 10%, rgba(96,165,250,.18), transparent 55%),
-        linear-gradient(180deg, var(--bg1), var(--bg2));
-      min-height:100vh;
-    }
-    .wrap{max-width:1200px;margin:18px auto;padding:0 14px}
-    .top{
-      display:flex;align-items:center;justify-content:space-between;
-      padding:14px 14px;border:1px solid var(--line);border-radius:14px;
-      background:linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.04));
-      backdrop-filter: blur(8px);
-    }
-    .brand{display:flex;gap:12px;align-items:center}
-    .logo{
-      width:34px;height:34px;border-radius:10px;
-      background:linear-gradient(135deg, rgba(74,222,128,.35), rgba(96,165,250,.25));
-      border:1px solid var(--line);
-      display:grid;place-items:center;font-weight:900;
-    }
-    .brand h1{margin:0;font-size:18px;letter-spacing:.2px}
-    .actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-    .btn{
-      border:1px solid var(--line);
-      background:rgba(255,255,255,.06);
-      color:var(--text);
-      padding:9px 12px;border-radius:12px;
-      cursor:pointer;font-weight:700;
-    }
-    .btn:hover{background:rgba(255,255,255,.09)}
-    .btn.primary{background:rgba(74,222,128,.16);border-color:rgba(74,222,128,.35)}
-    .pill{
-      border:1px solid var(--line);
-      background:rgba(255,255,255,.05);
-      padding:8px 10px;border-radius:999px;
-      color:var(--muted);font-size:12px;font-weight:700;
-    }
-
-    .grid{display:grid;grid-template-columns: 1.15fr .85fr;gap:14px;margin-top:14px}
-    @media (max-width: 980px){ .grid{grid-template-columns:1fr} }
-
-    .panel{
-      border:1px solid var(--line);
-      background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.035));
-      border-radius:14px;
-      overflow:hidden;
-    }
-    .panel .hd{
-      padding:12px 12px;
-      display:flex;align-items:center;justify-content:space-between;
-      border-bottom:1px solid var(--line);
-      background:rgba(255,255,255,.03);
-      font-weight:900;
-    }
-    .panel .bd{padding:12px}
-    .muted{color:var(--muted)}
-    .err{
-      border:1px solid rgba(251,113,133,.35);
-      background:rgba(251,113,133,.10);
-      padding:10px 12px;border-radius:12px;
-      margin-top:10px;
-      display:none;
-    }
-    .err.show{display:block}
-    .loading{
-      position:fixed;inset:0;
-      background:rgba(0,0,0,.35);
-      display:none;align-items:center;justify-content:center;
-      z-index:9999;
-    }
-    .loading.show{display:flex}
-    .spinner{
-      width:56px;height:56px;border-radius:999px;
-      border:4px solid rgba(255,255,255,.15);
-      border-top-color:rgba(74,222,128,.75);
-      animation:spin .9s linear infinite;
-    }
-    @keyframes spin{to{transform:rotate(360deg)}}
-
-    .stageBox{margin-bottom:12px}
-    .stageTitle{
-      display:flex;align-items:center;justify-content:space-between;
-      font-weight:900;
-      margin-bottom:8px;
-    }
-    .badge{
-      padding:4px 8px;border-radius:999px;
-      border:1px solid var(--line);
-      background:rgba(255,255,255,.05);
-      font-size:12px;
-    }
-    .list{display:flex;flex-direction:column;gap:8px}
-    .row{
-      border:1px solid var(--line);
-      background:rgba(255,255,255,.04);
-      border-radius:12px;
-      padding:10px 10px;
-      display:flex;align-items:center;justify-content:space-between;
-      gap:10px;
-      cursor:pointer;
-    }
-    .row:hover{background:rgba(255,255,255,.07)}
-    .left{
-      display:flex;flex-direction:column;gap:4px;min-width:0;
-    }
-    .sym{font-weight:1000;letter-spacing:.4px}
-    .meta{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:680px}
-    .tag{
-      font-size:11px;font-weight:900;
-      padding:4px 8px;border-radius:999px;
-      border:1px solid var(--line);
-      background:rgba(255,255,255,.05);
-    }
-    .tag.good{border-color:rgba(74,222,128,.35);background:rgba(74,222,128,.10);color:rgba(200,255,220,.95)}
-    .tag.warn{border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.10);color:rgba(255,245,210,.95)}
-    .tag.bad{border-color:rgba(251,113,133,.35);background:rgba(251,113,133,.10);color:rgba(255,210,220,.95)}
-
-    .obBox{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
-    .obCard{
-      border:1px solid var(--line);
-      background:rgba(255,255,255,.04);
-      border-radius:12px;
-      padding:10px;
-    }
-    .obCard b{display:block;margin-bottom:4px}
-  </style>
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="loading" id="loading"><div class="spinner"></div></div>
+  <header class="top">
+    <div class="brand">
+      <div class="logo">🐊</div>
+      <div class="title">
+        <h1>CryptoCroc Scanner</h1>
+        <div class="sub">memory · funnel · Bitget orderbook z-score · cron 10m</div>
+      </div>
+    </div>
 
-  <div class="wrap">
-    <div class="top">
-      <div class="brand">
-        <div class="logo">🐊</div>
+    <div class="actions">
+      <button id="btnBull" class="pill on">BULL</button>
+      <button id="btnBear" class="pill">BEAR</button>
+      <button id="btnScan" class="pill primary">Scan nu</button>
+      <button id="btnRefresh" class="pill">↻</button>
+      <div class="meta" id="meta">—</div>
+    </div>
+  </header>
+
+  <!-- Dit is die "balk": die MOET weg als alles ok is. -->
+  <div id="toast" class="toast hidden"></div>
+
+  <main class="grid">
+    <section class="panel">
+      <div class="panelHead">
         <div>
-          <h1>CryptoCroc Scanner</h1>
-          <div class="muted" style="font-size:12px;margin-top:2px;">KV memory + dynamische bands + OB (Bitget) bij ALMOST/ENTRY + cron 10 min</div>
+          <div class="panelTitle">Funnel</div>
+          <div class="panelHint" id="bands">—</div>
         </div>
-      </div>
-      <div class="actions">
-        <button class="btn" id="bullBtn">BULL</button>
-        <button class="btn" id="bearBtn">BEAR</button>
-        <button class="btn primary" id="scanBtn">Scan nu</button>
-        <span class="pill" id="statusPill">status: …</span>
-      </div>
-    </div>
-
-    <div class="err" id="errBox"></div>
-
-    <div class="grid">
-      <div class="panel">
-        <div class="hd">
-          <div>Funnel</div>
-          <div class="muted" id="bandsTxt">Bands: …</div>
-        </div>
-        <div class="bd" id="funnel"></div>
+        <div class="badge" id="count">0</div>
       </div>
 
-      <div class="panel">
-        <div class="hd">
-          <div>Orderbook</div>
-          <div class="muted">Wordt gebruikt bij ALMOST/ENTRY</div>
-        </div>
-        <div class="bd" id="obPanel">
-          <div class="muted">Klik links op een coin voor details.</div>
-          <div class="obBox" id="obBox" style="display:none;"></div>
+      <!-- ENTRY boven, RADAR onder -->
+      <div class="stage">
+        <div class="stageHead"><span>ENTRY</span><span class="chip" id="c_entry">0</span></div>
+        <div class="list" id="entry"></div>
+      </div>
+
+      <div class="stage">
+        <div class="stageHead"><span>HOLD</span><span class="chip" id="c_hold">0</span></div>
+        <div class="list" id="hold"></div>
+      </div>
+
+      <div class="stage">
+        <div class="stageHead"><span>SELL</span><span class="chip" id="c_sell">0</span></div>
+        <div class="list" id="sell"></div>
+      </div>
+
+      <div class="stage">
+        <div class="stageHead"><span>ALMOST</span><span class="chip" id="c_almost">0</span></div>
+        <div class="list" id="almost"></div>
+      </div>
+
+      <div class="stage">
+        <div class="stageHead"><span>BUILDUP</span><span class="chip" id="c_buildup">0</span></div>
+        <div class="list" id="buildup"></div>
+      </div>
+
+      <div class="stage">
+        <div class="stageHead"><span>RADAR</span><span class="chip" id="c_radar">0</span></div>
+        <div class="list" id="radar"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panelHead">
+        <div>
+          <div class="panelTitle">Orderbook</div>
+          <div class="panelHint">Bitget-only · gebruikt bij ALMOST→ENTRY en status (HOLD/SELL)</div>
         </div>
       </div>
-    </div>
-  </div>
 
-<script>
-  // ============ “balk blijft hangen” fix ============
-  // Alles wat loading / error is, MOET altijd terug naar “uit” in finally.
-  const loading = document.getElementById("loading");
-  const errBox = document.getElementById("errBox");
-  const statusPill = document.getElementById("statusPill");
-  const funnelEl = document.getElementById("funnel");
-  const bandsTxt = document.getElementById("bandsTxt");
-  const obBox = document.getElementById("obBox");
-
-  let SIDE = "bull";
-  let LAST = null;
-
-  function showLoading(on){ loading.classList.toggle("show", !!on); }
-  function showErr(msg){
-    if(!msg){ errBox.classList.remove("show"); errBox.textContent=""; return; }
-    errBox.textContent = msg;
-    errBox.classList.add("show");
-  }
-
-  function fmtUsd(n){
-    if(!Number.isFinite(n)) return "-";
-    return n >= 1_000_000 ? "$" + (n/1_000_000).toFixed(2) + "M" :
-           n >= 1_000 ? "$" + (n/1_000).toFixed(1) + "K" :
-           "$" + n.toFixed(0);
-  }
-
-  function tagForCoin(c){
-    // OB status alleen “hard” tonen als we OB geprobeerd hebben
-    const r = c?.ob?.reason || "n/a";
-    const ok = c?.ob?.ok === true;
-    if (r === "skipped") return { cls:"", text:"OB: -"};
-    if (ok) return { cls:"good", text:"OB OK"};
-    // NIET meer “OB ERR” overal schreeuwen. Het is vaak gewoon: pair niet gevonden.
-    return { cls:"warn", text:"OB: check"};
-  }
-
-  function stageBlock(title, items){
-    const div = document.createElement("div");
-    div.className = "stageBox";
-
-    const head = document.createElement("div");
-    head.className = "stageTitle";
-    head.innerHTML = `<span>${title}</span><span class="badge">${items.length}</span>`;
-    div.appendChild(head);
-
-    const list = document.createElement("div");
-    list.className = "list";
-
-    if(!items.length){
-      const empty = document.createElement("div");
-      empty.className = "muted";
-      empty.textContent = "Geen coins.";
-      list.appendChild(empty);
-    } else {
-      for(const c of items){
-        const row = document.createElement("div");
-        row.className = "row";
-        row.onclick = () => selectCoin(c);
-
-        const tag = tagForCoin(c);
-        const stageTag = `<span class="tag">${c.mem.stage}</span>`;
-        const obTag = `<span class="tag ${tag.cls}">${tag.text}</span>`;
-
-        row.innerHTML = `
-          <div class="left">
-            <div class="sym">${c.symbol} <span class="tag" style="margin-left:6px;">${c.name}</span></div>
-            <div class="meta">
-              prijs: $${Number(c.price).toFixed(6)} · ch24: ${Number(c.ch24).toFixed(2)}% · vm: ${Number(c.vm).toFixed(2)} · vol: ${fmtUsd(c.vol)} · score: ${c.timingScore} · scans: ${c.mem.totalScans}
-            </div>
+      <div class="ob" id="obBox">
+        <div class="obTitle" id="obTitle">Geen coin geselecteerd</div>
+        <div class="obGrid">
+          <div class="card">
+            <div class="k">Stage</div><div class="v" id="obStage">—</div>
           </div>
-          <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
-            ${stageTag}
-            ${obTag}
+          <div class="card">
+            <div class="k">Timing</div><div class="v" id="obTiming">—</div>
           </div>
-        `;
-        list.appendChild(row);
-      }
-    }
+          <div class="card">
+            <div class="k">OB score</div><div class="v" id="obScore">—</div>
+          </div>
+          <div class="card">
+            <div class="k">OB z-score</div><div class="v" id="obZ">—</div>
+          </div>
+          <div class="card">
+            <div class="k">Spread</div><div class="v" id="obSpread">—</div>
+          </div>
+          <div class="card">
+            <div class="k">OB status</div><div class="v" id="obStatus">—</div>
+          </div>
+        </div>
 
-    div.appendChild(list);
-    return div;
-  }
+        <div class="obHint" id="obHint">Tip: klik op een coin om details + orderbook te zien.</div>
+        <pre class="obRaw" id="obRaw"></pre>
+      </div>
+    </section>
+  </main>
 
-  function render(data){
-    LAST = data;
+  <footer class="foot">
+    <span>Tip: Cron draait elke 10 min automatisch. “Scan nu” is handmatig.</span>
+  </footer>
 
-    const b = data?.bands;
-    if (b && Number.isFinite(b.low) && Number.isFinite(b.high)) {
-      bandsTxt.textContent = `Bands: low ${b.low.toFixed(2)}% | high ${b.high.toFixed(2)}% | items: ${b.items}`;
-    } else {
-      bandsTxt.textContent = "Bands: -";
-    }
-
-    // ENTRY boven -> RADAR onder
-    funnelEl.innerHTML = "";
-    funnelEl.appendChild(stageBlock("ENTRY", (data.stage?.ENTRY || [])));
-    funnelEl.appendChild(stageBlock("ALMOST", (data.stage?.ALMOST || [])));
-    funnelEl.appendChild(stageBlock("BUILDUP", (data.stage?.BUILDUP || [])));
-    funnelEl.appendChild(stageBlock("RADAR", (data.stage?.RADAR || [])));
-  }
-
-  function selectCoin(c){
-    // Rechts panel “strak”
-    obBox.style.display = "grid";
-    obBox.innerHTML = "";
-
-    const a = document.createElement("div");
-    a.className = "obCard";
-    a.innerHTML = `<b>${c.symbol} (${SIDE.toUpperCase()})</b>
-      <div class="muted">Stage: <b style="color:var(--text)">${c.mem.stage}</b></div>
-      <div class="muted">TimingScore: <b style="color:var(--text)">${c.timingScore}</b></div>
-      <div class="muted">VM: <b style="color:var(--text)">${Number(c.vm).toFixed(2)}</b> · Vol: <b style="color:var(--text)">${fmtUsd(c.vol)}</b></div>
-      <div class="muted">Flat: <b style="color:var(--text)">${(c.stats.flatness==null?'-':c.stats.flatness.toFixed(2)+'%')}</b> · VolAcc: <b style="color:var(--text)">${(c.stats.volAcc*100).toFixed(1)}%</b></div>
-    `;
-    obBox.appendChild(a);
-
-    const b = document.createElement("div");
-    b.className = "obCard";
-    const ob = c.ob || {};
-    const z = (ob.z==null) ? "-" : Number(ob.z).toFixed(2);
-    const scr = (ob.score==null) ? "-" : Number(ob.score).toFixed(3);
-    const reason = ob.reason || "n/a";
-    b.innerHTML = `<b>Orderbook gate</b>
-      <div class="muted">Pair: <b style="color:var(--text)">${ob.pair || "-"}</b></div>
-      <div class="muted">OB score: <b style="color:var(--text)">${scr}</b></div>
-      <div class="muted">Z-score: <b style="color:var(--text)">${z}</b></div>
-      <div class="muted">Status: <b style="color:var(--text)">${ob.ok === true ? "OK" : "Niet bevestigd"}</b></div>
-      <div class="muted">Info: <b style="color:var(--text)">${reason}</b></div>
-      <div class="muted" style="margin-top:8px;">Tip: OB wordt pas actief “hard” gebruikt bij ALMOST → ENTRY.</div>
-    `;
-    obBox.appendChild(b);
-  }
-
-  async function loadCached(){
-    showErr(null);
-    showLoading(true);
-    try {
-      const url = SIDE === "bull" ? "/api/top10" : "/api/top10_bear";
-      const r = await fetch(url, { cache: "no-store" });
-      const j = await r.json().catch(()=>null);
-
-      if(!j || j.ok === false){
-        showErr(j?.error || "API error (geen JSON).");
-        statusPill.textContent = "status: error";
-        return;
-      }
-
-      statusPill.textContent = `status: OK · ${new Date(j.ts || Date.now()).toLocaleTimeString()}`;
-      render(j);
-    } catch (e) {
-      showErr(String(e.message || e));
-      statusPill.textContent = "status: error";
-    } finally {
-      // HIER zit jouw “balk blijft hangen” fix:
-      showLoading(false);
-    }
-  }
-
-  async function runScanNow(){
-    showErr(null);
-    showLoading(true);
-    try {
-      const url = SIDE === "bull" ? "/api/scan" : "/api/scan_bear";
-      const r = await fetch(url, { cache: "no-store" });
-      const j = await r.json().catch(()=>null);
-
-      if(!j || j.ok === false){
-        showErr(j?.error || "Scan error (geen JSON).");
-        statusPill.textContent = "status: scan error";
-        return;
-      }
-
-      statusPill.textContent = `status: SCAN OK · ${new Date(j.ts || Date.now()).toLocaleTimeString()}`;
-      render(j);
-    } catch (e) {
-      showErr(String(e.message || e));
-      statusPill.textContent = "status: scan error";
-    } finally {
-      showLoading(false);
-    }
-  }
-
-  document.getElementById("bullBtn").onclick = async () => { SIDE="bull"; await loadCached(); };
-  document.getElementById("bearBtn").onclick = async () => { SIDE="bear"; await loadCached(); };
-  document.getElementById("scanBtn").onclick = async () => { await runScanNow(); };
-
-  // start
-  loadCached();
-</script>
+  <script src="/app.js"></script>
 </body>
 </html>

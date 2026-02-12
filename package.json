@@ -1,12 +1,11 @@
 {
   "name": "cryptocroc-scanner",
   "private": true,
-  "version": "1.0.0",
-  "description": "CryptoCroc Scanner (static UI + Vercel Functions + KV funnel + cron)",
+  "type": "module",
   "engines": {
     "node": "24.x"
   },
   "dependencies": {
-    "@vercel/kv": "^1.0.1"
+    "@vercel/kv": "^3.0.0"
   }
 }

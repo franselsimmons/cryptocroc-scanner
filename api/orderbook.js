@@ -1,19 +1,38 @@
-const { kv } = require("@vercel/kv");
+import { kv } from "@vercel/kv";
+import { fetchOrderbookBitget, zScoreFromHist, obStatusFromScore } from "./_core.js";
 
-module.exports = async (req, res) => {
-  try {
-    const url = new URL(req.url, "http://localhost");
-    const id = url.searchParams.get("id");
-    const side = url.searchParams.get("side") || "bull";
+export const config = { runtime: "nodejs" };
 
-    if (!id) return res.status(200).json({ ok: false, error: "missing id" });
+export default async function handler(req, res){
+  try{
+    const side = (req.query.side || "bull").toLowerCase();
+    const symbol = String(req.query.symbol || "").toUpperCase();
+    if (!symbol) return res.status(400).json({ ok:false, error:"symbol ontbreekt" });
 
-    // Pak mem en ob history (zodat UI 'strak' blijft)
-    const mem = await kv.get(`mem:${side}:${id}`);
-    const obHist = await kv.get(`ob:${id}`);
+    const mem = await kv.get(`mem:${side}:${symbol}`);
+    if (!mem) return res.status(200).json({ ok:true, note:"Geen memory voor deze coin (nog niet gezien).", raw:{} });
 
-    res.status(200).json({ ok: true, side, id, mem: mem || null, obHist: obHist || [] });
-  } catch (e) {
-    res.status(200).json({ ok: false, error: String(e.message || e) });
+    const symbolUSDT = `${symbol}USDT`;
+    const ob = await fetchOrderbookBitget(symbolUSDT);
+
+    const obScore = Number(ob.obScore.toFixed(4));
+    const z = Number(zScoreFromHist(mem.obHist || [], obScore).toFixed(3));
+    const spreadPct = ob.spreadPct == null ? null : Number(ob.spreadPct.toFixed(4));
+    const obStatus = obStatusFromScore(side, obScore, spreadPct);
+
+    res.status(200).json({
+      ok:true,
+      stage: mem.stage,
+      timingScore: null,
+      obScore,
+      zScore: z,
+      spreadPct,
+      obStatus,
+      note: "Orderbook live via Bitget.",
+      raw: ob.raw
+    });
+
+  } catch(e){
+    res.status(500).json({ ok:false, error: String(e.message || e) });
   }
-};
+}
