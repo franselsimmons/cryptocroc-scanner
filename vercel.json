@@ -5,10 +5,5 @@
       "path": "/api/cron",
       "schedule": "*/10 * * * *"
     }
-  ],
-  "functions": {
-    "api/**/*.js": {
-      "maxDuration": 30
-    }
-  }
+  ]
 }
