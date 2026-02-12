@@ -1,33 +1,49 @@
-import { CFG, fetchBitgetOrderbook, calcObScore, zScoreFromHist, loadMem, saveMem } from "./_core.js";
+import { CFG } from "./_core.js";
+
 export const config = { runtime: "nodejs" };
 
-function json(res, code, obj){
-  res.statusCode = code;
-  res.setHeader("content-type","application/json; charset=utf-8");
-  res.end(JSON.stringify(obj));
+async function fetchBitget(symbol){
+  const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${symbol}USDT&limit=50`;
+  const r = await fetch(url);
+  const j = await r.json();
+  return j?.data;
 }
 
-export default async function handler(req, res){
+function sumDepth(levels, mid, pct, isBid){
+  const limit = isBid ? mid*(1-pct) : mid*(1+pct);
+  let total = 0;
+  for(const [price,size] of levels){
+    const p = Number(price);
+    const s = Number(size);
+    if(isBid && p < limit) break;
+    if(!isBid && p > limit) break;
+    total += p*s;
+  }
+  return total;
+}
+
+export default async function handler(req,res){
   try{
-    const u = new URL(req.url, "http://localhost");
+    const u = new URL(req.url,"http://localhost");
     const symbol = u.searchParams.get("symbol");
-    const mode = (u.searchParams.get("mode") || "bull").toLowerCase()==="bear" ? "bear":"bull";
-    if(!symbol) return json(res, 400, { error:"missing symbol" });
+    if(!symbol) throw new Error("Missing symbol");
 
-    const ob = await fetchBitgetOrderbook(symbol, 50);
-    const x = calcObScore(ob);
-    if(!x) return json(res, 500, { error:"obScore failed" });
+    const data = await fetchBitget(symbol);
+    if(!data?.bids || !data?.asks) throw new Error("No OB");
 
-    // zscore history per "BitgetSymbol" in mem (we koppelen op symbol string)
-    const mem = await loadMem(mode, symbol);
-    mem.obHist = Array.isArray(mem.obHist) ? mem.obHist : [];
-    mem.obHist.push(x.obScore);
-    if(mem.obHist.length > CFG.orderbook.historyN) mem.obHist = mem.obHist.slice(-CFG.orderbook.historyN);
-    const z = zScoreFromHist(mem.obHist, x.obScore);
-    await saveMem(mode, symbol, mem);
+    const bid = Number(data.bids[0][0]);
+    const ask = Number(data.asks[0][0]);
+    const mid = (bid+ask)/2;
 
-    return json(res, 200, { ...x, zScore:z });
+    const bidUsd = sumDepth(data.bids,mid,CFG.obDepthPct,true);
+    const askUsd = sumDepth(data.asks,mid,CFG.obDepthPct,false);
+
+    const score = (bidUsd-askUsd)/(bidUsd+askUsd);
+
+    res.statusCode=200;
+    res.end(JSON.stringify({score,bidUsd,askUsd}));
   }catch(e){
-    return json(res, 500, { error:String(e?.message||e) });
+    res.statusCode=500;
+    res.end(JSON.stringify({error:String(e)}));
   }
 }
