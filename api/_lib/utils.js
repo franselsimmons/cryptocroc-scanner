@@ -12,27 +12,25 @@ export function json(res, obj, code = 200) {
   res.end(JSON.stringify(obj));
 }
 
-export async function fetchJson(url, tries = 4, baseDelay = 600) {
+export async function fetchJson(url, tries = 4, baseDelay = 500) {
   let last;
   for (let i = 0; i < tries; i++) {
     try {
       const headers = { accept: "application/json" };
-      if (process.env.COINGECKO_API_KEY) {
-        headers["x-cg-pro-api-key"] = process.env.COINGECKO_API_KEY;
-      }
+      if (process.env.COINGECKO_API_KEY) headers["x-cg-pro-api-key"] = process.env.COINGECKO_API_KEY;
+
       const r = await fetch(url, { headers });
       if (!r.ok) {
         const t = await r.text().catch(() => "");
-        const e = new Error(`HTTP ${r.status} ${t.slice(0, 180)}`);
+        const e = new Error(`HTTP ${r.status} ${t.slice(0, 200)}`);
         e.status = r.status;
         throw e;
       }
       return await r.json();
     } catch (e) {
       last = e;
-      // 429 -> wat langer wachten
-      const mul = e?.status === 429 ? 2 : 1;
-      await sleep(baseDelay * mul * (i + 1));
+      const wait = (e?.status === 429) ? baseDelay * (2 ** i) * 2 : baseDelay * (i + 1);
+      await sleep(wait);
     }
   }
   throw last;
@@ -43,15 +41,17 @@ export function rangePct(high, low) {
   if (h == null || l == null || l <= 0) return null;
   return ((h - l) / l) * 100;
 }
+
 export function vmRatio(vol, mcap) {
   const v = n(vol), m = n(mcap);
   if (v == null || m == null || m <= 0) return null;
   return v / m;
 }
+
 export function ctlProxy(price, high, low) {
   const p = n(price), h = n(high), l = n(low);
   if (p == null || h == null || l == null) return null;
   const d = h - l;
   if (d <= 0) return null;
-  return (p - l) / d; // 0..1
+  return (p - l) / d;
 }

@@ -1,11 +1,11 @@
 {
   "name": "cryptocroc-scanner",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vercel dev",
-    "lint": "node -e \"console.log('ok')\""
+    "local-scan": "node tools/local-scan.mjs"
   },
   "dependencies": {
     "@upstash/redis": "^1.34.3"

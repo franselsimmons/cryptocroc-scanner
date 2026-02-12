@@ -1,9 +1,13 @@
+import { getRedis } from "./_lib/redis.js";
 import { json } from "./_lib/utils.js";
-import { redis } from "./_lib/redis.js";
 
 export default async function handler(req, res) {
-  const r = redis();
-  const data = await r.get("out:bull:v1");
-  if (!data) return json(res, { ok: false, error: "no data yet. call /api/scan" }, 404);
-  return json(res, data, 200);
+  try {
+    const redis = getRedis();
+    const data = await redis.get("out:bull:v3");
+    if (!data) return json(res, { ok: false, error: "no data yet - call /api/scan" }, 404);
+    return json(res, data, 200);
+  } catch (e) {
+    return json(res, { ok: false, error: String(e?.message || e) }, 500);
+  }
 }

@@ -2,7 +2,7 @@ name: CryptoCroc Auto Scan
 
 on:
   schedule:
-    - cron: "*/10 * * * *"  # elke 10 minuten
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -11,7 +11,5 @@ jobs:
     steps:
       - name: Call Vercel scan endpoint
         run: |
-          curl -sS --fail \
-            "https://${{ secrets.VERCEL_URL }}/api/scan?secret=${{ secrets.CRON_SECRET }}" \
-            -H "User-Agent: GitHub-Actions" \
-            -H "Accept: application/json"
+          curl -sS --fail "https://${{ secrets.VERCEL_URL }}/api/scan?secret=${{ secrets.CRON_SECRET }}" \
+            -H "User-Agent: GitHub-Actions" -H "Accept: application/json"

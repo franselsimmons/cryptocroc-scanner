@@ -1,0 +1,4 @@
+Lokaal: als je .env wil gebruiken, run:
+  npm i dotenv
+en voeg in package.json dependencies: "dotenv": "^16.4.5"
+(Optioneel; Vercel heeft env al.)
