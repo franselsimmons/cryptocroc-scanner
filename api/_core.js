@@ -1,325 +1,316 @@
 import { kv } from "@vercel/kv";
 
 const fetchFn = globalThis.fetch;
-if (!fetchFn) throw new Error("fetch is not available. Vercel must run Node runtime.");
+if (!fetchFn) throw new Error("fetch ontbreekt. Vercel Node runtime issue.");
 
 export const CFG = {
-  // Poolfilters (basis, veilig)
-  mcapMin: 3_000_000,
-  mcapMax: 400_000_000,
-  volMin: 250_000,
-  vmMin: 0.10,
-
-  // Funnel timing
-  minScansToLeaveRadar: 2,
-  minTotalScansForEntry: 5,
-
-  // Buildup/Almost/Entry gates
-  buildupConsistencyMin: 0.82,
-  buildupVolAccMin: 0.20,
-  entryVolMin: 1_500_000,
-  entryVmMin: 0.28,
-  entryVolAccMin: 0.30,
-  flatMaxBuildup: 0.030, // 3%
-  flatMaxAlmost: 0.040,  // 4%
-
-  // Orderbook gate
-  depthPct: 0.02,
-  obZBull: 1.0,
-  obZBear: -1.0,
-  obHistMax: 50,
-  obMinSamples: 12,
-
-  // Risk engine (lightweight, maar echt)
-  maxDrawdownPct: -8.0,
-  maxOpenBull: 2,
-  maxOpenBear: 2,
-
-  // Hedge mode: als bull en bear tegelijk entries hebben -> toegestaan, maar we labelen het
+  pool: {
+    mcapMin: 3_000_000,
+    mcapMax: 400_000_000,
+    volMin: 250_000,
+    vmMin: 0.10
+  },
+  bands: { lowPct: 10, highPct: 90 },
+  memory: {
+    maxScans: 30,
+    lastN: 6
+  },
+  stages: {
+    minScansToLeaveRadar: 2,
+    minTotalScansForEntry: 5,
+    entryMinVol: 1_500_000,
+    entryMinVm: 0.28,
+    buildUpConsistency: 0.82,
+    buildUpVolAccMin: 0.20,
+    entryVolAccMin: 0.30,
+    flatMaxAccu: 0.03,
+    flatMaxExpl: 0.04
+  },
+  orderbook: {
+    depthPct: 2,          // binnen 2% van mid
+    historyN: 50,
+    zBull: 1.0,
+    zBear: -1.0
+  },
+  portfolio: {
+    maxOpenRiskPct: 4,
+    maxOpenExpl: 2,
+    maxOpenAccu: 3
+  },
   hedgeMode: true
 };
 
-export function json(res, status=200){
-  return new Response(JSON.stringify(res), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control":"no-store" }
-  });
+function now(){ return Date.now(); }
+
+function percentile(arr, p){
+  if(!arr.length) return null;
+  const a = [...arr].sort((x,y)=>x-y);
+  const idx = (p/100)*(a.length-1);
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  if(lo===hi) return a[lo];
+  const w = idx-lo;
+  return a[lo]*(1-w) + a[hi]*w;
 }
 
-export function now(){ return Date.now(); }
-
-export function pct(n){ return (n*100); }
-
-export function clamp(n,min,max){ return Math.max(min, Math.min(max, n)); }
-
-export function safeNum(x, fallback=0){
+function safeNum(x, d=null){
   const n = Number(x);
-  return Number.isFinite(n) ? n : fallback;
+  return Number.isFinite(n) ? n : d;
 }
 
-export function computePercentile(sortedArr, p){
-  // p in [0..1], sorted ascending
-  if(!sortedArr.length) return 0;
-  const idx = (sortedArr.length - 1) * p;
-  const lo = Math.floor(idx);
-  const hi = Math.ceil(idx);
-  if(lo === hi) return sortedArr[lo];
-  const w = idx - lo;
-  return sortedArr[lo]*(1-w) + sortedArr[hi]*w;
+export async function fetchJSON(url, opts={}, tries=3){
+  let lastErr=null;
+  for(let i=0;i<tries;i++){
+    try{
+      const r = await fetchFn(url, { ...opts, headers:{ "accept":"application/json", ...(opts.headers||{}) } });
+      if(!r.ok){
+        const t = await r.text();
+        throw new Error(`HTTP ${r.status} ${t?.slice?.(0,200) || ""}`.trim());
+      }
+      return await r.json();
+    }catch(e){
+      lastErr = e;
+      await new Promise(res=>setTimeout(res, 300*(i+1)));
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Bitget spot symbols list
+ * We gebruiken dit om "Bitget-only" te garanderen.
+ */
+export async function getBitgetSpotSymbols(){
+  // We proberen meerdere endpoints (Bitget wisselt wel eens)
+  const urls = [
+    "https://api.bitget.com/api/v2/spot/public/symbols",
+    "https://api.bitget.com/api/spot/v1/public/products"
+  ];
+  for(const u of urls){
+    try{
+      const j = await fetchJSON(u, {}, 2);
+      const data = j?.data || j?.data?.data || j?.data?.result || j?.data?.list || j?.data;
+      const out = [];
+      if(Array.isArray(data)){
+        for(const it of data){
+          const sym = it?.symbol || it?.symbolName || it?.symbolCode;
+          const quote = it?.quoteCoin || it?.quoteCoinName || it?.quote || it?.quoteCurrency;
+          const base  = it?.baseCoin  || it?.baseCoinName  || it?.base  || it?.baseCurrency;
+          if(sym && (quote==="USDT" || String(sym).toUpperCase().endsWith("USDT"))){
+            out.push({
+              symbol: String(sym).toUpperCase(),
+              base: String(base||"").toUpperCase(),
+              quote: "USDT"
+            });
+          }
+        }
+      }
+      if(out.length) return out;
+    }catch(e){}
+  }
+  return [];
+}
+
+export async function getCoinGeckoPool(){
+  // CoinGecko markets
+  const url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=250&page=1&sparkline=false&price_change_percentage=24h";
+  const arr = await fetchJSON(url, {}, 3);
+  const pool = [];
+  for(const c of arr){
+    const mcap = safeNum(c.market_cap, 0);
+    const vol  = safeNum(c.total_volume, 0);
+    const price= safeNum(c.current_price, null);
+    const ch24 = safeNum(c.price_change_percentage_24h, null);
+    if(price==null || ch24==null) continue;
+
+    const vm = (mcap>0) ? (vol/mcap) : 0;
+    if(mcap < CFG.pool.mcapMin) continue;
+    if(mcap > CFG.pool.mcapMax) continue;
+    if(vol  < CFG.pool.volMin) continue;
+    if(vm   < CFG.pool.vmMin)  continue;
+
+    pool.push({
+      id: c.id,
+      symbol: String(c.symbol).toUpperCase(),
+      name: c.name,
+      price,
+      mcap,
+      vol,
+      vm,
+      ch24
+    });
+  }
+  return pool;
 }
 
 export function timingScore(side, c){
-  // 0..4
-  const ch24 = c.ch24;
-  const vm   = c.vm;
-  const rng  = c.range24;
-  const ctl  = c.ctl;
-
+  // range/ctl hebben we niet uit CG markets -> we maken score simpel en stabiel (niet gokken met OHLC)
+  // Score (0-3): ch24 sign, vm >=0.14, vol >=1m
   let s=0;
-  if(side==="bull"){
-    if(ch24>0) s++;
-    if(vm>=0.14) s++;
-    if(rng>=4.2 && rng<=25) s++;
-    if(ctl>=0.70) s++;
-  }else{
-    if(ch24<0) s++;
-    if(vm>=0.14) s++;
-    if(rng>=4.2 && rng<=25) s++;
-    if(ctl<=0.30) s++;
-  }
+  if(side==="bull" && c.ch24>0) s++;
+  if(side==="bear" && c.ch24<0) s++;
+  if(c.vm >= 0.14) s++;
+  if(c.vol >= 1_000_000) s++;
   return s;
 }
 
-export function enginePick(c){
-  // simpel maar logisch:
-  // - als flatness heel laag: ACCUMULATIE
-  // - anders: EXPLOSIE
-  return (c.flatness <= 0.02) ? "ACCUMULATIE" : "EXPLOSIE";
+export function decideSide(pool){
+  const chs = pool.map(x=>x.ch24).filter(Number.isFinite);
+  const low  = percentile(chs, CFG.bands.lowPct);
+  const high = percentile(chs, CFG.bands.highPct);
+  return { low, high };
 }
 
-export function computeFlatness(prices){
-  if(prices.length < 2) return 0.0;
-  const min = Math.min(...prices);
-  const max = Math.max(...prices);
-  if(min<=0) return 0.0;
-  return (max - min) / min;
+export function engineFor(c){
+  // Simpele engine keuze:
+  // - EXPLOSIE als vm hoog en vol hoog
+  // - anders ACCUMULATIE
+  if(c.vm >= 0.28 && c.vol >= 1_500_000) return "EXPLOSIE";
+  return "ACCUMULATIE";
 }
 
-export function avg(arr){
-  if(!arr.length) return 0;
-  return arr.reduce((a,b)=>a+b,0)/arr.length;
+export function calcFlatness(hist){
+  // laatste 6 prijzen: (max-min)/min
+  const last = hist.slice(-CFG.memory.lastN);
+  if(last.length < 3) return null;
+  const ps = last.map(x=>x.price).filter(Number.isFinite);
+  if(ps.length < 3) return null;
+  const mn = Math.min(...ps);
+  const mx = Math.max(...ps);
+  if(mn<=0) return null;
+  return (mx-mn)/mn;
 }
 
-export function std(arr){
-  if(arr.length<2) return 0;
-  const m = avg(arr);
-  const v = avg(arr.map(x=>(x-m)**2));
-  return Math.sqrt(v);
+export function calcVolAcc(hist){
+  const last = hist.slice(-CFG.memory.lastN);
+  if(last.length < 6) return null;
+  const a = last.slice(-3).map(x=>x.vol).filter(Number.isFinite);
+  const b = last.slice(0,3).map(x=>x.vol).filter(Number.isFinite);
+  const avg = (arr)=> arr.reduce((s,x)=>s+x,0)/Math.max(1,arr.length);
+  const av1 = avg(a), av0 = avg(b);
+  if(av0<=0) return null;
+  return (av1-av0)/av0;
 }
 
-export async function getBitgetUsdtSet(){
-  // cache 6 uur in KV
-  const key = "bitget:usdt:set";
-  const ttlKey = "bitget:usdt:set:ts";
-  const ts = await kv.get(ttlKey);
-  if(ts && (Date.now()-ts) < 6*60*60*1000){
-    const cached = await kv.get(key);
-    if(cached && Array.isArray(cached)) return new Set(cached);
-  }
-
-  // Bitget spot tickers
-  const url = "https://api.bitget.com/api/v2/spot/market/tickers?symbolType=SPOT";
-  const r = await fetchFn(url);
-  const j = await r.json();
-  const list = j?.data || [];
-  const set = new Set();
-  for(const t of list){
-    const s = (t?.symbol || "").toUpperCase();
-    if(s.endsWith("USDT")) set.add(s);
-  }
-  const arr = Array.from(set);
-  await kv.set(key, arr);
-  await kv.set(ttlKey, Date.now());
-  return set;
-}
-
-export async function fetchCoinGeckoMarkets(){
-  // top movers (we scannen groot genoeg en filteren daarna)
-  const url =
-    "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=250&page=1&sparkline=false&price_change_percentage=24h&locale=en";
-  const r = await fetchFn(url, { headers: { "accept":"application/json" } });
-  const j = await r.json();
-  if(!Array.isArray(j)) throw new Error("CoinGecko response not array");
-  return j;
-}
-
-export function mapCoin(m){
-  const price = safeNum(m.current_price, 0);
-  const high  = safeNum(m.high_24h, price);
-  const low   = safeNum(m.low_24h, price);
-  const vol   = safeNum(m.total_volume, 0);
-  const mcap  = safeNum(m.market_cap, 0);
-  const ch24  = safeNum(m.price_change_percentage_24h, 0);
-  const rng   = (low>0) ? ((high-low)/low)*100 : 0;
-  const ctl   = (high>low) ? clamp((price-low)/(high-low), 0, 1) : 0;
-
-  const vm = (mcap>0) ? (vol/mcap) : 0;
-
-  return {
-    id: String(m.id || ""),
-    symbol: String(m.symbol || "").toLowerCase(),
-    price, high, low,
-    vol, mcap,
-    ch24, range24: rng, ctl,
-    vm
-  };
-}
-
-export function poolPass(c){
-  if(c.mcap < CFG.mcapMin) return false;
-  if(c.mcap > CFG.mcapMax) return false;
-  if(c.vol  < CFG.volMin)  return false;
-  if(c.vm   < CFG.vmMin)   return false;
-  return true;
-}
-
-export function computeSideBands(allCh24){
-  const sorted = [...allCh24].sort((a,b)=>a-b);
-  const lowBand  = computePercentile(sorted, 0.10);
-  const highBand = computePercentile(sorted, 0.90);
-  return { lowBand, highBand };
-}
-
-export function sideFor(c, bands){
-  if(c.ch24 >= bands.highBand) return "bull";
-  if(c.ch24 <= bands.lowBand)  return "bear";
-  return null;
+export function consistency(hist){
+  const last = hist.slice(-CFG.memory.lastN);
+  if(!last.length) return 0;
+  const ok = last.filter(x=>x.passSide===true).length;
+  return ok/last.length;
 }
 
 export async function loadMem(side, sym){
-  const key = `mem:${side}:${sym}`;
-  const mem = await kv.get(key);
-  if(mem && typeof mem==="object") return mem;
-  return { totalScans: 0, stage: "RADAR", scansInStage: 0, hist: [] };
+  const k = `mem:${side}:${sym}`;
+  const obj = await kv.get(k);
+  return obj || { hist: [], stage:"RADAR", scansInStage:0, totalScans:0, obHist:[] };
 }
 
 export async function saveMem(side, sym, mem){
-  const key = `mem:${side}:${sym}`;
-  await kv.set(key, mem);
+  const k = `mem:${side}:${sym}`;
+  await kv.set(k, mem);
 }
 
-export function computeDerived(mem){
-  const last6 = mem.hist.slice(-6);
-  const passSide = last6.map(x=>!!x.passSide);
-  const consistency = last6.length ? (passSide.filter(Boolean).length / last6.length) : 0;
-
-  const vols = last6.map(x=>safeNum(x.vol,0));
-  const v1 = vols.slice(-3);
-  const v0 = vols.slice(0, Math.max(0, vols.length-3));
-  const avg1 = avg(v1);
-  const avg0 = avg(v0.length ? v0 : v1);
-  const volAcc = (avg0>0) ? ((avg1-avg0)/avg0) : 0;
-
-  const prices = last6.map(x=>safeNum(x.price,0)).filter(x=>x>0);
-  const flatness = computeFlatness(prices);
-
-  return { consistency, volAcc, flatness };
+export function oneStepTransition(mem, wantStage){
+  // max 1 stap per scan
+  const order = ["RADAR","BUILDUP","ALMOST","ENTRY"];
+  const cur = mem.stage || "RADAR";
+  const ci = order.indexOf(cur);
+  const wi = order.indexOf(wantStage);
+  if(wi===ci) return cur;
+  if(wi>ci) return order[Math.min(ci+1, order.length-1)];
+  return order[Math.max(ci-1, 0)];
 }
 
-export function stageAdvance(side, c, mem, d){
-  // stage machine: RADAR -> BUILDUP -> ALMOST -> ENTRY
-  // max 1 stap per scan, en kan terug als side niet meer klopt.
-  const total = mem.totalScans;
+/**
+ * Orderbook: probeer Bitget endpoints (v2 & v1) en parse flexibel.
+ */
+export async function fetchBitgetOrderbook(bitgetSymbol, limit=50){
+  const sym = String(bitgetSymbol).toUpperCase();
 
-  // Als deze scan niet meer in side valt: degrade hard
-  if(!c.passSide){
-    mem.stage = "RADAR";
-    mem.scansInStage = 0;
-    return;
-  }
+  const urls = [
+    `https://api.bitget.com/api/v2/spot/market/orderbook?symbol=${encodeURIComponent(sym)}&limit=${limit}`,
+    `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(sym)}&limit=${limit}`,
+    `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(sym)}&type=step0&limit=${limit}`
+  ];
 
-  // Radar hold
-  if(mem.stage==="RADAR"){
-    if(mem.scansInStage < CFG.minScansToLeaveRadar){
-      return;
+  let lastErr=null;
+  for(const u of urls){
+    try{
+      const j = await fetchJSON(u, {}, 2);
+      let data = j?.data ?? j?.data?.data ?? j?.data?.result ?? j?.data;
+      if(Array.isArray(data) && data.length===1) data = data[0];
+
+      const bids = data?.bids || data?.bid || data?.buy || data?.data?.bids;
+      const asks = data?.asks || data?.ask || data?.sell || data?.data?.asks;
+
+      const norm = (arr)=>{
+        if(!Array.isArray(arr)) return [];
+        return arr.map(x=>{
+          if(Array.isArray(x)) return [safeNum(x[0],null), safeNum(x[1],null)];
+          if(typeof x==="object" && x) return [safeNum(x.price,null), safeNum(x.size ?? x.amount ?? x.vol, null)];
+          return [null,null];
+        }).filter(x=>x[0]!=null && x[1]!=null);
+      };
+
+      const B = norm(bids);
+      const A = norm(asks);
+      if(B.length && A.length) return { bids:B, asks:A };
+      throw new Error("No bids/asks in response");
+    }catch(e){
+      lastErr = e;
     }
-    // promote naar BUILDUP als timing ok + consistency ok + (volAcc of flatness)
-    const okTiming = c.timingScore >= 2;
-    const okCons   = d.consistency >= CFG.buildupConsistencyMin;
-    const okEng    = (c.engine==="EXPLOSIE")
-      ? (d.volAcc >= CFG.buildupVolAccMin)
-      : (d.flatness <= CFG.flatMaxBuildup);
-
-    if(okTiming && okCons && okEng){
-      mem.stage = "BUILDUP";
-      mem.scansInStage = 0;
-    }
-    return;
   }
-
-  if(mem.stage==="BUILDUP"){
-    // promote naar ALMOST
-    const okTiming = c.timingScore >= 2;
-    const okEng = (c.engine==="EXPLOSIE")
-      ? (d.flatness <= CFG.flatMaxAlmost && d.volAcc >= CFG.buildupVolAccMin)
-      : (d.flatness <= CFG.flatMaxBuildup);
-
-    if(okTiming && okEng){
-      mem.stage = "ALMOST";
-      mem.scansInStage = 0;
-    }
-    return;
-  }
-
-  if(mem.stage==="ALMOST"){
-    // promote naar ENTRY (OB gate komt later)
-    const base = (c.vol >= CFG.entryVolMin) && (c.vm >= CFG.entryVmMin);
-    const enough = total >= CFG.minTotalScansForEntry;
-    const okTiming = c.timingScore >= 3;
-    const okEng = (c.engine==="EXPLOSIE")
-      ? (d.volAcc >= CFG.entryVolAccMin)
-      : (d.flatness <= CFG.flatMaxBuildup);
-
-    if(base && enough && okTiming && okEng){
-      mem.stage = "ENTRY";
-      mem.scansInStage = 0;
-    }
-    return;
-  }
-
-  if(mem.stage==="ENTRY"){
-    // blijft ENTRY tenzij side breekt (boven) -> RADAR
-    return;
-  }
+  throw lastErr || new Error("Orderbook failed");
 }
 
-export async function loadRisk(){
-  const key="portfolio:risk";
-  const r = await kv.get(key);
-  if(r && typeof r==="object") return r;
-  return { locked:false, openBull:0, openBear:0, ddPct:0 };
+export function calcObScore(ob){
+  const bids = ob.bids, asks = ob.asks;
+  const bestBid = bids[0]?.[0];
+  const bestAsk = asks[0]?.[0];
+  if(!Number.isFinite(bestBid) || !Number.isFinite(bestAsk)) return null;
+
+  const mid = (bestBid + bestAsk)/2;
+  const depth = CFG.orderbook.depthPct/100;
+
+  const minBid = mid*(1-depth);
+  const maxAsk = mid*(1+depth);
+
+  let bidUsd=0, askUsd=0;
+  for(const [p,s] of bids){
+    if(p < minBid) break;
+    bidUsd += p*s;
+  }
+  for(const [p,s] of asks){
+    if(p > maxAsk) break;
+    askUsd += p*s;
+  }
+  const den = bidUsd + askUsd;
+  const obScore = den>0 ? (bidUsd-askUsd)/den : 0;
+  const spreadPct = ((bestAsk-bestBid)/mid)*100;
+
+  return { obScore, bidsUsd:bidUsd, asksUsd:askUsd, mid, spreadPct, depthPct:CFG.orderbook.depthPct };
 }
 
-export async function saveRisk(r){
-  await kv.set("portfolio:risk", r);
+export function zScoreFromHist(hist, x){
+  const arr = hist.filter(Number.isFinite);
+  if(arr.length < 10) return null;
+  const mean = arr.reduce((s,v)=>s+v,0)/arr.length;
+  const varr = arr.reduce((s,v)=>s+(v-mean)*(v-mean),0)/arr.length;
+  const sd = Math.sqrt(varr);
+  if(sd<=0) return 0;
+  return (x-mean)/sd;
 }
 
-export function riskGate(side, risk){
-  if(risk.locked) return { ok:false, reason:"Risk LOCK (drawdown)" };
-  if(side==="bull" && risk.openBull >= CFG.maxOpenBull) return { ok:false, reason:"Max open BULL bereikt" };
-  if(side==="bear" && risk.openBear >= CFG.maxOpenBear) return { ok:false, reason:"Max open BEAR bereikt" };
-  return { ok:true, reason:"ok" };
-}
+export async function portfolioGate(engine){
+  // Basis risk engine (KV state) — geen echte trades, alleen "mag / mag niet"
+  const st = (await kv.get("portfolio:state")) || { open: [] };
+  const open = Array.isArray(st.open) ? st.open : [];
 
-export async function updateRiskFromSignals(dataBull, dataBear){
-  // Lightweight: we tell UI what would be "open" based on ENTRY count
-  // Real trades zijn er niet, maar we houden het consistent.
-  const openBull = (dataBull?.funnel?.ENTRY || []).length;
-  const openBear = (dataBear?.funnel?.ENTRY || []).length;
-  const risk = await loadRisk();
-  risk.openBull = openBull;
-  risk.openBear = openBear;
-  // locked blijft zoals user hem kan instellen later (nu auto false)
-  await saveRisk(risk);
-  return risk;
+  const openExpl = open.filter(x=>x.engine==="EXPLOSIE").length;
+  const openAccu = open.filter(x=>x.engine==="ACCUMULATIE").length;
+
+  if(engine==="EXPLOSIE" && openExpl >= CFG.portfolio.maxOpenExpl) return { ok:false, reason:"Max open EXPLOSIE bereikt" };
+  if(engine==="ACCUMULATIE" && openAccu >= CFG.portfolio.maxOpenAccu) return { ok:false, reason:"Max open ACCUMULATIE bereikt" };
+
+  // totaal risk pct: optioneel (als jij later sizePct invult)
+  return { ok:true, reason:"OK" };
 }

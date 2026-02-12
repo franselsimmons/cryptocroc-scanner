@@ -1,148 +1,179 @@
+import { CFG, getCoinGeckoPool, getBitgetSpotSymbols, decideSide, loadMem, saveMem, timingScore, engineFor, calcFlatness, calcVolAcc, consistency, oneStepTransition, fetchBitgetOrderbook, calcObScore, zScoreFromHist, portfolioGate } from "./_core.js";
 import { kv } from "@vercel/kv";
-import {
-  CFG, json, now,
-  getBitgetUsdtSet,
-  fetchCoinGeckoMarkets, mapCoin, poolPass,
-  computeSideBands, sideFor,
-  loadMem, saveMem, computeDerived, timingScore, enginePick, stageAdvance,
-  loadRisk, updateRiskFromSignals, riskGate
-} from "./_core.js";
 
-export default async function handler(req){
-  try{
-    const url = new URL(req.url);
-    const side = (url.searchParams.get("side") || "bull").toLowerCase();
-    if(side!=="bull" && side!=="bear") return json({ ok:false, error:"side must be bull|bear" }, 400);
+export const config = { runtime: "nodejs" };
 
-    // 1) Fetch + map
-    const markets = await fetchCoinGeckoMarkets();
-    const mapped = markets.map(mapCoin);
+function json(res, code, obj){
+  res.statusCode = code;
+  res.setHeader("content-type","application/json; charset=utf-8");
+  res.end(JSON.stringify(obj));
+}
 
-    // 2) Pool filter
-    const pool = mapped.filter(poolPass);
+function wantMode(req){
+  const u = new URL(req.url, "http://localhost");
+  const mode = (u.searchParams.get("mode") || "bull").toLowerCase();
+  return (mode==="bear") ? "bear" : "bull";
+}
 
-    // 3) Bands on pool
-    const bands = computeSideBands(pool.map(x=>x.ch24));
-    const lowBand = bands.lowBand;
-    const highBand = bands.highBand;
+async function scanOne(mode){
+  // 1) CG pool
+  const pool = await getCoinGeckoPool();
 
-    // 4) Bitget-only set
-    const usdtSet = await getBitgetUsdtSet();
+  // 2) bands & side filter
+  const bands = decideSide(pool);
+  const sided = pool.filter(c=>{
+    if(bands.low==null || bands.high==null) return false;
+    if(mode==="bull") return c.ch24 >= bands.high;
+    return c.ch24 <= bands.low;
+  });
 
-    // 5) Build list for this side (and only if Bitget has SYMBOLUSDT)
-    const picked = [];
-    for(const c0 of pool){
-      const s = sideFor(c0, {lowBand,highBand});
-      if(s !== side) continue;
+  // 3) Bitget-only filter: match base to USDT symbol
+  const bitget = await getBitgetSpotSymbols();
+  const byBase = new Map();
+  for(const s of bitget){
+    if(s.base) byBase.set(s.base, s.symbol);
+  }
 
-      const bitgetSym = (c0.symbol || "").toUpperCase() + "USDT";
-      if(!usdtSet.has(bitgetSym)) continue;
+  const candidates = [];
+  for(const c of sided){
+    const bg = byBase.get(c.symbol);
+    if(!bg) continue;
+    candidates.push({ ...c, bitgetSymbol:bg });
+  }
 
-      picked.push(c0);
-      if(picked.length >= 60) break; // hard cap for speed
+  // 4) update memory + stage
+  const funnel = { radar:[], buildup:[], almost:[], entry:[] };
+
+  for(const c of candidates){
+    const mem = await loadMem(mode, c.symbol);
+
+    const passSide = true;
+    const ts = Date.now();
+
+    mem.hist = Array.isArray(mem.hist) ? mem.hist : [];
+    mem.hist.push({ ts, price:c.price, vol:c.vol, vm:c.vm, passSide });
+
+    // trim history
+    if(mem.hist.length > CFG.memory.maxScans) mem.hist = mem.hist.slice(-CFG.memory.maxScans);
+
+    mem.totalScans = (mem.totalScans || 0) + 1;
+
+    const flat = calcFlatness(mem.hist);
+    const volAcc = calcVolAcc(mem.hist);
+    const cons = consistency(mem.hist);
+    const tscore = timingScore(mode, c);
+    const engine = engineFor(c);
+
+    // stage rules
+    let want = mem.stage || "RADAR";
+
+    // RADAR minimum
+    if(want==="RADAR"){
+      mem.scansInStage = (mem.scansInStage||0)+1;
+      if(mem.scansInStage >= CFG.stages.minScansToLeaveRadar && mem.totalScans>=2){
+        // promotie mogelijk
+        if(cons >= CFG.stages.buildUpConsistency && tscore>=2){
+          if(engine==="EXPLOSIE" && (volAcc!=null && volAcc >= CFG.stages.buildUpVolAccMin)) want="BUILDUP";
+          if(engine==="ACCUMULATIE" && (flat!=null && flat <= CFG.stages.flatMaxAccu)) want="BUILDUP";
+        }
+      }
+    } else if(want==="BUILDUP"){
+      mem.scansInStage = (mem.scansInStage||0)+1;
+      if(tscore>=2){
+        if(engine==="EXPLOSIE" && flat!=null && flat<=CFG.stages.flatMaxExpl && (volAcc!=null && volAcc>=CFG.stages.buildUpVolAccMin)) want="ALMOST";
+        if(engine==="ACCUMULATIE" && flat!=null && flat<=CFG.stages.flatMaxAccu) want="ALMOST";
+      }
+    } else if(want==="ALMOST"){
+      mem.scansInStage = (mem.scansInStage||0)+1;
+
+      // basis entry gate
+      const entryBase = (c.vol >= CFG.stages.entryMinVol) && (c.vm >= CFG.stages.entryMinVm) && (mem.totalScans >= CFG.stages.minTotalScansForEntry) && (tscore>=3);
+
+      if(entryBase){
+        // portfolio gate
+        const pg = await portfolioGate(engine);
+        if(pg.ok){
+          // orderbook zscore gate
+          try{
+            const ob = await fetchBitgetOrderbook(c.bitgetSymbol, 50);
+            const x = calcObScore(ob);
+            if(x?.obScore==null) throw new Error("obScore null");
+
+            mem.obHist = Array.isArray(mem.obHist) ? mem.obHist : [];
+            mem.obHist.push(x.obScore);
+            if(mem.obHist.length > CFG.orderbook.historyN) mem.obHist = mem.obHist.slice(-CFG.orderbook.historyN);
+
+            const z = zScoreFromHist(mem.obHist, x.obScore);
+
+            const passZ = (mode==="bull") ? (z!=null && z >= CFG.orderbook.zBull) : (z!=null && z <= CFG.orderbook.zBear);
+
+            if(passZ){
+              want = "ENTRY";
+            } // anders blijft ALMOST
+          }catch(e){
+            // OB faalt -> blijft ALMOST (geen "OB ERR" spam in UI)
+          }
+        }
+      }
+    } else if(want==="ENTRY"){
+      // blijft ENTRY; exit/hold/sell doen we via UI signaal (later uitbreiden)
+      mem.scansInStage = (mem.scansInStage||0)+1;
     }
 
-    // 6) Memory update + stage machine
-    const bySymbol = {};
-    const out = [];
-    for(const c0 of picked){
-      const sym = c0.symbol;
-      const mem = await loadMem(side, sym);
-
-      mem.totalScans = (mem.totalScans || 0) + 1;
-      mem.scansInStage = (mem.scansInStage || 0) + 1;
-
-      const passSide = true; // we already filtered by side
-      mem.hist = (mem.hist || []).concat([{
-        ts: now(),
-        price: c0.price,
-        vol: c0.vol,
-        vm: c0.vm,
-        passSide
-      }]).slice(-30);
-
-      const d = computeDerived(mem);
-
-      const c = {
-        symbol: sym,
-        price: c0.price,
-        vol: c0.vol,
-        mcap: c0.mcap,
-        vm: c0.vm,
-        ch24: c0.ch24,
-        range24: c0.range24,
-        ctl: c0.ctl,
-
-        passSide,
-        totalScans: mem.totalScans,
-
-        consistency: d.consistency,
-        volAcc: d.volAcc,
-        flatness: d.flatness,
-
-        engine: "EXPLOSIE", // temp, set below
-        timingScore: 0,
-        stage: mem.stage
-      };
-
-      c.engine = enginePick(c);
-      c.timingScore = timingScore(side, c);
-
-      // advance stage (max 1 step)
-      stageAdvance(side, c, mem, d);
-      c.stage = mem.stage;
-
-      // reset scansInStage if stage changed by stageAdvance
-      // (we detect by keeping stage in mem already set; if changed, scansInStage was set to 0 inside stageAdvance)
-      mem.stage = c.stage;
-
-      await saveMem(side, sym, mem);
-
-      bySymbol[sym] = c;
-      out.push(c);
+    // max 1 stap per scan
+    const nextStage = oneStepTransition(mem, want);
+    if(nextStage !== mem.stage){
+      mem.stage = nextStage;
+      mem.scansInStage = 1;
     }
 
-    // 7) Funnel buckets
-    const funnel = { ENTRY:[], ALMOST:[], BUILDUP:[], RADAR:[] };
-    for(const c of out){
-      funnel[c.stage]?.push(c);
-    }
+    await saveMem(mode, c.symbol, mem);
 
-    // sort: hoogste timing eerst
-    for(const k of Object.keys(funnel)){
-      funnel[k].sort((a,b)=> (b.timingScore-a.timingScore) || (b.vm-a.vm));
-    }
-
-    // 8) Risk engine (light) + hedge indicator (global)
-    // We store both sides latest to compute hedge info.
-    const latestBull = await kv.get("latest:bull");
-    const latestBear = await kv.get("latest:bear");
-
-    const tmpThis = { funnel };
-    const risk = await updateRiskFromSignals(
-      side==="bull" ? tmpThis : latestBull,
-      side==="bear" ? tmpThis : latestBear
-    );
-
-    // If risk gate says no, we keep the data, but UI will show LOCK
-    const gate = riskGate(side, risk);
-
-    const data = {
-      ok:true,
-      ts: now(),
-      side,
-      items: out.length,
-      lowBand, highBand,
-      hedgeMode: CFG.hedgeMode,
-      risk: { ...risk, gate },
-      funnel,
-      bySymbol
+    const out = {
+      symbol: c.symbol,
+      bitgetSymbol: c.bitgetSymbol,
+      price: c.price,
+      vol: c.vol,
+      vm: c.vm,
+      ch24: c.ch24,
+      timingScore: tscore,
+      engine,
+      stage: mem.stage,
+      totalScans: mem.totalScans
     };
 
-    await kv.set(`latest:${side}`, data);
+    if(mem.stage==="RADAR") funnel.radar.push(out);
+    if(mem.stage==="BUILDUP") funnel.buildup.push(out);
+    if(mem.stage==="ALMOST") funnel.almost.push(out);
+    if(mem.stage==="ENTRY") funnel.entry.push(out);
+  }
 
-    return json({ ok:true, data });
+  // sort per stage: beste boven
+  const sortFn = (a,b)=> (b.timingScore-a.timingScore) || (b.vm-a.vm) || (b.vol-a.vol);
+  funnel.radar.sort(sortFn);
+  funnel.buildup.sort(sortFn);
+  funnel.almost.sort(sortFn);
+  funnel.entry.sort(sortFn);
+
+  const result = {
+    ts: Date.now(),
+    mode,
+    hedgeMode: CFG.hedgeMode,
+    poolSize: candidates.length,
+    bands,
+    funnel
+  };
+
+  await kv.set(`latest:${mode}`, result);
+  return result;
+}
+
+export default async function handler(req, res){
+  try{
+    const mode = wantMode(req);
+    const result = await scanOne(mode);
+    return json(res, 200, result);
   }catch(e){
-    return json({ ok:false, error: e.message || String(e) }, 500);
+    return json(res, 500, { error: String(e?.message || e) });
   }
 }

@@ -1,17 +1,18 @@
 import { kv } from "@vercel/kv";
-import { json } from "./_core.js";
+export const config = { runtime: "nodejs" };
 
-export default async function handler(req){
-  try{
-    const url = new URL(req.url);
-    const side = (url.searchParams.get("side") || "bull").toLowerCase();
-    if(side!=="bull" && side!=="bear") return json({ ok:false, error:"side must be bull|bear" }, 400);
-
-    const data = await kv.get(`latest:${side}`);
-    if(!data) return json({ ok:true, data: null });
-
-    return json({ ok:true, data });
-  }catch(e){
-    return json({ ok:false, error: e.message || String(e) }, 500);
-  }
+export default async function handler(req, res){
+  const u = new URL(req.url, "http://localhost");
+  const mode = (u.searchParams.get("mode") || "bull").toLowerCase()==="bear" ? "bear":"bull";
+  const obj = await kv.get(`latest:${mode}`);
+  res.statusCode = 200;
+  res.setHeader("content-type","application/json; charset=utf-8");
+  res.end(JSON.stringify(obj || {
+    ts: Date.now(),
+    mode,
+    hedgeMode: true,
+    poolSize: 0,
+    bands: { low:null, high:null },
+    funnel: { entry:[], almost:[], buildup:[], radar:[] }
+  }));
 }
