@@ -1,51 +1,366 @@
 <!doctype html>
 <html lang="nl">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>CryptoCroc Scanner</title>
-  <link rel="stylesheet" href="/style.css" />
+  <style>
+    :root{
+      --bg1:#081014;
+      --bg2:#0a1b17;
+      --card:#0f1d22cc;
+      --line:#1f3a42;
+      --text:#e9f3f5;
+      --muted:#a9c0c7;
+      --good:#2dd4bf;
+      --bad:#fb7185;
+      --warn:#fbbf24;
+      --btn:#14363f;
+      --btn2:#1b4b57;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      color:var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background:
+        radial-gradient(1200px 700px at 20% 20%, #1a5b3f55, transparent 60%),
+        radial-gradient(900px 600px at 70% 60%, #1f5ea855, transparent 60%),
+        linear-gradient(180deg, var(--bg1), var(--bg2));
+      min-height:100vh;
+    }
+    .wrap{max-width:1200px;margin:0 auto;padding:18px}
+    .top{
+      display:flex;align-items:center;justify-content:space-between;
+      gap:12px;padding:12px 14px;border:1px solid var(--line);
+      background:linear-gradient(180deg, #0f2a2fbb, #0b171bbb);
+      border-radius:14px;
+      position:sticky;top:10px;z-index:5;
+      backdrop-filter: blur(8px);
+    }
+    .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px}
+    .brand .logo{font-size:20px}
+    .btns{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    button{
+      border:1px solid #2c5a65;
+      background:linear-gradient(180deg,var(--btn2),var(--btn));
+      color:var(--text);
+      padding:8px 12px;border-radius:10px;
+      cursor:pointer;font-weight:700;
+    }
+    button.active{outline:2px solid #2dd4bf66}
+    button:hover{filter:brightness(1.06)}
+    .pill{
+      display:inline-flex;align-items:center;gap:8px;
+      padding:6px 10px;border:1px solid var(--line);
+      background:#0b171bbb;border-radius:999px;color:var(--muted);
+      font-size:12px;font-weight:700;
+    }
+    .grid{display:grid;grid-template-columns: 1.2fr 0.8fr;gap:12px;margin-top:12px}
+    @media(max-width:980px){.grid{grid-template-columns:1fr}}
+    .card{
+      border:1px solid var(--line);
+      background:var(--card);
+      border-radius:14px;
+      overflow:hidden;
+    }
+    .card h3{
+      margin:0;padding:10px 12px;
+      border-bottom:1px solid var(--line);
+      font-size:13px;letter-spacing:.4px;color:var(--muted);
+      display:flex;align-items:center;justify-content:space-between;
+    }
+    .stage{padding:10px 10px 6px}
+    .row{
+      display:flex;align-items:center;justify-content:space-between;gap:10px;
+      padding:10px;border:1px solid var(--line);
+      border-radius:12px;background:#09161a99;margin-bottom:8px;
+      cursor:pointer;
+    }
+    .row:hover{border-color:#2dd4bf66}
+    .left .sym{font-weight:900}
+    .left .meta{color:var(--muted);font-size:12px;margin-top:3px}
+    .tag{
+      font-size:11px;font-weight:900;
+      padding:4px 8px;border-radius:999px;border:1px solid var(--line);
+      color:var(--muted);
+    }
+    .tag.good{color:#05201a;background:#2dd4bf22;border-color:#2dd4bf55}
+    .tag.warn{color:#2a1800;background:#fbbf2422;border-color:#fbbf2455}
+    .tag.bad{color:#2a0008;background:#fb718522;border-color:#fb718555}
+    .box{padding:12px}
+    .muted{color:var(--muted)}
+    .err{
+      margin-top:10px;
+      padding:10px 12px;border-radius:12px;
+      border:1px solid #fb718555;
+      background:#2b0a1288;
+      display:none;
+      white-space:pre-wrap;
+    }
+    .loading{
+      position:fixed;inset:0;
+      background:#00000066;
+      display:none;
+      align-items:center;justify-content:center;
+      z-index:999;
+    }
+    .spinner{
+      width:56px;height:56px;border-radius:50%;
+      border:5px solid #ffffff22;border-top-color:#2dd4bf;
+      animation:spin 0.9s linear infinite;
+      background:#081014aa;
+    }
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .small{font-size:12px}
+    .kvs{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  </style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo">🐊</span>
-      <span class="title">CryptoCroc Scanner</span>
-      <span class="subtitle">Funnel + KV memory + OB z-score + risk + hedge</span>
+  <div class="loading" id="loading"><div class="spinner"></div></div>
+
+  <div class="wrap">
+    <div class="top">
+      <div class="brand"><span class="logo">🐊</span> CryptoCroc Scanner</div>
+      <div class="btns">
+        <button id="bullBtn" class="active">BULL</button>
+        <button id="bearBtn">BEAR</button>
+        <button id="scanBtn">Scan nu</button>
+        <button id="resetBtn" title="Reset memory (RADAR opnieuw)">RESET</button>
+        <span class="pill" id="statusPill">idle</span>
+      </div>
     </div>
 
-    <div class="actions">
-      <button id="btnBull" class="pill active">BULL</button>
-      <button id="btnBear" class="pill">BEAR</button>
-      <button id="btnScan" class="pill primary">Scan nu</button>
-      <span id="status" class="chip">idle</span>
+    <div id="errBox" class="err"></div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>
+          <span>Funnel</span>
+          <span class="small muted" id="bandsTxt">—</span>
+        </h3>
+        <div class="box">
+          <div id="funnel"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>
+          <span>Orderbook</span>
+          <span class="small muted">alleen ALMOST/ENTRY</span>
+        </h3>
+        <div class="box" id="obBox">
+          <div class="muted">Klik op een coin in ALMOST/ENTRY.</div>
+        </div>
+      </div>
     </div>
-  </header>
+  </div>
 
-  <main class="wrap">
-    <div id="banner" class="banner hidden"></div>
+<script>
+  const loading = document.getElementById("loading");
+  const errBox  = document.getElementById("errBox");
+  const statusP = document.getElementById("statusPill");
+  const funnelEl= document.getElementById("funnel");
+  const obBox   = document.getElementById("obBox");
+  const bandsTxt= document.getElementById("bandsTxt");
 
-    <section class="grid">
-      <div class="panel">
-        <div class="panelHead">
-          <div class="panelTitle">Funnel</div>
-          <div class="panelMeta" id="meta"></div>
+  const bullBtn = document.getElementById("bullBtn");
+  const bearBtn = document.getElementById("bearBtn");
+  const scanBtn = document.getElementById("scanBtn");
+  const resetBtn= document.getElementById("resetBtn");
+
+  let side = "BULL";
+  let lastData = null;
+
+  function setLoading(on){
+    loading.style.display = on ? "flex" : "none";
+  }
+  function setErr(msg){
+    if(!msg){
+      errBox.style.display="none";
+      errBox.textContent="";
+      return;
+    }
+    errBox.style.display="block";
+    errBox.textContent = msg;
+  }
+  function setStatus(text){
+    statusP.textContent = text;
+  }
+
+  function pct(n){
+    if(n===null || n===undefined) return "—";
+    return (n*100).toFixed(2) + "%";
+  }
+
+  function money(n){
+    if(!Number.isFinite(n)) return "—";
+    return n.toLocaleString("en-US",{maximumFractionDigits:0});
+  }
+
+  function stageBlock(title, items, stage){
+    const wrap = document.createElement("div");
+    wrap.className = "stage";
+
+    const h = document.createElement("div");
+    h.style.display="flex";
+    h.style.alignItems="center";
+    h.style.justifyContent="space-between";
+    h.style.margin="6px 0 10px 0";
+    h.innerHTML = `<div style="font-weight:900">${title}</div>
+                   <div class="tag">${items.length}</div>`;
+    wrap.appendChild(h);
+
+    if(!items.length){
+      const empty = document.createElement("div");
+      empty.className="muted small";
+      empty.textContent="Geen coins.";
+      wrap.appendChild(empty);
+      return wrap;
+    }
+
+    items.forEach(c=>{
+      const row = document.createElement("div");
+      row.className="row";
+      row.onclick = ()=> onPickCoin(c, stage);
+
+      const left = document.createElement("div");
+      left.className="left";
+      left.innerHTML = `
+        <div class="sym">${c.symbol} <span class="tag ${c.engine==="EXPLOSIE"?"warn":"good"}">${c.engine}</span></div>
+        <div class="meta">
+          prijs: $${c.price.toFixed(6)} · ch24: ${(c.ch24*100).toFixed(2)}% · vm: ${c.vm.toFixed(2)} · vol: $${money(c.vol)} · score: ${c.timingScore} · scans: ${c.totalScans}
         </div>
-        <div id="funnel" class="funnel"></div>
-      </div>
+      `;
 
-      <div class="panel">
-        <div class="panelHead">
-          <div class="panelTitle">Orderbook</div>
-          <div class="panelMeta">Wordt alleen gebruikt bij ALMOST/ENTRY</div>
-        </div>
-        <div id="orderbook" class="ob">
-          <div class="muted">Klik op een coin voor details + orderbook.</div>
-        </div>
-      </div>
-    </section>
-  </main>
+      const right = document.createElement("div");
+      const t = document.createElement("div");
+      t.className = "tag";
+      t.textContent = stage;
+      right.appendChild(t);
 
-  <script src="/app.js"></script>
+      row.appendChild(left);
+      row.appendChild(right);
+      wrap.appendChild(row);
+    });
+
+    return wrap;
+  }
+
+  async function onPickCoin(c, stage){
+    // orderbook alleen ALMOST/ENTRY
+    if(stage !== "ALMOST" && stage !== "ENTRY"){
+      obBox.innerHTML = `<div class="muted">Orderbook wordt alleen opgehaald bij ALMOST/ENTRY.</div>`;
+      return;
+    }
+
+    setLoading(true);
+    setErr(null);
+    try{
+      const r = await fetch(`/api/orderbook?symbol=${encodeURIComponent(c.symbol)}`);
+      const j = await r.json();
+
+      if(!j.ok){
+        obBox.innerHTML = `
+          <div class="tag bad">Geen orderbook</div>
+          <div class="muted small" style="margin-top:8px">
+            Reden: ${j.reason || "UNKNOWN"}<br/>
+            ${j.error ? "Info: " + j.error : ""}
+          </div>
+        `;
+        return;
+      }
+
+      const z = (j.zScore===null || j.zScore===undefined) ? "—" : j.zScore.toFixed(2);
+
+      obBox.innerHTML = `
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <span class="tag good">${c.symbol}</span>
+          <span class="tag">spread: ${(j.spreadPct*100).toFixed(3)}%</span>
+          <span class="tag">obScore: ${j.obScore.toFixed(3)}</span>
+          <span class="tag ${side==="BULL" ? (j.zScore>=1.0?"good":"warn") : (j.zScore<=-1.0?"good":"warn")}">z: ${z}</span>
+        </div>
+
+        <div class="kvs">
+          <span class="pill">bidUsd: $${money(j.bidUsd)}</span>
+          <span class="pill">askUsd: $${money(j.askUsd)}</span>
+          <span class="pill">depth: ${(j.depthPct*100).toFixed(1)}%</span>
+        </div>
+
+        <div class="muted small" style="margin-top:10px">
+          Bron: ${j.source || "bitget"}<br/>
+          Tip: als z-score nog “—” is, moet deze coin eerst meer OB-metingen opbouwen.
+        </div>
+      `;
+    }catch(e){
+      obBox.innerHTML = `<div class="tag bad">Orderbook error</div><div class="muted small">${String(e)}</div>`;
+    }finally{
+      setLoading(false); // <<< dit fixeert jouw “balk blijft hangen”
+    }
+  }
+
+  function render(data){
+    lastData = data;
+    const f = data.funnel;
+
+    // ENTRY boven, RADAR onder (exact)
+    funnelEl.innerHTML = "";
+    funnelEl.appendChild(stageBlock("ENTRY",  f.ENTRY,  "ENTRY"));
+    funnelEl.appendChild(stageBlock("ALMOST", f.ALMOST, "ALMOST"));
+    funnelEl.appendChild(stageBlock("BUILDUP",f.BUILDUP,"BUILDUP"));
+    funnelEl.appendChild(stageBlock("RADAR",  f.RADAR,  "RADAR"));
+
+    bandsTxt.textContent = `Bands: low ${(data.bands.lowBand*100).toFixed(2)}% | high ${(data.bands.highBand*100).toFixed(2)}% | items: ${f.ENTRY.length+f.ALMOST.length+f.BUILDUP.length+f.RADAR.length}`;
+  }
+
+  async function scan(reset=false){
+    setLoading(true);
+    setErr(null);
+    setStatus("scanning…");
+
+    try{
+      const endpoint = side==="BULL" ? "/api/top10" : "/api/top10_bear";
+      const url = reset ? `${endpoint}?reset=1` : endpoint;
+
+      const r = await fetch(url, { cache:"no-store" });
+      const j = await r.json();
+
+      if(!j.ok){
+        setErr(JSON.stringify(j, null, 2));
+        setStatus("error");
+        return;
+      }
+
+      render(j);
+      setStatus(`ok · ${side} · entry:${j.counts.ENTRY} almost:${j.counts.ALMOST} buildup:${j.counts.BUILDUP} radar:${j.counts.RADAR}`);
+      obBox.innerHTML = `<div class="muted">Klik op een coin in ALMOST/ENTRY voor orderbook.</div>`;
+    }catch(e){
+      setErr(String(e));
+      setStatus("error");
+    }finally{
+      setLoading(false); // <<< dit fixeert jouw “balk blijft hangen”
+    }
+  }
+
+  bullBtn.onclick = ()=>{
+    side="BULL";
+    bullBtn.classList.add("active");
+    bearBtn.classList.remove("active");
+    scan(false);
+  };
+
+  bearBtn.onclick = ()=>{
+    side="BEAR";
+    bearBtn.classList.add("active");
+    bullBtn.classList.remove("active");
+    scan(false);
+  };
+
+  scanBtn.onclick = ()=> scan(false);
+  resetBtn.onclick = ()=> scan(true);
+
+  // initial
+  scan(false);
+</script>
 </body>
 </html>
