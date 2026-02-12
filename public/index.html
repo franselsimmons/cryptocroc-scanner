@@ -1,8 +1,37 @@
 <!doctype html>
-<html>
-<head><meta charset="utf-8"><title>CryptoCroc</title></head>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>CryptoCroc Scanner</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
 <body>
-  <h2>CryptoCroc</h2>
-  <p><a href="/bull.html">Bull</a> | <a href="/bear.html">Bear</a></p>
+  <div class="wrap">
+    <div class="header">
+      <div class="brand"><span class="logo">🐊</span> CryptoCroc Scanner</div>
+      <div class="small">BULL/BEAR + funnel + orderbook</div>
+    </div>
+
+    <div class="topbar">
+      <button id="btnBull" class="btn active">BULL</button>
+      <button id="btnBear" class="btn">BEAR</button>
+      <button id="btnScan" class="btn primary">Scan nu</button>
+
+      <div class="meta" id="meta">
+        <span class="chip">side: <b id="sideLabel">BULL</b></span>
+      </div>
+    </div>
+
+    <div id="error" class="err" style="display:none"></div>
+
+    <div id="content"></div>
+
+    <div class="footerNote">
+      Orderbook wordt alleen getoond bij ALMOST/ENTRY/HOLD/SELL. (Als je API OB levert.)
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
 </body>
 </html>
