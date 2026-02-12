@@ -2,87 +2,57 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>CryptoCroc Scanner</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="toast" id="toast">
-    <div class="box">
-      <div>
-        <div class="msg" id="toastMsg">Status</div>
-        <div class="sub" id="toastSub"></div>
-      </div>
-      <button class="close" id="toastClose" aria-label="Sluiten">✕</button>
-    </div>
-  </div>
-
-  <div class="container">
-    <div class="topbar">
-      <div class="brand">
-        <div class="logo">🐊</div>
-        <div>CryptoCroc Scanner</div>
-      </div>
-
-      <div class="pills">
-        <div class="pill" id="pillMode">MODE: <b>BULL</b></div>
-        <div class="pill" id="pillBands">Bands: —</div>
-        <div class="pill" id="pillItems">Items: —</div>
-        <div class="pill" id="pillLast">Last: —</div>
-      </div>
-
-      <div class="btns">
-        <div class="switch" id="switch">
-          <div class="opt active" data-mode="bull">BULL</div>
-          <div class="opt" data-mode="bear">BEAR</div>
-        </div>
-        <button class="primary" id="btnScan">Scan nu</button>
-        <button class="ghost" id="btnRefresh">↻</button>
-      </div>
+  <header class="topbar">
+    <div class="left">
+      <div class="brand">CryptoCroc Scanner</div>
+      <div class="sub" id="statusLine">Status: laden…</div>
     </div>
 
-    <div class="grid">
-      <div class="card">
-        <div class="hdr">
-          <h3>Funnel</h3>
-          <div class="meta" id="funnelMeta">—</div>
-        </div>
-        <div class="body" id="funnel"></div>
-      </div>
-
-      <div class="card">
-        <div class="hdr">
-          <h3>Orderbook</h3>
-          <div class="meta">Alleen ALMOST/ENTRY</div>
-        </div>
-        <div class="body" id="obPanel">
-          <div class="kpis">
-            <div class="kpi">
-              <div class="k">Coin</div>
-              <div class="v" id="obCoin">—</div>
-            </div>
-            <div class="kpi">
-              <div class="k">Stage</div>
-              <div class="v" id="obStage">—</div>
-            </div>
-            <div class="kpi">
-              <div class="k">OB zScore</div>
-              <div class="v" id="obZ">—</div>
-            </div>
-            <div class="kpi">
-              <div class="k">OB score</div>
-              <div class="v" id="obScore">—</div>
-            </div>
-          </div>
-          <div class="hr"></div>
-          <div class="small" id="obHint">Tip: klik op een coin in ALMOST/ENTRY voor orderbook.</div>
-          <div class="hr"></div>
-          <div class="small" id="obRaw"></div>
-        </div>
-      </div>
+    <div class="right">
+      <button id="modeBull" class="btn">BULL</button>
+      <button id="modeBear" class="btn">BEAR</button>
+      <button id="scanNow" class="btn primary">Scan nu</button>
     </div>
-  </div>
+  </header>
 
-  <script type="module" src="/app.js"></script>
+  <main class="grid">
+    <section class="panel">
+      <div class="panelTitle">Funnel</div>
+
+      <div class="funnelMeta" id="funnelMeta">—</div>
+
+      <div class="stage">
+        <div class="stageTitle">ENTRY</div>
+        <div class="stageBody" id="stageEntry"></div>
+      </div>
+
+      <div class="stage">
+        <div class="stageTitle">BUILDUP</div>
+        <div class="stageBody" id="stageBuildup"></div>
+      </div>
+
+      <div class="stage">
+        <div class="stageTitle">RADAR</div>
+        <div class="stageBody" id="stageRadar"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panelTitle">Orderbook</div>
+      <div class="panelHint">Wordt opgehaald als je op een coin klikt (ENTRY of BUILDUP)</div>
+
+      <div class="obBox">
+        <div class="obTitle" id="obTitle">Geen coin geselecteerd</div>
+        <pre class="obPre" id="obData">—</pre>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
 </body>
 </html>
