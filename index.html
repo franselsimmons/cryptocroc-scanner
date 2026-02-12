@@ -7,197 +7,45 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <header class="top">
+  <header class="topbar">
     <div class="brand">
-      <div class="logo">🐊</div>
-      <div>
-        <div class="title">CryptoCroc Scanner</div>
-        <div class="sub">BULL/BEAR • funnel • memory • orderbook vanaf ALMOST</div>
-      </div>
+      <span class="logo">🐊</span>
+      <span class="title">CryptoCroc Scanner</span>
+      <span class="subtitle">Funnel + KV memory + OB z-score + risk + hedge</span>
     </div>
 
-    <div class="controls">
-      <button class="pill active" id="btnBull">BULL</button>
-      <button class="pill" id="btnBear">BEAR</button>
-      <button class="pill green" id="btnScan">Scan nu</button>
-      <div class="meta" id="meta">—</div>
+    <div class="actions">
+      <button id="btnBull" class="pill active">BULL</button>
+      <button id="btnBear" class="pill">BEAR</button>
+      <button id="btnScan" class="pill primary">Scan nu</button>
+      <span id="status" class="chip">idle</span>
     </div>
   </header>
 
   <main class="wrap">
-    <div id="toast" class="toast hidden"></div>
+    <div id="banner" class="banner hidden"></div>
 
-    <section class="card">
-      <div class="cardHead">
-        <div class="cardTitle" id="viewTitle">BULL funnel</div>
-        <div class="badges">
-          <span class="badge" id="badgeApi">API: /api/scan</span>
-          <span class="badge" id="badgeStatus">status: —</span>
-          <span class="badge" id="badgeMs">—ms</span>
+    <section class="grid">
+      <div class="panel">
+        <div class="panelHead">
+          <div class="panelTitle">Funnel</div>
+          <div class="panelMeta" id="meta"></div>
+        </div>
+        <div id="funnel" class="funnel"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panelHead">
+          <div class="panelTitle">Orderbook</div>
+          <div class="panelMeta">Wordt alleen gebruikt bij ALMOST/ENTRY</div>
+        </div>
+        <div id="orderbook" class="ob">
+          <div class="muted">Klik op een coin voor details + orderbook.</div>
         </div>
       </div>
-
-      <div id="loading" class="loading hidden">
-        <div class="bar"></div>
-        <div class="txt">Scannen…</div>
-      </div>
-
-      <div id="tables"></div>
     </section>
   </main>
 
-<script>
-const API_SCAN = "/api/scan";
-const API_OB   = "/api/orderbook?symbol=";
-
-let side = "BULL";
-
-const btnBull = document.getElementById("btnBull");
-const btnBear = document.getElementById("btnBear");
-const btnScan = document.getElementById("btnScan");
-
-const viewTitle = document.getElementById("viewTitle");
-const badgeStatus = document.getElementById("badgeStatus");
-const badgeMs = document.getElementById("badgeMs");
-const meta = document.getElementById("meta");
-
-const tables = document.getElementById("tables");
-const loading = document.getElementById("loading");
-const toast = document.getElementById("toast");
-
-function setSide(s) {
-  side = s;
-  btnBull.classList.toggle("active", side==="BULL");
-  btnBear.classList.toggle("active", side==="BEAR");
-  viewTitle.textContent = side + " funnel";
-}
-
-btnBull.onclick = () => setSide("BULL");
-btnBear.onclick = () => setSide("BEAR");
-
-function showToast(text, kind="info") {
-  toast.textContent = text;
-  toast.className = "toast " + kind;
-  setTimeout(()=> toast.classList.add("hidden"), 2200);
-  toast.classList.remove("hidden");
-}
-
-function setLoading(on) {
-  loading.classList.toggle("hidden", !on);
-}
-
-function esc(s){ return String(s).replace(/[&<>"']/g, m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;" }[m])); }
-
-function renderTable(title, items, showOrderbook) {
-  const rows = items.map(x => `
-    <tr>
-      <td class="sym">${esc(x.symbol)}</td>
-      <td>${esc(x.name||"")}</td>
-      <td class="${x.side==="BULL"?"bull":"bear"}">${esc(x.side)}</td>
-      <td>${(x.ch24||0).toFixed(2)}%</td>
-      <td>${(x.vm||0).toFixed(2)}</td>
-      <td>${x.timing}</td>
-      <td>${(x.consistency||0).toFixed(2)}</td>
-      <td>${(x.volAcc||0).toFixed(2)}</td>
-      <td>${x.flatness==null?"—":(x.flatness*100).toFixed(2)+"%"}</td>
-      <td>
-        ${showOrderbook ? `<button class="mini" data-ob="${esc(x.obSymbol)}">OB</button>` : `<span class="muted">—</span>`}
-      </td>
-    </tr>
-  `).join("");
-
-  return `
-    <div class="stage">
-      <div class="stageHead">
-        <div class="stageTitle">${esc(title)}</div>
-        <div class="stageCount">${items.length}</div>
-      </div>
-      <div class="tableWrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Coin</th><th>Naam</th><th>Side</th><th>24h</th><th>VM</th><th>Timing</th><th>Cons</th><th>VolAcc</th><th>Flat</th><th>OB</th>
-            </tr>
-          </thead>
-          <tbody>${rows || `<tr><td colspan="10" class="muted">Geen coins</td></tr>`}</tbody>
-        </table>
-      </div>
-    </div>
-  `;
-}
-
-async function showOrderbook(symbol) {
-  showToast("Orderbook ophalen: " + symbol, "info");
-  try {
-    const r = await fetch(API_OB + encodeURIComponent(symbol));
-    const j = await r.json();
-    if (!j.ok) return showToast("OB niet beschikbaar (" + (j.error||"") + ")", "warn");
-    showToast("OB OK (" + symbol + ")", "ok");
-  } catch (e) {
-    showToast("OB fout: " + e.message, "warn");
-  }
-}
-
-tables.onclick = (e) => {
-  const btn = e.target.closest("button[data-ob]");
-  if (!btn) return;
-  showOrderbook(btn.getAttribute("data-ob"));
-};
-
-async function scan() {
-  setLoading(true);
-  badgeStatus.textContent = "status: …";
-  badgeMs.textContent = "—ms";
-  tables.innerHTML = "";
-
-  const t0 = performance.now();
-
-  try {
-    const r = await fetch(API_SCAN, { cache: "no-store" });
-    const ms = Math.round(performance.now() - t0);
-    badgeStatus.textContent = "status: " + r.status;
-    badgeMs.textContent = ms + "ms";
-
-    const j = await r.json();
-
-    if (!j.ok) {
-      tables.innerHTML = `<div class="errorBox">❌ ${esc(j.error||"Onbekende fout")}</div>`;
-      showToast("Scan fout", "warn");
-      return;
-    }
-
-    const f = j.funnel || {};
-    const stages = ["ENTRY","ALMOST","BUILDUP","RADAR"]; // ENTRY boven, RADAR onder
-
-    // filter op side in UI (BULL/BEAR knoppen)
-    function onlySide(arr){ return (arr||[]).filter(x => x.side === side); }
-
-    const html = stages.map(st => {
-      const items = onlySide(f[st]);
-      const showOB = (st === "ALMOST" || st === "ENTRY");
-      return renderTable(st, items, showOB);
-    }).join("");
-
-    tables.innerHTML = html;
-
-    const metaTxt = `pool: ${j.meta?.pool ?? "—"} • scanned: ${j.meta?.scanned ?? "—"} • bands: ${Number(j.meta?.lowBand||0).toFixed(2)} / ${Number(j.meta?.highBand||0).toFixed(2)}`;
-    meta.textContent = metaTxt;
-
-    showToast("Scan klaar", "ok");
-
-  } catch (e) {
-    tables.innerHTML = `<div class="errorBox">❌ ${esc(e.message)}</div>`;
-    showToast("Scan crash", "warn");
-  } finally {
-    // ✅ dit is precies waarom je balk nu WEL weggaat
-    setLoading(false);
-  }
-}
-
-btnScan.onclick = scan;
-
-// auto first scan
-scan();
-</script>
+  <script src="/app.js"></script>
 </body>
 </html>

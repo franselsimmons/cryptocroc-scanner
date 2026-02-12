@@ -1,162 +1,106 @@
-// /api/orderbook.js
-// CryptoCroc — Bitget Orderbook (spot USDT)
-// Returns: { symbol, mid, spreadPct, bidUsd, askUsd, obScore, depthPct, top:{bid,ask}, bids, asks }
-
+import { kv } from "@vercel/kv";
 export const config = { runtime: "nodejs" };
 
 const fetchFn = globalThis.fetch;
-if (!fetchFn) throw new Error("fetch is not available. Use Node.js runtime on Vercel.");
 
-function toNum(x) {
-  const n = Number(x);
-  return Number.isFinite(n) ? n : null;
+function json(res, code, obj){
+  res.setHeader("Content-Type","application/json");
+  res.setHeader("Cache-Control","no-store");
+  res.status(code).end(JSON.stringify(obj));
 }
 
-function normSymbol(raw) {
-  if (!raw) return null;
-  let s = String(raw).trim().toUpperCase();
-
-  // Als iemand "PEPE/USDT" of "PEPE-USDT" geeft → maak PEPEUSDT
-  s = s.replace("/", "").replace("-", "").replace("_", "");
-
-  // Als het al eindigt op USDT, laat zo
-  if (s.endsWith("USDT")) return s;
-
-  // Anders plak USDT erachter
-  return s + "USDT";
+function mean(arr){ return arr.reduce((a,b)=>a+b,0)/(arr.length||1); }
+function std(arr){
+  const m = mean(arr);
+  const v = mean(arr.map(x => (x-m)*(x-m)));
+  return Math.sqrt(v);
 }
 
-function sumDepth(levels, mid, depthPct, side) {
-  // levels: [[price, size], ...]
-  // side: "bids" => prijs >= mid*(1-depthPct)
-  // side: "asks" => prijs <= mid*(1+depthPct)
-  const low = mid * (1 - depthPct);
-  const high = mid * (1 + depthPct);
-
-  let usd = 0;
-  let kept = [];
-
-  for (let i = 0; i < levels.length; i++) {
-    const p = toNum(levels[i][0]);
-    const q = toNum(levels[i][1]);
-    if (p == null || q == null) continue;
-
-    const inBand =
-      side === "bids" ? p >= low && p <= mid : p <= high && p >= mid;
-
-    if (!inBand) continue;
-
-    const v = p * q;
-    usd += v;
-
-    // bewaar een paar regels voor UI/debug
-    if (kept.length < 20) kept.push({ p, q, usd: v });
-  }
-
-  return { usd, kept };
+function parseLevels(levels){
+  // levels: [ [price, size], ... ]
+  return (levels || []).map(x => ({ price:Number(x[0]), size:Number(x[1]) })).filter(x=>x.price>0 && x.size>0);
 }
 
-async function getBitgetOrderbook(symbol, limit = 50) {
-  // We proberen eerst de nieuwe v2 spot endpoint.
-  // Als die faalt, fallback naar oude v1.
-  const urls = [
-    `https://api.bitget.com/api/v2/spot/market/orderbook?symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
-    `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(symbol)}&type=step0&limit=${limit}`
+async function fetchBitgetOB(symbol){
+  // Spot orderbook endpoints verschillen per Bitget versie; we proberen 2 varianten.
+  // Verwacht symbol als "BTCUSDT".
+  const tries = [
+    `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(symbol)}&type=step0&limit=50`,
+    `https://api.bitget.com/api/v2/spot/market/orderbook?symbol=${encodeURIComponent(symbol)}&type=step0&limit=50`
   ];
 
-  let lastErr = null;
+  for(const url of tries){
+    const r = await fetchFn(url, { cache:"no-store" });
+    if(!r.ok) continue;
+    const j = await r.json();
 
-  for (const url of urls) {
-    try {
-      const r = await fetchFn(url, { cache: "no-store" });
-      const j = await r.json().catch(() => null);
-
-      if (!r.ok || !j) {
-        lastErr = new Error(`Bitget HTTP ${r.status}`);
-        continue;
-      }
-
-      // v2 shape (typisch): { code, msg, data:{ bids:[], asks:[] } } (soms data:[{...}])
-      // v1 shape (typisch): { code, msg, data:{ bids:[], asks:[] } }
-      let data = j.data;
-
-      // Soms is data een array met 1 item
-      if (Array.isArray(data)) data = data[0];
-
-      const bids = data?.bids || data?.bid || null;
-      const asks = data?.asks || data?.ask || null;
-
-      if (!Array.isArray(bids) || !Array.isArray(asks) || bids.length === 0 || asks.length === 0) {
-        lastErr = new Error("Bitget: bids/asks ontbreekt");
-        continue;
-      }
-
-      return { bids, asks };
-    } catch (e) {
-      lastErr = e;
+    // v1: { data: { bids:[], asks:[] } }
+    if(j?.data?.bids && j?.data?.asks){
+      return { bids: j.data.bids, asks: j.data.asks, raw:j };
+    }
+    // v2: { data: { bids:[], asks:[] } } of { data: { bids, asks } }
+    if(j?.data?.bids && j?.data?.asks){
+      return { bids: j.data.bids, asks: j.data.asks, raw:j };
     }
   }
-
-  throw lastErr || new Error("Bitget orderbook fetch failed");
+  throw new Error("Bitget orderbook not available for this symbol (or endpoint changed).");
 }
 
-export default async function handler(req, res) {
-  try {
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.setHeader("Cache-Control", "no-store");
+export default async function handler(req,res){
+  try{
+    const url = new URL(req.url, "http://localhost");
+    const symbol = (url.searchParams.get("symbol") || "").toUpperCase().trim();
+    const mid = Number(url.searchParams.get("mid") || 0);
+    const depthPct = Number(url.searchParams.get("depthPct") || 2);
 
-    const raw = req.query.symbol || req.query.sym || req.query.ticker;
-    const depthPct = req.query.depthPct ? Math.max(0.001, Math.min(0.1, Number(req.query.depthPct))) : 0.02;
-    const limit = req.query.limit ? Math.max(10, Math.min(200, Number(req.query.limit))) : 50;
+    if(!symbol) return json(res, 400, { ok:false, error:"Missing symbol" });
 
-    const symbol = normSymbol(raw);
-    if (!symbol) {
-      res.status(400).json({ ok: false, error: "Missing symbol" });
-      return;
-    }
+    const ob = await fetchBitgetOB(symbol);
+    const bids = parseLevels(ob.bids);
+    const asks = parseLevels(ob.asks);
 
-    const { bids, asks } = await getBitgetOrderbook(symbol, limit);
+    if(!bids.length || !asks.length) throw new Error("Empty orderbook");
 
-    // Best bid/ask
-    const bestBid = toNum(bids[0]?.[0]);
-    const bestAsk = toNum(asks[0]?.[0]);
+    const bestBid = bids[0].price;
+    const bestAsk = asks[0].price;
+    const midPx = mid>0 ? mid : (bestBid + bestAsk)/2;
 
-    if (bestBid == null || bestAsk == null || bestBid <= 0 || bestAsk <= 0) {
-      res.status(502).json({ ok: false, error: "Bad orderbook prices" });
-      return;
-    }
+    const minBid = midPx * (1 - depthPct/100);
+    const maxAsk = midPx * (1 + depthPct/100);
 
-    const mid = (bestBid + bestAsk) / 2;
-    const spreadPct = ((bestAsk - bestBid) / mid) * 100;
+    const bidUsd = bids.filter(x => x.price >= minBid).reduce((s,x)=> s + x.price*x.size, 0);
+    const askUsd = asks.filter(x => x.price <= maxAsk).reduce((s,x)=> s + x.price*x.size, 0);
 
-    // Depth sums binnen 2% rond mid
-    const bidDepth = sumDepth(bids, mid, depthPct, "bids");
-    const askDepth = sumDepth(asks, mid, depthPct, "asks");
+    const obScore = (bidUsd - askUsd) / ((bidUsd + askUsd) || 1);
+    const spreadPct = ((bestAsk - bestBid) / midPx) * 100;
 
-    const bidUsd = bidDepth.usd;
-    const askUsd = askDepth.usd;
+    // history -> zscore
+    const HKEY = `ob:hist:${symbol}`;
+    const hist = (await kv.get(HKEY)) || [];
+    const next = Array.isArray(hist) ? hist.slice(-49) : [];
+    next.push({ ts: Date.now(), obScore });
 
-    const denom = bidUsd + askUsd;
-    const obScore = denom > 0 ? (bidUsd - askUsd) / denom : 0;
+    await kv.set(HKEY, next);
 
-    res.status(200).json({
-      ok: true,
+    const arr = next.map(x=>x.obScore);
+    const m = mean(arr);
+    const s = std(arr) || 1e-9;
+    const z = (obScore - m) / s;
+
+    return json(res, 200, {
+      ok:true,
       symbol,
-      depthPct,
-      mid,
-      spreadPct,
-      bidUsd,
-      askUsd,
+      bestBid, bestAsk, mid: midPx,
+      bidUsd, askUsd,
       obScore,
-      top: { bid: bestBid, ask: bestAsk },
-      // kleine sample zodat je UI “strak” kan tekenen
-      bids: bidDepth.kept,
-      asks: askDepth.kept
+      zScore: z,
+      mean: m,
+      std: s,
+      spreadPct,
+      depthPct
     });
-  } catch (e) {
-    res.status(500).json({
-      ok: false,
-      error: e?.message || "Unknown error"
-    });
+
+  }catch(e){
+    return json(res, 200, { ok:false, error:e.message }); // UI wil "netjes" kunnen tonen zonder crash
   }
 }
