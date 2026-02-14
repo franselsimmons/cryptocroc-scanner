@@ -10,11 +10,12 @@ export default async function handler(req, res) {
 
     const mode = (req.query?.mode || "all").toLowerCase();
     const now = Date.now();
-
     const modes = mode === "all" ? ["bull", "bear"] : [mode];
 
     for (const m of modes) {
       if (m !== "bull" && m !== "bear") continue;
+
+      // reset marker + hard delete state/latest
       await kv.set(keyReset(m), now);
       await kv.del(keyState(m));
       await kv.del(keyLatest(m));
@@ -26,6 +27,6 @@ export default async function handler(req, res) {
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: false, error: String(e) }));
+    res.end(JSON.stringify({ ok:false, error:String(e) }));
   }
 }
