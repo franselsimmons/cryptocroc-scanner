@@ -1,6 +1,15 @@
 {
+  "functions": {
+    "api/*.js": {
+      "runtime": "nodejs20.x",
+      "memory": 1024,
+      "maxDuration": 30
+    }
+  },
   "crons": [
-    { "path": "/api/cron", "schedule": "*/10 * * * *" },
-    { "path": "/api/ob_sampler", "schedule": "* * * * *" }
+    {
+      "path": "/api/cron",
+      "schedule": "*/10 * * * *"
+    }
   ]
 }
