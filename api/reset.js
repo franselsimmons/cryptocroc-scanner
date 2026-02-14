@@ -1,47 +1,38 @@
 import { kv } from "@vercel/kv";
-
 export const config = { runtime: "nodejs" };
-
-// Zelfde secret als cron (makkelijk): CRON_SECRET
-function requireSecret(req) {
-  const secret = process.env.CRON_SECRET ? String(process.env.CRON_SECRET).trim() : "";
-  if (!secret) return; // als je geen secret wil, laat leeg (maar ik raad dat af)
-
-  // 1) Header (veilig)
-  const auth = req.headers?.authorization || req.headers?.Authorization || "";
-  if (auth === `Bearer ${secret}`) return;
-
-  // 2) Query param (handig als “klik-link”)
-  const u = new URL(req.url, "http://localhost");
-  const q = String(u.searchParams.get("secret") || "").trim();
-  if (q && q === secret) return;
-
-  const err = new Error("Unauthorized");
-  err.statusCode = 401;
-  throw err;
-}
 
 export default async function handler(req, res) {
   try {
-    requireSecret(req);
+    const u = new URL(req.url, "http://localhost");
 
-    // Dit is jouw “geheugen” nu:
-    // - laatste resultaten
-    // - Bitget symbol cache
-    await kv.del("latest:bull");
-    await kv.del("latest:bear");
-    await kv.del("bitget:usdt:symbols:v1");
+    const secret = u.searchParams.get("secret") || "";
+    const mode = (u.searchParams.get("mode") || "all").toLowerCase();
+
+    // beveiliging: RESET_SECRET > CRON_SECRET
+    const expected = process.env.RESET_SECRET || process.env.CRON_SECRET;
+    if (expected && secret !== expected) {
+      res.statusCode = 401;
+      res.end("Unauthorized");
+      return;
+    }
+
+    const keys = [];
+    if (mode === "bull" || mode === "all") {
+      keys.push("latest:bull", "state:bull");
+    }
+    if (mode === "bear" || mode === "all") {
+      keys.push("latest:bear", "state:bear");
+    }
+    // optional: Bitget symbol cache ook wissen
+    keys.push("bitget:symbols:usdt");
+
+    for (const k of keys) await kv.del(k);
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({
-      ok: true,
-      cleared: ["latest:bull", "latest:bear", "bitget:usdt:symbols:v1"],
-      note: "Wacht daarna op de volgende cron (max 10 min) voor nieuwe vulling."
-    }));
+    res.end(JSON.stringify({ ok: true, cleared: keys }));
   } catch (e) {
-    res.statusCode = e?.statusCode || 500;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+    res.statusCode = 500;
+    res.end(String(e));
   }
 }
