@@ -1,45 +1,42 @@
 body { margin:0; font-family: system-ui, Arial; background:#0b0f14; color:#e8eef7; }
 .topbar { display:flex; justify-content:space-between; align-items:center; padding:14px 16px; border-bottom:1px solid #1b2533; }
 .brand { font-weight:700; font-size:16px; }
-.sub { opacity:.85; font-size:12px; margin-top:4px; max-width: 1100px; }
+.sub { opacity:.8; font-size:12px; margin-top:4px; }
 
-.btn { padding:10px 12px; border:1px solid #26344a; background:#121a24; color:#e8eef7; border-radius:10px; cursor:pointer; text-decoration:none; display:inline-block; }
+.btn { padding:10px 12px; border:1px solid #26344a; background:#121a24; color:#e8eef7; border-radius:10px; cursor:pointer; }
+.btn.primary { border-color:#3d7cff; }
 .btn.active { outline:2px solid #3d7cff; }
-.btn.ghost { opacity: .85; }
-.btn:hover { border-color:#3d7cff; }
 
-.grid { display:grid; grid-template-columns: 1fr 1fr 1fr; gap:14px; padding:14px; }
+.grid { display:grid; grid-template-columns: 1.2fr .8fr; gap:14px; padding:14px; }
 .panel { background:#0f1620; border:1px solid #1b2533; border-radius:14px; padding:14px; }
-.panel.full { grid-column: 1 / -1; }
-.panelTitle { font-weight:800; margin-bottom:10px; }
-.panelHint { opacity:.75; font-size:12px; margin-bottom:10px; }
+.panelTitle { font-weight:700; margin-bottom:10px; }
+.panelHint { opacity:.7; font-size:12px; margin-bottom:10px; }
 
+.stage { margin-top:12px; }
+.stageTitle { font-weight:700; margin-bottom:8px; }
 .stageBody { display:flex; flex-direction:column; gap:10px; }
 .empty { opacity:.7; padding:10px; border:1px dashed #26344a; border-radius:10px; }
 
 .coinRow { padding:10px; border:1px solid #1b2533; border-radius:12px; cursor:pointer; background:#0c121b; }
 .coinRow:hover { border-color:#3d7cff; }
 .coinTop { display:flex; justify-content:space-between; align-items:center; }
-.sym { font-weight:800; display:flex; gap:8px; align-items:center; }
-.tag { opacity:.9; font-size:12px; }
-.coinMeta { opacity:.85; font-size:12px; display:flex; gap:10px; flex-wrap:wrap; margin-top:6px; }
+.sym { font-weight:800; }
+.tag { opacity:.85; font-size:12px; }
+.coinMeta { opacity:.8; font-size:12px; display:flex; gap:10px; flex-wrap:wrap; margin-top:6px; }
 
-.pill { font-size:11px; opacity:.9; border:1px solid #26344a; padding:2px 8px; border-radius:999px; background:#101826; }
-
-/* Modal */
-.modal { position:fixed; inset:0; background: rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; padding:18px; }
-.modal.open { display:flex; }
-.modalBox { width:min(980px, 100%); background:#0f1620; border:1px solid #1b2533; border-radius:14px; padding:14px; }
-.modalTop { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:12px; }
-.modalTitle { font-weight:900; font-size:18px; }
-.modalSub { opacity:.8; font-size:12px; margin-top:4px; }
-
+/* MODAL */
+.modal { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; padding:14px; }
+.modal.hidden { display:none; }
+.modalCard { width:min(980px, 100%); background:#0f1620; border:1px solid #1b2533; border-radius:14px; padding:14px; }
+.modalTop { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:12px; }
+.modalTitle { font-weight:800; font-size:18px; }
+.modalSub { opacity:.75; font-size:12px; margin-top:4px; }
 .modalGrid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
-.modalPanel { background:#0c121b; border:1px solid #1b2533; border-radius:12px; padding:12px; }
-.pre { margin:0; white-space:pre-wrap; font-size:12px; opacity:.95; }
+.modalBox { background:#0c121b; border:1px solid #1b2533; border-radius:12px; padding:10px; }
+.modalBoxTitle { font-weight:700; margin-bottom:8px; }
+.modalPre { margin:0; white-space:pre-wrap; font-size:12px; opacity:.95; }
 
-@media (max-width: 980px){
+@media (max-width: 900px){
   .grid { grid-template-columns: 1fr; }
-  .panel.full { grid-column:auto; }
   .modalGrid { grid-template-columns: 1fr; }
 }
