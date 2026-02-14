@@ -15,13 +15,18 @@ import {
   webhookForStage,
   sendDiscord,
   fmtCoinLine,
+  guardSpike,
+  guardChange24,
+  pruneWindow,
+  computeConsistency,
+  explainStage,
+  strengthScore,
 } from "./_core.js";
 
 export const config = RUNTIME_CONFIG;
 
 export default async function handler(req, res) {
   try {
-    // scan endpoint is protected (zelfde als cron)
     if (!requireSecret(req, res)) return;
 
     const mode = (req.query?.mode || "bull").toLowerCase();
@@ -30,22 +35,23 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull or bear" }));
     }
 
+    const now = Date.now();
+
     // BTC gate
     const btc = await fetchBTCGate();
     const wanted = mode === "bull" ? "BULL" : "BEAR";
 
-    // Universe
+    // Universe (Bitget-first)
     const symbolsSet = await getBitgetSpotUsdtSymbols();
-    const all = await fetchCoinGeckoTop();
-    const coins = all.filter((c) => symbolsSet.has(c.symbol));
+    const allRaw = await fetchCoinGeckoTop();
+    const coinsRaw = allRaw.filter((c) => symbolsSet.has(c.symbol));
 
     // State + resetAt
     const resetAt = (await kv.get(keyReset(mode))) || 0;
-    const state = (await kv.get(keyState(mode))) || {}; // { [symbol]: {stage, stageScans, enteredAt, priceHist[]} }
+    const state = (await kv.get(keyState(mode))) || {};
+    // state[sym] = { stage, stageScans, enteredAt, priceHist[], metricsHist{vol[],range[],vm[],chg[]}, dirHist[] }
 
-    const now = Date.now();
-
-    // Als BTC niet in de juiste state is -> output leeg + bewaren (zodat UI “NEUTRAL” ziet)
+    // Als BTC niet in juiste state -> output leeg + bewaren
     if (btc.state !== wanted) {
       const empty = {
         ok: true,
@@ -63,96 +69,163 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify(empty));
     }
 
-    // Build funnel lists
     const radar = [];
     const buildup = [];
     const almost = [];
 
-    // Stage updates + discord on “new in stage”
-    for (const c of coins) {
-      const sym = c.symbol;
-      const prev = state[sym] || { stage: "RADAR", stageScans: 0, enteredAt: now, priceHist: [] };
+    for (const raw of coinsRaw) {
+      const sym = raw.symbol;
+      const prev = state[sym] || {
+        stage: "RADAR",
+        stageScans: 0,
+        enteredAt: now,
+        priceHist: [],
+        metricsHist: { vol: [], range: [], vm: [], chg: [] },
+        dirHist: [],
+      };
 
-      // als coin-state ouder is dan resetAt -> force reset voor deze coin
+      // reset detect
       const prevEntered = Number(prev.enteredAt || 0);
       const wasReset = prevEntered < resetAt;
 
-      const priceHist = Array.isArray(prev.priceHist) ? prev.priceHist.slice(-6) : [];
-      priceHist.push(c.price);
-      const desired = nextDesiredStage(c, mode, priceHist);
+      // ---- metrics histories (voor spike-guard) ----
+      const mh = prev.metricsHist || { vol: [], range: [], vm: [], chg: [] };
+      const volHist = Array.isArray(mh.vol) ? mh.vol.slice(-3) : [];
+      const rngHist = Array.isArray(mh.range) ? mh.range.slice(-3) : [];
+      const vmHist  = Array.isArray(mh.vm) ? mh.vm.slice(-3) : [];
+      const chgHist = Array.isArray(mh.chg) ? mh.chg.slice(-3) : [];
 
+      // apply guards
+      const guarded = { ...raw };
+      guarded.volume = guardSpike(raw.volume, volHist);
+      guarded.range24 = guardSpike(raw.range24, rngHist);
+      guarded.vm = guardSpike(raw.vm, vmHist);
+      guarded.change24 = guardChange24(raw.change24, chgHist);
+
+      // update metric hist (met guarded values)
+      volHist.push(guarded.volume);
+      rngHist.push(guarded.range24);
+      vmHist.push(guarded.vm);
+      chgHist.push(guarded.change24);
+
+      // price hist (flatness)
+      const priceHist = Array.isArray(prev.priceHist) ? prev.priceHist.slice(-6) : [];
+      priceHist.push(guarded.price);
+
+      // consistency window hist
+      let dirHist = pruneWindow(prev.dirHist, now, SETTINGS.consistencyWindowMin);
+      // ok = “richting klopt”
+      const passSide =
+        mode === "bull" ? guarded.change24 >= 0 : guarded.change24 <= 0;
+      dirHist.push({ ts: now, ok: passSide });
+
+      const cons = computeConsistency(
+        dirHist,
+        now,
+        SETTINGS.consistencyWindowMin,
+        SETTINGS.consistencyMinSamples
+      );
+
+      // reset -> echt vanaf 0: force RADAR + nieuwe hist
       let stage = prev.stage || "RADAR";
       let stageScans = Number(prev.stageScans || 0);
       let enteredAt = Number(prev.enteredAt || now);
 
-      // HARD RESET per coin
       if (wasReset) {
         stage = "RADAR";
         stageScans = 0;
         enteredAt = now;
+        // ook consistency opnieuw beginnen (anders “oude trend” blijft hangen)
+        dirHist = [];
       }
 
-      // Als coin niet meer door RADAR komt -> eruit
+      // desired stage (zonder overslaan)
+      const desired = nextDesiredStage(guarded, mode, priceHist, btc);
+
       if (desired === "OUT") {
         delete state[sym];
         continue;
       }
 
-      // ==== GEEN OVERSLAAN LOGICA ====
-      // - Je mag max 1 stage omhoog per scan
-      // - En pas als stageScans >= minScansPerStage
+      // extra: consistency gate (alleen voor BUILDUP/ALMOST)
+      const consRatio = cons.ratio; // null als te weinig samples
+      const consOk =
+        consRatio == null ? false : consRatio >= SETTINGS.consistencyMinRatio;
+
+      let desired2 = desired;
+      if ((desired2 === "BUILDUP" || desired2 === "ALMOST") && !consOk) {
+        // te weinig/te zwak -> blijft RADAR (instroom blijft breed, maar doorstroom netjes)
+        desired2 = "RADAR";
+      }
+
       const prevRank = stageRank(stage);
-      const desiredRank = stageRank(desired);
+      const desiredRank = stageRank(desired2);
 
       let nextStage = stage;
 
       if (desiredRank > prevRank) {
-        // wil omhoog
         if (stageScans >= SETTINGS.minScansPerStage) {
-          // maar slechts 1 stap
-          if (desiredRank === prevRank + 1) nextStage = desired;
-          else {
-            // bijvoorbeeld RADAR -> ALMOST mag niet, wordt BUILDUP
-            nextStage = prevRank === 1 ? "BUILDUP" : "ALMOST";
-          }
+          // max 1 stap omhoog
+          if (desiredRank === prevRank + 1) nextStage = desired2;
+          else nextStage = prevRank === 1 ? "BUILDUP" : "ALMOST";
         }
       } else if (desiredRank < prevRank) {
-        // omlaag mag direct (veilig)
-        nextStage = desired;
+        nextStage = desired2; // omlaag direct
       }
 
       // update scans
       if (nextStage === stage) {
         stageScans += 1;
       } else {
-        // stage changed
         stage = nextStage;
         stageScans = 1;
         enteredAt = now;
 
-        // Discord: alleen als coin “nieuw binnenkomt” in een stage
+        // Discord on new stage
         const hook = webhookForStage(stage);
         if (hook) {
-          const msg = fmtCoinLine(c, mode, stage);
+          const strength = strengthScore(guarded, btc, consRatio);
+          const msg = fmtCoinLine(guarded, mode, stage, { strength, consistency: consRatio });
           await sendDiscord(hook, msg);
         }
       }
 
-      // save
-      state[sym] = { stage, stageScans, enteredAt, priceHist };
+      // explanations for popup
+      const expl = explainStage(guarded, mode, priceHist, btc, consRatio);
+      const strength = strengthScore(guarded, btc, consRatio);
 
-      // push into funnel lists (UI)
-      const item = {
-        symbol: c.symbol,
-        name: c.name,
-        price: c.price,
-        volume: c.volume,
-        marketCap: c.marketCap,
-        change24: c.change24,
-        range24: c.range24,
-        vm: c.vm,
+      // save back
+      state[sym] = {
         stage,
         stageScans,
+        enteredAt,
+        priceHist,
+        metricsHist: { vol: volHist, range: rngHist, vm: vmHist, chg: chgHist },
+        dirHist,
+      };
+
+      // UI item
+      const item = {
+        symbol: guarded.symbol,
+        name: guarded.name,
+        price: guarded.price,
+        volume: guarded.volume,
+        marketCap: guarded.marketCap,
+        change24: guarded.change24,
+        range24: guarded.range24,
+        vm: guarded.vm,
+        stage,
+        stageScans,
+        enteredAt,
+        // popup fields
+        consistency: consRatio,
+        consistencySamples: cons.total,
+        strength,
+        reasons: expl.reasons,
+        missing: expl.missing,
+        needBuildup: expl.needBuildup,
+        needAlmost: expl.needAlmost,
+        btc,
       };
 
       if (stage === "RADAR") radar.push(item);
@@ -160,7 +233,7 @@ export default async function handler(req, res) {
       else if (stage === "ALMOST") almost.push(item);
     }
 
-    // sort + limit radar
+    // sort + limit
     radar.sort((a, b) => b.vm - a.vm);
     buildup.sort((a, b) => b.vm - a.vm);
     almost.sort((a, b) => b.vm - a.vm);
@@ -174,7 +247,7 @@ export default async function handler(req, res) {
       mode,
       btc,
       counts: {
-        entry: 0, // OB/ELITE later
+        entry: 0,
         almost: almost.length,
         buildup: buildup.length,
         radar: radarLimited.length,
@@ -187,7 +260,6 @@ export default async function handler(req, res) {
       },
     };
 
-    // >>> DIT IS DE BELANGRIJKE KOPPELING <<<
     await kv.set(keyLatest(mode), result);
     await kv.set(keyState(mode), state);
 
