@@ -1,53 +1,33 @@
+// /api/cron.js
 import scan from "./scan.js";
+import { RUNTIME_CONFIG, requireSecret } from "./_core.js";
 
-export const config = { runtime: "nodejs" };
+export const config = RUNTIME_CONFIG;
 
-// ✅ cron beschermen: header OF querystring secret
-function requireCron(req, res) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return true; // open als je geen secret gebruikt (niet aangeraden)
-
-  const auth = req.headers?.authorization || "";
-  if (auth === `Bearer ${secret}`) return true;
-
-  // ✅ Allow: /api/cron?secret=....
-  try {
-    const url = new URL(req.url, "https://local");
-    const qs = url.searchParams.get("secret") || "";
-    if (qs === secret) return true;
-  } catch {}
-
-  res.statusCode = 401;
-  res.setHeader?.("content-type", "application/json");
-  res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
-  return false;
-}
-
-// mini “fake res” voor het intern aanroepen van scan.js
+// fake res om scan intern aan te roepen
 function makeRes() {
   return {
     statusCode: 200,
     headers: {},
     body: "",
-    setHeader(k, v) {
-      this.headers[String(k).toLowerCase()] = v;
-    },
-    end(txt) {
-      this.body = txt || "";
-    },
+    setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; },
+    end(txt) { this.body = txt || ""; },
   };
+}
+
+function safeJson(txt) {
+  try { return JSON.parse(txt); } catch { return { raw: String(txt || "") }; }
 }
 
 export default async function handler(req, res) {
   try {
-    if (!requireCron(req, res)) return;
+    if (!requireSecret(req, res)) return;
 
     const secret = process.env.CRON_SECRET || "";
     const authHeader = secret ? { authorization: `Bearer ${secret}` } : {};
 
-    // ✅ scan.js krijgt auth mee
-    const reqBull = { method: "GET", url: "/api/scan?mode=bull", headers: authHeader };
-    const reqBear = { method: "GET", url: "/api/scan?mode=bear", headers: authHeader };
+    const reqBull = { method: "GET", query: { mode: "bull" }, headers: authHeader };
+    const reqBear = { method: "GET", query: { mode: "bear" }, headers: authHeader };
 
     const resBull = makeRes();
     const resBear = makeRes();
@@ -57,25 +37,15 @@ export default async function handler(req, res) {
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    res.end(
-      JSON.stringify({
-        ok: true,
-        ts: Date.now(),
-        bull: safeJson(resBull.body),
-        bear: safeJson(resBear.body),
-      })
-    );
+    res.end(JSON.stringify({
+      ok: true,
+      ts: Date.now(),
+      bull: safeJson(resBull.body),
+      bear: safeJson(resBear.body),
+    }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: false, error: String(e) }));
-  }
-}
-
-function safeJson(txt) {
-  try {
-    return JSON.parse(txt);
-  } catch {
-    return { raw: String(txt || "") };
+    res.end(JSON.stringify({ ok:false, error:String(e) }));
   }
 }
