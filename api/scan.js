@@ -1,89 +1,106 @@
+import { CFG, fetchJSON, mapCoin } from "./_core.js";
 import { kv } from "@vercel/kv";
-import { CFG, fetchJSON, mapCoin, json } from "./_core.js";
 
 export const config = { runtime: "nodejs" };
 
-async function getCoinGeckoMarkets() {
-  const all = [];
-  for (let page = 1; page <= CFG.cgPages; page++) {
-    const url =
-      `https://api.coingecko.com/api/v3/coins/markets` +
-      `?vs_currency=usd&order=volume_desc&per_page=${CFG.cgPerPage}&page=${page}` +
-      `&price_change_percentage=24h`;
-    const part = await fetchJSON(url);
-    if (Array.isArray(part)) all.push(...part);
-  }
-  return all;
+async function getMarkets() {
+  // 250 coins (volume_desc). Later kunnen we pagina 2/3 toevoegen als je wil.
+  return fetchJSON(
+    "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=250&page=1&price_change_percentage=24h"
+  );
 }
 
-// Dit is de “kern” functie: cron gebruikt deze ook
-export async function runScan(mode) {
-  const markets = await getCoinGeckoMarkets();
-  const mapped = markets.map(mapCoin).filter(c => c.symbol);
-
-  // basis filters (jouw “pool”)
-  const pool = mapped.filter(c =>
-    c.volume >= CFG.minVolumeUsd &&
-    c.marketCap >= CFG.minMarketCap &&
-    c.vm >= CFG.minVmRatio
+function passesBaseFilters(c) {
+  return (
+    c.volume > CFG.minVolumeUsd &&
+    c.marketCap > CFG.minMarketCap &&
+    c.vm > CFG.minVmRatio
   );
-
-  // Funnel buckets
-  const radar = [];
-  const buildup = [];
-  const entry = [];
-
-  for (const c of pool) {
-    // Radar = alles dat door basis komt
-    radar.push(c);
-
-    // Buildup = richting van de mode
-    if (mode === "bull" && c.change24 > 0) buildup.push(c);
-    if (mode === "bear" && c.change24 < 0) buildup.push(c);
-
-    // Entry = strengere VM
-    if (mode === "bull" && c.change24 > 0 && c.vm >= CFG.entryVm) entry.push(c);
-    if (mode === "bear" && c.change24 < 0 && c.vm >= CFG.entryVm) entry.push(c);
-  }
-
-  // Sort: Entry bovenaan “hardste”
-  entry.sort((a, b) => (b.vm - a.vm));
-  buildup.sort((a, b) => (b.vm - a.vm));
-  radar.sort((a, b) => (b.vm - a.vm));
-
-  // (optioneel) beperk UI payload
-  const cap = (arr, n) => arr.slice(0, n);
-
-  const result = {
-    ok: true,
-    ts: Date.now(),
-    mode,
-    counts: {
-      pool: pool.length,
-      radar: radar.length,
-      buildup: buildup.length,
-      entry: entry.length
-    },
-    funnel: {
-      entry: cap(entry, 80),
-      buildup: cap(buildup, 120),
-      radar: cap(radar, 160)
-    }
-  };
-
-  await kv.set(`latest:${mode}`, result);
-  return result;
 }
 
 export default async function handler(req, res) {
   try {
     const u = new URL(req.url, "http://localhost");
     const mode = (u.searchParams.get("mode") || "bull").toLowerCase();
-    if (mode !== "bull" && mode !== "bear") return json(res, 400, { ok: false, error: "mode must be bull or bear" });
+    if (mode !== "bull" && mode !== "bear") {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, error: "mode must be bull or bear" }));
+      return;
+    }
 
-    const out = await runScan(mode);
-    return json(res, 200, out);
+    const markets = await getMarkets();
+    const mapped = markets.map(mapCoin);
+
+    const pool = mapped.filter(passesBaseFilters);
+
+    // 4 “blokken”:
+    // 1) ENTRY (intern: entry/hold/sell tabs)
+    // 2) BUILDUP
+    // 3) RADAR
+    // 4) (ENTRY is boven, RADAR onder, precies zoals jij wil in UI)
+    const radar = [];
+    const buildup = [];
+    const entry = [];
+    const hold = [];
+    const sell = [];
+
+    for (const c of pool) {
+      radar.push(c);
+
+      const dirOk = (mode === "bull") ? (c.change24 > 0) : (c.change24 < 0);
+      if (dirOk) buildup.push(c);
+
+      // ENTRY threshold (jouw snelle variant)
+      if (dirOk && c.vm >= 0.5) {
+        // simpele exit/hold logica op basis van 24h move:
+        // bull: huge pump => sell
+        // bear: huge dump => sell (take profit)
+        const bigMove = Math.abs(c.change24) >= 25;
+
+        if (bigMove) sell.push(c);
+        else hold.push(c);
+
+        entry.push(c); // entry is “alles wat entry-level haalt”
+      }
+    }
+
+    // Sort (mooi in UI): hoogste VM eerst
+    const byVmDesc = (a, b) => (b.vm - a.vm);
+    radar.sort(byVmDesc);
+    buildup.sort(byVmDesc);
+    entry.sort(byVmDesc);
+    hold.sort(byVmDesc);
+    sell.sort(byVmDesc);
+
+    const result = {
+      ok: true,
+      ts: Date.now(),
+      mode,
+      counts: {
+        pool: pool.length,
+        radar: radar.length,
+        buildup: buildup.length,
+        entry: entry.length,
+        hold: hold.length,
+        sell: sell.length
+      },
+      funnel: {
+        entry,
+        hold,
+        sell,
+        buildup,
+        radar
+      }
+    };
+
+    await kv.set(`latest:${mode}`, result);
+
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify(result));
   } catch (e) {
-    return json(res, 500, { ok: false, error: String(e?.message || e) });
+    res.statusCode = 500;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
