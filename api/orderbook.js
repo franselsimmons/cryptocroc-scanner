@@ -1,6 +1,6 @@
 // /api/orderbook.js
 import { kv } from "@vercel/kv";
-import { CFG, RUNTIME_CONFIG } from "./_core.js";
+import { RUNTIME_CONFIG, keyObResult, SETTINGS } from "./_core.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -8,48 +8,31 @@ export default async function handler(req, res) {
   try {
     const u = new URL(req.url, "http://localhost");
     const symbol = u.searchParams.get("symbol");
-    const side = u.searchParams.get("side") || "bull";
-    if (!symbol) throw new Error("Missing symbol");
+    const side = (u.searchParams.get("side") || "bull").toLowerCase();
 
-    const keyRes = `ob:result:${side}:${symbol}`;
-    const r = await kv.get(keyRes);
+    if (!symbol) throw new Error("Missing symbol");
+    if (side !== "bull" && side !== "bear") throw new Error("side must be bull/bear");
+
+    const r = await kv.get(keyObResult(side, symbol.toUpperCase()));
 
     if (!r) {
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");
-      res.end(
-        JSON.stringify({
-          ok: true,
-          symbol,
-          side,
-          status: "validating",
-          tip: "Nog geen OB-result. Wacht even (sampler draait elke minuut).",
-        })
-      );
-      return;
-    }
-
-    const ageSec = r?.ob?.ts ? (Date.now() - r.ob.ts) / 1000 : 999;
-    const stale = ageSec > CFG.obStaleSec;
-
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.end(
-      JSON.stringify({
+      res.end(JSON.stringify({
         ok: true,
         symbol,
         side,
-        valid: !!r.valid,
-        reason: r.reason,
-        avgScore: r.avgScore ?? null,
-        spreadPct: r?.ob?.spreadPct ?? null,
-        lor: r?.ob?.lor ?? null,
-        score: r?.ob?.score ?? null,
-        bidUsd: r?.ob?.bidUsd ?? null,
-        askUsd: r?.ob?.askUsd ?? null,
-        stale,
-      })
-    );
+        status: "validating",
+        need: SETTINGS.entry.samplesNeed,
+        windowSec: SETTINGS.entry.samplesWindowSec,
+        tip: "Nog geen geldige OB (3 samples/90s). Wacht ±1 minuut."
+      }));
+      return;
+    }
+
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ ok: true, symbol, side, ...r }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
