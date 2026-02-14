@@ -1,12 +1,6 @@
 // /api/reset.js
 import { kv } from "@vercel/kv";
-import {
-  RUNTIME_CONFIG,
-  requireSecret,
-  keyLatest,
-  keyState,
-  keyReset,
-} from "./_core.js";
+import { RUNTIME_CONFIG, requireSecret, keyLatest, keyState, keyReset } from "./_core.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -21,11 +15,7 @@ export default async function handler(req, res) {
 
     for (const m of modes) {
       if (m !== "bull" && m !== "bear") continue;
-
-      // reset marker (belangrijk!)
       await kv.set(keyReset(m), now);
-
-      // clear state & latest
       await kv.del(keyState(m));
       await kv.del(keyLatest(m));
     }
@@ -36,6 +26,6 @@ export default async function handler(req, res) {
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok:false, error:String(e) }));
+    res.end(JSON.stringify({ ok: false, error: String(e) }));
   }
 }
