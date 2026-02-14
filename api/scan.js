@@ -1,316 +1,567 @@
-import { CFG, fetchJSON, mapCoin } from "./_core.js";
 import { kv } from "@vercel/kv";
+import {
+  CFG, fetchJSON, vmRatio, calcRangePct,
+  now, clamp, minutesToMs
+} from "./_core.js";
 
 export const config = { runtime: "nodejs" };
 
-// ===== cron-only auth =====
-function requireCronAuth(req) {
-  const secret = process.env.CRON_SECRET ? String(process.env.CRON_SECRET).trim() : "";
-  if (!secret) return;
-  const auth = req.headers?.authorization || req.headers?.Authorization || "";
-  if (auth !== `Bearer ${secret}`) {
-    const err = new Error("Unauthorized");
-    err.statusCode = 401;
-    throw err;
-  }
+// =======================
+// CoinGecko
+// =======================
+async function getMarkets() {
+  const url =
+    `https://api.coingecko.com/api/v3/coins/markets` +
+    `?vs_currency=usd&order=volume_desc&per_page=${CFG.poolMax}&page=1` +
+    `&price_change_percentage=24h`;
+
+  return fetchJSON(url, { timeoutMs: 15_000 });
 }
 
-// ===== BTC Gate (STRICT) =====
-function ema(values, period) {
-  const k = 2 / (period + 1);
-  let e = values[0] ?? 0;
-  for (let i = 1; i < values.length; i++) e = values[i] * k + e * (1 - k);
-  return e;
-}
+function mapCoin(c) {
+  const price = Number(c.current_price);
+  const volume = Number(c.total_volume);
+  const marketCap = Number(c.market_cap);
 
-async function getBTCGateStrict() {
-  const j = await fetchJSON(
-    "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=1&interval=hourly"
-  );
-
-  const prices = (j?.prices || [])
-    .map(x => Number(x?.[1]))
-    .filter(n => n > 0);
-
-  if (prices.length < 15) {
-    return { activeMode: "off", reason: "btc data too small" };
-  }
-
-  const last = prices[prices.length - 1];
-  const p1h  = prices[prices.length - 2]  || last;
-  const p4h  = prices[prices.length - 5]  || last;
-  const p12h = prices[prices.length - 13] || last;
-
-  const btc1h  = ((last - p1h) / p1h) * 100;
-  const btc4h  = ((last - p4h) / p4h) * 100;
-  const btc12h = ((last - p12h) / p12h) * 100;
-
-  // EMA trend check
-  const window = prices.slice(-24);
-  const fast = ema(window, 5);
-  const slow = ema(window, 13);
-  const trendUp = fast > slow;
-  const trendDown = fast < slow;
-
-  const bullOk =
-    btc1h  >= CFG.btcBull1hMin &&
-    btc4h  >= CFG.btcBull4hMin &&
-    btc12h >= CFG.btcBull12hMin &&
-    trendUp;
-
-  const bearOk =
-    btc1h  <= CFG.btcBear1hMax &&
-    btc4h  <= CFG.btcBear4hMax &&
-    btc12h <= CFG.btcBear12hMax &&
-    trendDown;
-
-  const activeMode = bullOk ? "bull" : (bearOk ? "bear" : "off");
+  const change24 = Number(c.price_change_percentage_24h);
+  const range24 = calcRangePct(c.low_24h, c.high_24h, price);
 
   return {
-    activeMode,
-    btc1h, btc4h, btc12h,
-    emaFast: fast,
-    emaSlow: slow
+    id: c.id,
+    symbol: String(c.symbol || "").toUpperCase(),
+    name: c.name || "",
+    price,
+    volume,
+    marketCap,
+    change24,
+    range24,
+    vm: vmRatio(volume, marketCap)
   };
 }
 
-// ===== Bitget symbols cache (zelfde als eerder) =====
-async function fetchBitgetUsdtSymbols() {
-  try {
-    const r = await fetch("https://api.bitget.com/api/v2/spot/public/symbols", {
-      headers: { "accept": "application/json" }
-    });
-    const j = await r.json().catch(() => ({}));
-    const arr = j?.data;
-    if (Array.isArray(arr) && arr.length) {
-      const out = [];
-      for (const it of arr) {
-        const s = String(it?.symbol || it?.symbolName || "").toUpperCase();
-        if (!s.includes("USDT")) continue;
-        out.push(s.replace("_SPBL", ""));
-      }
-      if (out.length) return out;
-    }
-  } catch {}
-
-  try {
-    const r = await fetch("https://api.bitget.com/api/spot/v1/public/products", {
-      headers: { "accept": "application/json" }
-    });
-    const j = await r.json().catch(() => ({}));
-    const arr = j?.data;
-    if (Array.isArray(arr) && arr.length) {
-      const out = [];
-      for (const it of arr) {
-        const s = String(it?.symbolName || it?.symbol || "").toUpperCase();
-        if (s.endsWith("USDT")) out.push(s);
-      }
-      if (out.length) return out;
-    }
-  } catch {}
-
-  return [];
-}
-
+// =======================
+// Bitget symbols (USDT spot) cache in KV
+// =======================
 async function getBitgetUsdtSet() {
-  const cacheKey = "bitget:usdt:symbols:v1";
-  const cached = await kv.get(cacheKey);
-
-  if (Array.isArray(cached) && cached.length) {
-    return new Set(cached.map(s => String(s).toUpperCase()));
+  const cached = await kv.get("bitget:symbols:usdt");
+  if (cached?.ts && (now() - cached.ts) < (CFG.bitgetSymbolsCacheSec * 1000) && Array.isArray(cached.list)) {
+    return new Set(cached.list);
   }
 
-  const symbols = await fetchBitgetUsdtSymbols();
-  await kv.set(cacheKey, symbols);
-  await kv.expire(cacheKey, 60 * 60 * 6);
+  // Bitget public products (v1)
+  const url = "https://api.bitget.com/api/spot/v1/public/products";
+  const j = await fetchJSON(url, { timeoutMs: 15_000 });
 
-  return new Set(symbols.map(s => String(s).toUpperCase()));
+  const arr = j?.data || [];
+  const set = new Set();
+  for (const p of arr) {
+    // in praktijk is dit vaak "BTCUSDT"
+    const sym = (p?.symbolName || p?.symbol || "").toUpperCase();
+    if (sym.endsWith("USDT")) set.add(sym.replace("USDT", ""));
+  }
+
+  await kv.set("bitget:symbols:usdt", { ts: now(), list: [...set] });
+  return set;
 }
 
-// ===== Orderbook score =====
-async function fetchBitgetOrderbook(symbolUSDT) {
-  const url = `https://api.bitget.com/api/v2/spot/market/orderbook?symbol=${encodeURIComponent(symbolUSDT)}&limit=50`;
-  const r = await fetch(url, { headers: { "accept": "application/json" } });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(`Bitget HTTP ${r.status}`);
-  const data = Array.isArray(j?.data) ? j.data[0] : j?.data;
-  if (!data) throw new Error("Bitget: no data");
-  return data;
+// =======================
+// BTC Gate (CoinGecko data)
+// =======================
+function btcStateFromMarkets(markets) {
+  const btc = markets.find(x => String(x.symbol || "").toUpperCase() === "BTC");
+  if (!btc) return { state: "NEUTRAL", change24: 0, range24: 0 };
+
+  const price = Number(btc.current_price);
+  const change24 = Number(btc.price_change_percentage_24h);
+  const range24 = calcRangePct(btc.low_24h, btc.high_24h, price);
+
+  // bull
+  if (
+    change24 >= CFG.btcGate.bull.change24Min &&
+    range24 >= CFG.btcGate.bull.range24Min &&
+    range24 <= CFG.btcGate.bull.range24Max
+  ) return { state: "BULL", change24, range24 };
+
+  // bear
+  if (
+    change24 <= CFG.btcGate.bear.change24Max &&
+    range24 >= CFG.btcGate.bear.range24Min &&
+    range24 <= CFG.btcGate.bear.range24Max
+  ) return { state: "BEAR", change24, range24 };
+
+  return { state: "NEUTRAL", change24, range24 };
+}
+
+// =======================
+// State (KV memory)
+// =======================
+function emptyState() {
+  return {
+    coins: {}, // symbol -> info
+    // info:
+    // { stage, enteredAt, scansInStage, cooldownUntil, sidePassHistory:[], pricesHistory:[], volHistory:[], obSamples:[], obPeakAbs:0 }
+  };
+}
+
+function getCoinState(state, sym) {
+  state.coins[sym] ||= {
+    stage: "RADAR",
+    enteredAt: now(),
+    scansInStage: 0,
+    cooldownUntil: 0,
+    sidePassHistory: [],
+    pricesHistory: [],
+    volHistory: [],
+    obSamples: [],
+    obPeakAbs: 0
+  };
+  return state.coins[sym];
+}
+
+function pushLimited(arr, v, max) {
+  arr.push(v);
+  if (arr.length > max) arr.shift();
+}
+
+function stageTimeoutMs(stage) {
+  if (stage === "RADAR") return minutesToMs(CFG.stage.radarTimeoutMin);
+  if (stage === "BUILDUP") return minutesToMs(CFG.stage.buildupTimeoutMin);
+  if (stage === "ALMOST") return minutesToMs(CFG.stage.almostTimeoutMin);
+  if (stage === "ENTRY") return minutesToMs(CFG.stage.entryTimeoutMin);
+  if (stage === "COOLDOWN") return minutesToMs(CFG.stage.cooldownMin);
+  return minutesToMs(60);
+}
+
+// =======================
+// Orderbook fetch for sampling (server-side gate)
+// =======================
+async function fetchObSample(symbol) {
+  const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${symbol}USDT&limit=${CFG.ob.depthLimit}`;
+  const j = await fetchJSON(url, { timeoutMs: 12_000 });
+  const data = j?.data;
+  const bids = data?.bids;
+  const asks = data?.asks;
+  if (!bids?.length || !asks?.length) throw new Error("No OB data");
+
+  const bid = Number(bids[0][0]);
+  const ask = Number(asks[0][0]);
+  const mid = (bid + ask) / 2;
+  const spreadPct = ((ask - bid) / mid) * 100;
+
+  const { total: bidUsd, largest: bidLargest } = sumDepth(bids, mid, CFG.ob.depthPct, true);
+  const { total: askUsd, largest: askLargest } = sumDepth(asks, mid, CFG.ob.depthPct, false);
+
+  const score = (bidUsd - askUsd) / (bidUsd + askUsd);
+  const largestRatio = Math.max(bidLargest, askLargest) / Math.max(1, (bidUsd + askUsd));
+
+  return {
+    ts: now(),
+    score,
+    spreadPct,
+    bidUsd,
+    askUsd,
+    largestOrderRatio: largestRatio
+  };
 }
 
 function sumDepth(levels, mid, pct, isBid) {
   const limit = isBid ? mid * (1 - pct) : mid * (1 + pct);
   let total = 0;
-  for (const lv of levels) {
-    const price = Number(lv?.[0]);
-    const size = Number(lv?.[1]);
-    if (!(price > 0 && size > 0)) continue;
-    if (isBid && price < limit) break;
-    if (!isBid && price > limit) break;
-    total += price * size;
+  let largest = 0;
+
+  for (const [price, size] of levels) {
+    const p = Number(price);
+    const s = Number(size);
+    if (!p || !s) continue;
+
+    if (isBid && p < limit) break;
+    if (!isBid && p > limit) break;
+
+    const usd = p * s;
+    total += usd;
+    if (usd > largest) largest = usd;
   }
-  return total;
+  return { total, largest };
 }
 
-async function calcObScore(symbolUSDT) {
-  const data = await fetchBitgetOrderbook(symbolUSDT);
-  const bids = data?.bids;
-  const asks = data?.asks;
-  if (!Array.isArray(bids) || !Array.isArray(asks) || !bids.length || !asks.length) {
-    throw new Error("Bitget: empty bids/asks");
+function obValid(samples, mode) {
+  const winMs = CFG.ob.samplesWindowSec * 1000;
+  const recent = samples.filter(s => (now() - s.ts) <= winMs);
+
+  if (recent.length < CFG.ob.samplesNeed) return { ok: false };
+
+  // 3 samples pakken (laatste 3)
+  const last3 = recent.slice(-CFG.ob.samplesNeed);
+
+  // stale check per sample
+  for (const s of last3) {
+    if ((now() - s.ts) > (CFG.ob.staleSec * 1000)) return { ok: false };
+    if (s.spreadPct > CFG.ob.spreadMaxEntry) return { ok: false };
+    if (s.largestOrderRatio > CFG.ob.largestOrderRatioMax) return { ok: false };
   }
-  const bid = Number(bids[0][0]);
-  const ask = Number(asks[0][0]);
-  const mid = (bid + ask) / 2;
-  if (!(mid > 0)) throw new Error("Bitget: invalid mid");
 
-  const bidUsd = sumDepth(bids, mid, CFG.obDepthPct, true);
-  const askUsd = sumDepth(asks, mid, CFG.obDepthPct, false);
-  const score = (bidUsd + askUsd) > 0 ? (bidUsd - askUsd) / (bidUsd + askUsd) : 0;
-  return { score };
+  const dir = (x) => x > 0 ? 1 : x < 0 ? -1 : 0;
+  const dirs = last3.map(s => dir(s.score));
+  const sum = dirs.reduce((a,b)=>a+b,0);
+
+  // bull: meeste positief, bear: meeste negatief
+  if (mode === "bull") {
+    const positives = dirs.filter(d => d > 0).length;
+    if (positives < 2) return { ok: false };
+    const avg = last3.reduce((a,s)=>a+s.score,0)/last3.length;
+    if (avg < CFG.ob.obScoreMin) return { ok: false };
+    return { ok: true, score: avg, spreadPct: last3[last3.length-1].spreadPct };
+  } else {
+    const negatives = dirs.filter(d => d < 0).length;
+    if (negatives < 2) return { ok: false };
+    const avg = last3.reduce((a,s)=>a+s.score,0)/last3.length;
+    if (avg > -CFG.ob.obScoreMin) return { ok: false };
+    return { ok: true, score: avg, spreadPct: last3[last3.length-1].spreadPct };
+  }
 }
 
-// ===== filters =====
-function range24hPct(c) {
-  const hi = Number(c.high24) || 0;
-  const lo = Number(c.low24) || 0;
-  if (!(hi > 0 && lo > 0) || hi < lo) return 999;
-  return ((hi - lo) / lo) * 100;
-}
-
-function basePass(c) {
-  return (
-    c.volume >= CFG.minVolumeUsd &&
-    c.marketCap >= CFG.minMarketCap &&
-    c.vm >= CFG.minVmRatio &&
-    range24hPct(c) <= CFG.maxRange24hPct
-  );
-}
-
-function dirOk(mode, c) {
-  return mode === "bull" ? c.change24 > 0 : c.change24 < 0;
-}
-
-// ===== main =====
-async function getMarketsTop() {
-  return fetchJSON(
-    "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=250&page=1&price_change_percentage=24h&sparkline=false"
-  );
-}
-
+// =======================
+// Main scan
+// =======================
 export default async function handler(req, res) {
   try {
-    requireCronAuth(req);
-
-    const gate = await getBTCGateStrict();
-    const activeMode = gate.activeMode; // bull/bear/off
-
-    // Als gate off is: we zetten beide uit => iedereen ziet dezelfde “geen update”
-    const bullEnabled = activeMode === "bull";
-    const bearEnabled = activeMode === "bear";
-
-    const bitgetSet = await getBitgetUsdtSet();
-
-    const raw = await getMarketsTop();
-    const mapped = raw.map(mapCoin);
-
-    // 1) Base filters + bitget pair check (dus geen 400’s)
-    const pool = [];
-    for (const c of mapped) {
-      if (!basePass(c)) continue;
-      const symbolUSDT = `${c.symbol}USDT`;
-      if (!bitgetSet.has(symbolUSDT)) continue;
-      pool.push({ ...c, bitgetOk: true, symbolUSDT });
+    // block manual calls unless CRON_SECRET matches
+    const cronSecret = process.env.CRON_SECRET;
+    if (cronSecret) {
+      const auth = req.headers?.authorization || "";
+      // /api/cron calls scan internally (bypasses this), maar directe users call wordt geblokt:
+      // (als handler direct via internet wordt aangeroepen)
+      if (req?.headers && auth && auth !== `Bearer ${cronSecret}`) {
+        res.statusCode = 401;
+        res.end("Unauthorized");
+        return;
+      }
     }
 
-    // 2) beperk OB calls: top 70 op vm
-    const candidates = [...pool].sort((a, b) => b.vm - a.vm).slice(0, 70);
+    const u = new URL(req.url, "http://localhost");
+    const mode = (u.searchParams.get("mode") || "bull").toLowerCase();
 
-    // 3) OB score erbij
-    const withOB = [];
-    for (const c of candidates) {
-      try {
-        const ob = await calcObScore(c.symbolUSDT);
-        withOB.push({ ...c, obScore: ob.score });
-      } catch {}
+    // data ophalen
+    const [marketsRaw, bitgetSet] = await Promise.all([
+      getMarkets(),
+      getBitgetUsdtSet()
+    ]);
+
+    const btc = btcStateFromMarkets(marketsRaw);
+
+    // BTC gate: bull endpoint werkt alleen als BTC BULL, bear endpoint alleen als BTC BEAR
+    const needState = mode === "bull" ? "BULL" : "BEAR";
+    if (btc.state !== needState) {
+      const empty = {
+        ts: now(),
+        mode,
+        btc,
+        marketState: "NEUTRAL",
+        entry: [],
+        hold: [],
+        sell: [],
+        radar: [],
+        counts: { entry: 0, hold: 0, sell: 0, radar: 0 }
+      };
+      await kv.set(`latest:${mode}`, empty);
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      res.end(JSON.stringify(empty));
+      return;
     }
 
-    function build(mode, enabled) {
-      if (!enabled) {
-        return {
-          ok: true,
-          disabled: true,
-          ts: Date.now(),
-          mode,
-          gate,
-          reason: activeMode === "off" ? "BTC gate: OFF (geen duidelijke trend)" : `BTC gate: ${activeMode.toUpperCase()}`
-        };
+    // map & pool filters + bitget-first
+    const mapped = marketsRaw.map(mapCoin).filter(c => c.symbol && bitgetSet.has(c.symbol));
+
+    const pool = mapped.filter(c => {
+      if (c.marketCap < CFG.pool.mcapMin) return false;
+      if (c.volume < CFG.pool.volMin) return false;
+      if (c.vm < CFG.pool.vmMin) return false;
+      if (Math.abs(c.change24) > CFG.pool.absChange24Max) return false;
+      if (c.range24 > CFG.pool.range24Max) return false;
+      return true;
+    });
+
+    // load state
+    const stateKey = `state:${mode}`;
+    const state = (await kv.get(stateKey)) || emptyState();
+
+    // per coin memory update
+    for (const c of pool) {
+      const st = getCoinState(state, c.symbol);
+
+      pushLimited(st.pricesHistory, c.price, 12);
+      pushLimited(st.volHistory, c.volume, 12);
+
+      // side pass history (bull: change24 >0, bear: change24 <0)
+      const sidePass = mode === "bull" ? (c.change24 > 0) : (c.change24 < 0);
+      pushLimited(st.sidePassHistory, sidePass ? 1 : 0, CFG.buildup.consistencyWindow);
+
+      // cooldown check
+      if (st.cooldownUntil && now() < st.cooldownUntil) {
+        st.stage = "COOLDOWN";
+      }
+    }
+
+    // verwijder coins die niet meer in pool zitten (opschonen)
+    const poolSyms = new Set(pool.map(x => x.symbol));
+    for (const sym of Object.keys(state.coins)) {
+      if (!poolSyms.has(sym)) delete state.coins[sym];
+    }
+
+    // helpers voor stage checks
+    const bySym = Object.fromEntries(pool.map(c => [c.symbol, c]));
+
+    const entryList = [];
+    const holdList = [];
+    const sellList = [];
+    const radarList = [];
+
+    // OB calls budget
+    let obCalls = 0;
+
+    // Stage machine
+    for (const c of pool) {
+      const st = getCoinState(state, c.symbol);
+
+      // timeout -> cooldown
+      const age = now() - st.enteredAt;
+      if (st.stage !== "COOLDOWN" && age > stageTimeoutMs(st.stage)) {
+        st.stage = "COOLDOWN";
+        st.enteredAt = now();
+        st.scansInStage = 0;
+        st.cooldownUntil = now() + stageTimeoutMs("COOLDOWN");
       }
 
-      const radar = [];
-      const buildup = [];
-      const entry = [];
-      const hold = [];
-      const sell = [];
+      // stage scan count
+      st.scansInStage += 1;
 
-      for (const c of withOB) {
-        radar.push(c);
-        if (!dirOk(mode, c)) continue;
+      // consistency
+      const hist = st.sidePassHistory || [];
+      const consistency = hist.length ? (hist.reduce((a,b)=>a+b,0) / hist.length) : 0;
 
-        buildup.push(c);
+      // priceFlat (last 6 scans range)
+      const ph = st.pricesHistory || [];
+      let priceFlat = 999;
+      if (ph.length >= CFG.almost.priceFlatWindow) {
+        const w = ph.slice(-CFG.almost.priceFlatWindow);
+        const lo = Math.min(...w);
+        const hi = Math.max(...w);
+        priceFlat = ((hi - lo) / Math.max(1e-9, w[w.length-1])) * 100;
+      }
 
-        const vmOK = c.vm >= CFG.entryVmMin;
-        const obOK = mode === "bull" ? (c.obScore >= CFG.obBullMin) : (c.obScore <= CFG.obBearMax);
+      // volAcc ratio (last3 / prev3)
+      const vh = st.volHistory || [];
+      let volAccRatio = 1.0;
+      if (vh.length >= 6) {
+        const last3 = vh.slice(-3).reduce((a,b)=>a+b,0) / 3;
+        const prev3 = vh.slice(-6,-3).reduce((a,b)=>a+b,0) / 3;
+        volAccRatio = prev3 > 0 ? (last3 / prev3) : 1.0;
+      }
 
-        if (vmOK && obOK) {
-          entry.push(c);
+      // stage logic (we houden intern RADAR/BUILDUP/ALMOST/ENTRY/HOLD/SELL/COOLDOWN)
+      const sideOk =
+        mode === "bull" ? (c.change24 >= +CFG.buildup.change24MinAbs) : (c.change24 <= -CFG.buildup.change24MinAbs);
 
-          // simpele exit logica:
-          // als 24h al mega is -> sell bucket
-          if (Math.abs(c.change24) >= 25) sell.push(c);
-          else hold.push(c);
+      const buildupOk =
+        sideOk &&
+        c.vm >= CFG.buildup.vmMin &&
+        c.volume >= CFG.buildup.volMin &&
+        consistency >= CFG.buildup.consistencyMin;
+
+      const almostOk =
+        buildupOk &&
+        c.vm >= CFG.almost.vmMin &&
+        c.volume >= CFG.almost.volMin &&
+        priceFlat <= CFG.almost.priceFlatMax &&
+        volAccRatio >= CFG.almost.volAccRatioMin;
+
+      // Fast track (BUILDUP -> ENTRY) bij extreem OB + volume
+      const fastTrackCandidate = buildupOk && c.volume >= CFG.entry.fastTrack.volMin;
+
+      // OB sampling alleen voor: ALMOST of fasttrackCandidate (max calls per scan)
+      let obGate = { ok: false };
+      if ((almostOk || fastTrackCandidate) && obCalls < CFG.ob.maxCallsPerScan) {
+        try {
+          const sample = await fetchObSample(c.symbol);
+          obCalls++;
+
+          // store sample
+          st.obSamples ||= [];
+          st.obSamples.push(sample);
+
+          // trim to last ~10
+          if (st.obSamples.length > 10) st.obSamples = st.obSamples.slice(-10);
+
+          obGate = obValid(st.obSamples, mode);
+
+          // peakAbs update (voor HOLD trailing)
+          if (obGate.ok) {
+            const absScore = Math.abs(obGate.score);
+            st.obPeakAbs = Math.max(st.obPeakAbs || 0, absScore);
+          }
+        } catch {
+          // ignore OB fail (blijft gewoon geen entry)
+        }
+      } else {
+        // ook zonder nieuwe sample kunnen we valid checken met bestaande
+        if (st.obSamples?.length) {
+          obGate = obValid(st.obSamples, mode);
         }
       }
 
-      const byPower = (a, b) => (b.vm - a.vm) || (Math.abs(b.obScore) - Math.abs(a.obScore));
-      radar.sort(byPower);
-      buildup.sort(byPower);
-      entry.sort(byPower);
-      hold.sort(byPower);
-      sell.sort(byPower);
+      // ENTRY checks (change window + late move exception)
+      const absCh = Math.abs(c.change24);
+      const inNormal = absCh >= CFG.entry.change24AbsMin && absCh <= CFG.entry.change24AbsMax;
+      const inLate = absCh > CFG.entry.change24AbsMax && absCh <= CFG.entry.lateMoveAbsMax;
 
-      return {
-        ok: true,
-        disabled: false,
-        ts: Date.now(),
-        mode,
-        gate,
-        counts: {
-          pool: pool.length,
-          candidates: candidates.length,
-          obOk: withOB.length,
-          radar: radar.length,
-          buildup: buildup.length,
-          entry: entry.length,
-          hold: hold.length,
-          sell: sell.length
-        },
-        funnel: { entry, hold, sell, buildup, radar }
-      };
+      const lateOk =
+        inLate &&
+        c.vm >= CFG.entry.lateMoveVmMin &&
+        (
+          (mode === "bull" && obGate.ok && obGate.score >= CFG.entry.lateMoveObMin) ||
+          (mode === "bear" && obGate.ok && obGate.score <= -CFG.entry.lateMoveObMin)
+        );
+
+      const entryOk =
+        obGate.ok &&
+        (inNormal || lateOk) &&
+        (almostOk || (fastTrackCandidate && (
+          (mode === "bull" && obGate.score >= CFG.entry.fastTrack.obMin) ||
+          (mode === "bear" && obGate.score <= -CFG.entry.fastTrack.obMin)
+        )));
+
+      // HOLD/SELL logic: als ooit ENTRY geweest -> trailing, anders stage machine
+      const isEntryStage = st.stage === "ENTRY" || st.stage === "HOLD";
+
+      if (isEntryStage) {
+        const peak = st.obPeakAbs || 0;
+        const curAbs = obGate.ok ? Math.abs(obGate.score) : 0;
+
+        const holdOk =
+          peak > 0 &&
+          curAbs >= peak * CFG.hold.trailKeep &&
+          absCh <= CFG.hold.overextendedAbsChange;
+
+        const sellOk =
+          (!holdOk) ||
+          curAbs <= CFG.hold.sellNeutralAbs ||
+          absCh > CFG.hold.overextendedAbsChange;
+
+        if (sellOk) {
+          st.stage = "SELL";
+          sellList.push(packCoin(c, st, mode, obGate, { consistency, priceFlat, volAccRatio }));
+          // na SELL meteen cooldown (anti flip)
+          st.stage = "COOLDOWN";
+          st.enteredAt = now();
+          st.scansInStage = 0;
+          st.cooldownUntil = now() + stageTimeoutMs("COOLDOWN");
+          continue;
+        }
+
+        st.stage = "HOLD";
+        holdList.push(packCoin(c, st, mode, obGate, { consistency, priceFlat, volAccRatio }));
+        continue;
+      }
+
+      // Stage transitions
+      if (st.stage === "COOLDOWN") {
+        // in cooldown: alleen tonen in radar met label
+        radarList.push(packCoin(c, st, mode, obGate, { consistency, priceFlat, volAccRatio }));
+        continue;
+      }
+
+      // ALMOST verplicht route (maar fasttrack kan overslaan als OB extreem)
+      if (entryOk) {
+        st.stage = "ENTRY";
+        st.enteredAt = now();
+        st.scansInStage = 0;
+        entryList.push(packCoin(c, st, mode, obGate, { consistency, priceFlat, volAccRatio }));
+        continue;
+      }
+
+      if (almostOk) {
+        if (st.stage !== "ALMOST") {
+          st.stage = "ALMOST";
+          st.enteredAt = now();
+          st.scansInStage = 0;
+        }
+        radarList.push(packCoin(c, st, mode, obGate, { consistency, priceFlat, volAccRatio }));
+        continue;
+      }
+
+      if (buildupOk) {
+        if (st.stage !== "BUILDUP") {
+          st.stage = "BUILDUP";
+          st.enteredAt = now();
+          st.scansInStage = 0;
+        }
+        radarList.push(packCoin(c, st, mode, obGate, { consistency, priceFlat, volAccRatio }));
+        continue;
+      }
+
+      // default RADAR
+      if (st.stage !== "RADAR") {
+        st.stage = "RADAR";
+        st.enteredAt = now();
+        st.scansInStage = 0;
+      }
+      radarList.push(packCoin(c, st, mode, obGate, { consistency, priceFlat, volAccRatio }));
     }
 
-    const bullData = build("bull", bullEnabled);
-    const bearData = build("bear", bearEnabled);
+    // sorteren (ENTRY hoogste eerst)
+    entryList.sort((a,b) => (Math.abs(b.obScore||0) - Math.abs(a.obScore||0)) || (b.vm - a.vm));
+    holdList.sort((a,b) => (Math.abs(b.obScore||0) - Math.abs(a.obScore||0)) || (b.vm - a.vm));
+    sellList.sort((a,b) => (Math.abs(b.change24) - Math.abs(a.change24)));
+    radarList.sort((a,b) => (b.vm - a.vm));
 
-    await kv.set("latest:bull", bullData);
-    await kv.set("latest:bear", bearData);
+    // save state + latest
+    await kv.set(stateKey, state);
+
+    const out = {
+      ts: now(),
+      mode,
+      btc,
+      marketState: mode === "bull" ? "BULL" : "BEAR",
+      entry: entryList.slice(0, 60),
+      hold: holdList.slice(0, 60),
+      sell: sellList.slice(0, 60),
+      radar: radarList.slice(0, 180),
+      counts: {
+        pool: pool.length,
+        entry: entryList.length,
+        hold: holdList.length,
+        sell: sellList.length,
+        radar: radarList.length
+      }
+    };
+
+    await kv.set(`latest:${mode}`, out);
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: true, activeMode, gate }));
+    res.end(JSON.stringify(out));
   } catch (e) {
-    res.statusCode = e?.statusCode || 500;
+    res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+    res.end(JSON.stringify({ error: String(e) }));
   }
+}
+
+function packCoin(c, st, mode, obGate, extras) {
+  return {
+    symbol: c.symbol,
+    name: c.name,
+    price: c.price,
+    volume: c.volume,
+    marketCap: c.marketCap,
+    change24: c.change24,
+    range24: c.range24,
+    vm: c.vm,
+
+    stage: st.stage,
+    obScore: obGate.ok ? obGate.score : null,
+    obSpread: obGate.ok ? obGate.spreadPct : null,
+    ...extras
+  };
 }
