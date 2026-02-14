@@ -2,7 +2,6 @@ const el = (id) => document.getElementById(id);
 
 const API = {
   latest: (mode) => `/api/latest?mode=${encodeURIComponent(mode)}`,
-  scan:   (mode) => `/api/scan?mode=${encodeURIComponent(mode)}`,
   ob:     (symbol) => `/api/orderbook?symbol=${encodeURIComponent(symbol)}`
 };
 
@@ -55,6 +54,7 @@ function coinRow(c) {
       <span>vol: $${fmtUSD(c.volume)}</span>
       <span>mc: $${fmtUSD(c.marketCap)}</span>
       <span>vm: ${Number(c.vm || 0).toFixed(2)}</span>
+      <span>ob: ${Number(c.obScore ?? 0).toFixed(3)}</span>
     </div>
   `;
 
@@ -79,6 +79,15 @@ function renderAll(data) {
   const ts = data?.ts ? new Date(data.ts) : null;
   const stamp = ts ? ts.toLocaleString() : "—";
 
+  // BTC gate info (komt uit API)
+  const gate = data?.gate || {};
+  const btc = gate?.btc24h;
+  const gateText = (typeof btc === "number")
+    ? `BTC 24h: ${fmtPct(btc)} • Active: ${(gate.activeMode || "-").toUpperCase()}`
+    : `BTC gate: —`;
+
+  const disabled = data?.disabled === true;
+
   const f = data?.funnel || {};
   const radar = f.radar || [];
   const buildup = f.buildup || [];
@@ -86,18 +95,21 @@ function renderAll(data) {
   const hold = f.hold || [];
   const sell = f.sell || [];
 
-  // entry list wisselt met tabs
   const entryShown =
     ENTRY_TAB === "entry" ? entry :
     ENTRY_TAB === "hold"  ? hold :
     sell;
 
-  const counts = data?.counts || {};
-  el("statusLine").textContent =
-    `Mode: ${MODE.toUpperCase()} • Laatste update: ${stamp} • Radar ${counts.radar ?? radar.length} • Buildup ${counts.buildup ?? buildup.length} • Entry ${counts.entry ?? entry.length}`;
+  if (disabled) {
+    el("statusLine").textContent = `Mode: ${MODE.toUpperCase()} • UIT (BTC gate) • ${gateText} • Laatste update: ${stamp}`;
+    el("funnelMeta").textContent = `Automatisch • iedereen ziet dezelfde lijst • update elke 10 min`;
+  } else {
+    el("statusLine").textContent =
+      `Mode: ${MODE.toUpperCase()} • ${gateText} • Laatste update: ${stamp} • Radar ${radar.length} • Buildup ${buildup.length} • Entry ${entry.length}`;
 
-  el("funnelMeta").textContent =
-    `KV opslag: aan • Cron: elke 10 min • Klik coin = popup met Coin info + Bitget OB`;
+    el("funnelMeta").textContent =
+      `100% automatisch • iedereen ziet dezelfde coins • filters + Bitget orderbook poort`;
+  }
 
   renderStage("stageEntry", entryShown);
   renderStage("stageBuildup", buildup);
@@ -115,25 +127,10 @@ async function loadLatest() {
   }
 }
 
-async function runScanNow() {
-  try {
-    el("statusLine").textContent = "Status: scan bezig…";
-    const r = await fetch(API.scan(MODE), { cache: "no-store" });
-    const j = await r.json();
-    renderAll(j || {});
-  } catch (e) {
-    el("statusLine").textContent = "Status: scan fout (CoinGecko limit of server error)";
-  }
-}
-
 /* ================= POPUP / MODAL ================= */
 
-function openModal() {
-  el("modalBackdrop").classList.remove("hidden");
-}
-function closeModal() {
-  el("modalBackdrop").classList.add("hidden");
-}
+function openModal() { el("modalBackdrop").classList.remove("hidden"); }
+function closeModal() { el("modalBackdrop").classList.add("hidden"); }
 
 function coinInfoText(c) {
   return [
@@ -144,6 +141,7 @@ function coinInfoText(c) {
     `Volume: $${fmtUSD(c.volume)}`,
     `Marketcap: $${fmtUSD(c.marketCap)}`,
     `VM ratio: ${Number(c.vm || 0).toFixed(4)}`,
+    `OB score (server): ${Number(c.obScore ?? 0).toFixed(4)}`
   ].join("\n");
 }
 
@@ -177,7 +175,6 @@ async function openCoinModal(c) {
 /* =============== buttons =============== */
 el("modeBull").addEventListener("click", () => setMode("bull"));
 el("modeBear").addEventListener("click", () => setMode("bear"));
-el("scanNow").addEventListener("click", runScanNow);
 
 el("tabEntry").addEventListener("click", () => setTab("entry"));
 el("tabHold").addEventListener("click", () => setTab("hold"));
@@ -192,5 +189,5 @@ el("modalBackdrop").addEventListener("click", (e) => {
 setMode(MODE);
 setTab("entry");
 
-// auto refresh UI elke 30s
+// refresh UI elke 30s (maar scan blijft alleen cron)
 setInterval(loadLatest, 30000);
