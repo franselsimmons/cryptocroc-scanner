@@ -1,36 +1,37 @@
-import { kv } from "@vercel/kv";
+import { kvDelAllIndexed } from "./_core.js";
+
 export const config = { runtime: "nodejs" };
+
+function okAuth(req) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return false;
+
+  // 1) Cron header (Vercel style)
+  const auth = req.headers.authorization || "";
+  if (auth === `Bearer ${secret}`) return true;
+
+  // 2) Reset link (handig voor jou): /api/reset?k=...
+  // LET OP: dit is een "admin link", niet delen.
+  const u = new URL(req.url, "http://localhost");
+  const k = u.searchParams.get("k");
+  if (k && k === secret) return true;
+
+  return false;
+}
 
 export default async function handler(req, res) {
   try {
-    const u = new URL(req.url, "http://localhost");
-
-    const secret = u.searchParams.get("secret") || "";
-    const mode = (u.searchParams.get("mode") || "all").toLowerCase();
-
-    // beveiliging: RESET_SECRET > CRON_SECRET
-    const expected = process.env.RESET_SECRET || process.env.CRON_SECRET;
-    if (expected && secret !== expected) {
+    if (!okAuth(req)) {
       res.statusCode = 401;
       res.end("Unauthorized");
       return;
     }
 
-    const keys = [];
-    if (mode === "bull" || mode === "all") {
-      keys.push("latest:bull", "state:bull");
-    }
-    if (mode === "bear" || mode === "all") {
-      keys.push("latest:bear", "state:bear");
-    }
-    // optional: Bitget symbol cache ook wissen
-    keys.push("bitget:symbols:usdt");
-
-    for (const k of keys) await kv.del(k);
+    await kvDelAllIndexed();
 
     res.statusCode = 200;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: true, cleared: keys }));
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ ok: true, reset: true, ts: Date.now() }));
   } catch (e) {
     res.statusCode = 500;
     res.end(String(e));
