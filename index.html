@@ -10,65 +10,58 @@
   <header class="topbar">
     <div class="left">
       <div class="brand">CryptoCroc Scanner</div>
-      <div class="sub" id="statusLine">Status: laden…</div>
+      <div class="sub" id="statusLine">Laden…</div>
     </div>
 
     <div class="right">
       <button id="modeBull" class="btn">BULL</button>
       <button id="modeBear" class="btn">BEAR</button>
+      <a id="resetLink" class="btn ghost" href="#" target="_blank" rel="noreferrer">RESET</a>
     </div>
   </header>
 
   <main class="grid">
     <section class="panel">
-      <div class="panelTitle">Funnel</div>
-      <div class="funnelMeta" id="funnelMeta">—</div>
+      <div class="panelTitle">ENTRY</div>
+      <div class="stageBody" id="stageEntry"></div>
+    </section>
 
-      <!-- ENTRY block met tabs -->
-      <div class="stage">
-        <div class="stageHeader">
-          <div class="stageTitle">ENTRY</div>
-          <div class="tabs">
-            <button class="tabBtn active" id="tabEntry">Entry</button>
-            <button class="tabBtn" id="tabHold">Hold</button>
-            <button class="tabBtn" id="tabSell">Sell</button>
-          </div>
-        </div>
-        <div class="stageBody" id="stageEntry"></div>
-      </div>
+    <section class="panel">
+      <div class="panelTitle">HOLD</div>
+      <div class="stageBody" id="stageHold"></div>
+    </section>
 
-      <div class="stage">
-        <div class="stageTitle">BUILDUP</div>
-        <div class="stageBody" id="stageBuildup"></div>
-      </div>
+    <section class="panel">
+      <div class="panelTitle">SELL</div>
+      <div class="stageBody" id="stageSell"></div>
+    </section>
 
-      <div class="stage">
-        <div class="stageTitle">RADAR</div>
-        <div class="stageBody" id="stageRadar"></div>
-      </div>
+    <section class="panel full">
+      <div class="panelTitle">RADAR</div>
+      <div class="panelHint">RADAR bevat ook BUILDUP/ALMOST/COOLDOWN labels (4 tabellen totaal zoals jij wil).</div>
+      <div class="stageBody" id="stageRadar"></div>
     </section>
   </main>
 
-  <!-- POPUP / MODAL -->
-  <div class="modalBackdrop hidden" id="modalBackdrop">
-    <div class="modal">
+  <!-- Popup -->
+  <div class="modal" id="modal">
+    <div class="modalBox">
       <div class="modalTop">
         <div>
-          <div class="modalTitle" id="mTitle">Coin</div>
+          <div class="modalTitle" id="mTitle">—</div>
           <div class="modalSub" id="mSub">—</div>
         </div>
         <button class="btn" id="mClose">Sluiten</button>
       </div>
 
       <div class="modalGrid">
-        <div class="modalBox">
-          <div class="boxTitle">Coin info</div>
-          <pre class="pre" id="mCoin">—</pre>
+        <div class="modalPanel">
+          <div class="panelTitle">Coin info</div>
+          <pre class="pre" id="mInfo">—</pre>
         </div>
-
-        <div class="modalBox">
-          <div class="boxTitle">Orderbook (Bitget)</div>
-          <pre class="pre" id="mOb">Klik op coin…</pre>
+        <div class="modalPanel">
+          <div class="panelTitle">Orderbook (Bitget)</div>
+          <pre class="pre" id="mOb">Klik coin…</pre>
         </div>
       </div>
     </div>
