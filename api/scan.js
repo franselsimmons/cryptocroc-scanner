@@ -3,76 +3,54 @@ import { kv } from "@vercel/kv";
 import {
   RUNTIME_CONFIG,
   SETTINGS,
-  CFG,
   requireSecret,
   keyLatest,
   keyState,
   keyReset,
+  keyObResult,
+  keyEntryLog,
   fetchCoinGeckoTop,
   fetchBTCGate,
   getBitgetSpotUsdtSymbols,
-  passRadar,
-  passBuildup,
-  passAlmost,
+  applySpikeGuard,
+  updateSideHistory,
+  calcConsistency,
+  nextDesiredStage,
   stageRank,
   webhookForStage,
   sendDiscord,
   fmtCoinLine,
-  computeRisk,
-  coinRangeCapFromBtcRange,
-  guardWithMedian,
-  updateConsistency,
-  clamp,
+  passEntryFromOb,
+  computeConfidence,
+  computeAtrPctFromPriceHist,
+  computeSLTP
 } from "./_core.js";
 
 export const config = RUNTIME_CONFIG;
 
-function stageLabel(stage) {
-  return stage === "ELITE" ? "ENTRY" : stage;
+function coinSideFromMode(mode, change24) {
+  if (mode === "bull") return change24 >= 0 ? "BULL" : "BEAR";
+  return change24 <= 0 ? "BEAR" : "BULL";
 }
 
-async function getObResult(side, symbol) {
-  const keyRes = `ob:result:${side}:${symbol}`;
-  const r = await kv.get(keyRes);
-  if (!r) return { ok: true, status: "missing" };
-
-  const ageSec = r?.ob?.ts ? (Date.now() - r.ob.ts) / 1000 : 999;
-  const stale = ageSec > CFG.obStaleSec;
-
-  return {
-    ok: true,
-    status: "present",
-    valid: !!r.valid,
-    reason: r.reason || null,
-    avgScore: r.avgScore ?? null,
-    spreadPct: r?.ob?.spreadPct ?? null,
-    lor: r?.ob?.lor ?? null,
-    score: r?.ob?.score ?? null,
-    bidUsd: r?.ob?.bidUsd ?? null,
-    askUsd: r?.ob?.askUsd ?? null,
-    stale,
-  };
+function calcVolAcc(priceHist) {
+  // volume acceleration gebruiken we via state.volHist (in scan)
+  // hier placeholder: scan vult echte volAcc
+  return 1.0;
 }
 
-function coinStrengthScore(c, consistency, ob) {
-  // simpele score 0..100 (transparant)
-  let s = 0;
-  // vm
-  s += clamp((c.vm - 0.10) * 120, 0, 35); // 0.10->0, 0.39->35
-  // volume
-  s += clamp((c.volume / 1_000_000) * 0.8, 0, 20); // 25M ~20
-  // change24 richting
-  s += clamp(Math.abs(c.change24) * 1.2, 0, 15);
-  // consistency
-  if (consistency?.total >= SETTINGS.elite.minConsistencySamples) {
-    s += clamp(consistency.ratio * 20, 0, 20);
-  }
-  // orderbook
-  if (ob?.status === "present" && !ob.stale) {
-    if (ob.valid) s += 10;
-    if (Number(ob.avgScore || 0) >= SETTINGS.elite.obMinScore) s += 5;
-  }
-  return Math.round(clamp(s, 0, 100));
+async function bestEffortLogEntry(entryObj) {
+  try {
+    // @vercel/kv ondersteunt vaak lpush, maar als niet: we fail-silently.
+    if (typeof kv.lpush === "function") {
+      await kv.lpush(keyEntryLog, JSON.stringify(entryObj));
+      if (typeof kv.ltrim === "function") await kv.ltrim(keyEntryLog, 0, 500);
+    } else {
+      // fallback: unique key
+      const k = `log:entry:${entryObj.ts}:${entryObj.mode}:${entryObj.symbol}`;
+      await kv.set(k, entryObj, { ex: 60 * 60 * 24 * 30 });
+    }
+  } catch {}
 }
 
 export default async function handler(req, res) {
@@ -85,35 +63,29 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull or bear" }));
     }
 
-    const wanted = mode === "bull" ? "BULL" : "BEAR";
+    const now = Date.now();
 
     // BTC gate
     const btc = await fetchBTCGate();
-    const coinRangeCap = coinRangeCapFromBtcRange(btc.range24);
+    const wanted = mode === "bull" ? "BULL" : "BEAR";
 
-    // Universe
+    // Universe (Bitget-first)
     const symbolsSet = await getBitgetSpotUsdtSymbols();
     const all = await fetchCoinGeckoTop();
-    const coinsRaw = all.filter((c) => symbolsSet.has(c.symbol));
+    const rawCoins = all.filter((c) => symbolsSet.has(c.symbol));
 
-    // State + resetAt
+    // KV state
     const resetAt = (await kv.get(keyReset(mode))) || 0;
-    const state = (await kv.get(keyState(mode))) || {};
-    const now = Date.now();
+    const state = (await kv.get(keyState(mode))) || {}; 
+    // state[sym] = { stage, stageScans, enteredAt, priceHist, sideHist, metricsHist, volHist }
 
-    // BTC gate fail => save empty
+    // BTC mismatch => output leeg
     if (btc.state !== wanted) {
       const empty = {
         ok: true,
         ts: now,
         epoch: Math.floor(now / 1000),
         mode,
-        meta: {
-          wanted,
-          coinRangeCap,
-          consistencyWindow: "2h",
-          consistencyMinSamples: SETTINGS.elite.minConsistencySamples,
-        },
         btc,
         counts: { entry: 0, almost: 0, buildup: 0, radar: 0 },
         funnel: { radar: [], buildup: [], almost: [], entry: [] },
@@ -130,107 +102,82 @@ export default async function handler(req, res) {
     const almost = [];
     const entry = [];
 
-    // --------- main loop ----------
-    for (const c0 of coinsRaw) {
-      const sym = c0.symbol;
-
-      const prev =
-        state[sym] || {
-          stage: "RADAR",
-          stageScans: 0,
-          enteredAt: now,
-          priceHist: [],
-          // spike hist
-          vHist: [],
-          rHist: [],
-          vmHist: [],
-          // consistency hist
-          dirHist: [],
-        };
-
-      // reset check
-      const prevEntered = Number(prev.enteredAt || 0);
-      const wasReset = prevEntered < resetAt;
-
-      // spike-guard histories (last 2 kept)
-      const vHist = Array.isArray(prev.vHist) ? prev.vHist.slice(-2) : [];
-      const rHist = Array.isArray(prev.rHist) ? prev.rHist.slice(-2) : [];
-      const vmHist = Array.isArray(prev.vmHist) ? prev.vmHist.slice(-2) : [];
-
-      const safeVolume = guardWithMedian(vHist, c0.volume, 1.0);
-      const safeRange24 = guardWithMedian(rHist, c0.range24, 1.0);
-      const safeVm = guardWithMedian(vmHist, c0.vm, 1.0);
-
-      // “change24” alleen light guard (heel mild)
-      const safeChange24 = clamp(Number(c0.change24 || 0), -50, 50);
-
-      const c = {
-        ...c0,
-        volume: safeVolume,
-        range24: safeRange24,
-        vm: safeVm,
-        change24: safeChange24,
+    // Scan coins
+    for (const raw of rawCoins) {
+      const sym = raw.symbol;
+      const prev = state[sym] || {
+        stage: "RADAR",
+        stageScans: 0,
+        enteredAt: now,
+        priceHist: [],
+        sideHist: [],
+        metricsHist: { vol: [], range: [], vm: [], chg: [] },
+        volHist: []
       };
 
-      // update hists for next time
-      vHist.push(safeVolume);
-      rHist.push(safeRange24);
-      vmHist.push(safeVm);
-
-      // price hist (for flatness)
-      const priceHist = Array.isArray(prev.priceHist) ? prev.priceHist.slice(-6) : [];
-      priceHist.push(c.price);
-
-      // HARD RESET per coin
-      let stage = prev.stage || "RADAR";
-      let stageScans = Number(prev.stageScans || 0);
-      let enteredAt = Number(prev.enteredAt || now);
-      let dirHist = Array.isArray(prev.dirHist) ? prev.dirHist : [];
-
+      // reset per coin (hard)
+      const wasReset = Number(prev.enteredAt || 0) < resetAt;
       if (wasReset) {
-        stage = "RADAR";
-        stageScans = 0;
-        enteredAt = now;
-        dirHist = []; // heel belangrijk: consistency reset echt naar 0
+        prev.stage = "RADAR";
+        prev.stageScans = 0;
+        prev.enteredAt = now;
+        prev.priceHist = [];
+        prev.sideHist = [];
+        prev.metricsHist = { vol: [], range: [], vm: [], chg: [] };
+        prev.volHist = [];
       }
 
-      // pass radar?
-      const okRadar = passRadar(c, coinRangeCap);
-      if (!okRadar) {
+      // --- spike guard on CG data
+      const { patched: c, nextMetrics } = applySpikeGuard(prev.metricsHist, raw);
+
+      // --- update price history (max 6 = ~1 uur)
+      const priceHist = Array.isArray(prev.priceHist) ? prev.priceHist.slice(-5) : [];
+      priceHist.push(c.price);
+
+      // --- volume history for accel (6 scans = 1 uur)
+      const volHist = Array.isArray(prev.volHist) ? prev.volHist.slice(-5) : [];
+      volHist.push(c.volume);
+
+      const last3 = volHist.slice(-3);
+      const prev3 = volHist.slice(-6, -3);
+      const sum = (a) => a.reduce((x, y) => x + (Number(y) || 0), 0);
+      const volAcc = prev3.length ? (sum(last3) / Math.max(1, sum(prev3))) : 1.0;
+
+      // --- consistency window (2 uur)
+      const wantedSide = mode === "bull" ? "BULL" : "BEAR";
+      const sideNow = coinSideFromMode(mode, c.change24);
+      const sideHist = updateSideHistory(prev.sideHist, sideNow);
+      const cons = calcConsistency(sideHist, wantedSide);
+
+      // --- OB gate (ENTRY)
+      const ob = await kv.get(keyObResult(mode, sym));
+      const obView = ob ? {
+        valid: !!ob.valid,
+        stale: !!ob.stale,
+        score: Number(ob?.ob?.score ?? ob?.avgScore ?? 0),
+        spreadPct: Number(ob?.ob?.spreadPct ?? 999),
+        lor: Number(ob?.ob?.lor ?? 1),
+        agree: Number(ob?.agree ?? 0),
+        reason: ob?.reason || ""
+      } : null;
+
+      const obGate = passEntryFromOb(obView ? { ...obView, score: obView.score } : null, mode);
+      const obGateOk = obGate.ok;
+
+      // --- desired stage
+      const desired = nextDesiredStage(c, mode, priceHist, cons.ok, btc.range24, obGateOk);
+
+      // out?
+      if (desired === "OUT") {
         delete state[sym];
         continue;
       }
 
-      // consistency update (richting = bull of bear)
-      const dir = mode === "bull" ? (c.change24 >= 0 ? "up" : "down") : (c.change24 <= 0 ? "down" : "up");
-      const cons = updateConsistency(dirHist, dir, now);
-      dirHist = cons.hist;
+      // no skip + stage scans
+      let stage = prev.stage || "RADAR";
+      let stageScans = Number(prev.stageScans || 0);
+      let enteredAt = Number(prev.enteredAt || now);
 
-      // stage desire (tot ALMOST)
-      const okBuildup = passBuildup(c, mode);
-      const okAlmost = passAlmost(c, mode, priceHist);
-
-      // orderbook info (alleen lezen; geen extra calls)
-      const ob = await getObResult(mode, sym);
-
-      // ELITE/ENTRY gate
-      const eliteReady =
-        okAlmost &&
-        cons.pass &&
-        ob.status === "present" &&
-        ob.valid === true &&
-        ob.stale === false &&
-        Number(ob.avgScore || 0) >= SETTINGS.elite.obMinScore &&
-        Number(ob.spreadPct || 999) <= SETTINGS.elite.obMaxSpreadPct;
-
-      // desired stage
-      let desired = "RADAR";
-      if (okAlmost) desired = "ALMOST";
-      else if (okBuildup) desired = "BUILDUP";
-      else desired = "RADAR";
-      if (eliteReady) desired = "ELITE";
-
-      // ==== GEEN OVERSLAAN LOGICA ====
       const prevRank = stageRank(stage);
       const desiredRank = stageRank(desired);
 
@@ -238,16 +185,12 @@ export default async function handler(req, res) {
 
       if (desiredRank > prevRank) {
         if (stageScans >= SETTINGS.minScansPerStage) {
+          // slechts 1 stap omhoog
           if (desiredRank === prevRank + 1) nextStage = desired;
-          else {
-            // nooit overslaan
-            if (prevRank === 1) nextStage = "BUILDUP";
-            else if (prevRank === 2) nextStage = "ALMOST";
-            else if (prevRank === 3) nextStage = "ELITE";
-          }
+          else nextStage = prevRank === 1 ? "BUILDUP" : prevRank === 2 ? "ALMOST" : "ENTRY";
         }
       } else if (desiredRank < prevRank) {
-        nextStage = desired;
+        nextStage = desired; // omlaag direct
       }
 
       // update scans
@@ -259,90 +202,67 @@ export default async function handler(req, res) {
         stageScans = 1;
         enteredAt = now;
         stageChanged = true;
-      }
 
-      // risk calc
-      const risk = computeRisk(c, mode);
-
-      // reasons for popup
-      const why = {
-        btcGate: { wanted, got: btc.state, pass: btc.state === wanted, btcChg24: btc.chg24, btcRange24: btc.range24 },
-        coinRangeCap,
-        radar: {
-          pass: okRadar,
-          rules: {
-            mcapMin: SETTINGS.mcapMin,
-            mcapMax: SETTINGS.mcapMax,
-            volMin: SETTINGS.volMinRadar,
-            vmMin: SETTINGS.vmMinRadar,
-            maxAbsChg24: SETTINGS.maxAbsChg24,
-            maxRange24: coinRangeCap,
-          },
-        },
-        buildup: {
-          pass: okBuildup,
-          rules: SETTINGS.buildup,
-        },
-        almost: {
-          pass: okAlmost,
-          rules: SETTINGS.almost,
-          priceFlatPctMax: SETTINGS.almost.priceFlatMax,
-        },
-        consistency: {
-          pass: cons.pass,
-          window: "2h",
-          minSamples: SETTINGS.elite.minConsistencySamples,
-          ratioNeed: SETTINGS.elite.minConsistencyRatio,
-          total: cons.total,
-          same: cons.same,
-          ratio: cons.ratio,
-          dir,
-        },
-        orderbook: {
-          need: {
-            valid: true,
-            minScore: SETTINGS.elite.obMinScore,
-            maxSpreadPct: SETTINGS.elite.obMaxSpreadPct,
-            notStale: true,
-          },
-          got: ob,
-          pass:
-            ob.status === "present" &&
-            ob.valid === true &&
-            ob.stale === false &&
-            Number(ob.avgScore || 0) >= SETTINGS.elite.obMinScore &&
-            Number(ob.spreadPct || 999) <= SETTINGS.elite.obMaxSpreadPct,
-        },
-        eliteReady,
-        desired,
-      };
-
-      const strength = coinStrengthScore(c, cons, ob);
-
-      // Discord alleen bij stage change
-      if (stageChanged) {
+        // Discord on new stage
         const hook = webhookForStage(stage);
         if (hook) {
-          const msg = fmtCoinLine(c, mode, stage, { consistency: why.consistency, ob: ob, risk });
+          const extra = stage === "ENTRY" && obView
+            ? `OB: score=${obView.score.toFixed(3)} spread=${obView.spreadPct.toFixed(2)}% conf=${"?"}`
+            : "";
+          const msg = fmtCoinLine(c, mode, stage, extra);
           await sendDiscord(hook, msg);
         }
       }
 
-      // save coin state
+      // compute confidence + SL/TP for UI (alleen echt meaningful in ALMOST/ENTRY)
+      const atrPct = computeAtrPctFromPriceHist(priceHist);
+      const sltp = computeSLTP({ mode, price: c.price, atrPct });
+
+      const conf = computeConfidence({
+        mode,
+        obScore: obView?.score ?? 0,
+        obAgree: obView?.agree ?? 0,
+        vm: c.vm,
+        volAcc,
+        btc
+      });
+
+      // store state
       state[sym] = {
         stage,
         stageScans,
         enteredAt,
         priceHist,
-        vHist,
-        rHist,
-        vmHist,
-        dirHist,
+        sideHist,
+        metricsHist: nextMetrics,
+        volHist
       };
 
-      // item for UI
+      // log entry only when coin ENTERS entry
+      if (stageChanged && stage === "ENTRY") {
+        await bestEffortLogEntry({
+          ts: now,
+          symbol: sym,
+          mode,
+          price: c.price,
+          change24: c.change24,
+          range24: c.range24,
+          volume: c.volume,
+          marketCap: c.marketCap,
+          vm: c.vm,
+          obScore: obView?.score ?? null,
+          spreadPct: obView?.spreadPct ?? null,
+          lor: obView?.lor ?? null,
+          consistency: cons,
+          volAcc,
+          btc,
+          confidence: conf
+        });
+      }
+
+      // UI item
       const item = {
-        symbol: c.symbol,
+        symbol: sym,
         name: c.name,
         price: c.price,
         volume: c.volume,
@@ -350,25 +270,47 @@ export default async function handler(req, res) {
         change24: c.change24,
         range24: c.range24,
         vm: c.vm,
+
         stage,
-        stageLabel: stageLabel(stage),
         stageScans,
-        strength,
-        risk,
-        why,
+        consistency: cons,
+        volAcc,
+
+        ob: obView ? {
+          status: obView.valid ? "valid" : "validating",
+          valid: obView.valid,
+          stale: obView.stale,
+          score: obView.score,
+          spreadPct: obView.spreadPct,
+          lor: obView.lor,
+          agree: obView.agree,
+          reason: obView.reason
+        } : { status: "none" },
+
+        confidence: conf,
+        atrPct,
+        sl: sltp.sl,
+        tp: sltp.tp,
+
+        why: {
+          desired,
+          obGate: obGate.why,
+          missing: buildMissingText(mode, c, cons, btc, obGateOk, obView)
+        }
       };
 
-      if (stage === "RADAR") radar.push(item);
-      else if (stage === "BUILDUP") buildup.push(item);
+      if (stage === "ENTRY") entry.push(item);
       else if (stage === "ALMOST") almost.push(item);
-      else if (stage === "ELITE") entry.push(item);
+      else if (stage === "BUILDUP") buildup.push(item);
+      else radar.push(item);
     }
 
-    // sort
-    const byStrength = (a, b) => b.strength - a.strength;
-    entry.sort(byStrength);
-    almost.sort(byStrength);
-    buildup.sort(byStrength);
+    // sort (sterkte)
+    const sortKey = (a, b) => (b.confidence - a.confidence) || (b.vm - a.vm);
+
+    entry.sort(sortKey);
+    almost.sort(sortKey);
+    buildup.sort(sortKey);
     radar.sort((a, b) => b.vm - a.vm);
 
     const radarLimited = radar.slice(0, SETTINGS.RADAR_LIMIT);
@@ -378,13 +320,6 @@ export default async function handler(req, res) {
       ts: now,
       epoch: Math.floor(now / 1000),
       mode,
-      meta: {
-        wanted,
-        coinRangeCap,
-        consistencyWindow: "2h",
-        consistencyMinSamples: SETTINGS.elite.minConsistencySamples,
-        obStaleSec: CFG.obStaleSec,
-      },
       btc,
       counts: {
         entry: entry.length,
@@ -392,12 +327,7 @@ export default async function handler(req, res) {
         buildup: buildup.length,
         radar: radarLimited.length,
       },
-      funnel: {
-        entry,
-        almost,
-        buildup,
-        radar: radarLimited,
-      },
+      funnel: { entry, almost, buildup, radar: radarLimited },
     };
 
     await kv.set(keyLatest(mode), result);
@@ -411,4 +341,26 @@ export default async function handler(req, res) {
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ ok: false, error: String(e) }));
   }
+}
+
+function buildMissingText(mode, c, cons, btc, obGateOk, obView) {
+  const missing = [];
+
+  if (!cons.ok) missing.push(`Consistency < ${(0.67*100).toFixed(0)}% (min 6 samples/2u)`);
+  if (mode === "bull" && c.change24 < SETTINGS.buildup.chgMin) missing.push(`chg24 < ${SETTINGS.buildup.chgMin}%`);
+  if (mode === "bear" && c.change24 > -SETTINGS.buildup.chgMin) missing.push(`chg24 > -${SETTINGS.buildup.chgMin}%`);
+  if (c.vm < SETTINGS.buildup.vmMin) missing.push(`vm < ${SETTINGS.buildup.vmMin}`);
+  if (c.volume < SETTINGS.buildup.volMin) missing.push(`vol < ${SETTINGS.buildup.volMin}`);
+
+  if (c.vm < SETTINGS.almost.vmMin) missing.push(`(ALMOST) vm < ${SETTINGS.almost.vmMin}`);
+  if (c.volume < SETTINGS.almost.volMin) missing.push(`(ALMOST) vol < ${SETTINGS.almost.volMin}`);
+
+  if (!obGateOk) {
+    if (!obView) missing.push(`OB: geen data (wacht ob-sampler)`);
+    else missing.push(`OB: ${obView.reason || "validating / not passed"}`);
+  }
+
+  if (btc?.state !== (mode === "bull" ? "BULL" : "BEAR")) missing.push(`BTC gate mismatch`);
+
+  return missing.slice(0, 6);
 }
