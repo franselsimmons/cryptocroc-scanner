@@ -1,8 +1,5 @@
 {
   "crons": [
-    {
-      "path": "/api/cron?secret=cc_9F3k2M7pQ1xR8vT6nD4zL0sH5aB2cE",
-      "schedule": "*/10 * * * *"
-    }
+    { "path": "/api/cron", "schedule": "*/10 * * * *" }
   ]
 }
