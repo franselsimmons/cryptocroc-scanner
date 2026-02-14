@@ -8,22 +8,27 @@ import {
   keyState,
   keyReset,
   keyObResult,
+  keyObSamples,
   keyEntryLog,
   fetchCoinGeckoTopCached,
   fetchBTCGateCached,
   getBitgetSpotUsdtSymbols,
+  fetchBitgetAtr1hPctCached,     // fase 2
   applySpikeGuard,
   updateSideHistory,
   calcConsistency,
+  updatePriceHist,               // fase 1
+  calcChange1hPct,               // fase 1
+  calcObSlope,                   // fase 1
   nextDesiredStage,
   stageRank,
   webhookForStage,
   sendDiscord,
   fmtCoinLine,
-  passEntryFromOb,
   computeConfidence,
   computeAtrPctFromPriceHist,
-  computeSLTP
+  computeSLTP,
+  passEntryFromObPlus,           // fase 1 gates
 } from "./_core.js";
 
 export const config = RUNTIME_CONFIG;
@@ -57,20 +62,21 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    // ✅ BTC gate (cached 10 min)
+    // BTC gate (cached 10 min)
     const btc = await fetchBTCGateCached();
     const wanted = mode === "bull" ? "BULL" : "BEAR";
 
-    // ✅ Universe (Bitget-first)
+    // Universe (Bitget-first)
     const symbolsSet = await getBitgetSpotUsdtSymbols();
 
-    // ✅ CoinGecko top (cached 10 min)
+    // CoinGecko top (cached 10 min)
     const all = await fetchCoinGeckoTopCached();
     const rawCoins = all.filter((c) => symbolsSet.has(c.symbol));
 
     // KV state
     const resetAt = (await kv.get(keyReset(mode))) || 0;
     const state = (await kv.get(keyState(mode))) || {};
+    // state[sym] = { stage, stageScans, enteredAt, priceHist, sideHist, metricsHist, volHist }
 
     // BTC mismatch => output leeg
     if (btc.state !== wanted) {
@@ -102,7 +108,7 @@ export default async function handler(req, res) {
         stage: "RADAR",
         stageScans: 0,
         enteredAt: now,
-        priceHist: [],
+        priceHist: [], // nu: [{ts,price}] (oude states met numbers worden automatisch genormalized)
         sideHist: [],
         metricsHist: { vol: [], range: [], vm: [], chg: [] },
         volHist: []
@@ -123,11 +129,11 @@ export default async function handler(req, res) {
       // spike guard
       const { patched: c, nextMetrics } = applySpikeGuard(prev.metricsHist, raw);
 
-      // price history (6 scans ~1h)
-      const priceHist = Array.isArray(prev.priceHist) ? prev.priceHist.slice(-5) : [];
-      priceHist.push(c.price);
+      // price history (timestamped) + 1h change
+      const priceHist = updatePriceHist(prev.priceHist, c.price);
+      const change1h = calcChange1hPct(priceHist); // kan null zijn in begin
 
-      // volume history (6 scans ~1h)
+      // volume history (6 samples-ish)
       const volHist = Array.isArray(prev.volHist) ? prev.volHist.slice(-5) : [];
       volHist.push(c.volume);
 
@@ -142,7 +148,7 @@ export default async function handler(req, res) {
       const sideHist = updateSideHistory(prev.sideHist, sideNow);
       const cons = calcConsistency(sideHist, wantedSide);
 
-      // OB result (bestaat alleen als je OB-sampler draait)
+      // OB result (ENTRY gate)
       const ob = await kv.get(keyObResult(mode, sym));
       const obView = ob ? {
         valid: !!ob.valid,
@@ -154,12 +160,43 @@ export default async function handler(req, res) {
         reason: ob?.reason || ""
       } : null;
 
-      const obGate = passEntryFromOb(obView, mode);
-      const obGateOk = obGate.ok;
+      // OB samples => slope (alleen als je ob-sampler dit vult)
+      let obSlope = null;
+      if (SETTINGS.entry.obSlopeEnabled) {
+        const samples = await kv.get(keyObSamples(mode, sym));
+        obSlope = calcObSlope(samples);
+      }
+
+      // Confidence (wordt ook hard gate voor ENTRY)
+      const conf = computeConfidence({
+        obScore: obView?.score ?? 0,
+        obAgree: obView?.agree ?? 0,
+        vm: c.vm,
+        volAcc,
+        btc
+      });
+
+      // ENTRY OK? (OB + consistency(75%) + confidence>=70 + slope)
+      const entryGate = passEntryFromObPlus({
+        obView,
+        mode,
+        consistencyRatio: cons.ratio,
+        confidence: conf,
+        obSlope
+      });
+      const entryOk = entryGate.ok;
 
       // desired stage
-      const desired = nextDesiredStage(c, mode, priceHist, cons.ok, btc.range24, obGateOk);
+      const desired = nextDesiredStage(
+        c,
+        mode,
+        priceHist,
+        cons.ok,
+        btc.range24,
+        entryOk
+      );
 
+      // out?
       if (desired === "OUT") {
         delete state[sym];
         continue;
@@ -194,34 +231,37 @@ export default async function handler(req, res) {
         stageChanged = true;
       }
 
-      // confidence + SL/TP
-      const atrPct = computeAtrPctFromPriceHist(priceHist);
-      const sltp = computeSLTP({ mode, price: c.price, atrPct });
+      // ATR (fase 2: Bitget 1H ATR) + fallback scan-ATR
+      const atrFromScan = computeAtrPctFromPriceHist(priceHist);
+      const atrObj = await fetchBitgetAtr1hPctCached(sym);
+      const atrPct = atrObj?.atrPct && Number.isFinite(atrObj.atrPct) ? atrObj.atrPct : atrFromScan;
 
-      const conf = computeConfidence({
-        obScore: obView?.score ?? 0,
-        obAgree: obView?.agree ?? 0,
-        vm: c.vm,
-        volAcc,
-        btc
-      });
+      const sltp = computeSLTP({ mode, price: c.price, atrPct });
 
       // Discord on new stage
       if (stageChanged) {
         const hook = webhookForStage(stage);
         if (hook) {
-          let extra = "";
+          let extra = `Confidence: ${conf}/100`;
+
           if (stage === "ENTRY") {
             const obTxt = obView
               ? `OB: ${obView.score.toFixed(3)} | spread: ${obView.spreadPct.toFixed(2)}% | LOR: ${obView.lor.toFixed(2)} | agree: ${obView.agree}/3`
               : `OB: (no data)`;
+
+            const slopeTxt = Number.isFinite(obSlope) ? `OB slope: ${obSlope.toFixed(4)}` : `OB slope: n/a`;
+            const atrSrc = atrObj?.source ? `ATR src: ${atrObj.source}` : `ATR src: scan`;
+
             extra =
               `Confidence: ${conf}/100\n` +
+              `EntryGate: ${entryGate.why}\n` +
               `${obTxt}\n` +
-              `SL: $${sltp.sl.toFixed(6)} | TP: $${sltp.tp.toFixed(6)} | ATR~: ${(atrPct*100).toFixed(2)}%`;
-          } else {
-            extra = `Confidence: ${conf}/100`;
+              `${slopeTxt}\n` +
+              `Consistency: ${(cons.ratio * 100).toFixed(0)}% (${cons.same}/${cons.total})\n` +
+              `chg1h: ${change1h == null ? "n/a" : (change1h >= 0 ? "+" : "") + change1h.toFixed(2) + "%"}\n` +
+              `SL: $${sltp.sl.toFixed(6)} | TP: $${sltp.tp.toFixed(6)} | ATR~: ${(atrPct * 100).toFixed(2)}% (${atrSrc})`;
           }
+
           const msg = fmtCoinLine(c, mode, stage, extra);
           await sendDiscord(hook, msg);
         }
@@ -246,6 +286,7 @@ export default async function handler(req, res) {
           mode,
           price: c.price,
           change24: c.change24,
+          change1h,
           range24: c.range24,
           volume: c.volume,
           marketCap: c.marketCap,
@@ -253,13 +294,16 @@ export default async function handler(req, res) {
           obScore: obView?.score ?? null,
           spreadPct: obView?.spreadPct ?? null,
           lor: obView?.lor ?? null,
+          obAgree: obView?.agree ?? null,
+          obSlope,
           consistency: cons,
           volAcc,
           btc,
           confidence: conf,
           sl: sltp.sl,
           tp: sltp.tp,
-          atrPct
+          atrPct,
+          atrSource: atrObj?.source || "scan",
         });
       }
 
@@ -271,6 +315,7 @@ export default async function handler(req, res) {
         volume: c.volume,
         marketCap: c.marketCap,
         change24: c.change24,
+        change1h,
         range24: c.range24,
         vm: c.vm,
 
@@ -290,13 +335,17 @@ export default async function handler(req, res) {
           reason: obView.reason
         } : { status: "none" },
 
+        obSlope,
+
         confidence: conf,
         atrPct,
+        atrSource: atrObj?.source || "scan",
         sl: sltp.sl,
         tp: sltp.tp,
+
         why: {
           desired,
-          obGate: obGate.why
+          entryGate: entryGate.why,
         }
       };
 
