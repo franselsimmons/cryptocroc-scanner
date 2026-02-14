@@ -3,36 +3,46 @@ const el = (id) => document.getElementById(id);
 const API = {
   latest: (mode) => `/api/latest?mode=${encodeURIComponent(mode)}`,
   scan:   (mode) => `/api/scan?mode=${encodeURIComponent(mode)}`,
-  ob:     (mode, symbol) => `/api/orderbook?mode=${encodeURIComponent(mode)}&symbol=${encodeURIComponent(symbol)}`
+  ob:     (symbol) => `/api/orderbook?symbol=${encodeURIComponent(symbol)}`
 };
 
 let MODE = localStorage.getItem("MODE") || "bull";
+let LAST = null;
 
-function setMode(mode){
+// Entry tabs
+let ENTRY_TAB = "entry"; // entry | hold | sell
+
+function setMode(mode) {
   MODE = mode;
   localStorage.setItem("MODE", mode);
-  el("modeBull").classList.toggle("active", mode==="bull");
-  el("modeBear").classList.toggle("active", mode==="bear");
+  el("modeBull").classList.toggle("active", mode === "bull");
+  el("modeBear").classList.toggle("active", mode === "bear");
   loadLatest();
 }
 
-function fmtUSD(n){
-  n = Number(n);
-  if(!Number.isFinite(n)) return "-";
-  if(n >= 1e9) return (n/1e9).toFixed(2)+"B";
-  if(n >= 1e6) return (n/1e6).toFixed(2)+"M";
-  if(n >= 1e3) return (n/1e3).toFixed(2)+"K";
+function setTab(tab) {
+  ENTRY_TAB = tab;
+  el("tabEntry").classList.toggle("active", tab === "entry");
+  el("tabHold").classList.toggle("active", tab === "hold");
+  el("tabSell").classList.toggle("active", tab === "sell");
+  renderAll(LAST || {});
+}
+
+function fmtUSD(n) {
+  if (!Number.isFinite(n)) return "-";
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
   return String(Math.round(n));
 }
 
-function fmtPct(n){
-  n = Number(n);
-  if(!Number.isFinite(n)) return "-";
+function fmtPct(n) {
+  if (!Number.isFinite(n)) return "-";
   const s = n >= 0 ? "+" : "";
   return s + n.toFixed(2) + "%";
 }
 
-function coinRow(c){
+function coinRow(c) {
   const div = document.createElement("div");
   div.className = "coinRow";
   div.innerHTML = `
@@ -44,100 +54,143 @@ function coinRow(c){
       <span>prijs: $${c.price}</span>
       <span>vol: $${fmtUSD(c.volume)}</span>
       <span>mc: $${fmtUSD(c.marketCap)}</span>
-      <span>vm: ${Number(c.vm).toFixed(2)}</span>
+      <span>vm: ${Number(c.vm || 0).toFixed(2)}</span>
     </div>
   `;
-  div.addEventListener("click", () => loadOrderbook(c.symbol));
+
+  div.addEventListener("click", () => openCoinModal(c));
   return div;
 }
 
-function renderStage(targetId, arr){
+function renderStage(targetId, arr) {
   const box = el(targetId);
   box.innerHTML = "";
-  if(!arr || arr.length===0){
+
+  if (!arr || arr.length === 0) {
     box.innerHTML = `<div class="empty">Geen coins.</div>`;
     return;
   }
-  for(const c of arr){
-    box.appendChild(coinRow(c));
-  }
+  for (const c of arr) box.appendChild(coinRow(c));
 }
 
-function renderAll(data){
+function renderAll(data) {
+  LAST = data;
+
   const ts = data?.ts ? new Date(data.ts) : null;
   const stamp = ts ? ts.toLocaleString() : "—";
 
-  const entry = data?.funnel?.entry || [];
-  const buildup = data?.funnel?.buildup || [];
-  const radar = data?.funnel?.radar || [];
+  const f = data?.funnel || {};
+  const radar = f.radar || [];
+  const buildup = f.buildup || [];
+  const entry = f.entry || [];
+  const hold = f.hold || [];
+  const sell = f.sell || [];
 
+  // entry list wisselt met tabs
+  const entryShown =
+    ENTRY_TAB === "entry" ? entry :
+    ENTRY_TAB === "hold"  ? hold :
+    sell;
+
+  const counts = data?.counts || {};
   el("statusLine").textContent =
-    `Mode: ${MODE.toUpperCase()} • Laatste update: ${stamp} • Entry ${entry.length} • Buildup ${buildup.length} • Radar ${radar.length}`;
+    `Mode: ${MODE.toUpperCase()} • Laatste update: ${stamp} • Radar ${counts.radar ?? radar.length} • Buildup ${counts.buildup ?? buildup.length} • Entry ${counts.entry ?? entry.length}`;
 
   el("funnelMeta").textContent =
-    `KV opslag: aan • Cron: elke 10 min • Klik coin = Bitget OB + z-score`;
+    `KV opslag: aan • Cron: elke 10 min • Klik coin = popup met Coin info + Bitget OB`;
 
-  renderStage("stageEntry", entry);
+  renderStage("stageEntry", entryShown);
   renderStage("stageBuildup", buildup);
   renderStage("stageRadar", radar);
 }
 
-async function loadLatest(){
-  try{
+async function loadLatest() {
+  try {
     el("statusLine").textContent = "Status: laden…";
     const r = await fetch(API.latest(MODE), { cache: "no-store" });
     const j = await r.json();
     renderAll(j || {});
-  }catch(e){
+  } catch (e) {
     el("statusLine").textContent = "Status: fout bij laden (check Vercel logs)";
   }
 }
 
-async function runScanNow(){
-  try{
+async function runScanNow() {
+  try {
     el("statusLine").textContent = "Status: scan bezig…";
     const r = await fetch(API.scan(MODE), { cache: "no-store" });
     const j = await r.json();
     renderAll(j || {});
-  }catch(e){
-    el("statusLine").textContent = "Status: scan fout (CoinGecko limit / server error)";
+  } catch (e) {
+    el("statusLine").textContent = "Status: scan fout (CoinGecko limit of server error)";
   }
 }
 
-async function loadOrderbook(symbol){
-  try{
-    el("obTitle").textContent = `${symbol} (Bitget OB + z-score)`;
-    el("obData").textContent = "Laden…";
+/* ================= POPUP / MODAL ================= */
 
-    const r = await fetch(API.ob(MODE, symbol), { cache:"no-store" });
+function openModal() {
+  el("modalBackdrop").classList.remove("hidden");
+}
+function closeModal() {
+  el("modalBackdrop").classList.add("hidden");
+}
+
+function coinInfoText(c) {
+  return [
+    `Symbol: ${c.symbol}`,
+    `Naam: ${c.name || "-"}`,
+    `Prijs: $${c.price}`,
+    `24h: ${fmtPct(c.change24)}`,
+    `Volume: $${fmtUSD(c.volume)}`,
+    `Marketcap: $${fmtUSD(c.marketCap)}`,
+    `VM ratio: ${Number(c.vm || 0).toFixed(4)}`,
+  ].join("\n");
+}
+
+async function openCoinModal(c) {
+  el("mTitle").textContent = `${c.symbol}`;
+  el("mSub").textContent = `Mode: ${MODE.toUpperCase()}`;
+  el("mCoin").textContent = coinInfoText(c);
+  el("mOb").textContent = "Orderbook laden…";
+  openModal();
+
+  try {
+    const r = await fetch(API.ob(c.symbol), { cache: "no-store" });
     const j = await r.json();
 
-    if(!j?.ok){
-      el("obData").textContent =
-        `OB ERROR:\n${j?.error || "unknown"}\n\nTip: niet elke CoinGecko coin staat op Bitget USDT.`;
+    if (!j?.ok) {
+      el("mOb").textContent =
+        `OB ERROR:\n${j?.error || "Onbekend"}\n\nTip: alleen coins met ${c.symbol}USDT spot op Bitget werken.`;
       return;
     }
 
-    el("obData").textContent =
-      `score: ${j.score.toFixed(4)}\n`+
-      `zScore: ${j.zScore.toFixed(2)} (samples ${j.samples})\n`+
-      `passed: ${j.passed}\n`+
-      `bidUsd: ${Math.round(j.bidUsd)}\n`+
-      `askUsd: ${Math.round(j.askUsd)}\n`+
-      `note: ${j.note}\n`;
-
-  }catch(e){
-    el("obData").textContent = "OB ERROR: fetch mislukt";
+    el("mOb").textContent =
+      `Mid: ${j.mid}\n` +
+      `Bid USD (depth): ${Math.round(j.bidUsd)}\n` +
+      `Ask USD (depth): ${Math.round(j.askUsd)}\n` +
+      `Score: ${Number(j.score).toFixed(4)}\n`;
+  } catch (e) {
+    el("mOb").textContent = `OB ERROR: fetch mislukt\n${String(e?.message || e)}`;
   }
 }
 
-// buttons
+/* =============== buttons =============== */
 el("modeBull").addEventListener("click", () => setMode("bull"));
 el("modeBear").addEventListener("click", () => setMode("bear"));
 el("scanNow").addEventListener("click", runScanNow);
 
-// start
-setMode(MODE);
+el("tabEntry").addEventListener("click", () => setTab("entry"));
+el("tabHold").addEventListener("click", () => setTab("hold"));
+el("tabSell").addEventListener("click", () => setTab("sell"));
 
-// UI refresh elke 30s (cron doet echte scan)
+el("mClose").addEventListener("click", closeModal);
+el("modalBackdrop").addEventListener("click", (e) => {
+  if (e.target === el("modalBackdrop")) closeModal();
+});
+
+// initial
+setMode(MODE);
+setTab("entry");
+
+// auto refresh UI elke 30s
 setInterval(loadLatest, 30000);
