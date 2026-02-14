@@ -76,7 +76,6 @@ export default async function handler(req, res) {
     // KV state
     const resetAt = (await kv.get(keyReset(mode))) || 0;
     const state = (await kv.get(keyState(mode))) || {};
-    // state[sym] = { stage, stageScans, enteredAt, priceHist, sideHist, metricsHist, volHist }
 
     // BTC mismatch => output leeg
     if (btc.state !== wanted) {
@@ -108,7 +107,7 @@ export default async function handler(req, res) {
         stage: "RADAR",
         stageScans: 0,
         enteredAt: now,
-        priceHist: [], // nu: [{ts,price}] (oude states met numbers worden automatisch genormalized)
+        priceHist: [],
         sideHist: [],
         metricsHist: { vol: [], range: [], vm: [], chg: [] },
         volHist: []
@@ -131,7 +130,7 @@ export default async function handler(req, res) {
 
       // price history (timestamped) + 1h change
       const priceHist = updatePriceHist(prev.priceHist, c.price);
-      const change1h = calcChange1hPct(priceHist); // kan null zijn in begin
+      const change1h = calcChange1hPct(priceHist);
 
       // volume history (6 samples-ish)
       const volHist = Array.isArray(prev.volHist) ? prev.volHist.slice(-5) : [];
@@ -157,17 +156,18 @@ export default async function handler(req, res) {
         spreadPct: Number(ob?.ob?.spreadPct ?? 999),
         lor: Number(ob?.ob?.lor ?? 1),
         agree: Number(ob?.agree ?? 0),
+        depthMinUsd1p: Number(ob?.ob?.depthMinUsd1p ?? 0), // ✅ nieuw
         reason: ob?.reason || ""
       } : null;
 
-      // OB samples => slope (alleen als je ob-sampler dit vult)
+      // OB samples => slope
       let obSlope = null;
       if (SETTINGS.entry.obSlopeEnabled) {
         const samples = await kv.get(keyObSamples(mode, sym));
         obSlope = calcObSlope(samples);
       }
 
-      // Confidence (wordt ook hard gate voor ENTRY)
+      // Confidence
       const conf = computeConfidence({
         obScore: obView?.score ?? 0,
         obAgree: obView?.agree ?? 0,
@@ -176,7 +176,7 @@ export default async function handler(req, res) {
         btc
       });
 
-      // ENTRY OK? (OB + consistency(75%) + confidence>=70 + slope)
+      // ENTRY OK? (OB + consistency(75%) + confidence>=70 + slope + depth 1%)
       const entryGate = passEntryFromObPlus({
         obView,
         mode,
@@ -246,7 +246,7 @@ export default async function handler(req, res) {
 
           if (stage === "ENTRY") {
             const obTxt = obView
-              ? `OB: ${obView.score.toFixed(3)} | spread: ${obView.spreadPct.toFixed(2)}% | LOR: ${obView.lor.toFixed(2)} | agree: ${obView.agree}/3`
+              ? `OB: ${obView.score.toFixed(3)} | spread: ${obView.spreadPct.toFixed(2)}% | LOR: ${obView.lor.toFixed(2)} | agree: ${obView.agree}/3 | depth1%: $${Math.round(obView.depthMinUsd1p)}`
               : `OB: (no data)`;
 
             const slopeTxt = Number.isFinite(obSlope) ? `OB slope: ${obSlope.toFixed(4)}` : `OB slope: n/a`;
@@ -296,6 +296,7 @@ export default async function handler(req, res) {
           lor: obView?.lor ?? null,
           obAgree: obView?.agree ?? null,
           obSlope,
+          depthMinUsd1p: obView?.depthMinUsd1p ?? null, // ✅ nieuw
           consistency: cons,
           volAcc,
           btc,
@@ -332,6 +333,7 @@ export default async function handler(req, res) {
           spreadPct: obView.spreadPct,
           lor: obView.lor,
           agree: obView.agree,
+          depthMinUsd1p: obView.depthMinUsd1p, // ✅ nieuw
           reason: obView.reason
         } : { status: "none" },
 
