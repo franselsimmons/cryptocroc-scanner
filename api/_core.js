@@ -3,7 +3,7 @@ import { kv } from "@vercel/kv";
 
 export const RUNTIME_CONFIG = { runtime: "nodejs20.x" };
 
-// ================== SETTINGS (v1 + upgrades) ==================
+// ================== SETTINGS (v1 + fases 0/1/2) ==================
 export const SETTINGS = {
   // Universe
   CG_TOP: 250,
@@ -40,7 +40,18 @@ export const SETTINGS = {
     largestOrderRatioMax: 0.35,
     samplesNeed: 3,
     samplesWindowSec: 90,
-    minAgree: 2           // 2/3 richting
+    minAgree: 2,          // 2/3 richting
+
+    // Fase 1 hard gates
+    minConfidence: 70,          // ENTRY alleen als conf >= 70
+    entryConsistencyMin: 0.75,  // ENTRY alleen als consistency >= 75%
+
+    // Fase 1 OB slope (alleen als samples bestaan)
+    // bull: slope >= 0 (druk niet afnemend), bear: slope <= 0
+    obSlopeEnabled: true,
+    obSlopeMinBull: 0.0,
+    obSlopeMaxBear: 0.0,
+    obSlopeMinSamples: 3,
   },
 
   // No-skip
@@ -48,7 +59,7 @@ export const SETTINGS = {
 
   // consistency window based
   consistencyWindowMin: 120, // 2 uur
-  consistencyMinRatio: 0.67, // 67%
+  consistencyMinRatio: 0.67, // 67% (voor BUILDUP/ALMOST)
   consistencyMinSamples: 6,
 
   // OB sampler selection (voor je OB-sampler job)
@@ -57,6 +68,9 @@ export const SETTINGS = {
 
   // CG cache
   cgCacheSec: 60 * 10, // 10 minuten
+
+  // Fase 2: Bitget ATR cache
+  atrCacheSec: 60 * 10, // 10 minuten
 };
 
 // ================== AUTH ==================
@@ -79,18 +93,21 @@ export function requireSecret(req, res) {
 
 // ================== KV KEYS ==================
 export const keyLatest = (mode) => `latest:${mode}`;
-export const keyState  = (mode) => `state:${mode}`;
-export const keyReset  = (mode) => `resetAt:${mode}`;
+export const keyState = (mode) => `state:${mode}`;
+export const keyReset = (mode) => `resetAt:${mode}`;
 export const keyBitgetSymbols = "bitget:symbols:spotusdt";
 
 export const keyObSamples = (side, symbol) => `ob:samples:${side}:${symbol}`;
-export const keyObResult  = (side, symbol) => `ob:result:${side}:${symbol}`;
+export const keyObResult = (side, symbol) => `ob:result:${side}:${symbol}`;
 
 export const keyEntryLog = "log:entry"; // list (best effort)
 
 // CG cache keys
 const keyCgTopCache = `cache:cg:top:${SETTINGS.CG_TOP}`;
 const keyCgBtcCache = `cache:cg:btc`;
+
+// ATR cache key
+const keyAtr1hCache = (symbol) => `cache:atr1h:${symbol}`;
 
 // ================== DISCORD ==================
 export async function sendDiscord(webhookUrl, content) {
@@ -107,10 +124,10 @@ export async function sendDiscord(webhookUrl, content) {
 }
 
 export function webhookForStage(stage) {
-  if (stage === "RADAR")  return process.env.DISCORD_WEBHOOK_RADAR;
-  if (stage === "BUILDUP")return process.env.DISCORD_WEBHOOK_BUILDUP;
+  if (stage === "RADAR") return process.env.DISCORD_WEBHOOK_RADAR;
+  if (stage === "BUILDUP") return process.env.DISCORD_WEBHOOK_BUILDUP;
   if (stage === "ALMOST") return process.env.DISCORD_WEBHOOK_ALMOST;
-  if (stage === "ENTRY")  return process.env.DISCORD_WEBHOOK_ENTRY;
+  if (stage === "ENTRY") return process.env.DISCORD_WEBHOOK_ENTRY;
   return null;
 }
 
@@ -127,7 +144,7 @@ export function fmtCoinLine(c, mode, stage, extra = "") {
   return lines.join("\n");
 }
 
-// ================== DATA FETCH ==================
+// ================== DATA FETCH (CoinGecko + cache) ==================
 export async function fetchCoinGeckoTop() {
   const url =
     `https://api.coingecko.com/api/v3/coins/markets?` +
@@ -140,7 +157,6 @@ export async function fetchCoinGeckoTop() {
   return arr.map((x) => normalizeCG(x));
 }
 
-// ✅ nieuw: cached variant (10 min)
 export async function fetchCoinGeckoTopCached() {
   const cached = await kv.get(keyCgTopCache);
   if (Array.isArray(cached) && cached.length) return cached;
@@ -179,7 +195,6 @@ export async function fetchBTCGate() {
   return { state, chg24, range24 };
 }
 
-// ✅ nieuw: cached BTC gate (10 min, zelfde cadence als scan)
 export async function fetchBTCGateCached() {
   const cached = await kv.get(keyCgBtcCache);
   if (cached && cached.state) return cached;
@@ -191,7 +206,7 @@ export async function fetchBTCGateCached() {
 
 function normalizeCG(x) {
   const high = Number(x.high_24h || 0);
-  const low  = Number(x.low_24h || 0);
+  const low = Number(x.low_24h || 0);
   const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
   const volume = Number(x.total_volume || 0);
@@ -229,7 +244,100 @@ export async function getBitgetSpotUsdtSymbols() {
   return new Set(list);
 }
 
+// ================== FASE 2: Bitget ATR(14) op 1H candles (spot) ==================
+// gebruikt Bitget UTA endpoint (category=SPOT) voor publieke candles
+// Docs: GET /api/v3/market/candles (category=SPOT, symbol=BTCUSDT, interval=1H, limit<=100)
+export async function fetchBitgetAtr1hPctCached(symbolUpper) {
+  const symbol = String(symbolUpper || "").toUpperCase();
+  if (!symbol) return null;
+
+  const k = keyAtr1hCache(symbol);
+  const cached = await kv.get(k);
+  if (cached && Number.isFinite(cached.atrPct)) return cached;
+
+  const fresh = await fetchBitgetAtr1hPct(symbol);
+  if (fresh && Number.isFinite(fresh.atrPct)) {
+    await kv.set(k, fresh, { ex: SETTINGS.atrCacheSec });
+  }
+  return fresh;
+}
+
+async function fetchBitgetAtr1hPct(symbolUpper) {
+  // spot sym format: BTCUSDT (zonder underscore)
+  const sym = `${symbolUpper}USDT`;
+
+  // we hebben ~ 15 candles nodig (ATR14 + prevClose)
+  const url =
+    `https://api.bitget.com/api/v3/market/candles?` +
+    `category=SPOT&symbol=${encodeURIComponent(sym)}&interval=1H&type=MARKET&limit=20`;
+
+  const j = await safeJsonFetch(url, 6500);
+  if (!j || j.code !== "00000" || !Array.isArray(j.data) || j.data.length < 15) {
+    return null;
+  }
+
+  // Bitget geeft candles als arrays: [ts, open, high, low, close, vol, turnover]
+  // Let op volgorde: niet vertrouwen; we sorteren op ts asc.
+  const candles = j.data
+    .map((row) => ({
+      ts: Number(row?.[0] || 0),
+      o: Number(row?.[1] || 0),
+      h: Number(row?.[2] || 0),
+      l: Number(row?.[3] || 0),
+      c: Number(row?.[4] || 0),
+    }))
+    .filter((x) => x.ts > 0 && x.h > 0 && x.l > 0 && x.c > 0)
+    .sort((a, b) => a.ts - b.ts);
+
+  if (candles.length < 15) return null;
+
+  // ATR(14) via True Range
+  const trs = [];
+  for (let i = 1; i < candles.length; i++) {
+    const cur = candles[i];
+    const prev = candles[i - 1];
+    const tr = Math.max(
+      cur.h - cur.l,
+      Math.abs(cur.h - prev.c),
+      Math.abs(cur.l - prev.c)
+    );
+    if (Number.isFinite(tr) && tr > 0) trs.push(tr);
+  }
+
+  if (trs.length < 14) return null;
+
+  const last14 = trs.slice(-14);
+  const atr = last14.reduce((a, b) => a + b, 0) / last14.length;
+  const lastClose = candles[candles.length - 1].c;
+  const atrPct = lastClose > 0 ? atr / lastClose : null;
+
+  if (!Number.isFinite(atrPct)) return null;
+
+  return {
+    atr: atr,
+    atrPct: clamp(atrPct, 0.002, 0.20), // 0.2%..20% guard
+    close: lastClose,
+    ts: Date.now(),
+    source: "bitget1h",
+  };
+}
+
+async function safeJsonFetch(url, timeoutMs) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, { headers: { accept: "application/json" }, signal: ctrl.signal });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 // ================== MINI-UPGRADES ==================
+// median spike guard
 export function applySpikeGuard(prevMetrics, cur) {
   const m = prevMetrics || { vol: [], range: [], vm: [], chg: [] };
 
@@ -273,9 +381,10 @@ function median(a) {
   return b.length % 2 ? b[mid] : (b[mid - 1] + b[mid]) / 2;
 }
 
+// consistency window
 export function updateSideHistory(prevHist, side) {
   const now = Date.now();
-  const h = Array.isArray(prevHist) ? prevHist.slice(-60) : [];
+  const h = Array.isArray(prevHist) ? prevHist.slice(-80) : [];
   h.push({ ts: now, side });
   return pruneSideHistory(h);
 }
@@ -294,9 +403,65 @@ export function calcConsistency(hist, wantedSide) {
   return { ok: ratio >= SETTINGS.consistencyMinRatio, ratio, total, same };
 }
 
+// dynamic range cap based on btcRange
 export function coinRangeCapFromBTC(btcRange24) {
   const raw = 30 + (Number(btcRange24 || 0) - 5) * 2;
   return clamp(raw, SETTINGS.coinRangeCapMin, SETTINGS.coinRangeCapMax);
+}
+
+// ================== PRICE HISTORY + 1H CHANGE (FASE 1) ==================
+export function updatePriceHist(prevPriceHist, price) {
+  const now = Date.now();
+  const hist = normalizePriceHist(prevPriceHist).slice(-80); // hard cap
+  hist.push({ ts: now, price: Number(price || 0) });
+  return hist;
+}
+
+export function normalizePriceHist(prev) {
+  if (!Array.isArray(prev)) return [];
+  // support oude state: [number, number]
+  if (prev.length && typeof prev[0] === "number") {
+    return prev
+      .map((p, i) => ({ ts: Date.now() - (prev.length - i) * 10 * 60 * 1000, price: Number(p || 0) }))
+      .filter((x) => x.price > 0);
+  }
+  return prev
+    .map((x) => ({ ts: Number(x?.ts || 0), price: Number(x?.price || 0) }))
+    .filter((x) => x.ts > 0 && x.price > 0);
+}
+
+// pakt de prijs die minimaal 55 min oud is (robust bij gemiste scans)
+export function calcChange1hPct(priceHist) {
+  const h = normalizePriceHist(priceHist).sort((a, b) => a.ts - b.ts);
+  const now = Date.now();
+  const cutoff = now - 55 * 60 * 1000; // 55 min
+  const older = h.filter((x) => x.ts <= cutoff);
+  const last = h[h.length - 1];
+  if (!last || last.price <= 0 || older.length === 0) return null;
+  const base = older[older.length - 1].price;
+  if (!base || base <= 0) return null;
+  return ((last.price - base) / base) * 100;
+}
+
+// ================== OB SLOPE (FASE 1) ==================
+// verwacht samples: [{ts, score}] of [{ts, obScore}] etc.
+export function calcObSlope(samples) {
+  if (!Array.isArray(samples) || samples.length < SETTINGS.entry.obSlopeMinSamples) return null;
+  const s = samples
+    .map((x) => ({
+      ts: Number(x?.ts || 0),
+      score: Number(x?.score ?? x?.obScore ?? x?.avgScore ?? 0),
+    }))
+    .filter((x) => x.ts > 0 && Number.isFinite(x.score))
+    .sort((a, b) => a.ts - b.ts);
+
+  if (s.length < SETTINGS.entry.obSlopeMinSamples) return null;
+
+  const first = s[0].score;
+  const last = s[s.length - 1].score;
+  const n = s.length - 1;
+  if (n <= 0) return null;
+  return (last - first) / n; // per sample stap
 }
 
 // ================== FILTERS ==================
@@ -327,9 +492,11 @@ export function passBuildup(c, mode, consistencyOk) {
 }
 
 export function priceFlatOk(priceHist, maxPct) {
-  if (!Array.isArray(priceHist) || priceHist.length < 2) return true;
-  const min = Math.min(...priceHist);
-  const max = Math.max(...priceHist);
+  const h = normalizePriceHist(priceHist);
+  if (h.length < 2) return true;
+  const prices = h.map((x) => x.price);
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
   if (min <= 0) return true;
   const pct = ((max - min) / min) * 100;
   return pct <= maxPct;
@@ -341,6 +508,39 @@ export function passAlmost(c, mode, priceHist, consistencyOk) {
   if (c.volume < SETTINGS.almost.volMin) return false;
   if (!priceFlatOk(priceHist, SETTINGS.almost.priceFlatMax)) return false;
   return true;
+}
+
+// ENTRY gate based on OB result + spread/lor + thresholds + slope + hard gates
+export function passEntryFromObPlus({
+  obView,
+  mode,
+  consistencyRatio,
+  confidence,
+  obSlope,
+}) {
+  // OB basis
+  const base = passEntryFromOb(obView, mode);
+  if (!base.ok) return base;
+
+  // hard gates (fase 1)
+  if (Number(confidence || 0) < SETTINGS.entry.minConfidence) {
+    return { ok: false, why: `Confidence < ${SETTINGS.entry.minConfidence}` };
+  }
+  if (Number(consistencyRatio || 0) < SETTINGS.entry.entryConsistencyMin) {
+    return { ok: false, why: `Consistency < ${(SETTINGS.entry.entryConsistencyMin * 100).toFixed(0)}%` };
+  }
+
+  // OB slope (als samples bestaan)
+  if (SETTINGS.entry.obSlopeEnabled && Number.isFinite(obSlope)) {
+    if (mode === "bull" && obSlope < SETTINGS.entry.obSlopeMinBull) {
+      return { ok: false, why: "OB slope down" };
+    }
+    if (mode === "bear" && obSlope > SETTINGS.entry.obSlopeMaxBear) {
+      return { ok: false, why: "OB slope up" };
+    }
+  }
+
+  return { ok: true, why: "ENTRY gates passed" };
 }
 
 export function passEntryFromOb(ob, mode) {
@@ -363,9 +563,9 @@ export function passEntryFromOb(ob, mode) {
   return { ok: true, why: "OB gate passed" };
 }
 
-export function nextDesiredStage(c, mode, priceHist, consistencyOk, btcRange24, obGateOk) {
+export function nextDesiredStage(c, mode, priceHist, consistencyOk, btcRange24, entryOk) {
   if (!passRadar(c, btcRange24)) return "OUT";
-  if (obGateOk) return "ENTRY";
+  if (entryOk) return "ENTRY";
   if (passAlmost(c, mode, priceHist, consistencyOk)) return "ALMOST";
   if (passBuildup(c, mode, consistencyOk)) return "BUILDUP";
   return "RADAR";
@@ -393,13 +593,16 @@ export function computeConfidence({ obScore, obAgree, vm, volAcc, btc }) {
   return Math.round(clamp(score, 0, 100));
 }
 
+// fallback ATR proxy (scan-based)
 export function computeAtrPctFromPriceHist(priceHist) {
-  if (!Array.isArray(priceHist) || priceHist.length < 3) return 0.01; // 1% fallback
+  const h = normalizePriceHist(priceHist);
+  if (h.length < 3) return 0.01;
+
   let sum = 0;
   let n = 0;
-  for (let i = 1; i < priceHist.length; i++) {
-    const a = Number(priceHist[i - 1] || 0);
-    const b = Number(priceHist[i] || 0);
+  for (let i = 1; i < h.length; i++) {
+    const a = Number(h[i - 1]?.price || 0);
+    const b = Number(h[i]?.price || 0);
     if (a > 0 && b > 0) {
       sum += Math.abs(b - a) / a;
       n++;
@@ -420,17 +623,17 @@ export function computeSLTP({ mode, price, atrPct }) {
 
 // ================== HELPERS ==================
 function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
-function clamp01(n){ return clamp(n, 0, 1); }
-function mapLinear(x, a, b){
+function clamp01(n) { return clamp(n, 0, 1); }
+function mapLinear(x, a, b) {
   if (b === a) return 0;
   return (Number(x || 0) - a) / (b - a);
 }
 function num(n) { return (Number(n) || 0).toFixed(2); }
-function sign(n){ return `${n >= 0 ? "+" : ""}${num(n)}`; }
-function short(n){
-  n = Number(n)||0;
-  if (n >= 1e9) return (n/1e9).toFixed(2)+"B";
-  if (n >= 1e6) return (n/1e6).toFixed(2)+"M";
-  if (n >= 1e3) return (n/1e3).toFixed(2)+"K";
+function sign(n) { return `${n >= 0 ? "+" : ""}${num(n)}`; }
+function short(n) {
+  n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
   return n.toFixed(0);
 }
