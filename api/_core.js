@@ -1,69 +1,238 @@
-export const config = { runtime: "nodejs" };
+// /api/_core.js
+import { kv } from "@vercel/kv";
 
-export const CFG = {
-  // --- BTC gate (v1 defaults) ---
-  btcBullChange24: 0.8,     // bull als >= +0.8%
-  btcBearChange24: 0.8,     // bear als <= -0.8%
-  btcRangeMin: 2.0,         // minimaal 2% range24
-  btcBullRangeMax: 8.0,     // bull max range
-  btcBearRangeMax: 10.0,    // bear max range
+export const RUNTIME_CONFIG = { runtime: "nodejs" };
 
-  // --- Pool / RADAR ---
-  pool: {
-    mcapMin: 5_000_000,
-    volMinRadar: 500_000,
-    vmMinRadar: 0.15,
-    maxAbsChange24: 35,
-    maxRange24: 30,
-    radarMax: 160
-  },
+// ====== BASIS SETTINGS (v1 defaults) ======
+export const SETTINGS = {
+  // Universe / limits
+  CG_TOP: 250,
+  RADAR_LIMIT: 160,
 
-  // --- Stages ---
-  stage: {
-    buildupChangeMin: 1.2,
-    buildupVmMin: 0.22,
-    buildupVolMin: 1_200_000,
+  // Poolfilters (RADAR)
+  mcapMin: 5_000_000,
+  mcapMax: 400_000_000,      // wil je dit later hoger/uit? pas hier aan
+  volMinRadar: 500_000,
+  vmMinRadar: 0.15,
+  maxAbsChg24: 35,
+  maxRange24: 30,
 
-    almostVmMin: 0.26,
-    almostVolMin: 2_000_000,
+  // BTC gate
+  btcChgGate: 0.8,           // +0.8 / -0.8
+  btcRangeMin: 2,
+  btcRangeMaxBull: 8,
+  btcRangeMaxBear: 10,
 
-    entryAbsMin: 2,
-    entryAbsMax: 22,
-    entryLateAbsMax: 35,
-    entryLateVmMin: 0.35,
-    entryLateObMin: 0.12
-  },
+  // Stage eisen
+  buildup: { chgMin: 1.2, vmMin: 0.22, volMin: 1_200_000 },
+  almost:  { vmMin: 0.26, volMin: 2_000_000, priceFlatMax: 6.5 },
 
-  // --- Orderbook gates ---
-  ob: {
-    // jouw v1 keuze: killers maar niet te extreem
-    scoreMinAbs: 0.06,
-    spreadMaxEntry: 0.55,
-    largestOrderRatioMax: 0.35,
-
-    // stale
-    obStaleSec: 15
-  }
+  // “Geen overslaan” rule
+  minScansPerStage: 2,       // moet 2 scans in RADAR voordat BUILDUP, etc.
 };
 
-// helpers (laat je bestaande staan)
-export async function fetchJSON(url){
-  const r = await fetch(url);
-  if(!r.ok) throw new Error(`Fetch failed (${r.status})`);
-  return r.json();
+// ====== DISCORD ======
+export async function sendDiscord(webhookUrl, content) {
+  if (!webhookUrl) return;
+  try {
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+  } catch {
+    // bewust stil: discord mag je scan niet slopen
+  }
 }
 
-export function vmRatio(c){
-  return c.total_volume / c.market_cap;
+export function webhookForStage(stage) {
+  if (stage === "RADAR")  return process.env.DISCORD_WEBHOOK_RADAR;
+  if (stage === "BUILDUP")return process.env.DISCORD_WEBHOOK_BUILDUP;
+  if (stage === "ALMOST") return process.env.DISCORD_WEBHOOK_ALMOST;
+  if (stage === "ELITE")  return process.env.DISCORD_WEBHOOK_ELITE; // jouw “ENTRY/HOLD/SELL” kanaal
+  return null;
 }
 
-export function mapCoin(c){
-  return {
-    symbol: c.symbol.toUpperCase(),
-    price: c.current_price,
-    volume: c.total_volume,
-    marketCap: c.market_cap,
-    change24: c.price_change_percentage_24h,
-    vm: vmRatio(c)
-  };
+export function fmtCoinLine(c, mode, stage) {
+  const base = "https://cryptocroc-scanner-omega.vercel.app";
+  const page = `${base}/?mode=${encodeURIComponent(mode)}`;
+  return [
+    `**${c.symbol}** → **${stage}** (${mode.toUpperCase()})`,
+    `prijs: $${num(c.price)} | chg24: ${sign(c.change24)}% | range24: ${num(c.range24)}%`,
+    `vol: $${short(c.volume)} | mc: $${short(c.marketCap)} | vm: ${num(c.vm)}`,
+    `open: ${page}`,
+  ].join("\n");
+}
+
+// ====== AUTH ======
+export function requireSecret(req, res) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return true;
+
+  const auth = req.headers?.authorization || "";
+  const token = req.query?.token ? String(req.query.token) : "";
+
+  const ok = auth === `Bearer ${secret}` || token === secret;
+  if (!ok) {
+    res.statusCode = 401;
+    res.setHeader?.("content-type", "application/json");
+    res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
+    return false;
+  }
+  return true;
+}
+
+// ====== KV KEYS ======
+export const keyLatest = (mode) => `latest:${mode}`;
+export const keyState  = (mode) => `state:${mode}`;
+export const keyReset  = (mode) => `resetAt:${mode}`; // timestamp: na reset moet coin opnieuw opbouwen
+export const keyBitgetSymbols = "bitget:symbols:spotusdt";
+
+// ====== DATA FETCH ======
+export async function fetchCoinGeckoTop() {
+  const url =
+    `https://api.coingecko.com/api/v3/coins/markets?` +
+    `vs_currency=usd&order=market_cap_desc&per_page=${SETTINGS.CG_TOP}&page=1` +
+    `&sparkline=false&price_change_percentage=24h`;
+
+  const r = await fetch(url, { headers: { "accept": "application/json" } });
+  if (!r.ok) throw new Error(`CoinGecko markets failed ${r.status}`);
+  const arr = await r.json();
+
+  // normalize
+  return arr.map((x) => {
+    const high = Number(x.high_24h || 0);
+    const low  = Number(x.low_24h || 0);
+    const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
+
+    const volume = Number(x.total_volume || 0);
+    const marketCap = Number(x.market_cap || 0);
+    const vm = marketCap > 0 ? volume / marketCap : 0;
+
+    return {
+      id: x.id,
+      symbol: String(x.symbol || "").toUpperCase(),
+      name: x.name,
+      price: Number(x.current_price || 0),
+      change24: Number(x.price_change_percentage_24h || 0),
+      range24,
+      volume,
+      marketCap,
+      vm,
+    };
+  });
+}
+
+export async function fetchBTCGate() {
+  // 1 coin markets call (zelfde bron als coins)
+  const url =
+    `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin&sparkline=false&price_change_percentage=24h`;
+
+  const r = await fetch(url, { headers: { "accept": "application/json" } });
+  if (!r.ok) throw new Error(`CoinGecko BTC failed ${r.status}`);
+  const [x] = await r.json();
+
+  const chg24 = Number(x.price_change_percentage_24h || 0);
+  const high = Number(x.high_24h || 0);
+  const low  = Number(x.low_24h || 0);
+  const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
+
+  const bull =
+    chg24 >= SETTINGS.btcChgGate &&
+    range24 >= SETTINGS.btcRangeMin &&
+    range24 <= SETTINGS.btcRangeMaxBull;
+
+  const bear =
+    chg24 <= -SETTINGS.btcChgGate &&
+    range24 >= SETTINGS.btcRangeMin &&
+    range24 <= SETTINGS.btcRangeMaxBear;
+
+  let state = "NEUTRAL";
+  if (bull) state = "BULL";
+  else if (bear) state = "BEAR";
+
+  return { state, chg24, range24 };
+}
+
+export async function getBitgetSpotUsdtSymbols() {
+  // cache 24h in KV
+  const cached = await kv.get(keyBitgetSymbols);
+  if (Array.isArray(cached) && cached.length) return new Set(cached);
+
+  const url = "https://api.bitget.com/api/v2/spot/public/symbols";
+  const r = await fetch(url, { headers: { "accept": "application/json" } });
+  if (!r.ok) throw new Error(`Bitget symbols failed ${r.status}`);
+  const j = await r.json();
+
+  const list = (j?.data || [])
+    .filter((s) => String(s?.quoteCoin || "").toUpperCase() === "USDT")
+    .map((s) => String(s?.baseCoin || "").toUpperCase())
+    .filter(Boolean);
+
+  await kv.set(keyBitgetSymbols, list, { ex: 60 * 60 * 24 });
+  return new Set(list);
+}
+
+// ====== FILTERS ======
+export function passRadar(c) {
+  if (c.marketCap < SETTINGS.mcapMin) return false;
+  if (c.marketCap > SETTINGS.mcapMax) return false;
+  if (c.volume < SETTINGS.volMinRadar) return false;
+  if (c.vm < SETTINGS.vmMinRadar) return false;
+  if (Math.abs(c.change24) > SETTINGS.maxAbsChg24) return false;
+  if (c.range24 > SETTINGS.maxRange24) return false;
+  return true;
+}
+
+export function passBuildup(c, mode) {
+  const chgOk = mode === "bull" ? c.change24 >= SETTINGS.buildup.chgMin : c.change24 <= -SETTINGS.buildup.chgMin;
+  if (!chgOk) return false;
+  if (c.vm < SETTINGS.buildup.vmMin) return false;
+  if (c.volume < SETTINGS.buildup.volMin) return false;
+  return true;
+}
+
+export function priceFlatOk(priceHist, maxPct) {
+  if (!Array.isArray(priceHist) || priceHist.length < 2) return true; // nog geen historie -> ok
+  const min = Math.min(...priceHist);
+  const max = Math.max(...priceHist);
+  if (min <= 0) return true;
+  const pct = ((max - min) / min) * 100;
+  return pct <= maxPct;
+}
+
+export function passAlmost(c, mode, priceHist) {
+  if (!passBuildup(c, mode)) return false;
+  if (c.vm < SETTINGS.almost.vmMin) return false;
+  if (c.volume < SETTINGS.almost.volMin) return false;
+  if (!priceFlatOk(priceHist, SETTINGS.almost.priceFlatMax)) return false;
+  return true;
+}
+
+// ====== STAGE LOGIC ======
+export function nextDesiredStage(c, mode, priceHist) {
+  // alleen tot ALMOST in v1 (ELITE/ENTRY komt later via OB gate)
+  if (!passRadar(c)) return "OUT";
+  if (passAlmost(c, mode, priceHist)) return "ALMOST";
+  if (passBuildup(c, mode)) return "BUILDUP";
+  return "RADAR";
+}
+
+export function stageRank(stage) {
+  if (stage === "RADAR") return 1;
+  if (stage === "BUILDUP") return 2;
+  if (stage === "ALMOST") return 3;
+  if (stage === "ELITE") return 4;
+  return 0;
+}
+
+// helpers
+function num(n) { return (Number(n) || 0).toFixed(2); }
+function sign(n){ return `${n >= 0 ? "+" : ""}${num(n)}`; }
+function short(n){
+  n = Number(n)||0;
+  if (n >= 1e9) return (n/1e9).toFixed(2)+"B";
+  if (n >= 1e6) return (n/1e6).toFixed(2)+"M";
+  if (n >= 1e3) return (n/1e3).toFixed(2)+"K";
+  return n.toFixed(0);
 }
