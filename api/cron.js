@@ -9,21 +9,12 @@ function makeRes() {
     statusCode: 200,
     headers: {},
     body: "",
-    setHeader(k, v) {
-      this.headers[String(k).toLowerCase()] = v;
-    },
-    end(txt) {
-      this.body = txt || "";
-    },
+    setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; },
+    end(txt) { this.body = txt || ""; },
   };
 }
-
 function safeJson(txt) {
-  try {
-    return JSON.parse(txt);
-  } catch {
-    return { raw: String(txt || "") };
-  }
+  try { return JSON.parse(txt); } catch { return { raw: String(txt || "") }; }
 }
 
 export default async function handler(req, res) {
@@ -44,17 +35,15 @@ export default async function handler(req, res) {
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    res.end(
-      JSON.stringify({
-        ok: true,
-        ts: Date.now(),
-        bull: safeJson(resBull.body),
-        bear: safeJson(resBear.body),
-      })
-    );
+    res.end(JSON.stringify({
+      ok: true,
+      ts: Date.now(),
+      bull: safeJson(resBull.body),
+      bear: safeJson(resBear.body),
+    }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: false, error: String(e) }));
+    res.end(JSON.stringify({ ok:false, error:String(e) }));
   }
 }
