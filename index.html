@@ -8,64 +8,64 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="left">
-      <div class="brand">CryptoCroc Scanner</div>
-      <div class="sub" id="statusLine">Status: laden…</div>
-    </div>
+    <div class="page topbarInner">
+      <div>
+        <div class="brand">CryptoCroc Scanner</div>
+        <div class="sub" id="statusLine">Status: laden…</div>
+      </div>
 
-    <div class="right">
-      <button id="modeBull" class="btn">BULL</button>
-      <button id="modeBear" class="btn">BEAR</button>
-
-      <!-- reset link (met token via query) zetten we in app.js in de UI -->
-      <a id="resetLink" class="btn" href="#" target="_blank" rel="noopener">Reset</a>
+      <div class="right">
+        <div class="btnGroup">
+          <button id="modeBull" class="btn">BULL</button>
+          <button id="modeBear" class="btn">BEAR</button>
+        </div>
+        <a id="resetLink" class="btn reset" href="#" target="_blank" rel="noopener">Reset</a>
+      </div>
     </div>
   </header>
 
-  <main class="grid">
+  <main class="page main">
     <section class="panel">
-      <div class="panelTitle">Funnel</div>
-      <div class="panelHint" id="funnelMeta">—</div>
+      <div class="panelHeader">
+        <div class="panelTitle">Funnel</div>
+        <div class="panelHint" id="funnelMeta">—</div>
+      </div>
 
-      <div class="stage">
-        <div class="stageTitle">ENTRY</div>
+      <details class="stage" open>
+        <summary>
+          <div class="stageTitle">ENTRY <span class="badge" id="cntEntry">0</span></div>
+          <span class="badge">tap om te openen</span>
+        </summary>
         <div class="stageBody" id="stageEntry"></div>
-      </div>
+      </details>
 
-      <div class="stage">
-        <div class="stageTitle">ALMOST</div>
+      <details class="stage" open>
+        <summary>
+          <div class="stageTitle">ALMOST <span class="badge" id="cntAlmost">0</span></div>
+          <span class="badge">tap om te openen</span>
+        </summary>
         <div class="stageBody" id="stageAlmost"></div>
-      </div>
+      </details>
 
-      <div class="stage">
-        <div class="stageTitle">BUILDUP</div>
+      <details class="stage" open>
+        <summary>
+          <div class="stageTitle">BUILDUP <span class="badge" id="cntBuildup">0</span></div>
+          <span class="badge">tap om te openen</span>
+        </summary>
         <div class="stageBody" id="stageBuildup"></div>
-      </div>
+      </details>
 
-      <div class="stage">
-        <div class="stageTitle">RADAR</div>
+      <details class="stage" open>
+        <summary>
+          <div class="stageTitle">RADAR <span class="badge" id="cntRadar">0</span></div>
+          <span class="badge">tap om te openen</span>
+        </summary>
         <div class="stageBody" id="stageRadar"></div>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panelTitle">Uitleg</div>
-      <div class="panelHint">
-        Klik op een coin → popup met: waarom staat hij hier, strength, consistency, wat mist voor volgende stage, en orderbook.
-      </div>
-
-      <div class="obBox">
-        <div class="obTitle">Tip</div>
-        <pre class="obPre">
-- BTC gate moet matchen (bull/bear), anders is alles leeg.
-- Reset betekent: iedereen weer terug naar RADAR en opnieuw opbouwen.
-- Consistency werkt op 2 uur (min 6 samples) → eerst “warm-up”.
-        </pre>
-      </div>
+      </details>
     </section>
   </main>
 
-  <!-- MODAL POPUP -->
+  <!-- MODAL -->
   <div class="modal hidden" id="modal">
     <div class="modalCard">
       <div class="modalTop">
@@ -93,19 +93,19 @@
         </div>
 
         <div class="modalBox">
-          <div class="modalBoxTitle">Orderbook (Bitget)</div>
-          <pre class="modalPre" id="mOB">Klik “laden…”</pre>
-          <button class="btn primary" id="mObBtn">Orderbook laden</button>
+          <div class="modalBoxTitle">Orderbook</div>
+          <pre class="modalPre" id="mOB">Klik “Orderbook laden”.</pre>
+          <button class="btn" id="mObBtn">Orderbook laden</button>
         </div>
 
         <div class="modalBox">
-          <div class="modalBoxTitle">SL / TP (placeholder v1)</div>
-          <pre class="modalPre" id="mRisk">SL/TP komt in stap 2 (ATR). Voor nu tonen we alleen “plan” in tekst.</pre>
-        </div>
-
-        <div class="modalBox">
-          <div class="modalBoxTitle">BTC Gate</div>
+          <div class="modalBoxTitle">BTC gate</div>
           <pre class="modalPre" id="mBTC">—</pre>
+        </div>
+
+        <div class="modalBox">
+          <div class="modalBoxTitle">Plan</div>
+          <pre class="modalPre" id="mRisk">—</pre>
         </div>
       </div>
     </div>
