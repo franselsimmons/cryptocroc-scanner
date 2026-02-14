@@ -1,116 +1,115 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="nl">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CryptoCroc Scanner</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="page topbarInner">
-      <div>
-        <div class="brand">CryptoCroc Scanner</div>
-        <div class="sub" id="statusLine">Status: laden…</div>
-      </div>
 
-      <div class="right">
-        <div class="btnGroup">
-          <button id="modeBull" class="btn">BULL</button>
-          <button id="modeBear" class="btn">BEAR</button>
-        </div>
-        <a id="resetLink" class="btn reset" href="#" target="_blank" rel="noopener">Reset</a>
-      </div>
+<div class="topbar">
+  <div>
+    <div class="brand">CryptoCroc Scanner</div>
+    <div id="sub" class="sub">Laden…</div>
+  </div>
+
+  <div class="actions">
+    <button id="btnBull" class="btn">BULL</button>
+    <button id="btnBear" class="btn">BEAR</button>
+    <button id="btnReset" class="btn ghost">Reset</button>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel">
+    <div class="panelTitle">Funnel</div>
+    <div id="hint" class="panelHint">—</div>
+
+    <div class="stage">
+      <div class="stageTitle">ENTRY</div>
+      <div id="list-entry" class="stageBody"></div>
     </div>
-  </header>
 
-  <main class="page main">
-    <section class="panel">
-      <div class="panelHeader">
-        <div class="panelTitle">Funnel</div>
-        <div class="panelHint" id="funnelMeta">—</div>
-      </div>
+    <div class="stage">
+      <div class="stageTitle">ALMOST</div>
+      <div id="list-almost" class="stageBody"></div>
+    </div>
 
-      <details class="stage" open>
-        <summary>
-          <div class="stageTitle">ENTRY <span class="badge" id="cntEntry">0</span></div>
-          <span class="badge">tap om te openen</span>
-        </summary>
-        <div class="stageBody" id="stageEntry"></div>
-      </details>
+    <div class="stage">
+      <div class="stageTitle">BUILDUP</div>
+      <div id="list-buildup" class="stageBody"></div>
+    </div>
 
-      <details class="stage" open>
-        <summary>
-          <div class="stageTitle">ALMOST <span class="badge" id="cntAlmost">0</span></div>
-          <span class="badge">tap om te openen</span>
-        </summary>
-        <div class="stageBody" id="stageAlmost"></div>
-      </details>
-
-      <details class="stage" open>
-        <summary>
-          <div class="stageTitle">BUILDUP <span class="badge" id="cntBuildup">0</span></div>
-          <span class="badge">tap om te openen</span>
-        </summary>
-        <div class="stageBody" id="stageBuildup"></div>
-      </details>
-
-      <details class="stage" open>
-        <summary>
-          <div class="stageTitle">RADAR <span class="badge" id="cntRadar">0</span></div>
-          <span class="badge">tap om te openen</span>
-        </summary>
-        <div class="stageBody" id="stageRadar"></div>
-      </details>
-    </section>
-  </main>
-
-  <!-- MODAL -->
-  <div class="modal hidden" id="modal">
-    <div class="modalCard">
-      <div class="modalTop">
-        <div>
-          <div class="modalTitle" id="mTitle">—</div>
-          <div class="modalSub" id="mSub">—</div>
-        </div>
-        <button class="btn" id="mClose">Sluiten</button>
-      </div>
-
-      <div class="modalGrid">
-        <div class="modalBox">
-          <div class="modalBoxTitle">Waarom staat hij hier?</div>
-          <pre class="modalPre" id="mWhy">—</pre>
-        </div>
-
-        <div class="modalBox">
-          <div class="modalBoxTitle">Wat mist voor volgende stap?</div>
-          <pre class="modalPre" id="mNeed">—</pre>
-        </div>
-
-        <div class="modalBox">
-          <div class="modalBoxTitle">Stats</div>
-          <pre class="modalPre" id="mStats">—</pre>
-        </div>
-
-        <div class="modalBox">
-          <div class="modalBoxTitle">Orderbook</div>
-          <pre class="modalPre" id="mOB">Klik “Orderbook laden”.</pre>
-          <button class="btn" id="mObBtn">Orderbook laden</button>
-        </div>
-
-        <div class="modalBox">
-          <div class="modalBoxTitle">BTC gate</div>
-          <pre class="modalPre" id="mBTC">—</pre>
-        </div>
-
-        <div class="modalBox">
-          <div class="modalBoxTitle">Plan</div>
-          <pre class="modalPre" id="mRisk">—</pre>
-        </div>
-      </div>
+    <div class="stage">
+      <div class="stageTitle">RADAR</div>
+      <div id="list-radar" class="stageBody"></div>
     </div>
   </div>
 
-  <script src="/app.js"></script>
+  <div class="panel">
+    <div class="panelTitle">Uitleg</div>
+    <div class="panelHint">
+      Klik op een coin voor popup met: waarom hij hier staat, wat ontbreekt voor de volgende stap,
+      consistency, orderbook-status en SL/TP.
+    </div>
+
+    <div class="mini">
+      <div class="miniTitle">Handige links</div>
+      <div class="miniBody">
+        <div class="miniRow"><span>Latest (bull)</span><a href="/api/latest?mode=bull" target="_blank">open</a></div>
+        <div class="miniRow"><span>Latest (bear)</span><a href="/api/latest?mode=bear" target="_blank">open</a></div>
+        <div class="miniRow"><span>Cron</span><a href="/api/cron" target="_blank">open</a></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL -->
+<div id="modal" class="modal hidden">
+  <div class="modalCard">
+    <div class="modalTop">
+      <div>
+        <div id="mTitle" class="modalTitle">—</div>
+        <div id="mSub" class="modalSub">—</div>
+      </div>
+      <button id="mClose" class="btn">Sluiten</button>
+    </div>
+
+    <div class="modalGrid">
+      <div class="modalBox">
+        <div class="modalBoxTitle">Samenvatting</div>
+        <div id="mSummary" class="kv"></div>
+      </div>
+
+      <div class="modalBox">
+        <div class="modalBoxTitle">SL / TP</div>
+        <div id="mRisk" class="kv"></div>
+      </div>
+
+      <div class="modalBox">
+        <div class="modalBoxTitle">Waarom staat hij hier?</div>
+        <div id="mWhy" class="kv"></div>
+      </div>
+
+      <div class="modalBox">
+        <div class="modalBoxTitle">Wat mist hij voor next stage?</div>
+        <div id="mNeed" class="kv"></div>
+      </div>
+
+      <div class="modalBox">
+        <div class="modalBoxTitle">Consistency</div>
+        <div id="mCons" class="kv"></div>
+      </div>
+
+      <div class="modalBox">
+        <div class="modalBoxTitle">Orderbook</div>
+        <div id="mOb" class="kv"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
 </body>
 </html>
