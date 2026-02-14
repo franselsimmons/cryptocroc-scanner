@@ -1,234 +1,185 @@
-const el = (id) => document.getElementById(id);
+// /app.js
+let MODE = (new URLSearchParams(location.search).get("mode") || "bull").toLowerCase();
+if (MODE !== "bull" && MODE !== "bear") MODE = "bull";
 
-const API = {
-  latest: (mode) => `/api/latest?mode=${encodeURIComponent(mode)}`,
-  ob: (symbol, side) => `/api/orderbook?symbol=${encodeURIComponent(symbol)}&side=${encodeURIComponent(side)}`
-};
+const $ = (id) => document.getElementById(id);
 
-let MODE = new URLSearchParams(location.search).get("mode") || localStorage.getItem("MODE") || "bull";
-let MODAL_COIN = null;
-
-function fmtUSD(n){
-  if(!Number.isFinite(n)) return "-";
-  if(n >= 1e9) return (n/1e9).toFixed(2)+"B";
-  if(n >= 1e6) return (n/1e6).toFixed(2)+"M";
-  if(n >= 1e3) return (n/1e3).toFixed(2)+"K";
-  return String(Math.round(n));
+function money(n){
+  n = Number(n)||0;
+  if (n >= 1e9) return (n/1e9).toFixed(2)+"B";
+  if (n >= 1e6) return (n/1e6).toFixed(2)+"M";
+  if (n >= 1e3) return (n/1e3).toFixed(2)+"K";
+  return n.toFixed(0);
 }
-function fmtPct(n){
-  if(!Number.isFinite(n)) return "-";
-  const s = n >= 0 ? "+" : "";
-  return s + n.toFixed(2) + "%";
-}
-function fmtNum(n){ return (Number(n)||0).toFixed(2); }
+function num(n){ return (Number(n)||0).toFixed(2); }
+function pct(n){ n=Number(n)||0; return (n>=0?"+":"")+num(n)+"%"; }
 
-function setMode(mode){
-  MODE = mode;
-  localStorage.setItem("MODE", mode);
-  el("modeBull").classList.toggle("active", mode==="bull");
-  el("modeBear").classList.toggle("active", mode==="bear");
-  loadLatest();
+function setMode(m){
+  MODE = m;
+  const url = new URL(location.href);
+  url.searchParams.set("mode", MODE);
+  history.replaceState({}, "", url.toString());
+  updateButtons();
+  load();
 }
 
-// nette coin row: rustig, 2 regels, belangrijkst bovenaan
-function coinRow(c){
-  const div = document.createElement("div");
-  div.className = "coinRow";
-
-  const strength = Math.round(c.strength || 0);
-  const cons = (c.consistency == null) ? null : Math.round(c.consistency * 100);
-
-  div.innerHTML = `
-    <div class="coinTop">
-      <div class="coinLeft">
-        <div class="sym">${c.symbol}</div>
-        <div class="name">${c.name || ""}</div>
-      </div>
-      <div class="coinRight">
-        <span class="pill accent">${fmtPct(c.change24)}</span>
-        <span class="pill">${"vm " + fmtNum(c.vm)}</span>
-        <span class="pill ${strength >= 70 ? "ok" : ""}">S ${strength}</span>
-      </div>
-    </div>
-
-    <div class="coinMeta">
-      <div class="metaItem"><span class="metaKey">prijs</span><span class="metaVal">$${fmtNum(c.price)}</span></div>
-      <div class="metaItem"><span class="metaKey">vol</span><span class="metaVal">$${fmtUSD(c.volume)}</span></div>
-      <div class="metaItem"><span class="metaKey">mc</span><span class="metaVal">$${fmtUSD(c.marketCap)}</span></div>
-      <div class="metaItem"><span class="metaKey">range</span><span class="metaVal">${fmtPct(c.range24)}</span></div>
-      <div class="metaItem"><span class="metaKey">scans</span><span class="metaVal">${c.stageScans||0}</span></div>
-      <div class="metaItem"><span class="metaKey">cons</span><span class="metaVal">${cons==null ? "warm-up" : cons+"%"}</span></div>
-    </div>
-  `;
-
-  div.addEventListener("click", () => openModal(c));
-  return div;
+function updateButtons(){
+  $("btnBull").classList.toggle("active", MODE==="bull");
+  $("btnBear").classList.toggle("active", MODE==="bear");
 }
 
-function renderStage(targetId, arr){
-  const box = el(targetId);
-  box.innerHTML = "";
-  if(!arr || arr.length===0){
-    box.innerHTML = `<div class="empty">Geen coins.</div>`;
+function renderList(id, list){
+  const el = $(id);
+  if (!list || list.length === 0){
+    el.innerHTML = `<div class="empty">Geen coins.</div>`;
     return;
   }
-  for(const c of arr){
-    box.appendChild(coinRow(c));
-  }
+
+  el.innerHTML = list.map(c => {
+    const badge = c.stageLabel || c.stage;
+    const good = (badge==="ENTRY" || badge==="ALMOST");
+    return `
+      <div class="coinRow" data-sym="${c.symbol}">
+        <div class="coinTop">
+          <div class="sym">${c.symbol}</div>
+          <div class="badge ${good?"good":""}">${badge} • S ${c.strength}</div>
+        </div>
+        <div class="coinMeta">
+          <span>prijs: <b>$${num(c.price)}</b></span>
+          <span>chg24: <b>${pct(c.change24)}</b></span>
+          <span>range24: <b>${num(c.range24)}%</b></span>
+          <span>vm: <b>${num(c.vm)}</b></span>
+          <span>scans: <b>${c.stageScans}</b></span>
+          <span>vol: <b>$${money(c.volume)}</b></span>
+          <span>mc: <b>$${money(c.marketCap)}</b></span>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  // click handlers
+  [...el.querySelectorAll(".coinRow")].forEach(row => {
+    row.addEventListener("click", () => {
+      const sym = row.getAttribute("data-sym");
+      const coin = list.find(x => x.symbol === sym);
+      if (coin) openModal(coin);
+    });
+  });
 }
 
-function setCount(id, n){
-  const e = el(id);
-  if(e) e.textContent = String(n || 0);
+function kvLine(k,v){
+  return `<div><b>${k}</b> ${v}</div>`;
 }
 
-function renderAll(data){
-  const ts = data?.ts ? new Date(data.ts) : null;
-  const stamp = ts ? ts.toLocaleString() : "—";
-
-  const entry = data?.funnel?.entry || [];
-  const almost = data?.funnel?.almost || [];
-  const buildup = data?.funnel?.buildup || [];
-  const radar = data?.funnel?.radar || [];
-
-  setCount("cntEntry", entry.length);
-  setCount("cntAlmost", almost.length);
-  setCount("cntBuildup", buildup.length);
-  setCount("cntRadar", radar.length);
-
-  const btc = data?.btc || {};
-  const note = data?.note ? ` • ${data.note}` : "";
-
-  el("statusLine").textContent =
-    `Mode: ${MODE.toUpperCase()} • Laatste: ${stamp} • Radar ${radar.length} • Buildup ${buildup.length} • Almost ${almost.length} • Entry ${entry.length}${note}`;
-
-  // reset link (met token als je hem opslaat)
-  const token = (localStorage.getItem("CRON_SECRET") || "").trim();
-  el("resetLink").href = token
-    ? `/api/reset?mode=${encodeURIComponent(MODE)}&token=${encodeURIComponent(token)}`
-    : `/api/reset?mode=${encodeURIComponent(MODE)}`;
-
-  // coinRangeCap: dit is een “cap in %”, dus tonen we als percentage getal
-  const cap = (btc.dynamicMaxRange24 == null) ? "-" : btc.dynamicMaxRange24.toFixed(1) + "%";
-
-  el("funnelMeta").textContent =
-    `BTC gate: ${btc.state||"—"} (chg24 ${fmtPct(btc.chg24||0)}, range24 ${fmtPct(btc.range24||0)}) • coinRangeCap ${cap} • Consistency: 2h (min 6 samples)`;
-
-  renderStage("stageEntry", entry);
-  renderStage("stageAlmost", almost);
-  renderStage("stageBuildup", buildup);
-  renderStage("stageRadar", radar);
-}
-
-// modal
 function openModal(c){
-  MODAL_COIN = c;
-  el("modal").classList.remove("hidden");
+  $("modal").classList.remove("hidden");
 
-  const strength = Math.round(c.strength || 0);
-  const consTxt = (c.consistency == null)
-    ? `warm-up (${c.consistencySamples||0}/6)`
-    : `${Math.round(c.consistency*100)}% (${c.consistencySamples||0} samples)`;
+  $("mTitle").textContent = `${c.symbol} • ${c.stageLabel || c.stage} • Strength ${c.strength}`;
+  $("mSub").textContent = `Prijs $${num(c.price)} • chg24 ${pct(c.change24)} • range24 ${num(c.range24)}% • scans ${c.stageScans}`;
 
-  el("mTitle").textContent = `${c.symbol} • ${c.stage}`;
-  el("mSub").textContent = `${MODE.toUpperCase()} • strength ${strength}/100 • scans ${c.stageScans||0} • cons ${consTxt}`;
+  // summary
+  $("mSummary").innerHTML = [
+    kvLine("VM:", num(c.vm)),
+    kvLine("Volume:", "$"+money(c.volume)),
+    kvLine("Marketcap:", "$"+money(c.marketCap)),
+    kvLine("Stage:", (c.stageLabel || c.stage)),
+    kvLine("Stage scans:", c.stageScans),
+  ].join("");
 
-  el("mWhy").textContent =
-    ["Reasons:"].concat((c.reasons||[]).map(x => `- ${x}`)).join("\n");
+  // risk
+  const r = c.risk || {};
+  $("mRisk").innerHTML = [
+    kvLine("SL:", "$"+num(r.sl)),
+    kvLine("TP1:", "$"+num(r.tp1)),
+    kvLine("TP2:", "$"+num(r.tp2)),
+  ].join("");
 
-  el("mNeed").textContent =
-    ["BUILDUP targets:"]
-      .concat((c.needBuildup||[]).map(x => `- ${x}`))
-      .concat(["", "ALMOST targets:"])
-      .concat((c.needAlmost||[]).map(x => `- ${x}`))
-      .join("\n");
+  // why
+  const w = c.why || {};
+  $("mWhy").innerHTML = [
+    kvLine("BTC gate:", `${w?.btcGate?.got} (needed ${w?.btcGate?.wanted})`),
+    kvLine("Radar:", w?.radar?.pass ? "PASS" : "FAIL"),
+    kvLine("Buildup:", w?.buildup?.pass ? "PASS" : "FAIL"),
+    kvLine("Almost:", w?.almost?.pass ? "PASS" : "FAIL"),
+    kvLine("Consistency:", w?.consistency?.pass ? "PASS" : "FAIL"),
+    kvLine("Orderbook:", w?.orderbook?.pass ? "PASS" : "FAIL"),
+  ].join("");
 
-  el("mStats").textContent = [
-    `prijs: $${fmtNum(c.price)}`,
-    `chg24: ${fmtPct(c.change24)}`,
-    `range24: ${fmtPct(c.range24)}`,
-    `vol: $${fmtUSD(c.volume)}`,
-    `mc: $${fmtUSD(c.marketCap)}`,
-    `vm: ${fmtNum(c.vm)}`,
-    `enteredAt: ${c.enteredAt ? new Date(c.enteredAt).toLocaleString() : "-"}`,
-  ].join("\n");
+  // need (wat mist)
+  const need = [];
+  if (!w?.buildup?.pass) need.push("Mist BUILDUP eisen (chg/vm/vol).");
+  if (w?.buildup?.pass && !w?.almost?.pass) need.push("Mist ALMOST eisen (vm/vol/price-flat).");
+  if (w?.almost?.pass && !w?.consistency?.pass) need.push(`Consistency te laag of te weinig samples (${w?.consistency?.same}/${w?.consistency?.total}).`);
+  if (w?.almost?.pass && w?.consistency?.pass && !w?.orderbook?.pass) need.push("Orderbook nog niet valid/score/spread/stale.");
+  if (w?.eliteReady) need.push("Niks. Klaar voor ENTRY.");
 
-  const b = c.btc || {};
-  const cap = (b.dynamicMaxRange24 == null) ? "-" : b.dynamicMaxRange24.toFixed(1) + "%";
-  el("mBTC").textContent = [
-    `state: ${b.state||"-"}`,
-    `chg24: ${fmtPct(b.chg24||0)}`,
-    `range24: ${fmtPct(b.range24||0)}`,
-    `coinRangeCap: ${cap}`,
-  ].join("\n");
+  $("mNeed").innerHTML = need.length ? need.map(x => `<div>• ${x}</div>`).join("") : `<div>• —</div>`;
 
-  el("mRisk").textContent =
-`Plan:
-- RADAR → BUILDUP → ALMOST
-- Entry komt later pas met Orderbook gate (valid + score)
+  // cons
+  const cs = w?.consistency || {};
+  $("mCons").innerHTML = [
+    kvLine("Window:", cs.window || "—"),
+    kvLine("Dir:", cs.dir || "—"),
+    kvLine("Samples:", `${cs.total ?? 0} (min ${cs.minSamples ?? "-"})`),
+    kvLine("Same:", `${cs.same ?? 0}`),
+    kvLine("Ratio:", `${Math.round((cs.ratio||0)*100)}% (need ${Math.round((cs.ratioNeed||0)*100)}%)`),
+  ].join("");
 
-Hoe jij dit gebruikt:
-- strength + consistency hoog = betere kans
-- check Orderbook voor bevestiging`;
-
-  el("mOB").textContent = "Klik ‘Orderbook laden’.";
+  // OB
+  const ob = w?.orderbook?.got || {};
+  $("mOb").innerHTML = [
+    kvLine("Status:", ob.status || "—"),
+    kvLine("Valid:", String(ob.valid ?? "—")),
+    kvLine("AvgScore:", String(ob.avgScore ?? "—")),
+    kvLine("Spread:", ob.spreadPct != null ? num(ob.spreadPct)+"%" : "—"),
+    kvLine("Stale:", String(ob.stale ?? "—")),
+    kvLine("Reason:", ob.reason || "—"),
+  ].join("");
 }
 
 function closeModal(){
-  el("modal").classList.add("hidden");
-  MODAL_COIN = null;
+  $("modal").classList.add("hidden");
 }
 
-async function loadModalOB(){
-  if(!MODAL_COIN) return;
-  el("mOB").textContent = "Laden…";
+$("mClose").addEventListener("click", closeModal);
+$("modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
 
-  try{
-    const r = await fetch(API.ob(MODAL_COIN.symbol, MODE), { cache:"no-store" });
-    const j = await r.json();
+$("btnBull").addEventListener("click", () => setMode("bull"));
+$("btnBear").addEventListener("click", () => setMode("bear"));
 
-    if(j?.error){
-      el("mOB").textContent = `OB ERROR:\n${j.error}`;
-      return;
-    }
-    if(j?.status === "validating"){
-      el("mOB").textContent = `validating...\n${j.tip||""}`;
-      return;
-    }
+$("btnReset").addEventListener("click", async () => {
+  // reset is protected: je moet token meegeven (CRON_SECRET)
+  const token = prompt("Reset token (CRON_SECRET):");
+  if (!token) return;
+  const url = `/api/reset?mode=${encodeURIComponent(MODE)}&token=${encodeURIComponent(token)}`;
+  const r = await fetch(url, { cache:"no-store" });
+  const j = await r.json();
+  alert(JSON.stringify(j, null, 2));
+});
 
-    el("mOB").textContent = [
-      `valid: ${j.valid}`,
-      `avgScore: ${j.avgScore ?? "-"}`,
-      `score: ${j.score ?? "-"}`,
-      `spreadPct: ${j.spreadPct ?? "-"}`,
-      `lor: ${j.lor ?? "-"}`,
-      `bidUsd: ${Math.round(j.bidUsd || 0)}`,
-      `askUsd: ${Math.round(j.askUsd || 0)}`,
-      `stale: ${j.stale}`,
-    ].join("\n");
-  }catch{
-    el("mOB").textContent = "OB ERROR: fetch mislukt";
-  }
+async function load(){
+  const res = await fetch(`/api/latest?mode=${encodeURIComponent(MODE)}`, { cache:"no-store" });
+  const data = await res.json();
+
+  const ts = data.ts ? new Date(data.ts).toLocaleString() : "—";
+  const c = data.counts || { entry:0, almost:0, buildup:0, radar:0 };
+  const btc = data.btc || {};
+  const meta = data.meta || {};
+
+  $("sub").textContent =
+    `Mode: ${MODE.toUpperCase()} • Laatste: ${ts} • Radar ${c.radar} • Buildup ${c.buildup} • Almost ${c.almost} • Entry ${c.entry}`;
+
+  $("hint").textContent =
+    `BTC gate: ${btc.state || "—"} (chg24 ${num(btc.chg24)}%, range24 ${num(btc.range24)}%) • ` +
+    `coinRangeCap ${num(meta.coinRangeCap)}% • Consistency window: 2h (min ${meta.consistencyMinSamples || 6})`;
+
+  const f = data.funnel || {};
+  renderList("list-entry", f.entry);
+  renderList("list-almost", f.almost);
+  renderList("list-buildup", f.buildup);
+  renderList("list-radar", f.radar);
 }
 
-async function loadLatest(){
-  try{
-    el("statusLine").textContent = "Status: laden…";
-    const r = await fetch(API.latest(MODE), { cache:"no-store" });
-    const j = await r.json();
-    renderAll(j || {});
-  }catch{
-    el("statusLine").textContent = "Status: fout bij laden (check Vercel logs)";
-  }
-}
-
-// events
-el("modeBull").addEventListener("click", () => setMode("bull"));
-el("modeBear").addEventListener("click", () => setMode("bear"));
-el("mClose").addEventListener("click", closeModal);
-el("modal").addEventListener("click", (e) => { if(e.target.id==="modal") closeModal(); });
-el("mObBtn").addEventListener("click", loadModalOB);
-
-// start
-setMode(MODE);
-setInterval(loadLatest, 20000);
+updateButtons();
+load();
+setInterval(load, 10000);
