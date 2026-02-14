@@ -1,13 +1,25 @@
-import { kv } from "@vercel/kv";
-import { CFG, fetchJSON, json, mean, std } from "./_core.js";
+import { CFG } from "./_core.js";
 
 export const config = { runtime: "nodejs" };
 
-async function fetchBitgetDepth(symbol) {
-  // Bitget spot depth (jouw variant)
-  const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(symbol)}USDT&limit=50`;
-  const j = await fetchJSON(url);
-  return j?.data;
+// Bitget V2 spot orderbook endpoint (nieuw)
+async function fetchBitgetOrderbook(symbol) {
+  const s = String(symbol || "").toUpperCase();
+  // Let op: dit werkt alleen als de coin echt een SPOT USDT pair heeft op Bitget
+  const url = `https://api.bitget.com/api/v2/spot/market/orderbook?symbol=${encodeURIComponent(s)}USDT&limit=50`;
+
+  const r = await fetch(url, { headers: { "accept": "application/json" } });
+  const j = await r.json().catch(() => ({}));
+
+  if (!r.ok) {
+    throw new Error(`Bitget HTTP ${r.status}: ${JSON.stringify(j).slice(0, 200)}`);
+  }
+
+  // V2: data is meestal array met 1 object
+  const data = Array.isArray(j?.data) ? j.data[0] : j?.data;
+  if (!data) throw new Error("Bitget: no data");
+
+  return data;
 }
 
 function sumDepth(levels, mid, pct, isBid) {
@@ -15,65 +27,54 @@ function sumDepth(levels, mid, pct, isBid) {
   let total = 0;
 
   for (const lv of levels) {
-    const p = Number(lv?.[0]);
-    const s = Number(lv?.[1]);
-    if (!(p > 0) || !(s > 0)) continue;
+    const price = Number(lv?.[0]);
+    const size = Number(lv?.[1]);
+    if (!(price > 0 && size > 0)) continue;
 
-    if (isBid && p < limit) break;
-    if (!isBid && p > limit) break;
+    if (isBid && price < limit) break;
+    if (!isBid && price > limit) break;
 
-    total += p * s;
+    total += price * size;
   }
   return total;
+}
+
+function json(res, code, obj) {
+  res.statusCode = code;
+  res.setHeader("content-type", "application/json; charset=utf-8");
+  res.end(JSON.stringify(obj));
 }
 
 export default async function handler(req, res) {
   try {
     const u = new URL(req.url, "http://localhost");
-    const symbol = (u.searchParams.get("symbol") || "").toUpperCase();
-    const mode = (u.searchParams.get("mode") || "bull").toLowerCase();
-
+    const symbol = u.searchParams.get("symbol");
     if (!symbol) return json(res, 400, { ok: false, error: "Missing symbol" });
 
-    const data = await fetchBitgetDepth(symbol);
-    if (!data?.bids?.length || !data?.asks?.length) {
-      return json(res, 200, { ok: false, error: "No orderbook (coin not on Bitget USDT?)", symbol });
+    const data = await fetchBitgetOrderbook(symbol);
+
+    const bids = data?.bids;
+    const asks = data?.asks;
+    if (!Array.isArray(bids) || !Array.isArray(asks) || bids.length === 0 || asks.length === 0) {
+      return json(res, 500, { ok: false, error: "Bitget: empty bids/asks (pair bestaat niet?)" });
     }
 
-    const bid = Number(data.bids[0][0]);
-    const ask = Number(data.asks[0][0]);
+    const bid = Number(bids[0][0]);
+    const ask = Number(asks[0][0]);
     const mid = (bid + ask) / 2;
-    if (!(mid > 0)) return json(res, 200, { ok: false, error: "Bad OB mid", symbol });
+    if (!(mid > 0)) return json(res, 500, { ok: false, error: "Bitget: invalid mid" });
 
-    const bidUsd = sumDepth(data.bids, mid, CFG.obDepthPct, true);
-    const askUsd = sumDepth(data.asks, mid, CFG.obDepthPct, false);
-
+    const bidUsd = sumDepth(bids, mid, CFG.obDepthPct, true);
+    const askUsd = sumDepth(asks, mid, CFG.obDepthPct, false);
     const score = (bidUsd + askUsd) > 0 ? (bidUsd - askUsd) / (bidUsd + askUsd) : 0;
-
-    // z-score history in KV
-    const hKey = `ob:${mode}:${symbol}`;
-    const hist = (await kv.get(hKey)) || [];
-    const next = Array.isArray(hist) ? hist.slice(-50) : [];
-    next.push(score);
-    await kv.set(hKey, next);
-
-    const m = mean(next);
-    const sdev = std(next);
-    const zScore = (sdev > 0) ? (score - m) / sdev : 0;
-
-    const passed = next.length >= CFG.obMinSamples ? (Math.abs(zScore) >= CFG.obZ) : false;
 
     return json(res, 200, {
       ok: true,
-      symbol,
-      mode,
+      symbol: String(symbol).toUpperCase(),
+      mid,
       bidUsd,
       askUsd,
-      score,
-      zScore,
-      samples: next.length,
-      passed,
-      note: next.length < CFG.obMinSamples ? `Need ${CFG.obMinSamples} samples for stable z-score` : "ok"
+      score
     });
   } catch (e) {
     return json(res, 500, { ok: false, error: String(e?.message || e) });
