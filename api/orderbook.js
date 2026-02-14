@@ -1,67 +1,53 @@
-import { CFG, fetchJSON } from "./_core.js";
+import { kv } from "@vercel/kv";
+import { CFG } from "./_core.js";
 
 export const config = { runtime: "nodejs" };
-
-function sumDepth(levels, mid, pct, isBid) {
-  const limit = isBid ? mid * (1 - pct) : mid * (1 + pct);
-  let total = 0;
-  let largest = 0;
-
-  for (const [price, size] of levels) {
-    const p = Number(price);
-    const s = Number(size);
-    if (!p || !s) continue;
-
-    if (isBid && p < limit) break;
-    if (!isBid && p > limit) break;
-
-    const usd = p * s;
-    total += usd;
-    if (usd > largest) largest = usd;
-  }
-  return { total, largest };
-}
 
 export default async function handler(req, res) {
   try {
     const u = new URL(req.url, "http://localhost");
-    const symbol = (u.searchParams.get("symbol") || "").toUpperCase().trim();
+    const symbol = u.searchParams.get("symbol");
+    const side = u.searchParams.get("side") || "bull"; // bull/bear
     if (!symbol) throw new Error("Missing symbol");
 
-    // Bitget spot depth (v1)
-    const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${symbol}USDT&limit=${CFG.ob.depthLimit}`;
-    const j = await fetchJSON(url, { timeoutMs: 12_000 });
+    const keyRes = `ob:result:${side}:${symbol}`;
+    const r = await kv.get(keyRes);
 
-    const data = j?.data;
-    const bids = data?.bids;
-    const asks = data?.asks;
-    if (!bids?.length || !asks?.length) throw new Error("No OB data");
+    if (!r) {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({
+        ok: true,
+        symbol,
+        side,
+        status: "validating",
+        tip: "Nog geen 3 samples binnen 90s. Wacht even (OB sampler draait elke minuut)."
+      }));
+      return;
+    }
 
-    const bid = Number(bids[0][0]);
-    const ask = Number(asks[0][0]);
-    const mid = (bid + ask) / 2;
-    const spreadPct = ((ask - bid) / mid) * 100;
-
-    const b = sumDepth(bids, mid, CFG.ob.depthPct, true);
-    const a = sumDepth(asks, mid, CFG.ob.depthPct, false);
-
-    const score = (b.total - a.total) / (b.total + a.total);
-    const largestRatio = Math.max(b.largest, a.largest) / Math.max(1, (b.total + a.total));
+    // stale check
+    const ageSec = r?.ob?.ts ? (Date.now() - r.ob.ts) / 1000 : 999;
+    const stale = ageSec > CFG.obStaleSec;
 
     res.statusCode = 200;
-    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
+      ok: true,
       symbol,
-      mid,
-      spreadPct,
-      bidUsd: Math.round(b.total),
-      askUsd: Math.round(a.total),
-      score,
-      largestOrderRatio: largestRatio
+      side,
+      valid: !!r.valid,
+      reason: r.reason,
+      avgScore: r.avgScore ?? null,
+      spreadPct: r?.ob?.spreadPct ?? null,
+      lor: r?.ob?.lor ?? null,
+      score: r?.ob?.score ?? null,
+      bidUsd: r?.ob?.bidUsd ?? null,
+      askUsd: r?.ob?.askUsd ?? null,
+      stale
     }));
   } catch (e) {
-    res.statusCode = 200; // UI-friendly
-    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.statusCode = 500;
     res.end(JSON.stringify({ error: String(e) }));
   }
 }
