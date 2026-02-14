@@ -1,85 +1,31 @@
-<!doctype html>
-<html lang="nl">
+<!DOCTYPE html>
+<html>
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="UTF-8" />
   <title>CryptoCroc Scanner</title>
-  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    body { background:#0b1220; color:white; font-family:Arial; padding:20px; }
+    .coin { border:1px solid #2a3550; padding:10px; margin:6px 0; border-radius:8px; }
+    h2 { margin-top:30px; }
+  </style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="left">
-      <div class="brand">CryptoCroc Scanner</div>
-      <div class="sub" id="statusLine">Status: laden…</div>
-    </div>
 
-    <div class="right">
-      <button id="modeBull" class="btn">BULL</button>
-      <button id="modeBear" class="btn">BEAR</button>
-      <!-- scan knop weg, alles is automatisch -->
-    </div>
-  </header>
+<h1>CryptoCroc Scanner</h1>
+<div id="topline"></div>
 
-  <main class="grid">
-    <section class="panel">
-      <div class="panelTitle">Funnel</div>
-      <div class="funnelMeta" id="funnelMeta">—</div>
+<h2>ENTRY</h2>
+<div id="list-entry"></div>
 
-      <div class="stage">
-        <div class="stageTitle">ENTRY / HOLD / SELL</div>
-        <div class="stageBody" id="stageEntry"></div>
-      </div>
+<h2>ALMOST</h2>
+<div id="list-almost"></div>
 
-      <div class="stage">
-        <div class="stageTitle">ALMOST</div>
-        <div class="stageBody" id="stageAlmost"></div>
-      </div>
+<h2>BUILDUP</h2>
+<div id="list-buildup"></div>
 
-      <div class="stage">
-        <div class="stageTitle">BUILDUP</div>
-        <div class="stageBody" id="stageBuildup"></div>
-      </div>
+<h2>RADAR</h2>
+<div id="list-radar"></div>
 
-      <div class="stage">
-        <div class="stageTitle">RADAR</div>
-        <div class="stageBody" id="stageRadar"></div>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panelTitle">Uitleg</div>
-      <div class="panelHint">
-        Alles draait automatisch elke 10 minuten. Iedereen ziet dezelfde coins.
-        Klik op een coin om popup te openen met coin info + orderbook + SL/TP.
-      </div>
-    </section>
-  </main>
-
-  <!-- POPUP / MODAL -->
-  <div id="modal" class="modal hidden">
-    <div class="modalCard">
-      <div class="modalTop">
-        <div>
-          <div class="modalTitle" id="mTitle">—</div>
-          <div class="modalSub" id="mSub">—</div>
-        </div>
-        <button id="mClose" class="btn">Sluiten</button>
-      </div>
-
-      <div class="modalGrid">
-        <div class="modalBox">
-          <div class="modalBoxTitle">Coin info</div>
-          <pre class="modalPre" id="mCoin">—</pre>
-        </div>
-
-        <div class="modalBox">
-          <div class="modalBoxTitle">Orderbook + SL/TP</div>
-          <pre class="modalPre" id="mOB">—</pre>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script src="/app.js"></script>
+<script src="/app.js"></script>
 </body>
 </html>
