@@ -3,7 +3,7 @@ const el = (id) => document.getElementById(id);
 const API = {
   latest: (mode) => `/api/latest?mode=${encodeURIComponent(mode)}`,
   scan:   (mode) => `/api/scan?mode=${encodeURIComponent(mode)}`,
-  ob:     (symbol) => `/api/orderbook?symbol=${encodeURIComponent(symbol)}`
+  ob:     (mode, symbol) => `/api/orderbook?mode=${encodeURIComponent(mode)}&symbol=${encodeURIComponent(symbol)}`
 };
 
 let MODE = localStorage.getItem("MODE") || "bull";
@@ -17,13 +17,16 @@ function setMode(mode){
 }
 
 function fmtUSD(n){
+  n = Number(n);
   if(!Number.isFinite(n)) return "-";
   if(n >= 1e9) return (n/1e9).toFixed(2)+"B";
   if(n >= 1e6) return (n/1e6).toFixed(2)+"M";
   if(n >= 1e3) return (n/1e3).toFixed(2)+"K";
   return String(Math.round(n));
 }
+
 function fmtPct(n){
+  n = Number(n);
   if(!Number.isFinite(n)) return "-";
   const s = n >= 0 ? "+" : "";
   return s + n.toFixed(2) + "%";
@@ -41,7 +44,7 @@ function coinRow(c){
       <span>prijs: $${c.price}</span>
       <span>vol: $${fmtUSD(c.volume)}</span>
       <span>mc: $${fmtUSD(c.marketCap)}</span>
-      <span>vm: ${Number(c.vm||0).toFixed(2)}</span>
+      <span>vm: ${Number(c.vm).toFixed(2)}</span>
     </div>
   `;
   div.addEventListener("click", () => loadOrderbook(c.symbol));
@@ -64,24 +67,19 @@ function renderAll(data){
   const ts = data?.ts ? new Date(data.ts) : null;
   const stamp = ts ? ts.toLocaleString() : "—";
 
-  const f = data?.funnel || {};
-  const entry = f.entry || [];
-  const hold  = f.hold || [];
-  const buildup = f.buildup || [];
-  const radar = f.radar || [];
-  const sell = f.sell || [];
+  const entry = data?.funnel?.entry || [];
+  const buildup = data?.funnel?.buildup || [];
+  const radar = data?.funnel?.radar || [];
 
   el("statusLine").textContent =
-    `Mode: ${MODE.toUpperCase()} • Laatste update: ${stamp} • BitgetOnly: ${data?.bitgetOnly ? "JA" : "nee"}`;
+    `Mode: ${MODE.toUpperCase()} • Laatste update: ${stamp} • Entry ${entry.length} • Buildup ${buildup.length} • Radar ${radar.length}`;
 
   el("funnelMeta").textContent =
-    `KV opslag actief • Cron vult automatisch • Klik coin voor orderbook`;
+    `KV opslag: aan • Cron: elke 10 min • Klik coin = Bitget OB + z-score`;
 
   renderStage("stageEntry", entry);
-  renderStage("stageHold", hold);
   renderStage("stageBuildup", buildup);
   renderStage("stageRadar", radar);
-  renderStage("stageSell", sell);
 }
 
 async function loadLatest(){
@@ -102,37 +100,44 @@ async function runScanNow(){
     const j = await r.json();
     renderAll(j || {});
   }catch(e){
-    el("statusLine").textContent = "Status: scan fout (CoinGecko limit of server error)";
+    el("statusLine").textContent = "Status: scan fout (CoinGecko limit / server error)";
   }
 }
 
 async function loadOrderbook(symbol){
   try{
-    el("obTitle").textContent = `${symbol} (Bitget OB)`;
+    el("obTitle").textContent = `${symbol} (Bitget OB + z-score)`;
     el("obData").textContent = "Laden…";
 
-    const r = await fetch(API.ob(symbol), { cache:"no-store" });
+    const r = await fetch(API.ob(MODE, symbol), { cache:"no-store" });
     const j = await r.json();
 
-    if(j?.error){
-      el("obData").textContent = `OB ERROR:\n${j.error}`;
+    if(!j?.ok){
+      el("obData").textContent =
+        `OB ERROR:\n${j?.error || "unknown"}\n\nTip: niet elke CoinGecko coin staat op Bitget USDT.`;
       return;
     }
 
     el("obData").textContent =
-      `score: ${Number(j.score).toFixed(4)}\n`+
+      `score: ${j.score.toFixed(4)}\n`+
+      `zScore: ${j.zScore.toFixed(2)} (samples ${j.samples})\n`+
+      `passed: ${j.passed}\n`+
       `bidUsd: ${Math.round(j.bidUsd)}\n`+
       `askUsd: ${Math.round(j.askUsd)}\n`+
-      `mid: ${j.mid}\n`;
+      `note: ${j.note}\n`;
 
   }catch(e){
     el("obData").textContent = "OB ERROR: fetch mislukt";
   }
 }
 
+// buttons
 el("modeBull").addEventListener("click", () => setMode("bull"));
 el("modeBear").addEventListener("click", () => setMode("bear"));
 el("scanNow").addEventListener("click", runScanNow);
 
+// start
 setMode(MODE);
+
+// UI refresh elke 30s (cron doet echte scan)
 setInterval(loadLatest, 30000);
