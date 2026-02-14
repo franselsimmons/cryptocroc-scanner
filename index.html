@@ -21,36 +21,62 @@
   </header>
 
   <main class="grid">
+    <!-- 4 blokken: ENTRY (tabs) boven, daarna BUILDUP, daarna RADAR onder -->
     <section class="panel">
       <div class="panelTitle">Funnel</div>
       <div class="funnelMeta" id="funnelMeta">—</div>
 
+      <!-- 1) ENTRY block met tabs -->
       <div class="stage">
-        <div class="stageTitle">ENTRY</div>
+        <div class="stageHeader">
+          <div class="stageTitle">ENTRY</div>
+          <div class="tabs">
+            <button class="tabBtn active" id="tabEntry">Entry</button>
+            <button class="tabBtn" id="tabHold">Hold</button>
+            <button class="tabBtn" id="tabSell">Sell</button>
+          </div>
+        </div>
         <div class="stageBody" id="stageEntry"></div>
       </div>
 
+      <!-- 2) BUILDUP -->
       <div class="stage">
         <div class="stageTitle">BUILDUP</div>
         <div class="stageBody" id="stageBuildup"></div>
       </div>
 
+      <!-- 3) RADAR (onder) -->
       <div class="stage">
         <div class="stageTitle">RADAR</div>
         <div class="stageBody" id="stageRadar"></div>
       </div>
     </section>
-
-    <section class="panel">
-      <div class="panelTitle">Orderbook</div>
-      <div class="panelHint">Klik op een coin (ENTRY/BUILDUP/RADAR) om Bitget orderbook + z-score te zien</div>
-
-      <div class="obBox">
-        <div class="obTitle" id="obTitle">Geen coin geselecteerd</div>
-        <pre class="obPre" id="obData">—</pre>
-      </div>
-    </section>
   </main>
+
+  <!-- POPUP / MODAL -->
+  <div class="modalBackdrop hidden" id="modalBackdrop">
+    <div class="modal">
+      <div class="modalTop">
+        <div>
+          <div class="modalTitle" id="mTitle">Coin</div>
+          <div class="modalSub" id="mSub">—</div>
+        </div>
+        <button class="btn" id="mClose">Sluiten</button>
+      </div>
+
+      <div class="modalGrid">
+        <div class="modalBox">
+          <div class="boxTitle">Coin info</div>
+          <pre class="pre" id="mCoin">—</pre>
+        </div>
+
+        <div class="modalBox">
+          <div class="boxTitle">Orderbook (Bitget)</div>
+          <pre class="pre" id="mOb">Klik op coin…</pre>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>
