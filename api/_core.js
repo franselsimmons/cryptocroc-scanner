@@ -1,99 +1,94 @@
-import { kv } from "@vercel/kv";
+export const config = { runtime: "nodejs" };
 
 export const CFG = {
   // CoinGecko filters
-  minVolumeUsd: 500000,
-  minMarketCap: 2000000,
+  minVolumeUsd: 500_000,
+  minMarketCap: 2_000_000,
   minVmRatio: 0.25,
 
-  // Bitget orderbook score
-  obDepthPct: 0.002,
+  // Entry streng
+  entryVm: 0.50,
+
+  // Orderbook
+  obDepthPct: 0.002,      // 0.2%
   obMinSamples: 5,
   obZ: 1.2,
 
-  // caching
-  bitgetSymbolsCacheMs: 6 * 60 * 60 * 1000 // 6 uur
+  // Safety
+  cgPages: 2,             // 2*250 = 500 coins
+  cgPerPage: 250,
+  httpTimeoutMs: 12_000
 };
 
-export async function fetchJSON(url, { timeoutMs = 12000 } = {}) {
+export async function fetchJSON(url) {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const r = await fetch(url, { signal: ctrl.signal, headers: { "accept": "application/json" } });
-    if (!r.ok) throw new Error(`Fetch failed ${r.status} for ${url}`);
-    return await r.json();
-  } finally {
-    clearTimeout(t);
+  const t = setTimeout(() => ctrl.abort(), CFG.httpTimeoutMs);
+
+  const r = await fetch(url, {
+    signal: ctrl.signal,
+    headers: {
+      "accept": "application/json",
+      "user-agent": "CryptoCrocScanner/1.0 (Vercel)"
+    },
+    cache: "no-store"
+  }).catch((e) => {
+    throw new Error(`Fetch failed: ${e?.message || String(e)}`);
+  });
+
+  clearTimeout(t);
+
+  if (!r.ok) {
+    const txt = await r.text().catch(() => "");
+    throw new Error(`HTTP ${r.status} on ${url}${txt ? ` :: ${txt.slice(0, 120)}` : ""}`);
   }
+
+  return r.json();
 }
 
 export function vmRatio(c) {
   const v = Number(c?.total_volume || 0);
   const mc = Number(c?.market_cap || 0);
-  if (mc <= 0) return 0;
+  if (!(v > 0) || !(mc > 0)) return 0;
   return v / mc;
 }
 
 export function mapCoin(c) {
+  const price = Number(c?.current_price || 0);
+  const volume = Number(c?.total_volume || 0);
+  const marketCap = Number(c?.market_cap || 0);
+  const change24 = Number(c?.price_change_percentage_24h || 0);
+
   return {
-    id: c.id,
-    symbol: String(c.symbol || "").toUpperCase(),
-    price: Number(c.current_price || 0),
-    volume: Number(c.total_volume || 0),
-    marketCap: Number(c.market_cap || 0),
-    change24: Number(c.price_change_percentage_24h || 0),
+    symbol: String(c?.symbol || "").toUpperCase(),
+    price,
+    volume,
+    marketCap,
+    change24,
     vm: vmRatio(c)
   };
-}
-
-/**
- * Bitget USDT symbols ophalen zodat we ALLEEN coins tonen waarvan OB werkt.
- * Endpoint is "public/products". Als Bitget ooit wijzigt: we fail-safe (geen crash).
- */
-export async function getBitgetUsdtSet() {
-  const key = "bitget:usdtSet:v1";
-  const cached = await kv.get(key);
-  const cachedTs = await kv.get(key + ":ts");
-  if (cached && cachedTs && (Date.now() - Number(cachedTs)) < CFG.bitgetSymbolsCacheMs) {
-    return new Set(cached);
-  }
-
-  try {
-    const j = await fetchJSON("https://api.bitget.com/api/spot/v1/public/products");
-    const arr = j?.data || j?.result || [];
-    const set = new Set();
-
-    for (const p of arr) {
-      // Bitget heeft meerdere veldnamen; we pakken wat er is.
-      const sym = (p?.symbolName || p?.symbol || p?.baseCoin || "").toString();
-      const quote = (p?.quoteCoin || p?.quote || "").toString().toUpperCase();
-      const status = (p?.status || p?.state || "").toString().toUpperCase();
-
-      // We willen spot USDT paren die actief zijn
-      if (quote === "USDT" && sym) {
-        // sym kan bv "BTCUSDT" of "BTC" zijn; wij willen base symbol (BTC)
-        if (sym.toUpperCase().endsWith("USDT")) set.add(sym.toUpperCase().replace("USDT",""));
-        else set.add(sym.toUpperCase());
-      } else if (sym && sym.toUpperCase().endsWith("USDT")) {
-        set.add(sym.toUpperCase().replace("USDT",""));
-      }
-
-      // status check doen we niet hard, want veld kan missen.
-      void status;
-    }
-
-    const list = Array.from(set);
-    await kv.set(key, list);
-    await kv.set(key + ":ts", String(Date.now()));
-    return new Set(list);
-  } catch (e) {
-    // fail-safe: geen crash, maar dan is Bitget-only filtering uit
-    return null;
-  }
 }
 
 export function json(res, code, obj) {
   res.statusCode = code;
   res.setHeader("content-type", "application/json; charset=utf-8");
+  res.setHeader("cache-control", "no-store");
   res.end(JSON.stringify(obj));
+}
+
+export function mean(arr) {
+  if (!arr?.length) return 0;
+  let s = 0;
+  for (const x of arr) s += Number(x) || 0;
+  return s / arr.length;
+}
+
+export function std(arr) {
+  if (!arr?.length || arr.length < 2) return 0;
+  const m = mean(arr);
+  let v = 0;
+  for (const x of arr) {
+    const d = (Number(x) || 0) - m;
+    v += d * d;
+  }
+  return Math.sqrt(v / (arr.length - 1));
 }
