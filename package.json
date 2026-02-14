@@ -1,9 +1,10 @@
 {
   "name": "cryptocroc-scanner",
+  "private": true,
   "version": "1.0.0",
   "type": "module",
   "engines": {
-    "node": "18.x"
+    "node": "20.x"
   },
   "dependencies": {
     "@vercel/kv": "^1.0.1"
