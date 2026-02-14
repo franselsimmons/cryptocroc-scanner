@@ -7,14 +7,13 @@ const API = {
 };
 
 let MODE = localStorage.getItem("MODE") || "bull";
-let LAST = null;
 
 function setMode(mode){
   MODE = mode;
   localStorage.setItem("MODE", mode);
   el("modeBull").classList.toggle("active", mode==="bull");
   el("modeBear").classList.toggle("active", mode==="bear");
-  loadLatest(); // meteen refresh
+  loadLatest();
 }
 
 function fmtUSD(n){
@@ -24,7 +23,6 @@ function fmtUSD(n){
   if(n >= 1e3) return (n/1e3).toFixed(2)+"K";
   return String(Math.round(n));
 }
-
 function fmtPct(n){
   if(!Number.isFinite(n)) return "-";
   const s = n >= 0 ? "+" : "";
@@ -43,11 +41,9 @@ function coinRow(c){
       <span>prijs: $${c.price}</span>
       <span>vol: $${fmtUSD(c.volume)}</span>
       <span>mc: $${fmtUSD(c.marketCap)}</span>
-      <span>vm: ${c.vm.toFixed(2)}</span>
+      <span>vm: ${Number(c.vm||0).toFixed(2)}</span>
     </div>
   `;
-
-  // Klik = orderbook ophalen
   div.addEventListener("click", () => loadOrderbook(c.symbol));
   return div;
 }
@@ -65,24 +61,27 @@ function renderStage(targetId, arr){
 }
 
 function renderAll(data){
-  LAST = data;
-
   const ts = data?.ts ? new Date(data.ts) : null;
   const stamp = ts ? ts.toLocaleString() : "—";
 
-  const radar = data?.radar || [];
-  const buildup = data?.buildup || [];
-  const entry = data?.entry || [];
+  const f = data?.funnel || {};
+  const entry = f.entry || [];
+  const hold  = f.hold || [];
+  const buildup = f.buildup || [];
+  const radar = f.radar || [];
+  const sell = f.sell || [];
 
   el("statusLine").textContent =
-    `Mode: ${MODE.toUpperCase()} • Laatste update: ${stamp} • Radar ${radar.length} • Buildup ${buildup.length} • Entry ${entry.length}`;
+    `Mode: ${MODE.toUpperCase()} • Laatste update: ${stamp} • BitgetOnly: ${data?.bitgetOnly ? "JA" : "nee"}`;
 
   el("funnelMeta").textContent =
     `KV opslag actief • Cron vult automatisch • Klik coin voor orderbook`;
 
   renderStage("stageEntry", entry);
+  renderStage("stageHold", hold);
   renderStage("stageBuildup", buildup);
   renderStage("stageRadar", radar);
+  renderStage("stageSell", sell);
 }
 
 async function loadLatest(){
@@ -116,27 +115,24 @@ async function loadOrderbook(symbol){
     const j = await r.json();
 
     if(j?.error){
-      el("obData").textContent = `OB ERROR:\n${j.error}\n\nTip: alleen coins die echt op Bitget USDT staan werken.`;
+      el("obData").textContent = `OB ERROR:\n${j.error}`;
       return;
     }
 
     el("obData").textContent =
-      `score: ${j.score}\n`+
+      `score: ${Number(j.score).toFixed(4)}\n`+
       `bidUsd: ${Math.round(j.bidUsd)}\n`+
-      `askUsd: ${Math.round(j.askUsd)}\n`;
+      `askUsd: ${Math.round(j.askUsd)}\n`+
+      `mid: ${j.mid}\n`;
 
   }catch(e){
     el("obData").textContent = "OB ERROR: fetch mislukt";
   }
 }
 
-// buttons
 el("modeBull").addEventListener("click", () => setMode("bull"));
 el("modeBear").addEventListener("click", () => setMode("bear"));
 el("scanNow").addEventListener("click", runScanNow);
 
-// initial
 setMode(MODE);
-
-// auto refresh (UI) elke 30s, cron doet scan elke 10m
 setInterval(loadLatest, 30000);

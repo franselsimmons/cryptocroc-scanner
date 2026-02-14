@@ -1,49 +1,50 @@
-import { CFG } from "./_core.js";
+import { CFG, fetchJSON, json } from "./_core.js";
 
-export const config = { runtime: "nodejs" };
-
-async function fetchBitget(symbol){
-  const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${symbol}USDT&limit=50`;
-  const r = await fetch(url);
-  const j = await r.json();
-  return j?.data;
-}
-
-function sumDepth(levels, mid, pct, isBid){
-  const limit = isBid ? mid*(1-pct) : mid*(1+pct);
+function sumDepth(levels, mid, pct, isBid) {
+  const limit = isBid ? mid * (1 - pct) : mid * (1 + pct);
   let total = 0;
-  for(const [price,size] of levels){
-    const p = Number(price);
-    const s = Number(size);
-    if(isBid && p < limit) break;
-    if(!isBid && p > limit) break;
-    total += p*s;
+
+  for (const lv of levels) {
+    const price = Number(lv?.[0]);
+    const size  = Number(lv?.[1]);
+    if (!(price > 0 && size > 0)) continue;
+
+    if (isBid && price < limit) break;
+    if (!isBid && price > limit) break;
+
+    total += price * size;
   }
   return total;
 }
 
-export default async function handler(req,res){
-  try{
-    const u = new URL(req.url,"http://localhost");
-    const symbol = u.searchParams.get("symbol");
-    if(!symbol) throw new Error("Missing symbol");
+export default async function handler(req, res) {
+  try {
+    const u = new URL(req.url, "http://localhost");
+    const symbol = (u.searchParams.get("symbol") || "").toUpperCase();
+    if (!symbol) return json(res, 400, { error: "Missing symbol" });
 
-    const data = await fetchBitget(symbol);
-    if(!data?.bids || !data?.asks) throw new Error("No OB");
+    // Bitget depth endpoint (spot)
+    const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${symbol}USDT&limit=50`;
+    const j = await fetchJSON(url);
 
-    const bid = Number(data.bids[0][0]);
-    const ask = Number(data.asks[0][0]);
-    const mid = (bid+ask)/2;
+    const data = j?.data;
+    const bids = data?.bids;
+    const asks = data?.asks;
+    if (!Array.isArray(bids) || !Array.isArray(asks) || bids.length === 0 || asks.length === 0) {
+      return json(res, 404, { error: "No orderbook (coin niet op Bitget USDT of endpoint blokkeert)" });
+    }
 
-    const bidUsd = sumDepth(data.bids,mid,CFG.obDepthPct,true);
-    const askUsd = sumDepth(data.asks,mid,CFG.obDepthPct,false);
+    const bid = Number(bids[0][0]);
+    const ask = Number(asks[0][0]);
+    const mid = (bid + ask) / 2;
+    if (!(mid > 0)) return json(res, 500, { error: "Bad mid" });
 
-    const score = (bidUsd-askUsd)/(bidUsd+askUsd);
+    const bidUsd = sumDepth(bids, mid, CFG.obDepthPct, true);
+    const askUsd = sumDepth(asks, mid, CFG.obDepthPct, false);
+    const score = (bidUsd + askUsd) > 0 ? (bidUsd - askUsd) / (bidUsd + askUsd) : 0;
 
-    res.statusCode=200;
-    res.end(JSON.stringify({score,bidUsd,askUsd}));
-  }catch(e){
-    res.statusCode=500;
-    res.end(JSON.stringify({error:String(e)}));
+    return json(res, 200, { symbol, mid, bidUsd, askUsd, score });
+  } catch (e) {
+    return json(res, 500, { error: String(e) });
   }
 }
