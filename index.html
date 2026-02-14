@@ -1,31 +1,116 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="nl">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>CryptoCroc Scanner</title>
-  <style>
-    body { background:#0b1220; color:white; font-family:Arial; padding:20px; }
-    .coin { border:1px solid #2a3550; padding:10px; margin:6px 0; border-radius:8px; }
-    h2 { margin-top:30px; }
-  </style>
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+  <header class="topbar">
+    <div class="left">
+      <div class="brand">CryptoCroc Scanner</div>
+      <div class="sub" id="statusLine">Status: laden…</div>
+    </div>
 
-<h1>CryptoCroc Scanner</h1>
-<div id="topline"></div>
+    <div class="right">
+      <button id="modeBull" class="btn">BULL</button>
+      <button id="modeBear" class="btn">BEAR</button>
 
-<h2>ENTRY</h2>
-<div id="list-entry"></div>
+      <!-- reset link (met token via query) zetten we in app.js in de UI -->
+      <a id="resetLink" class="btn" href="#" target="_blank" rel="noopener">Reset</a>
+    </div>
+  </header>
 
-<h2>ALMOST</h2>
-<div id="list-almost"></div>
+  <main class="grid">
+    <section class="panel">
+      <div class="panelTitle">Funnel</div>
+      <div class="panelHint" id="funnelMeta">—</div>
 
-<h2>BUILDUP</h2>
-<div id="list-buildup"></div>
+      <div class="stage">
+        <div class="stageTitle">ENTRY</div>
+        <div class="stageBody" id="stageEntry"></div>
+      </div>
 
-<h2>RADAR</h2>
-<div id="list-radar"></div>
+      <div class="stage">
+        <div class="stageTitle">ALMOST</div>
+        <div class="stageBody" id="stageAlmost"></div>
+      </div>
 
-<script src="/app.js"></script>
+      <div class="stage">
+        <div class="stageTitle">BUILDUP</div>
+        <div class="stageBody" id="stageBuildup"></div>
+      </div>
+
+      <div class="stage">
+        <div class="stageTitle">RADAR</div>
+        <div class="stageBody" id="stageRadar"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panelTitle">Uitleg</div>
+      <div class="panelHint">
+        Klik op een coin → popup met: waarom staat hij hier, strength, consistency, wat mist voor volgende stage, en orderbook.
+      </div>
+
+      <div class="obBox">
+        <div class="obTitle">Tip</div>
+        <pre class="obPre">
+- BTC gate moet matchen (bull/bear), anders is alles leeg.
+- Reset betekent: iedereen weer terug naar RADAR en opnieuw opbouwen.
+- Consistency werkt op 2 uur (min 6 samples) → eerst “warm-up”.
+        </pre>
+      </div>
+    </section>
+  </main>
+
+  <!-- MODAL POPUP -->
+  <div class="modal hidden" id="modal">
+    <div class="modalCard">
+      <div class="modalTop">
+        <div>
+          <div class="modalTitle" id="mTitle">—</div>
+          <div class="modalSub" id="mSub">—</div>
+        </div>
+        <button class="btn" id="mClose">Sluiten</button>
+      </div>
+
+      <div class="modalGrid">
+        <div class="modalBox">
+          <div class="modalBoxTitle">Waarom staat hij hier?</div>
+          <pre class="modalPre" id="mWhy">—</pre>
+        </div>
+
+        <div class="modalBox">
+          <div class="modalBoxTitle">Wat mist voor volgende stap?</div>
+          <pre class="modalPre" id="mNeed">—</pre>
+        </div>
+
+        <div class="modalBox">
+          <div class="modalBoxTitle">Stats</div>
+          <pre class="modalPre" id="mStats">—</pre>
+        </div>
+
+        <div class="modalBox">
+          <div class="modalBoxTitle">Orderbook (Bitget)</div>
+          <pre class="modalPre" id="mOB">Klik “laden…”</pre>
+          <button class="btn primary" id="mObBtn">Orderbook laden</button>
+        </div>
+
+        <div class="modalBox">
+          <div class="modalBoxTitle">SL / TP (placeholder v1)</div>
+          <pre class="modalPre" id="mRisk">SL/TP komt in stap 2 (ATR). Voor nu tonen we alleen “plan” in tekst.</pre>
+        </div>
+
+        <div class="modalBox">
+          <div class="modalBoxTitle">BTC Gate</div>
+          <pre class="modalPre" id="mBTC">—</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
 </body>
 </html>
