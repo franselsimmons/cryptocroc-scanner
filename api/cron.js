@@ -2,22 +2,21 @@ import scan from "./scan.js";
 
 export const config = { runtime: "nodejs" };
 
-function mkReq(mode) {
-  return { url: `/api/scan?mode=${mode}`, headers: {} };
+function mkReq(url, secret) {
+  return {
+    url,
+    headers: secret ? { authorization: `Bearer ${secret}` } : {}
+  };
 }
 function mkRes() {
-  return {
-    statusCode: 200,
-    setHeader() {},
-    end() {}
-  };
+  return { statusCode: 200, setHeader() {}, end() {} };
 }
 
 export default async function handler(req, res) {
   try {
     const secret = process.env.CRON_SECRET ? String(process.env.CRON_SECRET).trim() : "";
 
-    // Als je CRON_SECRET gezet hebt, moet cron-call de Bearer header matchen.
+    // Cron endpoint zelf ook beveiligen (zelfde secret)
     if (secret) {
       const auth = req.headers?.authorization || req.headers?.Authorization || "";
       if (auth !== `Bearer ${secret}`) {
@@ -27,8 +26,8 @@ export default async function handler(req, res) {
       }
     }
 
-    await scan(mkReq("bull"), mkRes());
-    await scan(mkReq("bear"), mkRes());
+    // 1 call: scan doet BTC gate + schrijft bull+bear in KV
+    await scan(mkReq("/api/scan?mode=auto", secret), mkRes());
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
