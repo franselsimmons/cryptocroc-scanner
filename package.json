@@ -1,9 +1,17 @@
 {
   "name": "cryptocroc-scanner",
   "version": "1.0.0",
+  "description": "CryptoCroc Scanner – adaptive funnel with BTC gate, OB sampling and risk engine",
   "private": true,
   "type": "module",
-  "engines": { "node": "20.x" },
+  "engines": {
+    "node": "20.x"
+  },
+  "scripts": {
+    "dev": "vercel dev",
+    "start": "vercel dev",
+    "build": "echo \"No build step required\""
+  },
   "dependencies": {
     "@vercel/kv": "^1.0.1"
   }
