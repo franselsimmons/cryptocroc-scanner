@@ -3,8 +3,14 @@ import { kv } from "@vercel/kv";
 
 export const RUNTIME_CONFIG = { runtime: "nodejs" };
 
-// ====== BASIS SETTINGS (v1 defaults + mini upgrades) ======
+// ====== CONFIG ======
+export const CFG = {
+  obStaleSec: 180, // orderbook sample ouder dan 3 min = stale
+  consistencyWindowMs: 2 * 60 * 60 * 1000, // 2 uur
+};
+
 export const SETTINGS = {
+  // Universe / limits
   CG_TOP: 250,
   RADAR_LIMIT: 160,
 
@@ -15,36 +21,26 @@ export const SETTINGS = {
   vmMinRadar: 0.15,
   maxAbsChg24: 35,
 
-  // BTC gate (minimal pro, geen pseudo-ATR)
+  // BTC gate basis (blijft simpel & voorspelbaar)
   btcChgGate: 0.8,
   btcRangeMin: 2,
-  btcRangeMax: 10, // boven dit = te wild -> neutral
-
-  // Dynamic coin range cap knob
-  coinRangeBase: 30,        // basis cap
-  coinRangeMinClamp: 25,    // nooit strakker dan dit
-  coinRangeMaxClamp: 40,    // nooit ruimer dan dit
+  btcRangeMaxBull: 10,
+  btcRangeMaxBear: 10,
 
   // Stage eisen
   buildup: { chgMin: 1.2, vmMin: 0.22, volMin: 1_200_000 },
-  almost:  { vmMin: 0.26, volMin: 2_000_000, priceFlatMax: 6.5 },
+  almost: { vmMin: 0.26, volMin: 2_000_000, priceFlatMax: 6.5 },
+
+  // ENTRY/ELITE eisen
+  elite: {
+    minConsistencyRatio: 0.67,
+    minConsistencySamples: 6,
+    obMinScore: 60,
+    obMaxSpreadPct: 0.35,
+  },
 
   // “Geen overslaan” rule
   minScansPerStage: 2,
-
-  // Consistency window (vast tijdsvenster)
-  consistencyWindowMin: 120, // 2 uur
-  consistencyMinRatio: 0.67,
-  consistencyMinSamples: 6,
-
-  // Spike-guard
-  spikeMaxDeltaRatio: 1.0, // >100% afwijking van mediaan -> vervang door mediaan (vol/range/vm)
-  changeGuardAbs: 8,       // change24: light guard (abs verschil > 8pp)
-};
-
-// ====== ORDERBOOK CFG (voor /api/orderbook.js) ======
-export const CFG = {
-  obStaleSec: 15,
 };
 
 // ====== DISCORD ======
@@ -57,7 +53,7 @@ export async function sendDiscord(webhookUrl, content) {
       body: JSON.stringify({ content }),
     });
   } catch {
-    // bewust stil: discord mag je scan niet slopen
+    // discord mag nooit je scan slopen
   }
 }
 
@@ -65,24 +61,40 @@ export function webhookForStage(stage) {
   if (stage === "RADAR") return process.env.DISCORD_WEBHOOK_RADAR;
   if (stage === "BUILDUP") return process.env.DISCORD_WEBHOOK_BUILDUP;
   if (stage === "ALMOST") return process.env.DISCORD_WEBHOOK_ALMOST;
-  if (stage === "ENTRY") return process.env.DISCORD_WEBHOOK_ENTRY; // (later)
+  if (stage === "ELITE") return process.env.DISCORD_WEBHOOK_ELITE; // ENTRY kanaal
   return null;
 }
 
 export function fmtCoinLine(c, mode, stage, extra = {}) {
   const base = "https://cryptocroc-scanner-omega.vercel.app";
-  const page = `${base}/?mode=${encodeURIComponent(mode)}`;
-  const parts = [
-    `**${c.symbol}** → **${stage}** (${mode.toUpperCase()})`,
+  const page = `${base}/?mode=${encodeURIComponent(mode)}&symbol=${encodeURIComponent(
+    c.symbol
+  )}`;
+
+  const bits = [
+    `**${c.symbol}** → **${stage === "ELITE" ? "ENTRY" : stage}** (${mode.toUpperCase()})`,
     `prijs: $${num(c.price)} | chg24: ${sign(c.change24)}% | range24: ${num(c.range24)}%`,
     `vol: $${short(c.volume)} | mc: $${short(c.marketCap)} | vm: ${num(c.vm)}`,
   ];
 
-  if (extra?.strength != null) parts.push(`strength: **${Math.round(extra.strength)}**/100`);
-  if (extra?.consistency != null) parts.push(`consistency: ${(extra.consistency * 100).toFixed(0)}%`);
+  if (extra?.consistency) {
+    bits.push(
+      `consistency: ${(extra.consistency.ratio * 100).toFixed(0)}% (${extra.consistency.same}/${extra.consistency.total})`
+    );
+  }
+  if (extra?.ob) {
+    bits.push(
+      `OB: ${extra.ob.valid ? "valid" : "invalid"} | score: ${extra.ob.avgScore ?? "?"} | spread: ${num(
+        extra.ob.spreadPct
+      )}%`
+    );
+  }
+  if (extra?.risk) {
+    bits.push(`SL: $${num(extra.risk.sl)} | TP1: $${num(extra.risk.tp1)} | TP2: $${num(extra.risk.tp2)}`);
+  }
 
-  parts.push(`open: ${page}`);
-  return parts.join("\n");
+  bits.push(`open: ${page}`);
+  return bits.join("\n");
 }
 
 // ====== AUTH ======
@@ -105,9 +117,16 @@ export function requireSecret(req, res) {
 
 // ====== KV KEYS ======
 export const keyLatest = (mode) => `latest:${mode}`;
-export const keyState  = (mode) => `state:${mode}`;
-export const keyReset  = (mode) => `resetAt:${mode}`;
+export const keyState = (mode) => `state:${mode}`;
+export const keyReset = (mode) => `resetAt:${mode}`;
 export const keyBitgetSymbols = "bitget:symbols:spotusdt";
+
+// ====== BTC VOL KNOP (geen pseudo-ATR, alleen range24) ======
+export function coinRangeCapFromBtcRange(btcRange24) {
+  // range cap = 30% + (btcRange24-5)*2, clamp 25..40
+  const raw = 30 + (Number(btcRange24 || 0) - 5) * 2;
+  return clamp(raw, 25, 40);
+}
 
 // ====== DATA FETCH ======
 export async function fetchCoinGeckoTop() {
@@ -122,7 +141,7 @@ export async function fetchCoinGeckoTop() {
 
   return arr.map((x) => {
     const high = Number(x.high_24h || 0);
-    const low  = Number(x.low_24h || 0);
+    const low = Number(x.low_24h || 0);
     const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
     const volume = Number(x.total_volume || 0);
@@ -153,27 +172,19 @@ export async function fetchBTCGate() {
 
   const chg24 = Number(x.price_change_percentage_24h || 0);
   const high = Number(x.high_24h || 0);
-  const low  = Number(x.low_24h || 0);
+  const low = Number(x.low_24h || 0);
   const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-  // minimal-pro volatility knob
+  // BTC gate (simpel)
+  const inVolWindow = range24 >= SETTINGS.btcRangeMin && range24 <= SETTINGS.btcRangeMaxBull; // zelfde cap bull/bear
+  const bull = inVolWindow && chg24 >= SETTINGS.btcChgGate;
+  const bear = inVolWindow && chg24 <= -SETTINGS.btcChgGate;
+
   let state = "NEUTRAL";
-  if (range24 < SETTINGS.btcRangeMin) state = "NEUTRAL";
-  else if (range24 > SETTINGS.btcRangeMax) state = "NEUTRAL";
-  else {
-    if (chg24 >= SETTINGS.btcChgGate) state = "BULL";
-    else if (chg24 <= -SETTINGS.btcChgGate) state = "BEAR";
-  }
+  if (bull) state = "BULL";
+  else if (bear) state = "BEAR";
 
-  // dynamic coin range cap
-  const dynamicMaxRange24 =
-    clamp(
-      SETTINGS.coinRangeBase + (range24 - 5) * 2,
-      SETTINGS.coinRangeMinClamp,
-      SETTINGS.coinRangeMaxClamp
-    );
-
-  return { state, chg24, range24, dynamicMaxRange24 };
+  return { state, chg24, range24 };
 }
 
 export async function getBitgetSpotUsdtSymbols() {
@@ -194,60 +205,14 @@ export async function getBitgetSpotUsdtSymbols() {
   return new Set(list);
 }
 
-// ====== SPIKE-GUARD (median fallback) ======
-export function median3(a, b, c) {
-  const arr = [a, b, c].filter((x) => Number.isFinite(x)).sort((x, y) => x - y);
-  if (!arr.length) return 0;
-  return arr[Math.floor(arr.length / 2)];
-}
-
-// vol/range/vm: als >100% afwijking van median -> gebruik median
-export function guardSpike(current, hist3, ratio = SETTINGS.spikeMaxDeltaRatio) {
-  const h = Array.isArray(hist3) ? hist3.slice(-3) : [];
-  if (h.length < 2) return current;
-
-  const m = median3(h[h.length - 1], h[h.length - 2], current);
-  const base = Math.max(1e-9, Math.abs(m));
-  const delta = Math.abs(current - m) / base;
-
-  if (delta > ratio) return m;
-  return current;
-}
-
-// change24: light guard (niet smoothen, alleen extreme sprong afkappen)
-export function guardChange24(current, hist3) {
-  const h = Array.isArray(hist3) ? hist3.slice(-3) : [];
-  if (h.length < 2) return current;
-  const m = median3(h[h.length - 1], h[h.length - 2], current);
-  if (Math.abs(current - m) > SETTINGS.changeGuardAbs) return m;
-  return current;
-}
-
-// ====== CONSISTENCY WINDOW (2 uur, min 6 samples) ======
-export function pruneWindow(list, nowMs, windowMin) {
-  const wMs = windowMin * 60 * 1000;
-  return (Array.isArray(list) ? list : []).filter((x) => x && (nowMs - Number(x.ts || 0)) <= wMs);
-}
-
-export function computeConsistency(dirHist, nowMs, windowMin, minSamples) {
-  const pruned = pruneWindow(dirHist, nowMs, windowMin);
-  const total = pruned.length;
-  if (total < minSamples) return { ratio: null, total };
-  const ok = pruned.filter((x) => x.ok === true).length;
-  return { ratio: ok / total, total };
-}
-
 // ====== FILTERS ======
-export function passRadar(c, btc) {
+export function passRadar(c, coinRangeCap) {
   if (c.marketCap < SETTINGS.mcapMin) return false;
   if (c.marketCap > SETTINGS.mcapMax) return false;
   if (c.volume < SETTINGS.volMinRadar) return false;
   if (c.vm < SETTINGS.vmMinRadar) return false;
   if (Math.abs(c.change24) > SETTINGS.maxAbsChg24) return false;
-
-  const maxRange = btc?.dynamicMaxRange24 ?? SETTINGS.coinRangeBase;
-  if (c.range24 > maxRange) return false;
-
+  if (c.range24 > coinRangeCap) return false;
   return true;
 }
 
@@ -265,10 +230,10 @@ export function passBuildup(c, mode) {
 
 export function priceFlatOk(priceHist, maxPct) {
   if (!Array.isArray(priceHist) || priceHist.length < 2) return true;
-  const min = Math.min(...priceHist);
-  const max = Math.max(...priceHist);
-  if (min <= 0) return true;
-  const pct = ((max - min) / min) * 100;
+  const minP = Math.min(...priceHist);
+  const maxP = Math.max(...priceHist);
+  if (minP <= 0) return true;
+  const pct = ((maxP - minP) / minP) * 100;
   return pct <= maxPct;
 }
 
@@ -281,79 +246,89 @@ export function passAlmost(c, mode, priceHist) {
 }
 
 // ====== STAGE LOGIC ======
-export function nextDesiredStage(c, mode, priceHist, btc) {
-  if (!passRadar(c, btc)) return "OUT";
-  if (passAlmost(c, mode, priceHist)) return "ALMOST";
-  if (passBuildup(c, mode)) return "BUILDUP";
-  return "RADAR";
-}
-
 export function stageRank(stage) {
   if (stage === "RADAR") return 1;
   if (stage === "BUILDUP") return 2;
   if (stage === "ALMOST") return 3;
-  if (stage === "ENTRY") return 4;
+  if (stage === "ELITE") return 4; // ENTRY
   return 0;
 }
 
-// ====== UI EXPLANATIONS ======
-export function explainStage(c, mode, priceHist, btc, consistencyRatio) {
-  // reasons = wat klopt al; missing = wat moet nog voor volgende stap
-  const maxRange = btc?.dynamicMaxRange24 ?? SETTINGS.coinRangeBase;
+export function computeRisk(c, mode) {
+  // simpele, stabiele risk (kan later ATR/OB-based)
+  // basePct = clamp(range24/200, 0.015..0.035)
+  const basePct = clamp((Number(c.range24 || 0) / 200) || 0.02, 0.015, 0.035);
 
-  const reasons = [];
-  const missing = [];
-
-  // radar checks
-  if (c.marketCap >= SETTINGS.mcapMin) reasons.push("mcap ≥ min"); else missing.push(`mcap ≥ ${short(SETTINGS.mcapMin)}`);
-  if (c.marketCap <= SETTINGS.mcapMax) reasons.push("mcap ≤ max"); else missing.push(`mcap ≤ ${short(SETTINGS.mcapMax)}`);
-  if (c.volume >= SETTINGS.volMinRadar) reasons.push("vol ≥ radar"); else missing.push(`vol ≥ ${short(SETTINGS.volMinRadar)}`);
-  if (c.vm >= SETTINGS.vmMinRadar) reasons.push("vm ≥ radar"); else missing.push(`vm ≥ ${SETTINGS.vmMinRadar}`);
-  if (Math.abs(c.change24) <= SETTINGS.maxAbsChg24) reasons.push("|chg24| ok"); else missing.push(`|chg24| ≤ ${SETTINGS.maxAbsChg24}%`);
-  if (c.range24 <= maxRange) reasons.push("range24 ok"); else missing.push(`range24 ≤ ${maxRange.toFixed(1)}%`);
-
-  // next targets
-  const needBuildup = [];
-  const chgNeed = mode === "bull" ? `chg24 ≥ +${SETTINGS.buildup.chgMin}%` : `chg24 ≤ -${SETTINGS.buildup.chgMin}%`;
-  needBuildup.push(chgNeed);
-  needBuildup.push(`vm ≥ ${SETTINGS.buildup.vmMin}`);
-  needBuildup.push(`vol ≥ ${short(SETTINGS.buildup.volMin)}`);
-
-  const needAlmost = [];
-  needAlmost.push(...needBuildup);
-  needAlmost.push(`vm ≥ ${SETTINGS.almost.vmMin}`);
-  needAlmost.push(`vol ≥ ${short(SETTINGS.almost.volMin)}`);
-  needAlmost.push(`priceFlat ≤ ${SETTINGS.almost.priceFlatMax}% (laatste 6)`);
-
-  return { reasons, missing, needBuildup, needAlmost, consistencyRatio };
+  if (mode === "bull") {
+    const sl = c.price * (1 - basePct);
+    const tp1 = c.price * (1 + basePct * 2);
+    const tp2 = c.price * (1 + basePct * 4);
+    return { sl, tp1, tp2 };
+  } else {
+    const sl = c.price * (1 + basePct);
+    const tp1 = c.price * (1 - basePct * 2);
+    const tp2 = c.price * (1 - basePct * 4);
+    return { sl, tp1, tp2 };
+  }
 }
 
-export function strengthScore(c, btc, consistencyRatio) {
-  // simpele 0-100 score voor UI (geen risk-engine, puur “hoe sterk”)
-  const vmN = clamp((c.vm - 0.10) / 0.30, 0, 1);         // 0.10->0, 0.40->1
-  const volN = clamp((c.volume - 500_000) / 4_500_000, 0, 1);
-  const chgN = clamp((Math.abs(c.change24) - 1) / 15, 0, 1);
-  const consN = consistencyRatio == null ? 0.4 : clamp(consistencyRatio, 0, 1);
-  const btcN = btc?.state === "BULL" || btc?.state === "BEAR" ? 1 : 0;
+// ====== SPIKE GUARD (median fallback) ======
+export function median3(a, b, c) {
+  const arr = [a, b, c].map((x) => Number(x || 0)).sort((x, y) => x - y);
+  return arr[1];
+}
 
-  // weging: vm 30, vol 25, chg 20, cons 15, btc 10
-  return (
-    vmN * 30 +
-    volN * 25 +
-    chgN * 20 +
-    consN * 15 +
-    btcN * 10
-  );
+export function guardWithMedian(history, nextVal, maxJumpRatio = 1.0) {
+  // history: laatste 2 waarden (of minder). Als we 2 hebben: median( v1, v2, next )
+  const n = Number(nextVal || 0);
+  if (!Array.isArray(history)) return n;
+
+  const h = history.slice(-2).map((x) => Number(x || 0));
+  if (h.length < 2) return n;
+
+  const med = median3(h[0], h[1], n);
+  // spike detect: als next meer dan (1+maxJumpRatio) * median afwijkt -> median pakken
+  const denom = Math.max(1e-9, Math.abs(med));
+  const diffRatio = Math.abs(n - med) / denom;
+  if (diffRatio > maxJumpRatio) return med;
+  return n;
+}
+
+// ====== CONSISTENCY WINDOW ======
+export function updateConsistency(dirHist, dir, now) {
+  const hist = Array.isArray(dirHist) ? dirHist.slice(-64) : [];
+  hist.push({ ts: now, dir });
+
+  // prune > 2h
+  const cut = now - CFG.consistencyWindowMs;
+  const pruned = hist.filter((x) => Number(x.ts || 0) >= cut);
+
+  const total = pruned.length;
+  const same = pruned.filter((x) => x.dir === dir).length;
+  const ratio = total > 0 ? same / total : 0;
+
+  const pass =
+    total >= SETTINGS.elite.minConsistencySamples &&
+    ratio >= SETTINGS.elite.minConsistencyRatio;
+
+  return { hist: pruned, total, same, ratio, pass };
 }
 
 // helpers
-function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
-function num(n) { return (Number(n) || 0).toFixed(2); }
-function sign(n){ return `${n >= 0 ? "+" : ""}${num(n)}`; }
-function short(n){
-  n = Number(n)||0;
-  if (n >= 1e9) return (n/1e9).toFixed(2)+"B";
-  if (n >= 1e6) return (n/1e6).toFixed(2)+"M";
-  if (n >= 1e3) return (n/1e3).toFixed(2)+"K";
+export function clamp(x, a, b) {
+  x = Number(x || 0);
+  return Math.max(a, Math.min(b, x));
+}
+function num(n) {
+  return (Number(n) || 0).toFixed(2);
+}
+function sign(n) {
+  return `${n >= 0 ? "+" : ""}${num(n)}`;
+}
+function short(n) {
+  n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
   return n.toFixed(0);
 }
