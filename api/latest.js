@@ -12,11 +12,15 @@ export default async function handler(req, res) {
     if (!data) {
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");
-      return res.end(JSON.stringify({
-        ok: true,
-        counts: { entry:0, almost:0, buildup:0, radar:0 },
-        funnel: { entry:[], almost:[], buildup:[], radar:[] },
-      }));
+      return res.end(
+        JSON.stringify({
+          ok: true,
+          ts: null,
+          mode,
+          counts: { entry: 0, almost: 0, buildup: 0, radar: 0 },
+          funnel: { entry: [], almost: [], buildup: [], radar: [] },
+        })
+      );
     }
 
     res.statusCode = 200;
@@ -25,6 +29,6 @@ export default async function handler(req, res) {
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok:false, error:String(e) }));
+    res.end(JSON.stringify({ ok: false, error: String(e) }));
   }
 }
