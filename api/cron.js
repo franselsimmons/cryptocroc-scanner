@@ -1,36 +1,25 @@
-import scanHandler from "./scan.js";
 import { json } from "./_core.js";
+import { runScan } from "./scan.js";
 
-function mkReq(url, headers = {}) {
-  return { url, headers };
-}
-function mkRes() {
-  return {
-    statusCode: 200,
-    headers: {},
-    setHeader(k, v) { this.headers[k] = v; },
-    end() {}
-  };
-}
+export const config = { runtime: "nodejs" };
 
 export default async function handler(req, res) {
   try {
+    // Beveiliging (aanrader)
     const secret = process.env.CRON_SECRET;
-
-    // Vercel Cron stuurt Authorization: Bearer <CRON_SECRET> als jij die env var zet
     if (secret) {
-      const auth = req.headers?.authorization || req.headers?.Authorization;
+      const auth = req.headers.authorization;
       if (auth !== `Bearer ${secret}`) {
-        return json(res, 401, { error: "Unauthorized" });
+        res.statusCode = 401;
+        return res.end("Unauthorized");
       }
     }
 
-    // bull + bear achter elkaar
-    await scanHandler(mkReq("http://localhost/api/scan?mode=bull"), mkRes());
-    await scanHandler(mkReq("http://localhost/api/scan?mode=bear"), mkRes());
+    const bull = await runScan("bull");
+    const bear = await runScan("bear");
 
-    return json(res, 200, { ok: true, ts: Date.now() });
+    return json(res, 200, { ok: true, ts: Date.now(), bull: bull.counts, bear: bear.counts });
   } catch (e) {
-    return json(res, 500, { error: String(e) });
+    return json(res, 500, { ok: false, error: String(e?.message || e) });
   }
 }
