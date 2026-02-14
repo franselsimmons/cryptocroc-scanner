@@ -35,13 +35,16 @@ export const SETTINGS = {
 
   // ENTRY (OB gate)
   entry: {
-    obScoreMin: 0.06,     // bull >= 0.06, bear <= -0.06
-    spreadMaxPct: 0.55,   // %
+    obScoreMin: 0.06, // bull >= 0.06, bear <= -0.06
+    spreadMaxPct: 0.55, // %
     largestOrderRatioMax: 0.35,
     samplesNeed: 3,
     samplesWindowSec: 90,
-    minAgree: 2           // 2/3 richting
+    minAgree: 2, // 2/3 richting
   },
+
+  // OB freshness
+  obStaleSec: 15,
 
   // No-skip
   minScansPerStage: 2,
@@ -53,7 +56,7 @@ export const SETTINGS = {
 
   // OB sampler selection
   obPickAlmost: 12,
-  obPickBuildup: 8
+  obPickBuildup: 8,
 };
 
 // ================== AUTH ==================
@@ -76,12 +79,12 @@ export function requireSecret(req, res) {
 
 // ================== KV KEYS ==================
 export const keyLatest = (mode) => `latest:${mode}`;
-export const keyState  = (mode) => `state:${mode}`;
-export const keyReset  = (mode) => `resetAt:${mode}`;
+export const keyState = (mode) => `state:${mode}`;
+export const keyReset = (mode) => `resetAt:${mode}`;
 export const keyBitgetSymbols = "bitget:symbols:spotusdt";
 
 export const keyObSamples = (side, symbol) => `ob:samples:${side}:${symbol}`;
-export const keyObResult  = (side, symbol) => `ob:result:${side}:${symbol}`;
+export const keyObResult = (side, symbol) => `ob:result:${side}:${symbol}`;
 
 export const keyEntryLog = "log:entry"; // list (best effort)
 
@@ -100,10 +103,10 @@ export async function sendDiscord(webhookUrl, content) {
 }
 
 export function webhookForStage(stage) {
-  if (stage === "RADAR")  return process.env.DISCORD_WEBHOOK_RADAR;
-  if (stage === "BUILDUP")return process.env.DISCORD_WEBHOOK_BUILDUP;
+  if (stage === "RADAR") return process.env.DISCORD_WEBHOOK_RADAR;
+  if (stage === "BUILDUP") return process.env.DISCORD_WEBHOOK_BUILDUP;
   if (stage === "ALMOST") return process.env.DISCORD_WEBHOOK_ALMOST;
-  if (stage === "ENTRY")  return process.env.DISCORD_WEBHOOK_ENTRY;
+  if (stage === "ENTRY") return process.env.DISCORD_WEBHOOK_ENTRY;
   return null;
 }
 
@@ -165,7 +168,7 @@ export async function fetchBTCGate() {
 
 function normalizeCG(x) {
   const high = Number(x.high_24h || 0);
-  const low  = Number(x.low_24h || 0);
+  const low = Number(x.low_24h || 0);
   const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
   const volume = Number(x.total_volume || 0);
@@ -209,12 +212,12 @@ export function applySpikeGuard(prevMetrics, cur) {
   // prevMetrics = { vol:[..], range:[..], vm:[..], chg:[..] } arrays max 3
   const m = prevMetrics || { vol: [], range: [], vm: [], chg: [] };
 
-  const vol = guarded("vol", m.vol, cur.volume);
-  const range = guarded("range", m.range, cur.range24);
-  const vm = guarded("vm", m.vm, cur.vm);
+  const vol = guarded(m.vol, cur.volume);
+  const range = guarded(m.range, cur.range24);
+  const vm = guarded(m.vm, cur.vm);
 
   // change24: alleen spike guard (niet smoothen)
-  const chg = guarded("chg", m.chg, cur.change24, { onlySpike: true });
+  const chg = guarded(m.chg, cur.change24, { onlySpike: true });
 
   const next = {
     vol: push3(m.vol, vol),
@@ -234,7 +237,7 @@ export function applySpikeGuard(prevMetrics, cur) {
   return { patched, nextMetrics: next };
 }
 
-function guarded(kind, arr, value, opts = {}) {
+function guarded(arr, value, opts = {}) {
   const v = Number(value || 0);
   const a = Array.isArray(arr) ? arr.filter(Number.isFinite) : [];
   if (a.length < 2) return v;
@@ -244,11 +247,8 @@ function guarded(kind, arr, value, opts = {}) {
 
   // afwijking > 100% van mediaan => use median
   const diff = Math.abs(v - med) / Math.abs(med);
-  if (diff > 1.0) {
-    // voor change24 willen we geen smooth, alleen extreme spikes
-    if (opts.onlySpike) return med;
-    return med;
-  }
+  if (diff > 1.0) return med;
+
   return v;
 }
 
@@ -302,7 +302,10 @@ export function passRadar(c, btcRange24) {
   if (c.volume < SETTINGS.volMinRadar) return false;
   if (c.vm < SETTINGS.vmMinRadar) return false;
   if (Math.abs(c.change24) > SETTINGS.maxAbsChg24) return false;
+
+  // vaste cap + volatility knob (lichte)
   if (c.range24 > Math.min(SETTINGS.maxRange24, dynRangeCap)) return false;
+
   return true;
 }
 
@@ -375,7 +378,7 @@ export function stageRank(stage) {
   return 0;
 }
 
-// ================== CONFIDENCE + SL/TP ==================
+// ================== CONFIDENCE + SL/TP (ADAPTIEF) ==================
 export function computeConfidence({ mode, obScore, obAgree, vm, volAcc, btc }) {
   // weights: OB 40, VM 20, VolAcc 20, BTC 20
   const obStrength = clamp01(mapLinear(Math.abs(obScore), 0.04, 0.20)); // 0..1
@@ -386,12 +389,7 @@ export function computeConfidence({ mode, obScore, obAgree, vm, volAcc, btc }) {
   const vaStrength = clamp01(mapLinear(volAcc, 1.0, 1.25));
   const btcStrength = clamp01(mapLinear(Math.abs(btc?.chg24 || 0), SETTINGS.btcChgGate, 2.5));
 
-  const score =
-    40 * ob +
-    20 * vmStrength +
-    20 * vaStrength +
-    20 * btcStrength;
-
+  const score = 40 * ob + 20 * vmStrength + 20 * vaStrength + 20 * btcStrength;
   return Math.round(clamp(score, 0, 100));
 }
 
@@ -412,37 +410,80 @@ export function computeAtrPctFromPriceHist(priceHist) {
   return clamp(avg, 0.002, 0.12); // 0.2% .. 12%
 }
 
-export function computeSLTP({ mode, price, atrPct }) {
-  const atr = price * atrPct;
-  const slDist = 1.8 * atr;
-  const tpDist = 3.0 * atr;
+// ADAPTIEF: SL/TP hangt af van edge + OB + spread + volatility
+export function computeSLTP({ mode, price, range24, atrPct, edgeScore, obScore, spreadPct }) {
+  const p = Number(price || 0);
+  if (!p) return { atrPct: null, sl: null, tp: null, slPct: null, tpPct: null };
+
+  const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+
+  // volatility basis:
+  // - als we atrPct hebben (van priceHist): gebruik die
+  // - anders: gebruik range24 proxy
+  let atrP = Number(atrPct || 0);
+  if (!atrP || !Number.isFinite(atrP)) {
+    const rp = Number(range24 || 0);
+    const atrPctProxy = clamp(rp / 600, 0.006, 0.04); // (range24/6)% => /600 als fractie
+    atrP = atrPctProxy;
+  }
+  atrP = clamp(atrP, 0.002, 0.12);
+
+  // normalize signals 0..1
+  const edgeN = clamp((Number(edgeScore || 0) - 55) / 45, 0, 1);
+  const obN = clamp((Math.abs(Number(obScore || 0)) - 0.05) / 0.12, 0, 1);
+  const sprN = clamp(Number(spreadPct || 0) / 0.8, 0, 1);
+
+  // SL multiplier: strakker bij hoge edge+OB, ruimer bij slechte spread
+  let slMult = 2.2 - (0.8 * edgeN) - (0.6 * obN) + (0.6 * sprN);
+  slMult = clamp(slMult, 1.0, 2.2);
+
+  // TP multiplier: groter bij hoge edge+OB, kleiner bij slechte spread
+  let tpMult = 1.6 + (2.0 * edgeN) + (1.2 * obN) - (0.5 * sprN);
+  tpMult = clamp(tpMult, 1.6, 4.5);
+
+  const slPct = atrP * slMult; // fractie
+  const tpPct = atrP * tpMult;
 
   if (mode === "bull") {
     return {
-      sl: price - slDist,
-      tp: price + tpDist,
+      atrPct: atrP,
+      slPct: slPct * 100,
+      tpPct: tpPct * 100,
+      sl: p * (1 - slPct),
+      tp: p * (1 + tpPct),
     };
   } else {
     return {
-      sl: price + slDist,
-      tp: price - tpDist,
+      atrPct: atrP,
+      slPct: slPct * 100,
+      tpPct: tpPct * 100,
+      sl: p * (1 + slPct),
+      tp: p * (1 - tpPct),
     };
   }
 }
 
 // ================== HELPERS ==================
-function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
-function clamp01(n){ return clamp(n, 0, 1); }
-function mapLinear(x, a, b){
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
+function clamp01(n) {
+  return clamp(n, 0, 1);
+}
+function mapLinear(x, a, b) {
   if (b === a) return 0;
   return (Number(x || 0) - a) / (b - a);
 }
-function num(n) { return (Number(n) || 0).toFixed(2); }
-function sign(n){ return `${n >= 0 ? "+" : ""}${num(n)}`; }
-function short(n){
-  n = Number(n)||0;
-  if (n >= 1e9) return (n/1e9).toFixed(2)+"B";
-  if (n >= 1e6) return (n/1e6).toFixed(2)+"M";
-  if (n >= 1e3) return (n/1e3).toFixed(2)+"K";
+function num(n) {
+  return (Number(n) || 0).toFixed(2);
+}
+function sign(n) {
+  return `${n >= 0 ? "+" : ""}${num(n)}`;
+}
+function short(n) {
+  n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
   return n.toFixed(0);
 }
