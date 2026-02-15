@@ -28,7 +28,7 @@ export const MOON = {
   },
 
   almost: {
-    volAccMin: 1.5,
+    volAccMin: 1.05,
     priceFlatMax: 1.8,
     minConfidence: 45,
     consistencyMin: 0.60,
