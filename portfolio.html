@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>CryptoCroc Portfolio</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    .wrap{max-width:1100px;margin:18px auto;padding:0 12px;}
+    .topline{display:flex;gap:10px;align-items:center;justify-content:space-between;margin:10px 0 18px;}
+    .tabs{display:flex;gap:10px;flex-wrap:wrap}
+    .btnLink{display:inline-flex;align-items:center;gap:8px;text-decoration:none}
+    .table{width:100%;border-collapse:collapse;background:#0f141b;border-radius:12px;overflow:hidden}
+    .table th,.table td{padding:10px 10px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}
+    .table th{font-size:12px;text-transform:uppercase;opacity:.75;letter-spacing:.06em}
+    .pill{display:inline-block;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.08);font-size:12px}
+    .pnlPos{color:#3ee27a;font-weight:700}
+    .pnlNeg{color:#ff5b5b;font-weight:700}
+    .muted{opacity:.75;font-size:12px}
+    pre{white-space:pre-wrap;word-break:break-word;background:rgba(255,255,255,.06);padding:10px;border-radius:10px}
+    .grid2{display:grid;grid-template-columns:1fr;gap:14px}
+    @media(min-width:900px){.grid2{grid-template-columns:1fr 1fr}}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="left">
+      <div class="brand">📒 Portfolio</div>
+      <div class="sub" id="statusLine">laden…</div>
+    </div>
+    <div class="right">
+      <a class="btn btnLink" href="/?mode=bull">Main Funnel</a>
+      <a class="btn btnLink" href="/moon.html?mode=bull">Moonshots</a>
+      <button class="btn" id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <div class="grid2">
+      <section class="panel">
+        <div class="panelTitle">OPEN TRADES</div>
+        <div class="panelHint">Automatisch geopend bij ENTRY (main) / ELITE (moon).</div>
+        <div id="openBox"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panelTitle">LAATSTE CLOSED TRADES</div>
+        <div class="panelHint">Discord krijgt alleen open/close + PnL. Verbeter-info staat alleen hier.</div>
+        <div id="closedBox"></div>
+      </section>
+    </div>
+
+    <section class="panel" style="margin-top:14px;">
+      <div class="panelTitle">DETAILS (klik op een trade)</div>
+      <div class="panelHint">Hier zie je “waarom verlies / hoe beter winst” (alleen website).</div>
+      <div id="detailsBox"><div class="empty">Klik eerst op een trade.</div></div>
+    </section>
+  </div>
+
+  <script src="/portfolio.js"></script>
+</body>
+</html>
