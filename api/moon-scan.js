@@ -102,7 +102,6 @@ export default async function handler(req, res) {
     for (const c of rawCoins) {
       const sym = c.symbol;
 
-      // per-coin state (moon)
       const prev = state[sym] || {
         stage: "BUILDUP",
         stageScans: 0,
@@ -110,10 +109,9 @@ export default async function handler(req, res) {
         priceHist: [],
         volHist: [],
         sideHist: [],
-        depthOk: false, // hysteresis status
+        depthOk: false,
       };
 
-      // reset?
       const wasReset = Number(prev.enteredAt || 0) < resetAt;
       if (wasReset) {
         prev.stage = "BUILDUP";
@@ -125,7 +123,7 @@ export default async function handler(req, res) {
         prev.depthOk = false;
       }
 
-      // RADAR pass?
+      // Radar pass?
       if (!passRadarMoon(c, mode)) {
         delete state[sym];
         continue;
@@ -137,7 +135,6 @@ export default async function handler(req, res) {
       const volHist = Array.isArray(prev.volHist) ? prev.volHist.slice(-5) : [];
       volHist.push(c.volume);
 
-      // volAcc proxy (last3 / prev3)
       const sum = (a) => a.reduce((x, y) => x + (Number(y) || 0), 0);
       const last3 = volHist.slice(-3);
       const prev3 = volHist.slice(-6, -3);
@@ -181,11 +178,11 @@ export default async function handler(req, res) {
         btc,
       });
 
-      // depth floor (uses bid/ask depth within 0.2%)
+      // depth floor (min bid/ask binnen 0.2%)
       const depthUsd = obView ? Math.min(obView.bidUsd || 0, obView.askUsd || 0) : 0;
       const floorUsd = depthFloorUsd(c.marketCap);
 
-      // stage checks
+      // stage gates
       const almostGate = passAlmostMoon({
         priceHist,
         volAcc,
@@ -220,7 +217,6 @@ export default async function handler(req, res) {
       let nextStage = stage;
       if (desiredRank > prevRank) {
         if (stageScans >= MOON.minScansPerStage) {
-          // stap voor stap omhoog
           nextStage = prevRank === 1 ? "ALMOST" : "ELITE";
         }
       } else if (desiredRank < prevRank) {
@@ -237,13 +233,10 @@ export default async function handler(req, res) {
         stageChanged = true;
       }
 
-      // hysteresis state bijhouden (alleen als obView bestaat)
+      // hysteresis depthOk
       let depthOk = !!prev.depthOk;
       if (MOON.elite.depthFloorEnabled && obView) {
-        // als hij eliteGate ok is => depthOk true
-        // anders kan hij true blijven via hysteresis exit floor
         depthOk = eliteGate.ok || depthOk;
-        // als depth heel laag is onder exitFloor -> force false
         const exitNeed = floorUsd * MOON.elite.depthHysteresisExitMul;
         if (depthUsd < exitNeed) depthOk = false;
       }
@@ -276,7 +269,7 @@ export default async function handler(req, res) {
         depthOk,
       };
 
-      // elite log when enters ELITE
+      // elite log
       if (stageChanged && stage === "ELITE") {
         await bestEffortEliteLog({
           ts: now,
