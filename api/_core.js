@@ -6,7 +6,7 @@ export const RUNTIME_CONFIG = { runtime: "nodejs20.x" };
 // ================== SETTINGS (v1 + fases 0/1/2) ==================
 export const SETTINGS = {
   // Universe
-  CG_TOP: 250,
+  CG_TOP: 500,
   RADAR_LIMIT: 160,
 
   // RADAR (breed)
