@@ -10,8 +10,12 @@ let MODE = new URLSearchParams(location.search).get("mode") || localStorage.getI
 function setMode(mode){
   MODE = mode;
   localStorage.setItem("MODE", mode);
-  el("modeBull").classList.toggle("active", mode==="bull");
-  el("modeBear").classList.toggle("active", mode==="bear");
+
+  const bullBtn = el("modeBull");
+  const bearBtn = el("modeBear");
+  if (bullBtn) bullBtn.classList.toggle("active", mode==="bull");
+  if (bearBtn) bearBtn.classList.toggle("active", mode==="bear");
+
   loadLatest();
 }
 
@@ -52,6 +56,8 @@ function coinRow(c){
 
 function renderStage(targetId, arr){
   const box = el(targetId);
+  if (!box) return;
+
   box.innerHTML = "";
   if(!arr || arr.length===0){
     box.innerHTML = `<div class="empty">Geen coins.</div>`;
@@ -71,8 +77,11 @@ function renderAll(data){
   const ts = data?.ts ? new Date(data.ts) : null;
   const stamp = ts ? ts.toLocaleString() : "—";
 
-  el("statusLine").textContent =
-    `${btcLine(data.btc)} • Laatste update: ${stamp} • ENTRY ${data.counts.entry} • ALMOST ${data.counts.almost} • BUILDUP ${data.counts.buildup} • RADAR ${data.counts.radar}`;
+  const statusLine = el("statusLine");
+  if (statusLine) {
+    statusLine.textContent =
+      `${btcLine(data.btc)} • Laatste update: ${stamp} • ENTRY ${data.counts.entry} • ALMOST ${data.counts.almost} • BUILDUP ${data.counts.buildup} • RADAR ${data.counts.radar}`;
+  }
 
   renderStage("stageEntry", data?.funnel?.entry || []);
   renderStage("stageAlmost", data?.funnel?.almost || []);
@@ -82,59 +91,88 @@ function renderAll(data){
 
 async function loadLatest(){
   try{
-    el("statusLine").textContent = "Status: laden…";
+    const statusLine = el("statusLine");
+    if (statusLine) statusLine.textContent = "Status: laden…";
+
     const r = await fetch(API.latest(MODE), { cache: "no-store" });
     const j = await r.json();
     renderAll(j || {});
   }catch(e){
-    el("statusLine").textContent = "Status: fout bij laden (check Vercel logs)";
+    const statusLine = el("statusLine");
+    if (statusLine) statusLine.textContent = "Status: fout bij laden (check Vercel logs)";
   }
 }
 
 // ===== modal =====
 function showModal(on){
-  el("modal").classList.toggle("hidden", !on);
+  const modal = el("modal");
+  if (!modal) return;
+  modal.classList.toggle("hidden", !on);
 }
-el("mClose").addEventListener("click", ()=>showModal(false));
-el("modal").addEventListener("click",(e)=>{ if(e.target.id==="modal") showModal(false); });
+
+const mClose = el("mClose");
+if (mClose) mClose.addEventListener("click", ()=>showModal(false));
+
+const modalEl = el("modal");
+if (modalEl) {
+  modalEl.addEventListener("click",(e)=>{ if(e.target.id==="modal") showModal(false); });
+}
 
 async function openModal(c){
   showModal(true);
 
-  el("mTitle").textContent = `${c.symbol} • ${MODE.toUpperCase()} • ${c.stage}`;
-  el("mSub").textContent =
-    `prijs $${fmt(c.price)} • confidence ${c.confidence}/100 • scans ${c.stageScans} • consistency ${(c.consistency?.ratio*100||0).toFixed(0)}% (${c.consistency?.same||0}/${c.consistency?.total||0})`;
+  const mTitle = el("mTitle");
+  const mSub = el("mSub");
+  const mWhy = el("mWhy");
+  const mNext = el("mNext");
+  const mRisk = el("mRisk");
+  const mOB = el("mOB");
 
-  el("mWhy").textContent =
-    `Stage: ${c.stage}\n`+
-    `Desired: ${c.why?.desired}\n`+
-    `OB gate: ${c.why?.obGate}\n`+
-    `VolAcc: ${fmt(c.volAcc)}\n`;
+  if (mTitle) mTitle.textContent = `${c.symbol} • ${MODE.toUpperCase()} • ${c.stage}`;
 
-  el("mNext").textContent =
-    (c.why?.missing && c.why.missing.length)
-      ? c.why.missing.map(x=>`- ${x}`).join("\n")
-      : "Niks — hij voldoet al aan de volgende eisen.";
+  if (mSub) {
+    mSub.textContent =
+      `prijs $${fmt(c.price)} • confidence ${c.confidence}/100 • scans ${c.stageScans} • consistency ${(c.consistency?.ratio*100||0).toFixed(0)}% (${c.consistency?.same||0}/${c.consistency?.total||0})`;
+  }
 
-  el("mRisk").textContent =
-    `ATR% (proxy): ${(c.atrPct*100).toFixed(2)}%\n`+
-    `SL: $${fmt(c.sl)}\n`+
-    `TP: $${fmt(c.tp)}\n`;
+  if (mWhy) {
+    mWhy.textContent =
+      `Stage: ${c.stage}\n`+
+      `Desired: ${c.why?.desired}\n`+
+      `OB gate: ${c.why?.obGate}\n`+
+      `VolAcc: ${fmt(c.volAcc)}\n`;
+  }
+
+  if (mNext) {
+    mNext.textContent =
+      (c.why?.missing && c.why.missing.length)
+        ? c.why.missing.map(x=>`- ${x}`).join("\n")
+        : "Niks — hij voldoet al aan de volgende eisen.";
+  }
+
+  if (mRisk) {
+    mRisk.textContent =
+      `ATR% (proxy): ${(c.atrPct*100).toFixed(2)}%\n`+
+      `SL: $${fmt(c.sl)}\n`+
+      `TP: $${fmt(c.tp)}\n`;
+  }
 
   // OB live ophalen (details)
-  el("mOB").textContent = "Laden…";
+  if (mOB) mOB.textContent = "Laden…";
   try{
     const r = await fetch(API.ob(MODE, c.symbol), { cache:"no-store" });
     const j = await r.json();
 
+    if(!mOB) return;
+
     if(j.status === "validating"){
-      el("mOB").textContent =
+      mOB.textContent =
         `Status: validating\n`+
         `Tip: ${j.tip}\n`;
       return;
     }
 
-    el("mOB").textContent =
+    mOB.textContent =
       `valid: ${j.valid}\n`+
       `reason: ${j.reason}\n`+
       `avgScore: ${j.avgScore ?? "-"}\n`+
@@ -145,20 +183,26 @@ async function openModal(c){
       `askUsd: ${Math.round(j.ob?.askUsd ?? 0)}\n`+
       `stale: ${j.stale}\n`;
   }catch{
-    el("mOB").textContent = "OB ERROR: fetch mislukt";
+    if (mOB) mOB.textContent = "OB ERROR: fetch mislukt";
   }
 }
 
-// reset knop → opent link (jij plakt token)
-el("resetBtn").addEventListener("click", ()=>{
-  alert(
-    "Reset is beschermd.\n\nGebruik:\n/api/reset?mode=all&token=JOUW_CRON_SECRET\n\nTip: maak er een bookmark van."
-  );
-});
+// reset knop: alleen als hij bestaat (anders crash)
+const resetBtn = el("resetBtn");
+if (resetBtn) {
+  resetBtn.addEventListener("click", ()=>{
+    alert(
+      "Reset is beschermd.\n\nGebruik:\n/api/reset?mode=all&token=JOUW_CRON_SECRET\n\nTip: maak er een bookmark van."
+    );
+  });
+}
 
-// buttons
-el("modeBull").addEventListener("click", () => setMode("bull"));
-el("modeBear").addEventListener("click", () => setMode("bear"));
+// buttons (ook guarden, maar die bestaan normaal wel)
+const bullBtn = el("modeBull");
+if (bullBtn) bullBtn.addEventListener("click", () => setMode("bull"));
+
+const bearBtn = el("modeBear");
+if (bearBtn) bearBtn.addEventListener("click", () => setMode("bear"));
 
 // init
 setMode(MODE);
