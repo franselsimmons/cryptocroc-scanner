@@ -3,30 +3,23 @@ import { kv } from "@vercel/kv";
 
 export const RUNTIME_CONFIG = { runtime: "nodejs20.x" };
 
-// ================== MOONSHOT SETTINGS ==================
-// Doel: betrouwbaarheid + small/mid caps die nog NIET gepompt zijn.
 export const MOON = {
-  // Universe
-  CG_TOP: 250,          // blijf 250 (500 kan hobby slopen)
+  CG_TOP: 250,
   RADAR_LIMIT: 120,
 
-  // BTC gate (zelfde idee als main, maar MOON eigen)
   btcChgGate: 0.6,
   btcRangeMin: 2,
   btcRangeMaxBull: 10,
   btcRangeMaxBear: 12,
 
-  // Marketcap band
   mcapMin: 5_000_000,
   mcapMax: 150_000_000,
 
-  // RADAR (Stage 1: BUILDUP lijst)
   radar: {
     volMin: 250_000,
     vmMin: 0.10,
     range24Max: 15,
 
-    // "Nog niet gepompt / gedumpt"
     bullChg24Min: -5,
     bullChg24Max: +8,
 
@@ -34,45 +27,38 @@ export const MOON = {
     bearChg24Max: +5,
   },
 
-  // Stage 2: ALMOST (accumulatie / distributie)
   almost: {
-    volAccMin: 1.5,       // laatste 30m vs vorige 30m (proxy)
-    priceFlatMax: 1.8,    // % in window (timestamped priceHist)
+    volAccMin: 1.5,
+    priceFlatMax: 1.8,
     minConfidence: 45,
-    consistencyMin: 0.60, // 60% richting ok (licht)
+    consistencyMin: 0.60,
   },
 
-  // Stage 3: ELITE (meest betrouwbaar)
   elite: {
     minConfidence: 60,
     consistencyMin: 0.70,
 
-    // OB gate
-    obScoreMin: 0.05,        // bull >= 0.05, bear <= -0.05
+    obScoreMin: 0.05,
     spreadMaxPct: 0.55,
     largestOrderRatioMax: 0.35,
     samplesNeed: 3,
     samplesWindowSec: 90,
     minAgree: 2,
 
-    // Extra betrouwbaarheid
     obSlopeEnabled: true,
     obSlopeMinSamples: 3,
     obSlopeMinBull: 0.0,
     obSlopeMaxBear: 0.0,
 
-    // Depth floor dynamisch op marketcap (zelfde band als OB: 0.2%)
     depthFloorEnabled: true,
     depthHysteresisExitMul: 0.85,
-    depthK: 28,            // floor = clamp( K * sqrt(mcap_M) * 1000, min, max )
+    depthK: 28,
     depthMinUsd: 60_000,
     depthMaxUsd: 600_000,
   },
 
-  // scan gedrag
   minScansPerStage: 2,
 
-  // caches
   cgCacheSec: 60 * 10,
   btcCacheSec: 60 * 10,
   bitgetSymbolsCacheSec: 60 * 60 * 24,
@@ -96,7 +82,7 @@ export function requireSecret(req, res) {
   return true;
 }
 
-// ================== KV KEYS (MOON, volledig apart) ==================
+// ================== KV KEYS ==================
 export const keyMoonLatest = (mode) => `moon:latest:${mode}`;
 export const keyMoonState  = (mode) => `moon:state:${mode}`;
 export const keyMoonReset  = (mode) => `moon:resetAt:${mode}`;
@@ -106,9 +92,8 @@ export const keyMoonBitgetSymbols = `moon:bitget:symbols:spotusdt`;
 export const keyMoonObSamples = (mode, symbol) => `moon:ob:samples:${mode}:${symbol}`;
 export const keyMoonObResult  = (mode, symbol) => `moon:ob:result:${mode}:${symbol}`;
 
-export const keyMoonEliteLog = `moon:log:elite`; // list best effort
+export const keyMoonEliteLog = `moon:log:elite`;
 
-// cache keys
 const keyCgTopCache = `moon:cache:cg:top:${MOON.CG_TOP}`;
 const keyCgBtcCache = `moon:cache:cg:btc`;
 
@@ -121,9 +106,7 @@ export async function sendDiscord(webhookUrl, content) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content }),
     });
-  } catch {
-    // discord mag de scan niet slopen
-  }
+  } catch {}
 }
 
 export function moonWebhookForStage(stage) {
@@ -145,7 +128,7 @@ export function fmtMoonLine(c, mode, stage, extra = "") {
   return lines.join("\n");
 }
 
-// ================== DATA FETCH (CG + Bitget) ==================
+// ================== DATA FETCH ==================
 export async function fetchCoinGeckoTopCached() {
   const cached = await kv.get(keyCgTopCache);
   if (Array.isArray(cached) && cached.length) return cached;
@@ -245,7 +228,7 @@ export async function getBitgetSpotUsdtSymbols() {
   return new Set(list);
 }
 
-// ================== HISTORY HELPERS ==================
+// ================== HISTORY ==================
 export function updatePriceHist(prev, price) {
   const now = Date.now();
   const h = normalizePriceHist(prev).slice(-120);
@@ -257,7 +240,6 @@ export function updatePriceHist(prev, price) {
 export function normalizePriceHist(prev) {
   if (!Array.isArray(prev)) return [];
   if (prev.length && typeof prev[0] === "number") {
-    // oud format -> maak timestamps fake (10m per punt)
     return prev
       .map((p, i) => ({ ts: Date.now() - (prev.length - i) * 10 * 60 * 1000, price: Number(p || 0) }))
       .filter((x) => x.price > 0);
@@ -350,14 +332,12 @@ export function calcObSlope(samples) {
   return (last - first) / n;
 }
 
-// Dynamische floor: mcap in miljoenen -> sqrt -> USD
 export function depthFloorUsd(marketCapUsd) {
-  const mcapM = Math.max(0, Number(marketCapUsd || 0)) / 1_000_000; // in miljoenen
-  const raw = MOON.elite.depthK * Math.sqrt(mcapM) * 1000;          // USD
+  const mcapM = Math.max(0, Number(marketCapUsd || 0)) / 1_000_000;
+  const raw = MOON.elite.depthK * Math.sqrt(mcapM) * 1000;
   return clamp(raw, MOON.elite.depthMinUsd, MOON.elite.depthMaxUsd);
 }
 
-// hysteresis: als coin al "depthOk" was, mag hij iets dalen zonder flip-flop
 export function passDepthFloor({ depthUsd, floorUsd, wasOk }) {
   if (!MOON.elite.depthFloorEnabled) return { ok: true, why: "Depth disabled" };
   const need = wasOk ? floorUsd * MOON.elite.depthHysteresisExitMul : floorUsd;
@@ -365,7 +345,7 @@ export function passDepthFloor({ depthUsd, floorUsd, wasOk }) {
   return { ok, why: ok ? "Depth ok" : `Depth < ${Math.round(need).toLocaleString()} USD` };
 }
 
-// ================== MOON FILTERS (3 stages) ==================
+// ================== FILTERS ==================
 export function passRadarMoon(c, mode) {
   if (c.marketCap < MOON.mcapMin) return false;
   if (c.marketCap > MOON.mcapMax) return false;
@@ -385,7 +365,6 @@ export function passRadarMoon(c, mode) {
   return true;
 }
 
-// stage2 (ALMOST): volAcc omhoog, prijs vlak, confidence >= 45, consistency licht
 export function passAlmostMoon({ priceHist, volAcc, confidence, consistencyRatio }) {
   const flat = priceFlatPct(priceHist, 60);
   if (volAcc < MOON.almost.volAccMin) return { ok: false, why: "VolAcc low" };
@@ -395,7 +374,6 @@ export function passAlmostMoon({ priceHist, volAcc, confidence, consistencyRatio
   return { ok: true, why: "ALMOST ok" };
 }
 
-// stage3 (ELITE): OB + slope + confidence + consistency + depth floor
 export function passEliteMoon({
   mode,
   obView,
