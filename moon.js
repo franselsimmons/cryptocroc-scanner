@@ -23,7 +23,7 @@ function setMode(m) {
 
 function row(c) {
   const depth = Math.min(c?.ob?.bidUsd || 0, c?.ob?.askUsd || 0);
-  const floor = c.floorUsd || 0;
+  const floor = c?.floorUsd || 0;
 
   return `
   <div class="row">
@@ -50,17 +50,21 @@ function render(list, el) {
 async function load() {
   elStatus.textContent = "Loading...";
   try {
-    const r = await fetch(API(mode));
+    const r = await fetch(API(mode), { cache: "no-store" });
     const j = await r.json();
 
-    const counts = j.counts || {};
-    elStatus.textContent = `${mode.toUpperCase()} | Elite ${counts.elite||0} | Almost ${counts.almost||0} | Buildup ${counts.buildup||0}`;
+    const counts = j?.counts || {};
+    const note = j?.note ? ` • ${j.note}` : "";
+    const btc = j?.btc ? ` • BTC ${j.btc.state} (${fmtSign(j.btc.chg24)}% / ${fmt(j.btc.range24)}%)` : "";
+
+    elStatus.textContent =
+      `${mode.toUpperCase()} | Elite ${counts.elite||0} | Almost ${counts.almost||0} | Buildup ${counts.buildup||0}${btc}${note}`;
 
     render(j?.funnel?.elite || [], elElite);
     render(j?.funnel?.almost || [], elAlmost);
     render(j?.funnel?.buildup || [], elBuildup);
   } catch (e) {
-    elStatus.textContent = "Error";
+    elStatus.textContent = "Error bij laden (check Vercel logs)";
     elElite.innerHTML = `<pre>${String(e)}</pre>`;
   }
 }
