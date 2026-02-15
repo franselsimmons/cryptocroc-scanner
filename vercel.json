@@ -2,7 +2,10 @@
   "crons": [
     { "path": "/api/cron", "schedule": "*/10 * * * *" },
     { "path": "/api/ob-sampler", "schedule": "* * * * *" },
+
     { "path": "/api/moon-cron", "schedule": "*/10 * * * *" },
-    { "path": "/api/moon-ob-sampler", "schedule": "* * * * *" }
+    { "path": "/api/moon-ob-sampler", "schedule": "* * * * *" },
+
+    { "path": "/api/portfolio-tick", "schedule": "*/10 * * * *" }
   ]
 }
