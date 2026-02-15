@@ -144,7 +144,7 @@ export default async function handler(req, res) {
       const wantedSide = mode === "bull" ? "BULL" : "BEAR";
       const sideNow = coinSideFromMode(mode, c.change24);
       const sideHist = updateSideHistory(prev.sideHist, sideNow);
-      const cons = calcConsistency(sideHist, wantedSide, 120, 6);
+      const cons = calcConsistency(sideHist, wantedSide, 60, 3);
 
       // OB result
       const obRaw = await kv.get(keyMoonObResult(mode, sym));
