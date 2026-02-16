@@ -1,56 +1,44 @@
 // /api/moon-run-all.js
-import { requireSecret } from "./_moon_core.js";
-
-export const config = { runtime: "nodejs20.x" };
+export const config = { runtime: "nodejs" };
 
 const fetchFn = globalThis.fetch;
 
-async function hit(req, path) {
-  const base = `https://${req.headers.host}`;
-  const url = new URL(path, base);
-
-  const r = await fetchFn(url.toString(), {
-    method: "GET",
-    headers: {
-      accept: "application/json",
-      // Als dit endpoint door cron wordt geraakt: doorgeven zodat de subcalls nooit 401 krijgen
-      ...(String(req.headers?.["x-vercel-cron"] || "") === "1"
-        ? { "x-vercel-cron": "1" }
-        : {}),
-      "cache-control": "no-store",
-    },
-  });
-
-  const text = await r.text();
-  let json = null;
-  try { json = JSON.parse(text); } catch {}
-
-  return { ok: r.ok, status: r.status, path: url.pathname + url.search, json, text: json ? null : text.slice(0, 300) };
-}
-
 export default async function handler(req, res) {
   try {
-    // Laat cron door (x-vercel-cron:1), of token/secret
-    if (!requireSecret(req, res)) return;
+    const mode = String(req.query?.mode || "bull").toLowerCase();
+    const token = String(req.query?.token || "");
 
-    const mode = (req.query?.mode || "bull").toLowerCase();
-    const m = mode === "bear" ? "bear" : "bull";
+    const secret = process.env.CRON_SECRET || "";
+    if (!secret || token !== secret) {
+      res.statusCode = 401;
+      res.setHeader("content-type", "application/json");
+      res.setHeader("cache-control", "no-store");
+      return res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
+    }
 
-    // 1) Scan
-    const scan = await hit(req, `/api/moon-scan?mode=${m}`);
+    const base = process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : `https://${req.headers.host}`;
 
-    // 2) kleine pauze zodat KV write zeker klaar is
-    await new Promise((r) => setTimeout(r, 800));
+    // ✅ gebruik Bearer header zodat moon-scan/moon-ob-sampler nooit 401 kunnen geven
+    const headers = { accept: "application/json", authorization: `Bearer ${secret}` };
 
-    // 3) OB sampler
-    const ob = await hit(req, `/api/moon-ob-sampler`);
+    const scanRes = await fetchFn(`${base}/api/moon-scan?mode=${encodeURIComponent(mode)}`, { headers });
+    const scanData = await scanRes.json();
+
+    await new Promise((r) => setTimeout(r, 1200));
+
+    const obRes = await fetchFn(`${base}/api/moon-ob-sampler`, { headers });
+    const obData = await obRes.json();
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: true, ts: Date.now(), mode: m, scan, ob }));
-  } catch (e) {
+    res.setHeader("cache-control", "no-store");
+    return res.end(JSON.stringify({ ok: true, mode, scan: scanData, ob: obData, ts: Date.now() }));
+  } catch (err) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: false, error: String(e) }));
+    res.setHeader("cache-control", "no-store");
+    return res.end(JSON.stringify({ ok: false, error: String(err?.message || err) }));
   }
 }
