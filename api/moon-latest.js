@@ -14,10 +14,11 @@ export default async function handler(req, res) {
     mode: m,
     counts: { elite: 0, almost: 0, buildup: 0 },
     funnel: { elite: [], almost: [], buildup: [] },
-    note: "No data yet. Run /api/moon-scan?mode=bull first.",
+    note: "No data yet. Waiting for cron scan.",
   };
 
   res.statusCode = 200;
   res.setHeader("content-type", "application/json");
+  res.setHeader("cache-control", "no-store");
   res.end(JSON.stringify(data));
 }
