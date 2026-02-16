@@ -11,10 +11,14 @@ import {
 
 export const config = RUNTIME_CONFIG;
 
+// ============================
+// Bitget depth fetch
+// ============================
 async function fetchBitgetDepth(symbolUpper) {
   const base = String(symbolUpper || "").toUpperCase();
   if (!base) return null;
 
+  // Bitget spot depth endpoint (legacy v1)
   const sym = `${base}USDT_SPBL`;
   const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(sym)}&limit=50`;
 
@@ -27,6 +31,9 @@ async function fetchBitgetDepth(symbolUpper) {
   return d;
 }
 
+// ============================
+// Helpers: depth math
+// ============================
 function sumDepth(levels, mid, pct, isBid) {
   const limit = isBid ? mid * (1 - pct) : mid * (1 + pct);
   let total = 0;
@@ -37,6 +44,7 @@ function sumDepth(levels, mid, pct, isBid) {
     const s = Number(row?.[1]);
     if (!Number.isFinite(p) || !Number.isFinite(s)) continue;
 
+    // bids dalen, asks stijgen (Bitget levert meestal sorted)
     if (isBid && p < limit) break;
     if (!isBid && p > limit) break;
 
@@ -47,6 +55,7 @@ function sumDepth(levels, mid, pct, isBid) {
   return { total, biggest };
 }
 
+// Sample bevat genoeg info om later rolling trend + stability te meten
 function computeObSample(depth) {
   const bids = depth?.bids || [];
   const asks = depth?.asks || [];
@@ -59,6 +68,7 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
+  // 0.2% band (micro depth)
   const pct = 0.002;
   const bidRes = sumDepth(bids, mid, pct, true);
   const askRes = sumDepth(asks, mid, pct, false);
@@ -67,11 +77,12 @@ function computeObSample(depth) {
   const askUsd = askRes.total;
 
   const denom = bidUsd + askUsd;
-  const score = denom > 0 ? (bidUsd - askUsd) / denom : 0;
+  const score = denom > 0 ? (bidUsd - askUsd) / denom : 0; // -1..+1
 
   const biggest = Math.max(bidRes.biggest, askRes.biggest);
-  const lor = denom > 0 ? biggest / denom : 1;
+  const lor = denom > 0 ? biggest / denom : 1; // largest order ratio (spoof hint)
 
+  // 1% band depth (robust floor)
   const bid1 = sumDepth(bids, mid, 0.01, true);
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
@@ -83,10 +94,18 @@ function directionOk(mode, score) {
   return mode === "bull" ? score > 0 : score < 0;
 }
 
+// ============================
+// Rolling window + metrics
+// ============================
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
+
 function pruneSamples(samples) {
   const now = Date.now();
   const winMs = MOON.elite.samplesWindowSec * 1000;
   const arr = Array.isArray(samples) ? samples : [];
+
   const fresh = arr
     .map((s) => ({
       ts: Number(s?.ts || 0),
@@ -102,26 +121,118 @@ function pruneSamples(samples) {
     .filter((s) => now - s.ts <= winMs)
     .sort((a, b) => a.ts - b.ts);
 
-  return fresh.slice(-20);
+  // compact houden
+  return fresh.slice(-30);
 }
 
+// Simple slope over last N (average per step)
+function calcSlope(lastN) {
+  if (!Array.isArray(lastN) || lastN.length < 2) return 0;
+  const first = lastN[0].score;
+  const last = lastN[lastN.length - 1].score;
+  const steps = lastN.length - 1;
+  return steps > 0 ? (last - first) / steps : 0;
+}
+
+// Stability = hoe “wild” was score? (std-ish, maar simpel)
+function calcStability(lastN) {
+  if (!Array.isArray(lastN) || lastN.length < 2) return { std: 0, ok: true };
+  const scores = lastN.map((s) => Number(s.score || 0));
+  const mean = scores.reduce((a, x) => a + x, 0) / scores.length;
+  const varr = scores.reduce((a, x) => a + (x - mean) * (x - mean), 0) / scores.length;
+  const std = Math.sqrt(varr);
+
+  // crypto: 0.00..0.20 realistisch; spoofing vaak “spiky”
+  const ok = std <= 0.12;
+  return { std, ok };
+}
+
+// Rolling validation = consensus + slope + stability + spread/lor sanity
 function validateSamples(mode, samplesFresh) {
-  const fresh = pruneSamples(samplesFresh);
-  if (fresh.length < MOON.elite.samplesNeed) {
-    return { valid: false, reason: "Not enough samples", fresh };
+  const freshAll = pruneSamples(samplesFresh);
+
+  // minimum samples voor beslissing
+  const need = Number(MOON?.elite?.samplesNeed || 3);
+  if (freshAll.length < need) {
+    return {
+      valid: false,
+      reason: "Not enough samples",
+      agree: 0,
+      avgScore: null,
+      slope: 0,
+      stabilityStd: null,
+      stable: false,
+      fresh: freshAll,
+      windowN: need,
+    };
   }
 
-  const lastN = fresh.slice(-MOON.elite.samplesNeed);
+  const lastN = freshAll.slice(-need);
+
+  // direction agreement
   const agree = lastN.filter((s) => directionOk(mode, s.score)).length;
-
-  if (agree < MOON.elite.minAgree) {
-    return { valid: false, reason: "Direction not consistent", fresh: lastN, agree };
+  if (agree < Number(MOON?.elite?.minAgree || 2)) {
+    const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
+    const slope = calcSlope(lastN);
+    const stab = calcStability(lastN);
+    return {
+      valid: false,
+      reason: "Direction not consistent",
+      agree,
+      avgScore,
+      slope,
+      stabilityStd: stab.std,
+      stable: stab.ok,
+      fresh: lastN,
+      windowN: need,
+    };
   }
 
+  // average score
   const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
-  return { valid: true, reason: "OK", fresh: lastN, avgScore, agree };
+
+  // slope check (rolling) — default: >0 for bull, <0 for bear
+  const slope = calcSlope(lastN);
+  let slopeOk = true;
+  if (MOON?.elite?.obSlopeEnabled) {
+    if (mode === "bull") slopeOk = slope >= Number(MOON?.elite?.obSlopeMinBull ?? 0);
+    else slopeOk = slope <= Number(MOON?.elite?.obSlopeMaxBear ?? 0);
+  }
+
+  // stability check
+  const stab = calcStability(lastN);
+  const stableOk = stab.ok;
+
+  // spread/lor sanity (rolling: pak laatste sample)
+  const last = lastN[lastN.length - 1];
+  const spreadOk = Number(last.spreadPct || 999) <= Number(MOON?.elite?.spreadMaxPct ?? 0.7);
+  const lorOk = Number(last.lor || 1) <= Number(MOON?.elite?.largestOrderRatioMax ?? 0.4);
+
+  const valid = !!(agree >= (MOON?.elite?.minAgree || 2) && slopeOk && stableOk && spreadOk && lorOk);
+
+  // reason text
+  let reason = "OK";
+  if (!slopeOk) reason = "Slope not ok";
+  else if (!stableOk) reason = "OB too spiky (stability fail)";
+  else if (!spreadOk) reason = "Spread too wide";
+  else if (!lorOk) reason = "Largest order suspicious";
+
+  return {
+    valid,
+    reason,
+    agree,
+    avgScore,
+    slope,
+    stabilityStd: stab.std,
+    stable: stableOk,
+    fresh: lastN,
+    windowN: need,
+  };
 }
 
+// ============================
+// Candidate processing
+// ============================
 async function processCandidate(mode, symbol) {
   const depth = await fetchBitgetDepth(symbol);
   const sample = depth ? computeObSample(depth) : null;
@@ -135,15 +246,25 @@ async function processCandidate(mode, symbol) {
   await kv.set(kS, pruned);
 
   const v = validateSamples(mode, pruned);
+
+  // stale check = sample zelf te oud (moet “vers” zijn)
   const stale = (Date.now() - sample.ts) / 1000 > 15;
 
+  // Result is wat moon-scan leest als obView
   await kv.set(keyMoonObResult(mode, symbol), {
     symbol,
     side: mode,
     valid: v.valid,
     reason: v.reason,
+
+    // rolling metrics
     avgScore: v.avgScore ?? null,
     agree: v.agree ?? null,
+    slope: v.slope ?? 0,
+    stable: !!v.stable,
+    stabilityStd: v.stabilityStd ?? null,
+    windowN: v.windowN ?? null,
+
     ob: {
       ts: sample.ts,
       mid: sample.mid,
@@ -157,7 +278,7 @@ async function processCandidate(mode, symbol) {
     stale,
   });
 
-  return { ok: true, symbol, valid: v.valid };
+  return { ok: true, symbol, valid: v.valid, reason: v.reason };
 }
 
 async function runBatched(list, batchSize, fn) {
@@ -173,6 +294,20 @@ async function runBatched(list, batchSize, fn) {
   return out;
 }
 
+// unique list helper
+function uniqSymbols(arr) {
+  const seen = new Set();
+  const out = [];
+  for (const s of arr) {
+    const x = String(s || "").toUpperCase().trim();
+    if (!x) continue;
+    if (seen.has(x)) continue;
+    seen.add(x);
+    out.push(x);
+  }
+  return out;
+}
+
 export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
@@ -184,6 +319,8 @@ export default async function handler(req, res) {
     if (bull?.funnel) tasks.push({ mode: "bull", data: bull });
     if (bear?.funnel) tasks.push({ mode: "bear", data: bear });
 
+    // Beter: ook radar top meepakken, anders krijg je “OB komt nooit op gang”
+    // We pakken: elite+almost+buildup + top radar (op volAcc/conf) zodat rolling sneller “warm” wordt.
     let totalTried = 0;
     let totalOk = 0;
     let totalValid = 0;
@@ -192,15 +329,22 @@ export default async function handler(req, res) {
     for (const t of tasks) {
       const mode = t.mode;
 
+      const elite  = (t.data?.funnel?.elite  || []).slice(0, 8);
       const almost = (t.data?.funnel?.almost || []).slice(0, 14);
-      const buildup = (t.data?.funnel?.buildup || []).slice(0, 10);
+      const buildup= (t.data?.funnel?.buildup|| []).slice(0, 12);
+      const radar  = (t.data?.funnel?.radar  || []).slice(0, 18);
 
-      const candidates = [...almost, ...buildup]
-        .map((x) => String(x?.symbol || "").toUpperCase())
-        .filter(Boolean);
+      // candidates pool
+      const candidates = uniqSymbols([
+        ...elite.map((x) => x?.symbol),
+        ...almost.map((x) => x?.symbol),
+        ...buildup.map((x) => x?.symbol),
+        ...radar.map((x) => x?.symbol),
+      ]);
 
       totalTried += candidates.length;
 
+      // batchSize: let op Vercel + Bitget; 6 is safe
       const results = await runBatched(candidates, 6, (sym) => processCandidate(mode, sym));
 
       for (const r of results) {
@@ -215,7 +359,18 @@ export default async function handler(req, res) {
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: true, ts: Date.now(), totalTried, totalOk, totalValid, sampleErrors }));
+    res.end(
+      JSON.stringify({
+        ok: true,
+        ts: Date.now(),
+        totalTried,
+        totalOk,
+        totalValid,
+        note:
+          "Rolling OB: consensus + slope + stability + spread + LOR. Also warms up from RADAR so OB can start building early.",
+        sampleErrors,
+      })
+    );
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
