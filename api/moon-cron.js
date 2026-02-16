@@ -1,68 +1,38 @@
 // /api/moon-cron.js
 import { requireSecret, RUNTIME_CONFIG } from "./_moon_core.js";
-
 export const config = RUNTIME_CONFIG;
 
-function getBaseUrl(req) {
-  // 1) Als je BASE_URL gezet hebt in env, gebruik die (aanrader)
-  if (process.env.BASE_URL) return process.env.BASE_URL;
+async function hit(path) {
+  const base =
+    process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : "http://localhost:3000";
 
-  // 2) Anders: gebruik VERCEL_URL
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-
-  // 3) Fallback lokaal
-  const host = req?.headers?.host || "localhost:3000";
-  return `https://${host}`;
-}
-
-async function hit(req, path) {
-  const base = getBaseUrl(req);
   const secret = process.env.CRON_SECRET || "";
 
   const url = new URL(path, base);
+  if (secret) url.searchParams.set("token", secret);
 
-  const headers = { accept: "application/json" };
-  // ✅ SUPER BELANGRIJK: interne calls authenticeren met Bearer
-  if (secret) headers.authorization = `Bearer ${secret}`;
-
-  const r = await fetch(url.toString(), { method: "GET", headers });
-
+  const r = await fetch(url.toString(), { method: "GET", headers: { accept: "application/json" } });
   const text = await r.text();
+
   let json = null;
   try { json = JSON.parse(text); } catch {}
 
-  return {
-    ok: r.ok,
-    status: r.status,
-    path: url.pathname + url.search,
-    json,
-    text: json ? null : text.slice(0, 300),
-  };
+  return { ok: r.ok, status: r.status, path: url.pathname + url.search, json, text: json ? null : text.slice(0, 300) };
 }
 
 export default async function handler(req, res) {
   try {
-    // ✅ Cron zelf mag door via x-vercel-cron of Bearer/token
     if (!requireSecret(req, res)) return;
 
-    // 1) scan bull + bear
-    const scanBull = await hit(req, "/api/moon-scan?mode=bull");
-    const scanBear = await hit(req, "/api/moon-scan?mode=bear");
-
-    // 2) sampler pakt candidates uit latest
-    const ob = await hit(req, "/api/moon-ob-sampler");
-
-    const out = {
-      ok: true,
-      ts: Date.now(),
-      scanBull,
-      scanBear,
-      moonObSampler: ob,
-    };
+    const scanBull = await hit("/api/moon-scan?mode=bull");
+    const scanBear = await hit("/api/moon-scan?mode=bear");
+    const ob = await hit("/api/moon-ob-sampler");
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify(out));
+    res.end(JSON.stringify({ ok: true, ts: Date.now(), scanBull, scanBear, moonObSampler: ob }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
