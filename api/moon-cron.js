@@ -3,21 +3,19 @@ import { requireSecret, RUNTIME_CONFIG } from "./_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
 
-async function hit(path) {
-  const base =
-    process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : "http://localhost:3000";
-
-  const secret = process.env.CRON_SECRET || "";
-
-  // interne call: voeg token toe zodat requireSecret nooit kan blokkeren
+async function hit(req, path) {
+  // Altijd exact dezelfde host gebruiken als waar deze cron op draait
+  const base = `https://${req.headers.host}`;
   const url = new URL(path, base);
-  if (secret) url.searchParams.set("token", secret);
 
+  // Belangrijk: interne calls moeten ook “cron” zijn, anders krijg je 401
   const r = await fetch(url.toString(), {
     method: "GET",
-    headers: { accept: "application/json" },
+    headers: {
+      accept: "application/json",
+      "x-vercel-cron": "1",     // ✅ DE FIX
+      "cache-control": "no-store",
+    },
   });
 
   const text = await r.text();
@@ -35,15 +33,15 @@ async function hit(path) {
 
 export default async function handler(req, res) {
   try {
-    // Vercel cron komt met header x-vercel-cron: 1 (jij laat die al door in _moon_core)
+    // Cron-job zelf mag door (x-vercel-cron: 1)
     if (!requireSecret(req, res)) return;
 
     // 1) scan bull + bear
-    const scanBull = await hit("/api/moon-scan?mode=bull");
-    const scanBear = await hit("/api/moon-scan?mode=bear");
+    const scanBull = await hit(req, "/api/moon-scan?mode=bull");
+    const scanBear = await hit(req, "/api/moon-scan?mode=bear");
 
     // 2) sampler (pakt candidates uit latest)
-    const ob = await hit("/api/moon-ob-sampler");
+    const ob = await hit(req, "/api/moon-ob-sampler");
 
     const out = {
       ok: true,
