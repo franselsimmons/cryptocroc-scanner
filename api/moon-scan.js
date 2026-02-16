@@ -31,10 +31,67 @@ import {
 
 export const config = RUNTIME_CONFIG;
 
+const MAX_SNAPSHOTS = 3;
+
 function minutesAgo(ts) {
   const t = Number(ts || 0);
   if (!t) return 999999;
   return (Date.now() - t) / 60000;
+}
+
+function updateSnapshots(prevSnapshots, snapshot) {
+  const arr = Array.isArray(prevSnapshots) ? [...prevSnapshots] : [];
+  arr.push(snapshot);
+  if (arr.length > MAX_SNAPSHOTS) arr.shift();
+  return arr;
+}
+
+function computeRollingMetrics(snaps) {
+  if (!snaps || snaps.length < 3) {
+    return {
+      deltaPrice15m: 0,
+      deltaVol15m: 0,
+      compression: false,
+      obSlope: 0,
+      obStability: 0,
+      atrEst: 0,
+    };
+  }
+
+  const [s1, s2, s3] = snaps;
+
+  const deltaPrice15m =
+    ((s3.price - s1.price) / s1.price) * 100;
+
+  const deltaVol15m =
+    s3.volAcc - s1.volAcc;
+
+  const compression =
+    s3.range24 < s2.range24 &&
+    s2.range24 < s1.range24;
+
+  const slope1 = s2.obScore - s1.obScore;
+  const slope2 = s3.obScore - s2.obScore;
+  const obSlope = (slope1 + slope2) / 2;
+
+  const scores = snaps.map(s => s.obScore);
+  const mean = scores.reduce((a,b)=>a+b,0)/scores.length;
+  const variance =
+    scores.reduce((a,b)=>a+Math.pow(b-mean,2),0)/scores.length;
+  const obStability = Math.sqrt(variance);
+
+  const move1 = Math.abs((s2.price - s1.price)/s1.price);
+  const move2 = Math.abs((s3.price - s2.price)/s2.price);
+  const atrEst = (move1 + move2)/2;
+
+  return {
+    deltaPrice15m,
+    deltaVol15m,
+    compression,
+    obSlope,
+    obStability,
+    atrEst,
+  };
 }
 
 export default async function handler(req, res) {
@@ -45,26 +102,18 @@ export default async function handler(req, res) {
     const mode = modeRaw === "bear" ? "bear" : "bull";
     const now = Date.now();
 
-    // 1) BTC gate data (we tonen dit in UI; gate zelf kun je later weer “hard” maken)
     const btc = await fetchBTCGateCached();
-
-    // 2) Universe: Bitget spot USDT symbols
     const bitgetSet = await getBitgetSpotUsdtSymbols();
-
-    // 3) CoinGecko slice (cached) — pagina 5, 250 coins
     const cg = await fetchCoinGeckoTopCached();
 
-    // 4) State (voor volAcc + rotatie)
     const resetAt = (await kv.get(keyMoonReset(mode))) || 0;
     const state = (await kv.get(keyMoonState(mode))) || {};
 
-    // 5) Live candidates (Bitget filter + radar filter)
     const radarRaw = cg
       .filter((c) => bitgetSet.has(String(c.symbol || "").toUpperCase()))
       .filter((c) => passRadarMoon(c, mode))
       .slice(0, MOON.RADAR_LIMIT);
 
-    // Cleanup “spook state”
     const liveSyms = new Set(radarRaw.map((c) => c.symbol));
     for (const sym of Object.keys(state)) {
       if (!liveSyms.has(sym)) delete state[sym];
@@ -84,45 +133,45 @@ export default async function handler(req, res) {
         lastSeenAt: 0,
         priceHist: [],
         volHist: [],
+        snapshots: [],
         stage: "RADAR",
       };
 
-      // Reset knop
       if (Number(prev.enteredAt || 0) < resetAt) {
         prev.enteredAt = now;
         prev.stageAt = now;
-        prev.lastSeenAt = 0;
         prev.priceHist = [];
         prev.volHist = [];
+        prev.snapshots = [];
         prev.stage = "RADAR";
       }
 
-      // Rotatie (alleen voor “hangers”)
-      const ageMin = minutesAgo(prev.stageAt || prev.enteredAt || now);
-      if (prev.stage === "BUILDUP" && ageMin > MOON.buildupMaxAgeMin) {
-        prev.stage = "RADAR";
-        prev.stageAt = now;
-      }
-      if (prev.stage === "ALMOST" && ageMin > MOON.almostMaxAgeMin) {
-        prev.stage = "BUILDUP";
-        prev.stageAt = now;
-      }
-
-      // histories
       const priceHist = updatePriceHist(prev.priceHist, c.price);
       const volHist = updateVolHist(prev.volHist, c.volume);
       const volAcc = volAccFromHist(volHist);
       const flat60 = priceFlatPct(priceHist, 60);
 
-      // OB view (als sampler al liep)
       const obRaw = await kv.get(keyMoonObResult(mode, sym));
+      const obScore = Number(obRaw?.ob?.score ?? obRaw?.score ?? 0);
+
+      const snapshot = {
+        ts: now,
+        price: c.price,
+        volAcc,
+        range24: c.range24,
+        obScore,
+      };
+
+      const snapshots = updateSnapshots(prev.snapshots, snapshot);
+      const rolling = computeRollingMetrics(snapshots);
+
       const obView = obRaw
         ? {
             valid: !!obRaw.valid,
             stale: !!obRaw.stale,
-            score: Number(obRaw?.ob?.score ?? obRaw?.score ?? obRaw?.avgScore ?? 0),
-            spreadPct: Number(obRaw?.ob?.spreadPct ?? obRaw?.spreadPct ?? 999),
-            lor: Number(obRaw?.ob?.lor ?? obRaw?.lor ?? 1),
+            score: obScore,
+            spreadPct: Number(obRaw?.ob?.spreadPct ?? 999),
+            lor: Number(obRaw?.ob?.lor ?? 1),
             agree: Number(obRaw?.agree ?? 0),
             bidUsd: Number(obRaw?.ob?.bidUsd ?? 0),
             askUsd: Number(obRaw?.ob?.askUsd ?? 0),
@@ -130,53 +179,48 @@ export default async function handler(req, res) {
           }
         : null;
 
-      // depth
-      const depthUsd = obView ? Math.min(obView.bidUsd || 0, obView.askUsd || 0) : 0;
+      const depthUsd = obView ? Math.min(obView.bidUsd, obView.askUsd) : 0;
       const floorUsd = depthFloorUsd(c.marketCap);
       const depthOk = depthUsd >= floorUsd;
 
-      // confidence (werkt ook als obView null is: obScore=0)
       const confidence = computeConfidence({
-        obScore: obView?.score ?? 0,
+        obScore,
         obAgree: obView?.agree ?? 0,
         vm: c.vm,
         volAcc,
         btc,
       });
 
-      // Consistency (voor nu simpel: bull => change24 >=0, bear => change24 <=0)
-      // (Als je later sideHist terug wil, kan dat; maar dit is “works-now”.)
-      const wantedSide = mode === "bull" ? "BULL" : "BEAR";
-      const sideNow =
-        mode === "bull" ? (c.change24 >= 0 ? "BULL" : "BEAR") : (c.change24 <= 0 ? "BEAR" : "BULL");
-      const consistencyRatio = sideNow === wantedSide ? 1.0 : 0.0;
-
-      // gates
       const buildupGate = passBuildupMoon({ c, volAcc });
       const almostGate = passAlmostMoon({
         priceHist,
         volAcc,
         confidence,
-        consistencyRatio,
+        consistencyRatio: 1,
       });
+
+      let eliteExtra =
+        rolling.deltaPrice15m <= 4 &&
+        rolling.deltaVol15m > 0.15 &&
+        rolling.compression &&
+        rolling.obSlope > 8 &&
+        rolling.obStability < 20;
 
       const eliteGate = passEliteMoon({
         mode,
         obView,
         confidence,
-        consistencyRatio,
+        consistencyRatio: 1,
         depthUsd,
         floorUsd,
         range24: c.range24,
       });
 
-      // stage keuze (proactief)
       let stage = "RADAR";
       if (buildupGate.ok) stage = "BUILDUP";
       if (almostGate.ok) stage = "ALMOST";
-      if (eliteGate.ok) stage = "ELITE";
+      if (eliteGate.ok && eliteExtra) stage = "ELITE";
 
-      // risk (altijd tonen; note zegt of depth ok is)
       const risk = computeMoonRisk({
         mode,
         price: c.price,
@@ -203,55 +247,34 @@ export default async function handler(req, res) {
         priceFlat60: +Number(flat60 || 0).toFixed(2),
 
         confidence,
-        consistency: { ok: true, ratio: consistencyRatio, total: 1, same: consistencyRatio ? 1 : 0 },
 
-        ob: obView
-          ? {
-              status: obView.valid ? "valid" : "validating",
-              valid: obView.valid,
-              stale: obView.stale,
-              score: obView.score,
-              spreadPct: obView.spreadPct,
-              lor: obView.lor,
-              agree: obView.agree,
-              bidUsd: obView.bidUsd,
-              askUsd: obView.askUsd,
-              reason: obView.reason,
-            }
-          : { status: "none" },
+        rolling,
+
+        ob: obView || { status: "none" },
 
         depthUsd,
         floorUsd,
         depthOk,
 
-        risk, // ✅ SL/TP hier
-
-        why: {
-          radar: "RADAR ok",
-          buildup: buildupGate.why,
-          almost: almostGate.why,
-          elite: eliteGate.why,
-        },
+        risk,
       };
 
-      // store state
       state[sym] = {
         enteredAt: item.enteredAt,
         stageAt: item.stageAt,
         lastSeenAt: now,
         priceHist,
         volHist,
+        snapshots,
         stage,
       };
 
-      // push to lists
       radar.push(item);
       if (stage === "BUILDUP") buildup.push(item);
       if (stage === "ALMOST") almost.push(item);
       if (stage === "ELITE") elite.push(item);
     }
 
-    // sorting (kwaliteit bovenaan)
     const sortKey = (a, b) =>
       (b.confidence - a.confidence) ||
       (b.volAcc - a.volAcc) ||
@@ -260,8 +283,6 @@ export default async function handler(req, res) {
     elite.sort(sortKey);
     almost.sort(sortKey);
     buildup.sort(sortKey);
-
-    // radar: meest “interessant” bovenaan
     radar.sort((a, b) => (b.volAcc - a.volAcc) || (b.vm - a.vm));
 
     const result = {
@@ -275,23 +296,15 @@ export default async function handler(req, res) {
         almost: almost.length,
         elite: elite.length,
       },
-      funnel: {
-        elite,
-        almost,
-        buildup,
-        radar,
-      },
+      funnel: { elite, almost, buildup, radar },
     };
 
     await kv.set(keyMoonLatest(mode), result);
     await kv.set(keyMoonState(mode), state);
 
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify(result));
+    res.status(200).json(result);
+
   } catch (e) {
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+    res.status(200).json({ ok: false, error: String(e?.message || e) });
   }
 }
