@@ -3,25 +3,27 @@ import { requireSecret, RUNTIME_CONFIG } from "./_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
 
-function baseUrlFromEnv(req) {
-  // ✅ in Vercel is dit altijd goed voor production
+function getBaseUrl(req) {
+  // 1) Als je BASE_URL gezet hebt in env, gebruik die (aanrader)
+  if (process.env.BASE_URL) return process.env.BASE_URL;
+
+  // 2) Anders: gebruik VERCEL_URL
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  // fallback
-  return `https://${req.headers.host}`;
+
+  // 3) Fallback lokaal
+  const host = req?.headers?.host || "localhost:3000";
+  return `https://${host}`;
 }
 
 async function hit(req, path) {
-  const base = baseUrlFromEnv(req);
+  const base = getBaseUrl(req);
   const secret = process.env.CRON_SECRET || "";
 
   const url = new URL(path, base);
 
-  // ✅ Belangrijk: stuur Bearer header (meest “hard”)
   const headers = { accept: "application/json" };
+  // ✅ SUPER BELANGRIJK: interne calls authenticeren met Bearer
   if (secret) headers.authorization = `Bearer ${secret}`;
-
-  // (optioneel) token in query ook, mag blijven voor debug
-  if (secret) url.searchParams.set("token", secret);
 
   const r = await fetch(url.toString(), { method: "GET", headers });
 
@@ -40,20 +42,30 @@ async function hit(req, path) {
 
 export default async function handler(req, res) {
   try {
+    // ✅ Cron zelf mag door via x-vercel-cron of Bearer/token
     if (!requireSecret(req, res)) return;
 
+    // 1) scan bull + bear
     const scanBull = await hit(req, "/api/moon-scan?mode=bull");
     const scanBear = await hit(req, "/api/moon-scan?mode=bear");
+
+    // 2) sampler pakt candidates uit latest
     const ob = await hit(req, "/api/moon-ob-sampler");
+
+    const out = {
+      ok: true,
+      ts: Date.now(),
+      scanBull,
+      scanBear,
+      moonObSampler: ob,
+    };
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    res.setHeader("cache-control", "no-store");
-    res.end(JSON.stringify({ ok: true, ts: Date.now(), scanBull, scanBear, moonObSampler: ob }));
+    res.end(JSON.stringify(out));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    res.setHeader("cache-control", "no-store");
     res.end(JSON.stringify({ ok: false, error: String(e) }));
   }
 }
