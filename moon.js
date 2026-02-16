@@ -56,7 +56,6 @@ modal.addEventListener("click", (e) => {
 function setMode(m) {
   mode = m;
   qs.set("mode", mode);
-  // token behouden in URL
   if (token) qs.set("token", token);
   history.replaceState(null, "", `${location.pathname}?${qs.toString()}`);
   setActiveButtons();
@@ -79,12 +78,16 @@ function short(n){
 }
 
 function emptyBox(msg = "Geen coins") {
-  return `<div class="empty">${msg}</div>`;
+  return `<div class="empty">${escapeHtml(msg)}</div>`;
 }
 
 function coinRow(c, stageName) {
   const conf = Number(c?.confidence || 0);
   const consPct = Math.round((Number(c?.consistency?.ratio || 0)) * 100);
+
+  const risk = c?.risk || null;
+  const slTxt = risk ? `SL ${fmt(risk.slPct)}%` : "SL —";
+  const tpTxt = risk ? `TP1 ${risk.tp1}` : "TP —";
 
   return `
   <div class="coinRow" data-sym="${escapeHtml(c.symbol||"")}" data-stage="${escapeHtml(stageName)}">
@@ -101,6 +104,8 @@ function coinRow(c, stageName) {
       <span class="pill">VM ${fmt(c.vm)}</span>
       <span class="pill">Conf ${conf}</span>
       <span class="pill">Cons ${consPct}%</span>
+      <span class="pill">${escapeHtml(slTxt)}</span>
+      <span class="pill">${escapeHtml(tpTxt)}</span>
     </div>
   </div>`;
 }
@@ -112,7 +117,6 @@ function renderStage(list, el, stageName) {
   }
   el.innerHTML = list.map((c) => coinRow(c, stageName)).join("");
 
-  // click handlers (modal)
   el.querySelectorAll(".coinRow").forEach((rowEl, idx) => {
     rowEl.onclick = () => openModal(list[idx], stageName);
   });
@@ -126,7 +130,6 @@ function openModal(c, stageName) {
   mSub.textContent =
     `Price $${fmt(c.price)} • Chg24 ${fmtSign(c.change24)}% • Range24 ${fmt(c.range24)}% • VM ${fmt(c.vm)}`;
 
-  // waarom (je API zet vaak iets zoals c.why.elite / c.why.almost etc)
   mWhy.textContent = pretty({
     stage: stageName,
     why: c?.why || null,
@@ -134,22 +137,20 @@ function openModal(c, stageName) {
     note: c?.note ?? null
   });
 
-  // OB / depth
   mOB.textContent = pretty({
     ob: c?.ob || null,
     depthMinUsd: depthMin,
     floorUsd: floor
   });
 
-  // confidence/consistency
+  // ✅ hier staan SL/TP duidelijk
   mRisk.textContent = pretty({
+    risk: c?.risk || null,
     confidence: c?.confidence ?? null,
     consistency: c?.consistency || null,
-    volAcc: c?.volAcc ?? null,
-    priceFlat: c?.priceFlat ?? null
+    volAcc: c?.volAcc ?? null
   });
 
-  // debug
   mNext.textContent = pretty(c);
 
   modal.classList.remove("hidden");
@@ -188,12 +189,10 @@ async function loadLatest() {
 
     const note = j?.note ? ` • ${j.note}` : "";
 
-    // let op: API kan counts.radar hebben
     statusLine.textContent =
       `Mode: ${mode.toUpperCase()} • Elite ${counts.elite||0} | Almost ${counts.almost||0} | ` +
       `Buildup ${counts.buildup||0} | Radar ${counts.radar||0}${btc}${note}`;
 
-    // let op: API kan funnel.radar hebben
     const funnel = j?.funnel || {};
     renderStage(funnel.elite  || [], stageElite,  "ELITE");
     renderStage(funnel.almost || [], stageAlmost, "ALMOST");
@@ -210,7 +209,6 @@ async function loadLatest() {
 }
 
 async function runScan() {
-  // Scan is een “server job”: als token ontbreekt en CRON_SECRET staat aan → 401/empty.
   if (!token) {
     alert("Geen token in de URL. Gebruik ?token=JOUW_TOKEN");
     return;
@@ -222,7 +220,6 @@ async function runScan() {
     const r = await fetch(API_SCAN(mode), { cache: "no-store" });
     const j = await r.json();
     if (!j?.ok) throw new Error(j?.error || "Scan failed");
-    // na scan meteen latest laden
     await loadLatest();
   } catch (e) {
     statusLine.textContent = "Status: scan error (check Vercel logs)";
@@ -230,5 +227,4 @@ async function runScan() {
   }
 }
 
-// start
 loadLatest();
