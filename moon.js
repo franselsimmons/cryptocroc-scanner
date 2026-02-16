@@ -5,10 +5,10 @@ if (mode !== "bull" && mode !== "bear") mode = "bull";
 
 const API = (m) => `/api/moon-latest?mode=${encodeURIComponent(m)}`;
 
-const elRadar  = document.getElementById("radar");   // ✅ nieuw
 const elElite  = document.getElementById("elite");
 const elAlmost = document.getElementById("almost");
 const elBuildup = document.getElementById("buildup");
+const elRadar  = document.getElementById("radar");
 const elStatus = document.getElementById("status");
 
 document.getElementById("bullBtn").onclick = () => setMode("bull");
@@ -25,16 +25,17 @@ function setMode(m) {
 function row(c) {
   const depth = Math.min(c?.ob?.bidUsd || 0, c?.ob?.askUsd || 0);
   const floor = c?.floorUsd || 0;
+  const stage = (c.stage || "RADAR").toUpperCase();
 
   return `
   <div class="row">
     <div class="sym">${c.symbol}</div>
     <div class="muted">${c.name || ""}</div>
+    <div>Stage: <b>${stage}</b></div>
     <div>Price: <b>$${fmt(c.price)}</b></div>
     <div>Chg24: <b>${fmtSign(c.change24)}%</b> | Range24: ${fmt(c.range24)}%</div>
     <div>MC: ${short(c.marketCap)} | Vol: ${short(c.volume)} | VM: ${fmt(c.vm)}</div>
     <div>Conf: <b>${c.confidence ?? "-"}</b> | Cons: ${Math.round((c.consistency?.ratio||0)*100)}%</div>
-    <div>Stage: <b>${c.stage || "RADAR"}</b></div>
     <div>OB: ${c.ob?.status || "none"} | score: ${fmt(c.ob?.score)} | spread: ${fmt(c.ob?.spreadPct)}% | LOR: ${fmt(c.ob?.lor)}</div>
     <div>Depth(min): ${short(depth)} | Floor: ${short(floor)} | DepthOk: ${String(c.depthOk ?? false)}</div>
     <div class="why">Gate: ${c?.why?.elite || c?.why?.almost || ""}</div>
@@ -50,6 +51,23 @@ function render(list, el) {
   el.innerHTML = list.map(row).join("");
 }
 
+function splitByStage(list) {
+  const elite = [];
+  const almost = [];
+  const buildup = [];
+  const radar = [];
+
+  for (const c of (list || [])) {
+    const s = String(c?.stage || "").toUpperCase();
+    if (s === "ELITE") elite.push(c);
+    else if (s === "ALMOST") almost.push(c);
+    else if (s === "BUILDUP") buildup.push(c);
+    else radar.push(c);
+  }
+
+  return { elite, almost, buildup, radar };
+}
+
 async function load() {
   elStatus.textContent = "Loading...";
   try {
@@ -60,21 +78,42 @@ async function load() {
     const note = j?.note ? ` • ${j.note}` : "";
     const btc = j?.btc ? ` • BTC ${j.btc.state} (${fmtSign(j.btc.chg24)}% / ${fmt(j.btc.range24)}%)` : "";
 
-    // ✅ werkt met counts.radar of counts.buildup etc.
+    // ✅ Pak coins uit alle mogelijke API vormen
+    let coins = [];
+    if (Array.isArray(j?.funnel)) {
+      // jouw geval: funnel is een array
+      coins = j.funnel;
+    } else if (Array.isArray(j?.radar)) {
+      coins = j.radar;
+    } else if (Array.isArray(j?.funnel?.radar)) {
+      coins = j.funnel.radar;
+    }
+
+    // ✅ Als API al netjes funnel.elite/almost/buildup geeft, gebruik dat
+    const hasStructured =
+      j?.funnel && !Array.isArray(j.funnel) &&
+      (Array.isArray(j.funnel.elite) || Array.isArray(j.funnel.almost) || Array.isArray(j.funnel.buildup));
+
+    if (hasStructured) {
+      render(j?.funnel?.elite || [], elElite);
+      render(j?.funnel?.almost || [], elAlmost);
+      render(j?.funnel?.buildup || [], elBuildup);
+      render(j?.funnel?.radar || coins || [], elRadar);
+    } else {
+      // ✅ Anders zelf splitten op stage
+      const s = splitByStage(coins);
+      render(s.elite, elElite);
+      render(s.almost, elAlmost);
+      render(s.buildup, elBuildup);
+      render(s.radar, elRadar);
+    }
+
     elStatus.textContent =
-      `${mode.toUpperCase()} | Radar ${counts.radar||0} | Elite ${counts.elite||0} | Almost ${counts.almost||0} | Buildup ${counts.buildup||0}${btc}${note}`;
-
-    // ✅ RADAR kan op 2 manieren binnenkomen (j.radar OF j.funnel.radar)
-    const radarList = j?.radar || j?.funnel?.radar || [];
-
-    render(radarList, elRadar);
-    render(j?.funnel?.elite || [], elElite);
-    render(j?.funnel?.almost || [], elAlmost);
-    render(j?.funnel?.buildup || [], elBuildup);
+      `${mode.toUpperCase()} | Elite ${counts.elite||0} | Almost ${counts.almost||0} | Buildup ${counts.buildup||0} | Radar ${counts.radar||0}${btc}${note}`;
 
   } catch (e) {
     elStatus.textContent = "Error bij laden (check Vercel logs)";
-    if (elRadar) elRadar.innerHTML = `<pre>${String(e)}</pre>`;
+    elRadar.innerHTML = `<pre>${String(e)}</pre>`;
   }
 }
 
