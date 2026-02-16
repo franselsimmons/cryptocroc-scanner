@@ -1,135 +1,101 @@
 // /api/moon-scan.js
 import { kv } from "@vercel/kv";
+import {
+  RUNTIME_CONFIG,
+  requireSecret,
+  MOON,
+  keyMoonLatest,
+  fetchBTCGateCached,
+  fetchCoinGeckoTopCached,
+  getBitgetSpotUsdtSymbols,
+  passRadarMoon,
+} from "./_moon_core.js";
 
-export const config = { runtime: "nodejs" };
-
-const CRON_SECRET = process.env.CRON_SECRET;
+export const config = RUNTIME_CONFIG;
 
 export default async function handler(req, res) {
   try {
-    const { mode = "bull", token } = req.query;
+    // ✅ beveiliging (token of x-vercel-cron)
+    if (!requireSecret(req, res)) return;
 
-    if (token !== CRON_SECRET) {
-      return res.status(401).json({ ok: false, error: "Unauthorized" });
-    }
-
-    const isBear = mode === "bear";
+    const modeRaw = String(req.query?.mode || "bull").toLowerCase();
+    const mode = modeRaw === "bear" ? "bear" : "bull";
 
     // ===============================
-    // 1. BTC TREND CHECK
+    // 1) BTC GATE (cached, % range)
     // ===============================
-    const btcRes = await fetch(
-      "https://api.coingecko.com/api/v3/coins/bitcoin?localization=false&tickers=false&market_data=true"
-    );
-
-    if (!btcRes.ok) {
-      return res.json({ ok: false, error: "BTC fetch failed" });
-    }
-
-    const btcData = await btcRes.json();
-    const btcChg = btcData.market_data.price_change_percentage_24h || 0;
-    const btcRange =
-      btcData.market_data.high_24h.usd -
-      btcData.market_data.low_24h.usd;
-
-    const btcState = btcChg < 0 ? "BEAR" : "BULL";
+    const btc = await fetchBTCGateCached(); // { state, chg24, range24 }
 
     // ===============================
-    // 2. 250 COINS VANAF PAGINA 5
+    // 2) COINGECKO SLICE (250 coins vanaf pagina 5)
     // ===============================
-    const marketRes = await fetch(
-      "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=5&price_change_percentage=24h"
-    );
-
-    if (!marketRes.ok) {
-      return res.json({ ok: false, error: "Markets fetch failed (rate limit?)" });
-    }
-
-    const coins = await marketRes.json();
+    const cg = await fetchCoinGeckoTopCached(); // gebruikt MOON.CG_START_PAGE/CG_PER_PAGE/CG_PAGES
 
     // ===============================
-    // 3. RADAR (lichte selectie)
+    // 3) BITGET SPOT USDT SYMBOLS (filter: alleen coins die op Bitget bestaan)
     // ===============================
-    const radar = coins
-      .map(c => {
-        const vm = (c.total_volume || 0) / (c.market_cap || 1);
-        const range24 =
-          ((c.high_24h || 0) - (c.low_24h || 0)) /
-          (c.low_24h || 1) * 100;
-
-        return {
-          id: c.id,
-          symbol: c.symbol.toUpperCase(),
-          name: c.name,
-          price: c.current_price,
-          change24: c.price_change_percentage_24h || 0,
-          range24,
-          volume: c.total_volume,
-          marketCap: c.market_cap,
-          vm,
-        };
-      })
-      .filter(c =>
-        c.marketCap > 5_000_000 &&
-        c.marketCap < 150_000_000 &&
-        c.vm > 0.15 &&
-        c.range24 > 3
-      );
+    const bitgetSet = await getBitgetSpotUsdtSymbols();
 
     // ===============================
-    // 4. BUILDUP (iets strenger)
+    // 4) RADAR (jouw moon radar filter)
     // ===============================
-    const buildup = radar.filter(c =>
-      c.vm >= 0.20 &&
-      Math.abs(c.change24) > 1.5
-    );
+    const radar = cg
+      .filter((c) => bitgetSet.has(String(c.symbol || "").toUpperCase()))
+      .filter((c) => passRadarMoon(c, mode))
+      .slice(0, MOON.RADAR_LIMIT);
 
     // ===============================
-    // 5. ALMOST (nog strenger)
+    // 5) BUILDUP / ALMOST / ELITE
+    // (Moon funnel wordt vooral “echt” zodra OB-sampler heeft gedraaid.
+    // Voor nu: we laten coins doorstromen op basis van simpele regels,
+    // en OB/confidence komen later via moon-ob-sampler + extra KV state.)
     // ===============================
-    const almost = buildup.filter(c =>
-      c.vm >= 0.28 &&
-      Math.abs(c.change24) > 2.5 &&
-      c.range24 > 5
-    );
+    const buildup = radar.filter((c) => Math.abs(Number(c.change24 || 0)) >= 1.5);
+
+    const almost = buildup.filter((c) => {
+      const vm = Number(c.vm || 0);
+      const rng = Number(c.range24 || 0);
+      const chg = Math.abs(Number(c.change24 || 0));
+      return vm >= 0.20 && chg >= 2.0 && rng >= 4.0;
+    });
+
+    const elite = almost.filter((c) => {
+      const vm = Number(c.vm || 0);
+      const chg = Math.abs(Number(c.change24 || 0));
+      return vm >= 0.28 && chg >= 3.0;
+    });
 
     // ===============================
-    // 6. ELITE (OB vereist)
+    // 6) RESULT OBJECT (exact wat moon.js verwacht)
     // ===============================
-    // Tijdelijk simpele OB simulatie
-    const elite = almost.filter(c =>
-      c.vm >= 0.35 &&
-      Math.abs(c.change24) > 3
-    );
-
     const result = {
       ok: true,
       ts: Date.now(),
       mode,
-      btc: {
-        state: btcState,
-        chg24: btcChg,
-        range24: btcRange
-      },
+      btc, // { state, chg24, range24 }
       counts: {
         radar: radar.length,
         buildup: buildup.length,
         almost: almost.length,
-        elite: elite.length
+        elite: elite.length,
       },
       funnel: {
         radar,
         buildup,
         almost,
-        elite
-      }
+        elite,
+      },
     };
 
-    await kv.set(`moon:${mode}`, result);
+    // ✅ DIT WAS JE BUG: hier moet hij naar moon:latest:${mode}
+    await kv.set(keyMoonLatest(mode), result);
 
-    return res.json(result);
-
-  } catch (err) {
-    return res.json({ ok: false, error: err.message });
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(result));
+  } catch (e) {
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
