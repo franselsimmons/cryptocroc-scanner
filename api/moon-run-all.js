@@ -3,41 +3,30 @@ export const config = { runtime: "nodejs" };
 
 const fetchFn = globalThis.fetch;
 
-function getBaseUrl(req) {
-  if (process.env.BASE_URL) return process.env.BASE_URL;
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return `https://${req.headers.host}`;
-}
-
 export default async function handler(req, res) {
   try {
-    const mode = String(req.query?.mode || "bull").toLowerCase();
-    const token = String(req.query?.token || "");
+    const { mode = "bull", token } = req.query;
 
-    if (!token || token !== String(process.env.CRON_SECRET || "")) {
+    if (!token || token !== process.env.CRON_SECRET) {
       res.statusCode = 401;
       res.setHeader("content-type", "application/json");
       return res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
     }
 
-    const base = getBaseUrl(req);
-    const headers = {
-      accept: "application/json",
-      authorization: `Bearer ${process.env.CRON_SECRET}`,
-    };
+    const base = process.env.BASE_URL || `https://${req.headers.host}`;
 
-    const scanRes = await fetchFn(`${base}/api/moon-scan?mode=${encodeURIComponent(mode)}`, { headers });
+    // cache-bust zodat je nooit “oude” responses krijgt
+    const t = Date.now();
+
+    const scanRes = await fetchFn(`${base}/api/moon-scan?mode=${mode}&token=${token}&_t=${t}`);
     const scanText = await scanRes.text();
-    let scanData = null;
-    try { scanData = JSON.parse(scanText); } catch { scanData = { raw: scanText }; }
+    const scanData = safeJson(scanText);
 
-    // kleine pauze is ok, maar hoeft niet groot
-    await new Promise((r) => setTimeout(r, 600));
+    await sleep(1200);
 
-    const obRes = await fetchFn(`${base}/api/moon-ob-sampler`, { headers });
+    const obRes = await fetchFn(`${base}/api/moon-ob-sampler?token=${token}&_t=${t}`);
     const obText = await obRes.text();
-    let obData = null;
-    try { obData = JSON.parse(obText); } catch { obData = { raw: obText }; }
+    const obData = safeJson(obText);
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
@@ -45,16 +34,16 @@ export default async function handler(req, res) {
       ok: true,
       mode,
       scanOk: scanRes.ok,
-      scanStatus: scanRes.status,
       obOk: obRes.ok,
-      obStatus: obRes.status,
       scan: scanData,
       ob: obData,
-      ts: Date.now(),
     }));
-  } catch (e) {
+  } catch (err) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    return res.end(JSON.stringify({ ok: false, error: String(e) }));
+    return res.end(JSON.stringify({ ok: false, error: String(err?.message || err) }));
   }
 }
+
+function safeJson(text) { try { return JSON.parse(text); } catch { return { raw: String(text).slice(0, 400) }; } }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
