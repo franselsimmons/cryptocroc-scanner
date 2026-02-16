@@ -5,60 +5,69 @@ import { kv } from "@vercel/kv";
 export const RUNTIME_CONFIG = { runtime: "nodejs" };
 
 export const MOON = {
-  // ✅ scan breder dan top 250 → top 1000 via 4 pagina’s (250 per page)
+  // ================== COINGECKO UNIVERSE ==================
+  // We combineren 2 “orders” zodat je wél rotatie/nieuwe coins ziet:
+  // - market_cap_desc (klassiek)
+  // - volume_desc (zorgt voor nieuwe movers)
   CG_PER_PAGE: 250,
-  CG_PAGES: 4, // 4 * 250 = 1000
+  CG_PAGES_PER_ORDER: 2, // 2 pages * 250 = 500 per order
+  CG_ORDERS: ["market_cap_desc", "volume_desc"], // totaal ~1000 unieke coins (als CG ze heeft)
   RADAR_LIMIT: 120,
 
-  // BTC gate
+  // ================== BTC GATE ==================
+  // (laat staan zoals jij had)
   btcChgGate: 0.6,
   btcRangeMin: 2,
   btcRangeMaxBull: 10,
   btcRangeMaxBear: 12,
 
-  // Universe caps
-  mcapMin: 5_000_000,
-  mcapMax: 150_000_000,
+  // ================== UNIVERSE CAPS (SOEPELER) ==================
+  // → zodat er meer coins door RADAR komen
+  mcapMin: 2_000_000,      // was 5M
+  mcapMax: 250_000_000,    // was 150M
 
-  // ✅ RADAR iets soepeler (meer instroom)
+  // ================== RADAR (SOEPELER) ==================
   radar: {
-    volMin: 180_000,     // was 250k
-    vmMin: 0.08,         // was 0.10
-    range24Max: 20,      // was 15
+    volMin: 100_000,       // was 250k
+    vmMin: 0.05,           // was 0.10
+    range24Max: 25,        // was 15
 
-    bullChg24Min: -6,    // was -5
-    bullChg24Max: +10,   // was +8
+    // breder zodat je meer kandidaten ziet
+    bullChg24Min: -10,
+    bullChg24Max: +15,
 
-    bearChg24Min: -10,   // was -8
-    bearChg24Max: +6,    // was +5
+    bearChg24Min: -15,
+    bearChg24Max: +10,
   },
 
-  // ✅ ALMOST soepeler (jouw grootste blokkade was volAcc > 1.05)
+  // ================== ALMOST (SOEPELER) ==================
   almost: {
-    volAccMin: 0.98,     // was 1.05
-    priceFlatMax: 2.4,   // was 1.8
-    minConfidence: 35,   // was 45
-    consistencyMin: 0.50 // was 0.60
+    volAccMin: 1.00,       // was 1.05 (nu sneller door)
+    priceFlatMax: 3.0,     // was 1.8 (nu minder streng)
+    minConfidence: 30,     // was 45
+    consistencyMin: 0.45,  // was 0.60
   },
 
-  // ✅ ELITE iets soepeler om “valid” te halen
+  // ================== ELITE (SOEPELER VOOR TEST) ==================
   elite: {
-    minConfidence: 50,          // was 60
-    consistencyMin: 0.60,       // was 0.70
+    minConfidence: 45,     // was 60
+    consistencyMin: 0.55,  // was 0.70
 
     obScoreMin: 0.03,           // was 0.05
-    spreadMaxPct: 0.85,         // was 0.55
-    largestOrderRatioMax: 0.55, // was 0.35
-    samplesNeed: 3,
-    samplesWindowSec: 120,      // was 90
-    minAgree: 1,                // was 2 (anders blijft alles “validating” hangen)
+    spreadMaxPct: 0.80,         // was 0.55
+    largestOrderRatioMax: 0.45, // was 0.35
+
+    // sneller “valid” krijgen
+    samplesNeed: 2,         // was 3
+    samplesWindowSec: 120,  // was 90
+    minAgree: 1,            // was 2
 
     obSlopeEnabled: true,
     obSlopeMinSamples: 3,
     obSlopeMinBull: 0.0,
     obSlopeMaxBear: 0.0,
 
-    // ✅ tijdelijk UIT voor testen (depth floor blokkeert vaak alles)
+    // ✅ voor debug eerst UIT, anders blokkeert ELITE vaak
     depthFloorEnabled: false,
     depthHysteresisExitMul: 0.85,
     depthK: 28,
@@ -66,12 +75,15 @@ export const MOON = {
     depthMaxUsd: 600_000,
   },
 
+  // stage moves
   minScansPerStage: 2,
 
-  cgCacheSec: 60 * 10,
-  btcCacheSec: 60 * 10,
-  bitgetSymbolsCacheSec: 60 * 60 * 24,
+  // cache (iets korter voor “ik wil verandering zien”)
+  cgCacheSec: 60 * 2,      // was 10 min
+  btcCacheSec: 60 * 5,     // was 10 min
+  bitgetSymbolsCacheSec: 60 * 60 * 6, // was 24h (mag, maar 6h is prima)
 
+  // rotatie (zoals jij al had)
   buildupMaxAgeMin: 240,
   almostMaxAgeMin: 240,
 };
@@ -110,7 +122,7 @@ export const keyMoonObResult  = (mode, symbol) => `moon:ob:result:${mode}:${symb
 
 export const keyMoonEliteLog = `moon:log:elite`;
 
-const keyCgTopCache = `moon:cache:cg:top:${MOON.CG_PAGES * MOON.CG_PER_PAGE}`;
+const keyCgTopCache = `moon:cache:cg:universe:${MOON.CG_ORDERS.join(",")}:${MOON.CG_PAGES_PER_ORDER * MOON.CG_PER_PAGE}`;
 const keyCgBtcCache = `moon:cache:cg:btc`;
 
 // ================== DISCORD ==================
@@ -144,41 +156,77 @@ export function fmtMoonLine(c, mode, stage, extra = "") {
   return lines.join("\n");
 }
 
+// ================== SAFE FETCH (429/5xx) ==================
+async function fetchJsonRetry(url, tries = 3) {
+  let lastErr = null;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(url, { headers: { accept: "application/json" } });
+
+      // CoinGecko rate limit: even wachten en retry
+      if (r.status === 429) {
+        await sleep(800 + i * 600);
+        continue;
+      }
+
+      if (!r.ok) {
+        lastErr = new Error(`fetch failed ${r.status}`);
+        await sleep(300 + i * 300);
+        continue;
+      }
+
+      return await r.json();
+    } catch (e) {
+      lastErr = e;
+      await sleep(300 + i * 300);
+    }
+  }
+  throw lastErr || new Error("fetch failed");
+}
+
 // ================== DATA FETCH ==================
 export async function fetchCoinGeckoTopCached() {
   const cached = await kv.get(keyCgTopCache);
   if (Array.isArray(cached) && cached.length) return cached;
 
-  const fresh = await fetchCoinGeckoTopMulti();
+  const fresh = await fetchCoinGeckoUniverse();
   await kv.set(keyCgTopCache, fresh, { ex: MOON.cgCacheSec });
   return fresh;
 }
 
-async function fetchCoinGeckoTopMulti() {
-  const out = [];
-
-  for (let page = 1; page <= MOON.CG_PAGES; page++) {
-    const url =
-      `https://api.coingecko.com/api/v3/coins/markets?` +
-      `vs_currency=usd&order=market_cap_desc&per_page=${MOON.CG_PER_PAGE}&page=${page}` +
-      `&sparkline=false&price_change_percentage=24h`;
-
-    const r = await fetch(url, { headers: { accept: "application/json" } });
-    if (!r.ok) throw new Error(`CoinGecko markets failed ${r.status} (page ${page})`);
-    const arr = await r.json();
-    out.push(...arr.map(normalizeCG));
+async function fetchCoinGeckoUniverse() {
+  // We halen pages parallel per order (sneller, minder kans op timeout)
+  const tasks = [];
+  for (const order of MOON.CG_ORDERS) {
+    for (let page = 1; page <= MOON.CG_PAGES_PER_ORDER; page++) {
+      tasks.push(fetchCoinGeckoPage({ order, page }));
+    }
   }
 
-  // ✅ unieke symbols (CoinGecko kan duplicates hebben)
+  const results = await Promise.all(tasks);
+  const combined = results.flat();
+
+  // unieke symbols
   const seen = new Set();
   const uniq = [];
-  for (const c of out) {
+  for (const c of combined) {
     if (!c?.symbol) continue;
     if (seen.has(c.symbol)) continue;
     seen.add(c.symbol);
     uniq.push(c);
   }
   return uniq;
+}
+
+async function fetchCoinGeckoPage({ order, page }) {
+  const url =
+    `https://api.coingecko.com/api/v3/coins/markets?` +
+    `vs_currency=usd&order=${encodeURIComponent(order)}` +
+    `&per_page=${MOON.CG_PER_PAGE}&page=${page}` +
+    `&sparkline=false&price_change_percentage=24h`;
+
+  const arr = await fetchJsonRetry(url, 3);
+  return Array.isArray(arr) ? arr.map(normalizeCG) : [];
 }
 
 export async function fetchBTCGateCached() {
@@ -194,11 +242,8 @@ async function fetchBTCGate() {
   const url =
     `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin&sparkline=false&price_change_percentage=24h`;
 
-  const r = await fetch(url, { headers: { accept: "application/json" } });
-  if (!r.ok) throw new Error(`CoinGecko BTC failed ${r.status}`);
-  const [x] = await r.json();
-
-  const btc = normalizeCG(x);
+  const [x] = await fetchJsonRetry(url, 3);
+  const btc = normalizeCG(x || {});
   const chg24 = btc.change24;
   const range24 = btc.range24;
 
@@ -246,9 +291,7 @@ export async function getBitgetSpotUsdtSymbols() {
   if (Array.isArray(cached) && cached.length) return new Set(cached);
 
   const url = "https://api.bitget.com/api/v2/spot/public/symbols";
-  const r = await fetch(url, { headers: { accept: "application/json" } });
-  if (!r.ok) throw new Error(`Bitget symbols failed ${r.status}`);
-  const j = await r.json();
+  const j = await fetchJsonRetry(url, 3);
 
   const list = (j?.data || [])
     .filter((s) => String(s?.quoteCoin || "").toUpperCase() === "USDT")
@@ -312,8 +355,8 @@ export function calcConsistency(hist, wantedSide, windowMin = 120, minSamples = 
 
 // ================== CONFIDENCE ==================
 export function computeConfidence({ obScore, obAgree, vm, volAcc, btc }) {
-  const obStrength = clamp01(mapLinear(Math.abs(obScore), 0.03, 0.18));
-  const obBonus = obAgree === 3 ? 1.0 : obAgree === 2 ? 0.85 : 0.6;
+  const obStrength = clamp01(mapLinear(Math.abs(obScore), 0.02, 0.18));
+  const obBonus = obAgree === 3 ? 1.0 : obAgree === 2 ? 0.85 : obAgree === 1 ? 0.7 : 0.5;
   const ob = obStrength * obBonus;
 
   const vmStrength = clamp01(mapLinear(vm, MOON.radar.vmMin, 0.35));
@@ -446,3 +489,4 @@ function short(n){
   if (n >= 1e3) return (n/1e3).toFixed(2)+"K";
   return n.toFixed(0);
 }
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
