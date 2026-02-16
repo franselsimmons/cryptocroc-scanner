@@ -4,201 +4,269 @@ import {
   RUNTIME_CONFIG,
   requireSecret,
   MOON,
+
   keyMoonLatest,
+  keyMoonState,
+  keyMoonReset,
+  keyMoonObResult,
+
   fetchBTCGateCached,
   fetchCoinGeckoTopCached,
   getBitgetSpotUsdtSymbols,
+
   passRadarMoon,
+  passBuildupMoon,
+  passAlmostMoon,
+  passEliteMoon,
+
+  updatePriceHist,
+  updateVolHist,
+  volAccFromHist,
+  priceFlatPct,
+
+  computeConfidence,
+  depthFloorUsd,
+  computeMoonRisk,
 } from "./_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
 
-// ===============================
-// TP/SL techniek (werkt altijd)
-// ===============================
-function clamp(n, a, b) {
-  return Math.max(a, Math.min(b, n));
-}
-
-function computeConfidenceLite({ vm, range24, absChg24, btc }) {
-  // 0..100 (simpel maar bruikbaar)
-  const vmS = clamp((Number(vm || 0) - 0.10) / (0.35 - 0.10), 0, 1);
-  const rgS = clamp((Number(range24 || 0) - 2) / (12 - 2), 0, 1);
-  const chS = clamp((Number(absChg24 || 0) - 1) / (6 - 1), 0, 1);
-  const btcS = clamp((Math.abs(Number(btc?.chg24 || 0)) - 0.6) / (2.5 - 0.6), 0, 1);
-
-  const score = 35 * vmS + 25 * rgS + 25 * chS + 15 * btcS;
-  return Math.round(clamp(score, 0, 100));
-}
-
-function computeRisk({ mode, price, range24, confidence, stage }) {
-  const p = Number(price || 0);
-  if (!(p > 0)) return null;
-
-  // Basis SL% komt uit volatiliteit (24h range)
-  // Moon = wat agressiever dan main, maar wel clampen
-  let slPct = clamp(Number(range24 || 0) * 0.30, 2.0, 12.0); // 2%..12%
-
-  // Confidence: hoger = strakker, lager = ruimer
-  const conf = clamp(Number(confidence || 0), 0, 100);
-  const confAdj = (conf - 50) / 100; // -0.50..+0.50
-  slPct *= (1 - confAdj);           // conf 80 => *0.70, conf 40 => *1.10
-
-  // Stage: BUILDUP iets ruimer, ELITE strakker
-  let stageMul = 1.0;
-  if (stage === "BUILDUP") stageMul = 1.15;
-  if (stage === "ALMOST")  stageMul = 1.00;
-  if (stage === "ELITE")   stageMul = 0.85;
-  slPct *= stageMul;
-
-  slPct = clamp(slPct, 1.5, 15.0);
-
-  const slDist = (slPct / 100) * p;
-
-  // R-multiples (moonshots)
-  const R1 = 1.5, R2 = 2.5, R3 = 4.0;
-
-  let sl, tp1, tp2, tp3;
-  if (mode === "bull") {
-    sl  = p - slDist;
-    tp1 = p + slDist * R1;
-    tp2 = p + slDist * R2;
-    tp3 = p + slDist * R3;
-  } else {
-    // short
-    sl  = p + slDist;
-    tp1 = p - slDist * R1;
-    tp2 = p - slDist * R2;
-    tp3 = p - slDist * R3;
-  }
-
-  return {
-    slPct: Number(slPct.toFixed(2)),
-    sl: Number(sl.toFixed(8)),
-    tp1: Number(tp1.toFixed(8)),
-    tp2: Number(tp2.toFixed(8)),
-    tp3: Number(tp3.toFixed(8)),
-    rMultiples: [R1, R2, R3],
-    debug: { confAdj: Number(confAdj.toFixed(2)), stageMul },
-  };
+function minutesAgo(ts) {
+  const t = Number(ts || 0);
+  if (!t) return 999999;
+  return (Date.now() - t) / 60000;
 }
 
 export default async function handler(req, res) {
   try {
-    // ✅ beveiliging (token of x-vercel-cron)
     if (!requireSecret(req, res)) return;
 
     const modeRaw = String(req.query?.mode || "bull").toLowerCase();
     const mode = modeRaw === "bear" ? "bear" : "bull";
+    const now = Date.now();
 
-    // ===============================
-    // 1) BTC GATE (cached)
-    // ===============================
-    const btc = await fetchBTCGateCached(); // { state, chg24, range24 }
+    // 1) BTC gate data (we tonen dit in UI; gate zelf kun je later weer “hard” maken)
+    const btc = await fetchBTCGateCached();
 
-    // Optioneel: als je wilt dat moon alleen draait als BTC dezelfde kant op staat
-    // (nu laten we altijd door, maar je ziet BTC state in UI)
-    // const wanted = mode === "bull" ? "BULL" : "BEAR";
-    // if (btc.state !== wanted) ...
-
-    // ===============================
-    // 2) COINGECKO SLICE
-    // ===============================
-    const cg = await fetchCoinGeckoTopCached(); // gebruikt MOON.CG_START_PAGE/CG_PER_PAGE/CG_PAGES
-
-    // ===============================
-    // 3) BITGET SPOT USDT SYMBOLS
-    // ===============================
+    // 2) Universe: Bitget spot USDT symbols
     const bitgetSet = await getBitgetSpotUsdtSymbols();
 
-    // ===============================
-    // 4) RADAR (moon radar filter)
-    // ===============================
-    const radarBase = cg
+    // 3) CoinGecko slice (cached) — pagina 5, 250 coins
+    const cg = await fetchCoinGeckoTopCached();
+
+    // 4) State (voor volAcc + rotatie)
+    const resetAt = (await kv.get(keyMoonReset(mode))) || 0;
+    const state = (await kv.get(keyMoonState(mode))) || {};
+
+    // 5) Live candidates (Bitget filter + radar filter)
+    const radarRaw = cg
       .filter((c) => bitgetSet.has(String(c.symbol || "").toUpperCase()))
       .filter((c) => passRadarMoon(c, mode))
       .slice(0, MOON.RADAR_LIMIT);
 
-    // ===============================
-    // 5) BUILDUP / ALMOST / ELITE (simpel, zonder OB)
-    // ===============================
-    const buildupBase = radarBase.filter((c) => Math.abs(Number(c.change24 || 0)) >= 1.5);
-
-    const almostBase = buildupBase.filter((c) => {
-      const vm = Number(c.vm || 0);
-      const rng = Number(c.range24 || 0);
-      const chg = Math.abs(Number(c.change24 || 0));
-      return vm >= 0.20 && chg >= 2.0 && rng >= 4.0;
-    });
-
-    const eliteBase = almostBase.filter((c) => {
-      const vm = Number(c.vm || 0);
-      const chg = Math.abs(Number(c.change24 || 0));
-      return vm >= 0.28 && chg >= 3.0;
-    });
-
-    // ===============================
-    // 6) Verrijk coins met confidence + SL/TP + why
-    // ===============================
-    function enrich(c, stage) {
-      const vm = Number(c.vm || 0);
-      const rng = Number(c.range24 || 0);
-      const absChg = Math.abs(Number(c.change24 || 0));
-
-      const confidence = computeConfidenceLite({ vm, range24: rng, absChg24: absChg, btc });
-
-      const risk = computeRisk({
-        mode,
-        price: c.price,
-        range24: rng,
-        confidence,
-        stage,
-      });
-
-      // simpele “why” tekst zodat je snapt waarom hij waar staat
-      const why = {
-        radar: `mcap ${Math.round(Number(c.marketCap || 0)).toLocaleString()} • vol ${Math.round(Number(c.volume || 0)).toLocaleString()} • vm ${vm.toFixed(2)} • range24 ${rng.toFixed(2)}%`,
-        buildup: absChg >= 1.5 ? `abs chg24 ${absChg.toFixed(2)}% >= 1.5%` : `abs chg24 te laag`,
-        almost:
-          vm >= 0.20 && absChg >= 2.0 && rng >= 4.0
-            ? `vm ${vm.toFixed(2)} • chg ${absChg.toFixed(2)} • range ${rng.toFixed(2)}`
-            : `almost voorwaarden niet compleet`,
-        elite:
-          vm >= 0.28 && absChg >= 3.0
-            ? `vm ${vm.toFixed(2)} • chg ${absChg.toFixed(2)}`
-            : `elite voorwaarden niet compleet`,
-      };
-
-      return {
-        ...c,
-        stage,
-        confidence,
-        consistency: { ok: false, ratio: 0, total: 0, same: 0 }, // later door state/OB te upgraden
-        volAcc: 1.0, // later
-        ob: { status: "none" }, // later door moon-ob-sampler
-        depthOk: false,
-        floorUsd: 0,
-        risk,
-        why: {
-          almost: why.almost,
-          elite: why.elite,
-          radar: why.radar,
-          buildup: why.buildup,
-        },
-      };
+    // Cleanup “spook state”
+    const liveSyms = new Set(radarRaw.map((c) => c.symbol));
+    for (const sym of Object.keys(state)) {
+      if (!liveSyms.has(sym)) delete state[sym];
     }
 
-    const radar = radarBase.map((c) => enrich(c, "RADAR"));
-    const buildup = buildupBase.map((c) => enrich(c, "BUILDUP"));
-    const almost = almostBase.map((c) => enrich(c, "ALMOST"));
-    const elite = eliteBase.map((c) => enrich(c, "ELITE"));
+    const radar = [];
+    const buildup = [];
+    const almost = [];
+    const elite = [];
 
-    // ===============================
-    // 7) RESULT OBJECT (exact wat moon.js verwacht)
-    // ===============================
+    for (const c of radarRaw) {
+      const sym = c.symbol;
+
+      const prev = state[sym] || {
+        enteredAt: now,
+        stageAt: now,
+        lastSeenAt: 0,
+        priceHist: [],
+        volHist: [],
+        stage: "RADAR",
+      };
+
+      // Reset knop
+      if (Number(prev.enteredAt || 0) < resetAt) {
+        prev.enteredAt = now;
+        prev.stageAt = now;
+        prev.lastSeenAt = 0;
+        prev.priceHist = [];
+        prev.volHist = [];
+        prev.stage = "RADAR";
+      }
+
+      // Rotatie (alleen voor “hangers”)
+      const ageMin = minutesAgo(prev.stageAt || prev.enteredAt || now);
+      if (prev.stage === "BUILDUP" && ageMin > MOON.buildupMaxAgeMin) {
+        prev.stage = "RADAR";
+        prev.stageAt = now;
+      }
+      if (prev.stage === "ALMOST" && ageMin > MOON.almostMaxAgeMin) {
+        prev.stage = "BUILDUP";
+        prev.stageAt = now;
+      }
+
+      // histories
+      const priceHist = updatePriceHist(prev.priceHist, c.price);
+      const volHist = updateVolHist(prev.volHist, c.volume);
+      const volAcc = volAccFromHist(volHist);
+      const flat60 = priceFlatPct(priceHist, 60);
+
+      // OB view (als sampler al liep)
+      const obRaw = await kv.get(keyMoonObResult(mode, sym));
+      const obView = obRaw
+        ? {
+            valid: !!obRaw.valid,
+            stale: !!obRaw.stale,
+            score: Number(obRaw?.ob?.score ?? obRaw?.score ?? obRaw?.avgScore ?? 0),
+            spreadPct: Number(obRaw?.ob?.spreadPct ?? obRaw?.spreadPct ?? 999),
+            lor: Number(obRaw?.ob?.lor ?? obRaw?.lor ?? 1),
+            agree: Number(obRaw?.agree ?? 0),
+            bidUsd: Number(obRaw?.ob?.bidUsd ?? 0),
+            askUsd: Number(obRaw?.ob?.askUsd ?? 0),
+            reason: String(obRaw?.reason || ""),
+          }
+        : null;
+
+      // depth
+      const depthUsd = obView ? Math.min(obView.bidUsd || 0, obView.askUsd || 0) : 0;
+      const floorUsd = depthFloorUsd(c.marketCap);
+      const depthOk = depthUsd >= floorUsd;
+
+      // confidence (werkt ook als obView null is: obScore=0)
+      const confidence = computeConfidence({
+        obScore: obView?.score ?? 0,
+        obAgree: obView?.agree ?? 0,
+        vm: c.vm,
+        volAcc,
+        btc,
+      });
+
+      // Consistency (voor nu simpel: bull => change24 >=0, bear => change24 <=0)
+      // (Als je later sideHist terug wil, kan dat; maar dit is “works-now”.)
+      const wantedSide = mode === "bull" ? "BULL" : "BEAR";
+      const sideNow =
+        mode === "bull" ? (c.change24 >= 0 ? "BULL" : "BEAR") : (c.change24 <= 0 ? "BEAR" : "BULL");
+      const consistencyRatio = sideNow === wantedSide ? 1.0 : 0.0;
+
+      // gates
+      const buildupGate = passBuildupMoon({ c, volAcc });
+      const almostGate = passAlmostMoon({
+        priceHist,
+        volAcc,
+        confidence,
+        consistencyRatio,
+      });
+
+      const eliteGate = passEliteMoon({
+        mode,
+        obView,
+        confidence,
+        consistencyRatio,
+        depthUsd,
+        floorUsd,
+        range24: c.range24,
+      });
+
+      // stage keuze (proactief)
+      let stage = "RADAR";
+      if (buildupGate.ok) stage = "BUILDUP";
+      if (almostGate.ok) stage = "ALMOST";
+      if (eliteGate.ok) stage = "ELITE";
+
+      // risk (altijd tonen; note zegt of depth ok is)
+      const risk = computeMoonRisk({
+        mode,
+        price: c.price,
+        range24: c.range24,
+        confidence,
+        depthOk,
+      });
+
+      const item = {
+        symbol: sym,
+        name: c.name,
+        price: c.price,
+        change24: c.change24,
+        range24: c.range24,
+        volume: c.volume,
+        marketCap: c.marketCap,
+        vm: c.vm,
+
+        stage,
+        enteredAt: Number(prev.enteredAt || now),
+        stageAt: Number(prev.stageAt || now),
+
+        volAcc: +Number(volAcc || 1).toFixed(3),
+        priceFlat60: +Number(flat60 || 0).toFixed(2),
+
+        confidence,
+        consistency: { ok: true, ratio: consistencyRatio, total: 1, same: consistencyRatio ? 1 : 0 },
+
+        ob: obView
+          ? {
+              status: obView.valid ? "valid" : "validating",
+              valid: obView.valid,
+              stale: obView.stale,
+              score: obView.score,
+              spreadPct: obView.spreadPct,
+              lor: obView.lor,
+              agree: obView.agree,
+              bidUsd: obView.bidUsd,
+              askUsd: obView.askUsd,
+              reason: obView.reason,
+            }
+          : { status: "none" },
+
+        depthUsd,
+        floorUsd,
+        depthOk,
+
+        risk, // ✅ SL/TP hier
+
+        why: {
+          radar: "RADAR ok",
+          buildup: buildupGate.why,
+          almost: almostGate.why,
+          elite: eliteGate.why,
+        },
+      };
+
+      // store state
+      state[sym] = {
+        enteredAt: item.enteredAt,
+        stageAt: item.stageAt,
+        lastSeenAt: now,
+        priceHist,
+        volHist,
+        stage,
+      };
+
+      // push to lists
+      radar.push(item);
+      if (stage === "BUILDUP") buildup.push(item);
+      if (stage === "ALMOST") almost.push(item);
+      if (stage === "ELITE") elite.push(item);
+    }
+
+    // sorting (kwaliteit bovenaan)
+    const sortKey = (a, b) =>
+      (b.confidence - a.confidence) ||
+      (b.volAcc - a.volAcc) ||
+      (b.vm - a.vm);
+
+    elite.sort(sortKey);
+    almost.sort(sortKey);
+    buildup.sort(sortKey);
+
+    // radar: meest “interessant” bovenaan
+    radar.sort((a, b) => (b.volAcc - a.volAcc) || (b.vm - a.vm));
+
     const result = {
       ok: true,
-      ts: Date.now(),
+      ts: now,
       mode,
       btc,
       counts: {
@@ -208,15 +276,15 @@ export default async function handler(req, res) {
         elite: elite.length,
       },
       funnel: {
-        radar,
-        buildup,
-        almost,
         elite,
+        almost,
+        buildup,
+        radar,
       },
     };
 
-    // ✅ juiste key (moon-latest leest exact deze)
     await kv.set(keyMoonLatest(mode), result);
+    await kv.set(keyMoonState(mode), state);
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
