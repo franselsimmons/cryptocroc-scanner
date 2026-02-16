@@ -1,208 +1,94 @@
-// /moon.js
-const qs = new URLSearchParams(location.search);
-let mode = (qs.get("mode") || "bull").toLowerCase();
-if (mode !== "bull" && mode !== "bear") mode = "bull";
+let mode = "bull";
 
-const API = (m) => `/api/moon-latest?mode=${encodeURIComponent(m)}`;
+const stageElite   = document.getElementById("stageElite");
+const stageAlmost  = document.getElementById("stageAlmost");
+const stageBuildup = document.getElementById("stageBuildup");
+const stageRadar   = document.getElementById("stageRadar");
+const statusLine   = document.getElementById("statusLine");
 
-const elElite   = document.getElementById("stageElite");
-const elAlmost  = document.getElementById("stageAlmost");
-const elBuildup = document.getElementById("stageBuildup");
-const elRadar   = document.getElementById("stageRadar");
-const elStatus  = document.getElementById("statusLine");
-
-const btnBull = document.getElementById("modeBull");
-const btnBear = document.getElementById("modeBear");
-
+document.getElementById("modeBull").onclick = () => setMode("bull");
+document.getElementById("modeBear").onclick = () => setMode("bear");
 document.getElementById("refreshBtn").onclick = () => load();
-btnBull.onclick = () => setMode("bull");
-btnBear.onclick = () => setMode("bear");
 
-// Modal
-const modal = document.getElementById("modal");
-const mClose = document.getElementById("mClose");
-const mTitle = document.getElementById("mTitle");
-const mSub   = document.getElementById("mSub");
-const mWhy   = document.getElementById("mWhy");
-const mOB    = document.getElementById("mOB");
-const mStats = document.getElementById("mStats");
-const mNext  = document.getElementById("mNext");
-
-mClose.onclick = closeModal;
-modal.addEventListener("click", (e) => {
-  if (e.target === modal) closeModal();
-});
-
-function setMode(m) {
+function setMode(m){
   mode = m;
-  qs.set("mode", mode);
-  history.replaceState(null, "", `${location.pathname}?${qs.toString()}`);
-  updateButtons();
   load();
 }
 
-function updateButtons() {
-  btnBull.classList.toggle("active", mode === "bull");
-  btnBear.classList.toggle("active", mode === "bear");
-}
-
-function coinRow(c) {
-  const changeClass = (c.change24 || 0) >= 0 ? "" : "danger";
-  const consPct = Math.round(((c.consistency?.ratio ?? 0) * 100));
-
-  return `
-    <div class="coinRow" data-sym="${esc(c.symbol)}">
-      <div class="coinTop">
-        <div>
-          <div class="sym">${esc(c.symbol)}</div>
-          <div class="tag">${esc(c.name || "")}</div>
-        </div>
-        <div class="pill ${changeClass}">
-          ${fmtSign(c.change24)}%
-        </div>
-      </div>
-
-      <div class="coinMeta">
-        <div class="pill">Price: $${fmt(c.price)}</div>
-        <div class="pill">Range24: ${fmt(c.range24)}%</div>
-        <div class="pill">MC: ${short(c.marketCap)}</div>
-        <div class="pill">Vol: ${short(c.volume)}</div>
-        <div class="pill">VM: ${fmt(c.vm)}</div>
-        <div class="pill">Conf: ${c.confidence ?? "-"}</div>
-        <div class="pill">Cons: ${consPct}%</div>
-      </div>
+function createRow(c){
+  const div = document.createElement("div");
+  div.className = "coinRow";
+  div.innerHTML = `
+    <div class="coinTop">
+      <div class="sym">${c.symbol}</div>
+      <div class="tag">${c.name}</div>
+    </div>
+    <div class="coinMeta">
+      <span class="pill">Price $${Number(c.price).toFixed(4)}</span>
+      <span class="pill">24h ${Number(c.change24).toFixed(2)}%</span>
+      <span class="pill">Range ${Number(c.range24).toFixed(2)}%</span>
+      <span class="pill">VM ${Number(c.vm).toFixed(2)}</span>
     </div>
   `;
+
+  div.onclick = () => openModal(c);
+  return div;
 }
 
-function renderStage(list, el, stageName) {
-  if (!Array.isArray(list) || list.length === 0) {
+function render(stage, el){
+  el.innerHTML = "";
+  if(!stage || !stage.length){
     el.innerHTML = `<div class="empty">Geen coins</div>`;
     return;
   }
-
-  el.innerHTML = list.map(coinRow).join("");
-
-  // click handlers -> modal
-  [...el.querySelectorAll(".coinRow")].forEach((rowEl) => {
-    const sym = rowEl.getAttribute("data-sym");
-    const coin = list.find((x) => String(x.symbol) === String(sym));
-    rowEl.onclick = () => openModal(coin, stageName);
-  });
+  stage.forEach(c => el.appendChild(createRow(c)));
 }
 
-function openModal(c, stage) {
-  if (!c) return;
+async function load(){
+  statusLine.textContent = "Laden...";
 
-  mTitle.textContent = `${c.symbol} — ${stage}`;
-  mSub.textContent = [
-    `prijs $${fmt(c.price)}`,
-    `chg24 ${fmtSign(c.change24)}%`,
-    `range24 ${fmt(c.range24)}%`,
-    `vm ${fmt(c.vm)}`
-  ].join(" | ");
+  const res = await fetch(`/api/moon-latest?mode=${mode}`, { cache:"no-store" });
+  const data = await res.json();
 
-  const whyElite  = c?.why?.elite  ? `elite: ${c.why.elite}` : "";
-  const whyAlmost = c?.why?.almost ? `almost: ${c.why.almost}` : "";
-  const whyLine = [whyElite, whyAlmost].filter(Boolean).join("\n");
-  mWhy.textContent = whyLine || "—";
+  const counts = data.counts || {};
 
-  // OB / Depth block (kan soms leeg zijn)
-  const ob = c?.ob || {};
-  const depthMin = Math.min(ob?.bidUsd || 0, ob?.askUsd || 0);
-  const floor = c?.floorUsd || 0;
+  statusLine.textContent =
+    `Mode: ${mode.toUpperCase()} • Elite ${counts.elite||0} • Almost ${counts.almost||0} • Buildup ${counts.buildup||0} • Radar ${counts.radar||0}`;
 
-  mOB.textContent =
-`ob.status: ${ob.status || "none"}
-ob.score: ${numOrDash(ob.score)}
-ob.spreadPct: ${numOrDash(ob.spreadPct)}
-ob.lor: ${numOrDash(ob.lor)}
-obSlope: ${numOrDash(c.obSlope)}
-depth(min): ${short(depthMin)}
-floorUsd: ${short(floor)}
-depthOk: ${String(c.depthOk ?? false)}`;
+  const funnel = data.funnel || {};
 
-  const cons = c?.consistency || {};
-  mStats.textContent =
-`stage: ${c.stage || "-"}
-stageScans: ${c.stageScans ?? "-"}
-confidence: ${c.confidence ?? "-"}
-consistency: ${Math.round((cons.ratio || 0) * 100)}% (${cons.same || 0}/${cons.total || 0})
-volAcc: ${numOrDash(c.volAcc)}`;
+  render(funnel.elite, stageElite);
+  render(funnel.almost, stageAlmost);
+  render(funnel.buildup, stageBuildup);
+  render(funnel.radar, stageRadar);
+}
 
-  // Wat moet beter (simpel/duidelijk)
-  const tips = [];
-  if ((c.volAcc ?? 999) < 1.05) tips.push("VolAcc omhoog (meer echte activiteit / volume)");
-  if ((cons.ratio ?? 0) < 0.6) tips.push("Consistency omhoog (meerdere scans zelfde richting)");
-  if ((c.confidence ?? 0) < 60) tips.push("Confidence omhoog (VM/OB/btc bevestiging)");
-  if ((c.depthOk ?? false) === false) tips.push("Depth moet hoger (orderbook diepte/kwaliteit)");
-  if (!tips.length) tips.push("Ziet er goed uit — wachten op bevestiging / volgende scan");
+/* MODAL */
 
-  mNext.textContent = tips.map(t => `- ${t}`).join("\n");
+const modal = document.getElementById("modal");
+const mTitle = document.getElementById("mTitle");
+const mSub   = document.getElementById("mSub");
+const mWhy   = document.getElementById("mWhy");
+const mData  = document.getElementById("mData");
+
+document.getElementById("mClose").onclick = () => {
+  modal.classList.add("hidden");
+};
+
+function openModal(c){
+  mTitle.textContent = `${c.symbol} — ${c.name}`;
+  mSub.textContent   = `Price $${c.price}`;
+
+  mWhy.textContent =
+`24h Change: ${c.change24}%
+Range24: ${c.range24}%
+Volume: ${c.volume}
+MarketCap: ${c.marketCap}
+VM: ${c.vm}`;
+
+  mData.textContent = JSON.stringify(c, null, 2);
 
   modal.classList.remove("hidden");
 }
 
-function closeModal() {
-  modal.classList.add("hidden");
-}
-
-async function load() {
-  elStatus.textContent = "Status: laden…";
-
-  try {
-    const r = await fetch(API(mode), { cache: "no-store" });
-    const j = await r.json();
-
-    const btc = j?.btc
-      ? `BTC ${j.btc.state} (${fmtSign(j.btc.chg24)}% / ${fmt(j.btc.range24)}%)`
-      : "BTC —";
-
-    const counts = j?.counts || {};
-    const cRadar   = counts.radar   ?? (j?.funnel?.radar?.length   || 0);
-    const cBuildup = counts.buildup ?? (j?.funnel?.buildup?.length || 0);
-    const cAlmost  = counts.almost  ?? (j?.funnel?.almost?.length  || 0);
-    const cElite   = counts.elite   ?? (j?.funnel?.elite?.length   || 0);
-
-    elStatus.textContent =
-      `Mode: ${mode.toUpperCase()} • Elite ${cElite} | Almost ${cAlmost} | Buildup ${cBuildup} | Radar ${cRadar} • ${btc}`;
-
-    const f = j?.funnel || {};
-
-    // Let op: jouw API moet funnel.radar/buildup/almost/elite leveren
-    renderStage(f.elite   || [], elElite,   "ELITE");
-    renderStage(f.almost  || [], elAlmost,  "ALMOST");
-    renderStage(f.buildup || [], elBuildup, "BUILDUP");
-    renderStage(f.radar   || [], elRadar,   "RADAR");
-
-  } catch (e) {
-    elStatus.textContent = "Status: fout (check Vercel logs)";
-    elElite.innerHTML = `<pre class="empty">${esc(String(e))}</pre>`;
-  }
-}
-
-// Helpers
-function fmt(n) { return (Number(n) || 0).toFixed(2); }
-function fmtSign(n){ n = Number(n) || 0; return (n >= 0 ? "+" : "") + n.toFixed(2); }
-function short(n){
-  n = Number(n) || 0;
-  if (n >= 1e9) return (n/1e9).toFixed(2)+"B";
-  if (n >= 1e6) return (n/1e6).toFixed(2)+"M";
-  if (n >= 1e3) return (n/1e3).toFixed(2)+"K";
-  return n.toFixed(0);
-}
-function numOrDash(n){
-  if (n === null || n === undefined || !Number.isFinite(Number(n))) return "-";
-  return Number(n).toFixed(4);
-}
-function esc(s){
-  return String(s ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
-}
-
-updateButtons();
 load();
