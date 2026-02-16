@@ -3,11 +3,7 @@ import { requireSecret, RUNTIME_CONFIG } from "./_moon_core.js";
 export const config = RUNTIME_CONFIG;
 
 async function hit(path) {
-  const base =
-    process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : "http://localhost:3000";
-
+  const base = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000";
   const secret = process.env.CRON_SECRET || "";
 
   const url = new URL(path, base);
