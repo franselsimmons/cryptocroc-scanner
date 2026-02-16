@@ -458,10 +458,6 @@ export function computeMoonRisk({ mode, price, range24, confidence, depthOk }) {
 
 // ================== BTC HARD GATE ==================
 export function isModeAllowedByBtc(mode, btcState) {
-  // Hard gate:
-  // BTC=BULL => alleen bull mode toegestaan
-  // BTC=BEAR => alleen bear mode toegestaan
-  // BTC=NEUTRAL => niets toegestaan (hard veilig)
   if (btcState !== "BULL" && btcState !== "BEAR") return false;
   return mode === "bull" ? btcState === "BULL" : btcState === "BEAR";
 }
@@ -490,12 +486,8 @@ export function hitStopOrTp({ mode, priceNow, sl, tp3 }) {
 }
 
 // ================== HELPERS ==================
-function clamp(n, a, b) {
-  return Math.max(a, Math.min(b, n));
-}
-function clamp01(n) {
-  return clamp(n, 0, 1);
-}
+function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+function clamp01(n) { return clamp(n, 0, 1); }
 function mapLinear(x, a, b) {
   if (b === a) return 0;
   return (Number(x || 0) - a) / (b - a);
