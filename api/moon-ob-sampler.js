@@ -11,7 +11,6 @@ import {
 
 export const config = RUNTIME_CONFIG;
 
-// Bitget depth (spot)
 async function fetchBitgetDepth(symbolUpper) {
   const sym = `${String(symbolUpper || "").toUpperCase()}USDT`;
   const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(sym)}&limit=50`;
@@ -43,7 +42,6 @@ function sumDepth(levels, mid, pct, isBid) {
   return { total, biggest };
 }
 
-// OB sample binnen 0.2% (zelfde band als score)
 function computeObSample(depth) {
   const bids = depth?.bids || [];
   const asks = depth?.asks || [];
@@ -56,7 +54,7 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  const pct = 0.002; // 0.2%
+  const pct = 0.002;
   const bidRes = sumDepth(bids, mid, pct, true);
   const askRes = sumDepth(asks, mid, pct, false);
 
@@ -69,15 +67,12 @@ function computeObSample(depth) {
   const biggest = Math.max(bidRes.biggest, askRes.biggest);
   const lor = denom > 0 ? biggest / denom : 1;
 
-  return {
-    ts: Date.now(),
-    score,
-    spreadPct,
-    lor,
-    bidUsd,
-    askUsd,
-    mid,
-  };
+  // ✅ ook voor moon: 1% liquiditeit (handig voor jouw analyse/vertrouwen)
+  const bid1 = sumDepth(bids, mid, 0.01, true);
+  const ask1 = sumDepth(asks, mid, 0.01, false);
+  const depthMinUsd1p = Math.min(bid1.total, ask1.total);
+
+  return { ts: Date.now(), score, spreadPct, lor, bidUsd, askUsd, mid, depthMinUsd1p };
 }
 
 function directionOk(mode, score) {
@@ -98,6 +93,7 @@ function pruneSamples(samples) {
       bidUsd: Number(s?.bidUsd ?? 0),
       askUsd: Number(s?.askUsd ?? 0),
       mid: Number(s?.mid ?? 0),
+      depthMinUsd1p: Number(s?.depthMinUsd1p ?? 0),
     }))
     .filter((s) => s.ts > 0 && Number.isFinite(s.score))
     .filter((s) => now - s.ts <= winMs)
@@ -108,6 +104,7 @@ function pruneSamples(samples) {
 
 function validateSamples(mode, samplesFresh) {
   const fresh = pruneSamples(samplesFresh);
+
   if (fresh.length < MOON.elite.samplesNeed) {
     return { valid: false, reason: "Not enough samples", fresh };
   }
@@ -138,13 +135,21 @@ async function processCandidate(mode, symbol) {
   const v = validateSamples(mode, pruned);
   const stale = (Date.now() - sample.ts) / 1000 > 15;
 
-  await kv.set(keyMoonObResult(mode, symbol), {
+  // ✅ FIX: top-level velden erbij (moon core verwacht dit)
+  const result = {
     symbol,
     side: mode,
     valid: v.valid,
     reason: v.reason,
+    stale,
+
+    score: sample.score,
+    spreadPct: sample.spreadPct,
+    lor: sample.lor,
+    depthMinUsd1p: sample.depthMinUsd1p,
     avgScore: v.avgScore ?? null,
     agree: v.agree ?? null,
+
     ob: {
       ts: sample.ts,
       mid: sample.mid,
@@ -153,9 +158,12 @@ async function processCandidate(mode, symbol) {
       askUsd: sample.askUsd,
       score: sample.score,
       lor: sample.lor,
+      depthMinUsd1p: sample.depthMinUsd1p,
     },
-    stale,
-  });
+    ts: Date.now(),
+  };
+
+  await kv.set(keyMoonObResult(mode, symbol), result);
 
   return { ok: true, symbol, valid: v.valid };
 }
@@ -177,7 +185,6 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    // Kandidaten komen uit moon latest
     const bull = await kv.get(keyMoonLatest("bull"));
     const bear = await kv.get(keyMoonLatest("bear"));
 
@@ -191,7 +198,6 @@ export default async function handler(req, res) {
     for (const t of tasks) {
       const mode = t.mode;
 
-      // We samplen OB vooral voor ALMOST + top BUILDUP
       const almost = (t.data?.funnel?.almost || []).slice(0, 14);
       const buildup = (t.data?.funnel?.buildup || []).slice(0, 10);
 
