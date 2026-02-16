@@ -5,86 +5,79 @@ import { kv } from "@vercel/kv";
 export const RUNTIME_CONFIG = { runtime: "nodejs" };
 
 export const MOON = {
-  // ✅ 250 coins per 10 min, vanaf pagina 5 (jouw mcap-zone)
+  // ✅ 250 coins per scan, vanaf pagina 5
   CG_PER_PAGE: 250,
   CG_START_PAGE: 5,
   CG_PAGES: 1,
 
   RADAR_LIMIT: 120,
 
-  // BTC gate (blijft zoals jij had)
+  // BTC gate
   btcChgGate: 0.6,
   btcRangeMin: 2,
   btcRangeMaxBull: 10,
   btcRangeMaxBear: 12,
 
-  // Universe caps (jouw zone)
+  // Universe caps
   mcapMin: 5_000_000,
   mcapMax: 150_000_000,
 
-  // ✅ PROACTIEF: radar breder (vroeg oppikken)
+  // ✅ PROACTIEF radar
   radar: {
-    volMin: 200_000,      // iets lager dan 250k → meer instroom
-    vmMin: 0.12,          // vroeg, maar niet dood
-    range24Min: 2.0,      // niet stilstaand
-    range24Max: 12.0,     // geen “al ontploft” in radar
-
-    // change24 niet te streng: vroeg stadium kan klein zijn
+    volMin: 200_000,
+    vmMin: 0.12,
+    range24Min: 2.0,
+    range24Max: 12.0,
     bullChg24Min: -6,
     bullChg24Max: +6,
     bearChg24Min: -6,
     bearChg24Max: +6,
   },
 
-  // ✅ BUILDUP = druk/opbouw (volume versnelt)
+  // ✅ BUILDUP
   buildup: {
-    volAccMin: 1.05,      // versnelling
+    volAccMin: 1.05,
     vmMin: 0.18,
     range24Min: 3.5,
-    chgAbsMin: 0.8,       // beetje beweging ok
-    chgAbsMax: 12.0,      // niet al “te laat”
+    chgAbsMin: 0.8,
+    chgAbsMax: 12.0,
   },
 
-  // ✅ ALMOST = klaarzetten (nog vóór echte spike)
+  // ✅ ALMOST
   almost: {
     volAccMin: 1.10,
     vmMin: 0.25,
     range24Min: 5.5,
     range24Max: 16.0,
-    minConfidence: 50,    // confidence kan pas goed worden met OB-result
+    minConfidence: 50,
     consistencyMin: 0.60,
-    priceFlatMax: 2.8,    // iets soepeler dan 1.8 (moon is volatiel)
+    priceFlatMax: 2.8,
   },
 
-  // ✅ ELITE = INSTAP (OB + depth bevestigt)
+  // ✅ ELITE = instap
   elite: {
     minConfidence: 65,
     consistencyMin: 0.70,
 
-    obScoreMin: 0.04,          // iets soepeler dan 0.05
-    spreadMaxPct: 0.70,        // iets soepeler (spot kan variëren)
+    obScoreMin: 0.04,
+    spreadMaxPct: 0.70,
     largestOrderRatioMax: 0.40,
     samplesNeed: 3,
     samplesWindowSec: 90,
     minAgree: 2,
 
-    obSlopeEnabled: true,
-    obSlopeMinSamples: 3,
-    obSlopeMinBull: 0.0,
-    obSlopeMaxBear: 0.0,
-
-    depthFloorEnabled: true,
-    depthHysteresisExitMul: 0.85,
-    depthK: 28,
-    depthMinUsd: 60_000,
-    depthMaxUsd: 600_000,
-
-    // ✅ “niet te laat”: als range24 al huge is, geen elite-instap
+    // “niet te laat”
     range24Max: 18.0,
-  },
 
-  // no-skip stage moves (mag blijven)
-  minScansPerStage: 2,
+    // Rolling (15m) requirements voor 9.7 niveau
+    roll: {
+      maxDeltaPrice15mPct: 4.0,   // prijs mag nog niet exploderen
+      minDeltaVol15m: 0.15,       // druk moet oplopen
+      needCompression: true,      // range krimpt
+      minObSlope: 8,              // OB bouwt op
+      maxObStability: 20,         // OB niet “flipt”
+    },
+  },
 
   // caches
   cgCacheSec: 60 * 10,
@@ -94,6 +87,13 @@ export const MOON = {
   // rotatie
   buildupMaxAgeMin: 240,
   almostMaxAgeMin: 240,
+
+  // Portfolio instellingen (virtueel)
+  portfolio: {
+    posUsd: 100,          // $100 per entry (kan later env maken)
+    maxOpen: 8,           // max open posities tegelijk
+    closeOnBtcFlip: true, // BTC gate flip => posities sluiten
+  },
 };
 
 // ================== AUTH ==================
@@ -127,14 +127,18 @@ export const keyMoonBitgetSymbols = `moon:bitget:symbols:spotusdt`;
 export const keyMoonObSamples = (mode, symbol) => `moon:ob:samples:${mode}:${symbol}`;
 export const keyMoonObResult  = (mode, symbol) => `moon:ob:result:${mode}:${symbol}`;
 
-// ✅ cache key uniek per slice
+// Portfolio keys
+export const keyMoonPositions = (mode) => `moon:positions:${mode}`;   // open + closed
+export const keyMoonPortfolio = (mode) => `moon:portfolio:${mode}`;   // totals
+
+// cache keys
 const keyCgTopCache = `moon:cache:cg:top:per${MOON.CG_PER_PAGE}:start${MOON.CG_START_PAGE}:pages${MOON.CG_PAGES}`;
 const keyCgBtcCache = `moon:cache:cg:btc`;
 
 // ================== COINGECKO HEADERS ==================
 function cgHeaders() {
   const h = { accept: "application/json" };
-  const k = process.env.CG_API_KEY; // optioneel
+  const k = process.env.CG_API_KEY;
   if (k) h["x-cg-pro-api-key"] = k;
   return h;
 }
@@ -168,7 +172,6 @@ async function fetchCoinGeckoSlice() {
     out.push(...arr.map(normalizeCG));
   }
 
-  // unique symbols
   const seen = new Set();
   const uniq = [];
   for (const c of out) {
@@ -268,14 +271,12 @@ export function updatePriceHist(prev, price) {
   if (p > 0) h.push({ ts: now, price: p });
   return h;
 }
-
 export function normalizePriceHist(prev) {
   if (!Array.isArray(prev)) return [];
   return prev
     .map((x) => ({ ts: Number(x?.ts || 0), price: Number(x?.price || 0) }))
     .filter((x) => x.ts > 0 && x.price > 0);
 }
-
 export function priceFlatPct(priceHist, minutes = 60) {
   const h = normalizePriceHist(priceHist).sort((a, b) => a.ts - b.ts);
   const cutoff = Date.now() - minutes * 60 * 1000;
@@ -294,7 +295,6 @@ export function updateVolHist(prev, volume) {
   arr.push(Number(volume || 0));
   return arr;
 }
-
 export function volAccFromHist(volHist) {
   const h = Array.isArray(volHist) ? volHist : [];
   const last3 = h.slice(-3);
@@ -306,7 +306,7 @@ export function volAccFromHist(volHist) {
   return a / b;
 }
 
-// ================== CONFIDENCE (met OB) ==================
+// ================== CONFIDENCE ==================
 export function computeConfidence({ obScore, obAgree, vm, volAcc, btc }) {
   const obStrength = clamp01(mapLinear(Math.abs(obScore), 0.03, 0.18));
   const obBonus = obAgree === 3 ? 1.0 : obAgree === 2 ? 0.85 : 0.6;
@@ -337,7 +337,6 @@ export function passObBase(obView, mode) {
   } else {
     if (score > -MOON.elite.obScoreMin) return { ok: false, why: "OB score too low" };
   }
-
   return { ok: true, why: "OB ok" };
 }
 
@@ -346,14 +345,12 @@ export function depthFloorUsd(marketCapUsd) {
   const raw = MOON.elite.depthK * Math.sqrt(mcapM) * 1000;
   return clamp(raw, MOON.elite.depthMinUsd, MOON.elite.depthMaxUsd);
 }
-
 export function passDepthFloor({ depthUsd, floorUsd }) {
-  if (!MOON.elite.depthFloorEnabled) return { ok: true, why: "Depth disabled" };
   const ok = Number(depthUsd || 0) >= Number(floorUsd || 0);
   return { ok, why: ok ? "Depth ok" : `Depth < ${Math.round(floorUsd).toLocaleString()} USD` };
 }
 
-// ================== FILTERS (proactief) ==================
+// ================== FILTERS ==================
 export function passRadarMoon(c, mode) {
   if (c.marketCap < MOON.mcapMin) return false;
   if (c.marketCap > MOON.mcapMax) return false;
@@ -373,7 +370,6 @@ export function passRadarMoon(c, mode) {
     if (chg < MOON.radar.bearChg24Min) return false;
     if (chg > MOON.radar.bearChg24Max) return false;
   }
-
   return true;
 }
 
@@ -393,7 +389,6 @@ export function passAlmostMoon({ priceHist, volAcc, confidence, consistencyRatio
   if (Number(confidence || 0) < MOON.almost.minConfidence) return { ok: false, why: "Confidence low" };
   if (Number(consistencyRatio || 0) < MOON.almost.consistencyMin) return { ok: false, why: "Consistency low" };
   if (flat > MOON.almost.priceFlatMax) return { ok: false, why: "Price not flat" };
-  if (Number.isFinite(Number(flat))) return { ok: true, why: "ALMOST ok" };
   return { ok: true, why: "ALMOST ok" };
 }
 
@@ -413,30 +408,21 @@ export function passEliteMoon({ mode, obView, confidence, consistencyRatio, dept
 }
 
 // ================== RISK (SL/TP) ==================
-// Doel: simpel, stabiel, altijd aanwezig.
-// Werkt zonder candles/ATR; gebruikt range24 + confidence + depth.
 export function computeMoonRisk({ mode, price, range24, confidence, depthOk }) {
   const p = Number(price || 0);
   if (!(p > 0)) return null;
 
-  // basis: 24h range → “mini-ATR”
-  const r = clamp(Number(range24 || 0), 1.0, 25.0) / 100;  // 1%..25% → 0.01..0.25
-
-  // hoe hoger confidence, hoe strakker SL en ambitieuzer TP
+  const r = clamp(Number(range24 || 0), 1.0, 25.0) / 100;
   const conf = clamp(Number(confidence || 0), 0, 100);
 
-  // SL basis: 0.30 * range (vroeg instap → niet te krap)
-  // daarna aanpassen door confidence en depth
   let slMul = 0.30;
-  slMul += mapLinear(conf, 0, 100) * (-0.10);     // high conf → iets strakker
-  if (!depthOk) slMul += 0.08;                    // low depth → ruimer SL (noise)
-
+  slMul += mapLinear(conf, 0, 100) * (-0.10);
+  if (!depthOk) slMul += 0.08;
   slMul = clamp(slMul, 0.18, 0.42);
 
-  const slPct = clamp(r * slMul, 0.006, 0.06);    // 0.6%..6%
+  const slPct = clamp(r * slMul, 0.006, 0.06);
   const sl = mode === "bull" ? p * (1 - slPct) : p * (1 + slPct);
 
-  // TP: R-multiples (moon = explosief) → 1.8R / 3.0R / 4.2R
   const R = slPct;
   const tp1 = mode === "bull" ? p * (1 + 1.8 * R) : p * (1 - 1.8 * R);
   const tp2 = mode === "bull" ? p * (1 + 3.0 * R) : p * (1 - 3.0 * R);
@@ -452,7 +438,39 @@ export function computeMoonRisk({ mode, price, range24, confidence, depthOk }) {
   };
 }
 
-// ================== HELPERS ==================
+// ================== BTC HARD GATE ==================
+export function isModeAllowedByBtc(mode, btcState) {
+  // A: hard block. Alleen scannen als btcState matcht.
+  // Bull scan alleen als BTC=BULL; Bear scan alleen als BTC=BEAR.
+  if (btcState !== "BULL" && btcState !== "BEAR") return false;
+  return mode === "bull" ? btcState === "BULL" : btcState === "BEAR";
+}
+
+// ================== PORTFOLIO HELPERS ==================
+export function calcPnlPct({ mode, entryPrice, priceNow }) {
+  const e = Number(entryPrice || 0);
+  const p = Number(priceNow || 0);
+  if (!(e > 0 && p > 0)) return 0;
+
+  // bull: winst als p>e, bear: winst als p<e
+  if (mode === "bull") return ((p - e) / e) * 100;
+  return ((e - p) / e) * 100;
+}
+
+export function hitStopOrTp({ mode, priceNow, sl, tp3 }) {
+  const p = Number(priceNow || 0);
+  if (!(p > 0)) return { hit: false };
+
+  if (mode === "bull") {
+    if (sl && p <= Number(sl)) return { hit: true, kind: "SL" };
+    if (tp3 && p >= Number(tp3)) return { hit: true, kind: "TP" };
+  } else {
+    if (sl && p >= Number(sl)) return { hit: true, kind: "SL" };
+    if (tp3 && p <= Number(tp3)) return { hit: true, kind: "TP" };
+  }
+  return { hit: false };
+}
+
 function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
 function clamp01(n){ return clamp(n, 0, 1); }
 function mapLinear(x, a, b){
