@@ -11,33 +11,49 @@ import {
 
 export const config = RUNTIME_CONFIG;
 
-// ================== BITGET DEPTH (SPOT) ==================
-async function fetchDepthTry(symbol) {
-  const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(symbol)}&limit=50`;
+// =============== BITGET ORDERBOOK (robust) ===============
+async function fetchJson(url) {
   const r = await fetch(url, { headers: { accept: "application/json" } });
-  if (!r.ok) return null;
-
-  const j = await r.json();
-  const d = j?.data || null;
-  if (!d?.bids?.length || !d?.asks?.length) return null;
-  return d;
+  if (!r.ok) return { ok: false, status: r.status, json: null };
+  try {
+    const j = await r.json();
+    return { ok: true, status: r.status, json: j };
+  } catch {
+    return { ok: false, status: 0, json: null };
+  }
 }
 
+function normalizeDepth(j) {
+  const d = j?.data || j?.data?.data || j?.data?.orderbook || null;
+  const bids = d?.bids || j?.data?.bids || null;
+  const asks = d?.asks || j?.data?.asks || null;
+  if (!Array.isArray(bids) || !Array.isArray(asks)) return null;
+  if (!bids.length || !asks.length) return null;
+  return { bids, asks };
+}
+
+// probeert meerdere combinaties (Bitget is hier berucht om)
 async function fetchBitgetDepth(symbolUpper) {
   const base = String(symbolUpper || "").toUpperCase();
   if (!base) return null;
 
-  // ✅ probeer meerdere symbol formats (Bitget wijzigt dit soms per endpoint)
   const candidates = [
-    `${base}USDT`,
-    `${base}USDT_SPBL`,
-    `${base}USDT_SPOT`,
+    // Spot v1 depth (vaak: BTCUSDT_SPBL)
+    `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(`${base}USDT_SPBL`)}&limit=50`,
+    `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(`${base}USDT`)}&limit=50`,
+
+    // Spot v2 orderbook (sommige deployments hebben dit nodig)
+    `https://api.bitget.com/api/v2/spot/market/orderbook?symbol=${encodeURIComponent(`${base}USDT_SPBL`)}&limit=50`,
+    `https://api.bitget.com/api/v2/spot/market/orderbook?symbol=${encodeURIComponent(`${base}USDT`)}&limit=50`,
   ];
 
-  for (const sym of candidates) {
-    const d = await fetchDepthTry(sym);
-    if (d) return d;
+  for (const url of candidates) {
+    const r = await fetchJson(url);
+    if (!r.ok) continue;
+    const depth = normalizeDepth(r.json);
+    if (depth) return depth;
   }
+
   return null;
 }
 
@@ -51,6 +67,7 @@ function sumDepth(levels, mid, pct, isBid) {
     const s = Number(row?.[1]);
     if (!Number.isFinite(p) || !Number.isFinite(s)) continue;
 
+    // let op: break werkt alleen als levels gesorteerd zijn (Bitget meestal wel)
     if (isBid && p < limit) break;
     if (!isBid && p > limit) break;
 
@@ -73,8 +90,7 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  // 0.2% band
-  const pct = 0.002;
+  const pct = 0.002; // 0.2%
   const bidRes = sumDepth(bids, mid, pct, true);
   const askRes = sumDepth(asks, mid, pct, false);
 
@@ -87,7 +103,6 @@ function computeObSample(depth) {
   const biggest = Math.max(bidRes.biggest, askRes.biggest);
   const lor = denom > 0 ? biggest / denom : 1;
 
-  // 1% vloer
   const bid1 = sumDepth(bids, mid, 0.01, true);
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
@@ -163,6 +178,7 @@ async function processCandidate(mode, symbol) {
   const v = validateSamples(mode, pruned);
   const stale = (Date.now() - sample.ts) / 1000 > 15;
 
+  // ✅ schrijf óók top-level velden (handig voor scanners)
   await kv.set(keyMoonObResult(mode, symbol), {
     symbol,
     side: mode,
@@ -170,6 +186,11 @@ async function processCandidate(mode, symbol) {
     reason: v.reason,
     avgScore: v.avgScore ?? null,
     agree: v.agree ?? null,
+
+    score: sample.score,
+    spreadPct: sample.spreadPct,
+    lor: sample.lor,
+
     ob: {
       ts: sample.ts,
       mid: sample.mid,
@@ -181,6 +202,7 @@ async function processCandidate(mode, symbol) {
       depthMinUsd1p: sample.depthMinUsd1p,
     },
     stale,
+    ts: Date.now(),
   });
 
   return { ok: true, symbol, valid: v.valid };
@@ -210,12 +232,14 @@ export default async function handler(req, res) {
     if (bull?.funnel) tasks.push({ mode: "bull", data: bull });
     if (bear?.funnel) tasks.push({ mode: "bear", data: bear });
 
-    let totalProcessed = 0;
+    let totalTried = 0;
+    let totalOk = 0;
     let totalValid = 0;
+
+    const sampleErrors = [];
 
     for (const t of tasks) {
       const mode = t.mode;
-
       const almost = (t.data?.funnel?.almost || []).slice(0, 14);
       const buildup = (t.data?.funnel?.buildup || []).slice(0, 10);
 
@@ -223,19 +247,30 @@ export default async function handler(req, res) {
         .map((x) => String(x?.symbol || "").toUpperCase())
         .filter(Boolean);
 
+      totalTried += candidates.length;
+
       const results = await runBatched(candidates, 6, (sym) => processCandidate(mode, sym));
 
       for (const r of results) {
         if (r?.ok) {
-          totalProcessed++;
+          totalOk++;
           if (r.valid) totalValid++;
+        } else {
+          if (sampleErrors.length < 8) sampleErrors.push({ mode, symbol: r.symbol, reason: r.reason || "fail" });
         }
       }
     }
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: true, ts: Date.now(), totalProcessed, totalValid }));
+    res.end(JSON.stringify({
+      ok: true,
+      ts: Date.now(),
+      totalTried,
+      totalOk,
+      totalValid,
+      sampleErrors,
+    }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
