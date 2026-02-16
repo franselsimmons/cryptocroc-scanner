@@ -5,8 +5,7 @@
 
     { "path": "/api/moon-scan?mode=bull", "schedule": "*/5 * * * *" },
     { "path": "/api/moon-scan?mode=bear", "schedule": "*/5 * * * *" },
-
-    { "path": "/api/moon-ob-sampler", "schedule": "*/2 * * * *" },
+    { "path": "/api/moon-ob-sampler", "schedule": "* * * * *" },
 
     { "path": "/api/portfolio-tick", "schedule": "*/10 * * * *" }
   ]
