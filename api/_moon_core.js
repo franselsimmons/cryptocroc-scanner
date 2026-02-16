@@ -4,88 +4,82 @@ import { kv } from "@vercel/kv";
 // ✅ Vercel runtime mag alleen "nodejs"
 export const RUNTIME_CONFIG = { runtime: "nodejs" };
 
+// ================== CONFIG ==================
 export const MOON = {
-  // ================== COINGECKO UNIVERSE ==================
-  // We combineren 2 “orders” zodat je wél rotatie/nieuwe coins ziet:
-  // - market_cap_desc (klassiek)
-  // - volume_desc (zorgt voor nieuwe movers)
+  // ✅ breder scannen: top 1000 (4 pagina’s x 250)
   CG_PER_PAGE: 250,
-  CG_PAGES_PER_ORDER: 2, // 2 pages * 250 = 500 per order
-  CG_ORDERS: ["market_cap_desc", "volume_desc"], // totaal ~1000 unieke coins (als CG ze heeft)
+  CG_PAGES: 4,
   RADAR_LIMIT: 120,
 
-  // ================== BTC GATE ==================
-  // (laat staan zoals jij had)
+  // BTC gate (laat dit nog even staan)
   btcChgGate: 0.6,
   btcRangeMin: 2,
   btcRangeMaxBull: 10,
   btcRangeMaxBear: 12,
 
-  // ================== UNIVERSE CAPS (SOEPELER) ==================
-  // → zodat er meer coins door RADAR komen
-  mcapMin: 2_000_000,      // was 5M
-  mcapMax: 250_000_000,    // was 150M
+  // Universe caps (iets ruimer zodat meer coins kunnen instromen)
+  mcapMin: 3_000_000,
+  mcapMax: 250_000_000,
 
-  // ================== RADAR (SOEPELER) ==================
+  // ✅ RADAR wat soepeler (meer instroom)
   radar: {
-    volMin: 100_000,       // was 250k
-    vmMin: 0.05,           // was 0.10
-    range24Max: 25,        // was 15
+    volMin: 120_000,
+    vmMin: 0.06,
+    range24Max: 25,
 
-    // breder zodat je meer kandidaten ziet
-    bullChg24Min: -10,
-    bullChg24Max: +15,
+    bullChg24Min: -8,
+    bullChg24Max: +12,
 
-    bearChg24Min: -15,
-    bearChg24Max: +10,
+    bearChg24Min: -12,
+    bearChg24Max: +8,
   },
 
-  // ================== ALMOST (SOEPELER) ==================
+  // ✅ ALMOST soepeler (zodat je ziet dat stages bewegen)
   almost: {
-    volAccMin: 1.00,       // was 1.05 (nu sneller door)
-    priceFlatMax: 3.0,     // was 1.8 (nu minder streng)
-    minConfidence: 30,     // was 45
-    consistencyMin: 0.45,  // was 0.60
+    volAccMin: 1.00,
+    priceFlatMax: 3.2,
+    minConfidence: 35,
+    consistencyMin: 0.50,
   },
 
-  // ================== ELITE (SOEPELER VOOR TEST) ==================
+  // ✅ ELITE iets soepeler (voor testfase)
   elite: {
-    minConfidence: 45,     // was 60
-    consistencyMin: 0.55,  // was 0.70
+    minConfidence: 50,
+    consistencyMin: 0.60,
 
-    obScoreMin: 0.03,           // was 0.05
-    spreadMaxPct: 0.80,         // was 0.55
-    largestOrderRatioMax: 0.45, // was 0.35
-
-    // sneller “valid” krijgen
-    samplesNeed: 2,         // was 3
-    samplesWindowSec: 120,  // was 90
-    minAgree: 1,            // was 2
+    obScoreMin: 0.03,
+    spreadMaxPct: 0.90,
+    largestOrderRatioMax: 0.45,
+    samplesNeed: 2,
+    samplesWindowSec: 120,
+    minAgree: 1,
 
     obSlopeEnabled: true,
     obSlopeMinSamples: 3,
     obSlopeMinBull: 0.0,
     obSlopeMaxBear: 0.0,
 
-    // ✅ voor debug eerst UIT, anders blokkeert ELITE vaak
-    depthFloorEnabled: false,
+    depthFloorEnabled: true,
     depthHysteresisExitMul: 0.85,
-    depthK: 28,
-    depthMinUsd: 60_000,
+    depthK: 18,
+    depthMinUsd: 30_000,
     depthMaxUsd: 600_000,
   },
 
-  // stage moves
-  minScansPerStage: 2,
+  // ✅ sneller doorgroeien (test)
+  minScansPerStage: 1,
 
-  // cache (iets korter voor “ik wil verandering zien”)
-  cgCacheSec: 60 * 2,      // was 10 min
-  btcCacheSec: 60 * 5,     // was 10 min
-  bitgetSymbolsCacheSec: 60 * 60 * 6, // was 24h (mag, maar 6h is prima)
+  // cache
+  cgCacheSec: 60 * 10,
+  btcCacheSec: 60 * 10,
+  bitgetSymbolsCacheSec: 60 * 60 * 24,
 
-  // rotatie (zoals jij al had)
   buildupMaxAgeMin: 240,
   almostMaxAgeMin: 240,
+
+  // fetch safety
+  fetchTimeoutMs: 9000,
+  fetchRetries: 2,
 };
 
 // ================== AUTH ==================
@@ -122,7 +116,7 @@ export const keyMoonObResult  = (mode, symbol) => `moon:ob:result:${mode}:${symb
 
 export const keyMoonEliteLog = `moon:log:elite`;
 
-const keyCgTopCache = `moon:cache:cg:universe:${MOON.CG_ORDERS.join(",")}:${MOON.CG_PAGES_PER_ORDER * MOON.CG_PER_PAGE}`;
+const keyCgTopCache = `moon:cache:cg:top:${MOON.CG_PAGES * MOON.CG_PER_PAGE}`;
 const keyCgBtcCache = `moon:cache:cg:btc`;
 
 // ================== DISCORD ==================
@@ -156,32 +150,51 @@ export function fmtMoonLine(c, mode, stage, extra = "") {
   return lines.join("\n");
 }
 
-// ================== SAFE FETCH (429/5xx) ==================
-async function fetchJsonRetry(url, tries = 3) {
+// ================== SAFE FETCH ==================
+async function fetchWithTimeout(url, options = {}, timeoutMs = 9000) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, { ...options, signal: controller.signal });
+    return r;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function safeFetchJson(url) {
+  const headers = {
+    accept: "application/json",
+    "user-agent": "CryptoCrocMoon/1.0",
+  };
+
   let lastErr = null;
-  for (let i = 0; i < tries; i++) {
+  for (let i = 0; i <= MOON.fetchRetries; i++) {
     try {
-      const r = await fetch(url, { headers: { accept: "application/json" } });
+      const r = await fetchWithTimeout(
+        url,
+        { headers },
+        MOON.fetchTimeoutMs
+      );
 
-      // CoinGecko rate limit: even wachten en retry
-      if (r.status === 429) {
-        await sleep(800 + i * 600);
-        continue;
-      }
-
+      // 429/5xx → retry/best-effort
       if (!r.ok) {
-        lastErr = new Error(`fetch failed ${r.status}`);
-        await sleep(300 + i * 300);
+        const txt = await r.text().catch(() => "");
+        lastErr = new Error(`HTTP ${r.status} ${txt?.slice(0, 120) || ""}`);
+        // 4xx (behalve 429) = meestal “hard fail” → niet blijven retryen
+        if (r.status >= 400 && r.status < 500 && r.status !== 429) break;
         continue;
       }
 
-      return await r.json();
+      const j = await r.json();
+      return { ok: true, json: j, status: r.status };
     } catch (e) {
       lastErr = e;
-      await sleep(300 + i * 300);
+      continue;
     }
   }
-  throw lastErr || new Error("fetch failed");
+
+  return { ok: false, error: String(lastErr || "fetch failed") };
 }
 
 // ================== DATA FETCH ==================
@@ -189,44 +202,54 @@ export async function fetchCoinGeckoTopCached() {
   const cached = await kv.get(keyCgTopCache);
   if (Array.isArray(cached) && cached.length) return cached;
 
-  const fresh = await fetchCoinGeckoUniverse();
-  await kv.set(keyCgTopCache, fresh, { ex: MOON.cgCacheSec });
-  return fresh;
-}
+  // ✅ Best-effort: nooit crashen
+  const fresh = await fetchCoinGeckoTopMultiBestEffort();
 
-async function fetchCoinGeckoUniverse() {
-  // We halen pages parallel per order (sneller, minder kans op timeout)
-  const tasks = [];
-  for (const order of MOON.CG_ORDERS) {
-    for (let page = 1; page <= MOON.CG_PAGES_PER_ORDER; page++) {
-      tasks.push(fetchCoinGeckoPage({ order, page }));
-    }
+  // als we iets hebben → cache zetten
+  if (Array.isArray(fresh) && fresh.length) {
+    await kv.set(keyCgTopCache, fresh, { ex: MOON.cgCacheSec });
+    return fresh;
   }
 
-  const results = await Promise.all(tasks);
-  const combined = results.flat();
+  // laatste fallback: cache opnieuw proberen
+  const cachedAgain = await kv.get(keyCgTopCache);
+  if (Array.isArray(cachedAgain) && cachedAgain.length) return cachedAgain;
 
-  // unieke symbols
+  return [];
+}
+
+async function fetchCoinGeckoTopMultiBestEffort() {
+  const out = [];
+
+  for (let page = 1; page <= MOON.CG_PAGES; page++) {
+    const url =
+      `https://api.coingecko.com/api/v3/coins/markets?` +
+      `vs_currency=usd&order=market_cap_desc&per_page=${MOON.CG_PER_PAGE}&page=${page}` +
+      `&sparkline=false&price_change_percentage=24h`;
+
+    const r = await safeFetchJson(url);
+
+    // faalt pagina? → stop niet alles, maar ga door / of breek bij rate limit
+    if (!r.ok) {
+      // als CoinGecko rate limited, heeft doorvragen weinig zin → break
+      if (String(r.error).includes("HTTP 429")) break;
+      continue;
+    }
+
+    const arr = Array.isArray(r.json) ? r.json : [];
+    for (const x of arr) out.push(normalizeCG(x));
+  }
+
+  // unique symbols
   const seen = new Set();
   const uniq = [];
-  for (const c of combined) {
+  for (const c of out) {
     if (!c?.symbol) continue;
     if (seen.has(c.symbol)) continue;
     seen.add(c.symbol);
     uniq.push(c);
   }
   return uniq;
-}
-
-async function fetchCoinGeckoPage({ order, page }) {
-  const url =
-    `https://api.coingecko.com/api/v3/coins/markets?` +
-    `vs_currency=usd&order=${encodeURIComponent(order)}` +
-    `&per_page=${MOON.CG_PER_PAGE}&page=${page}` +
-    `&sparkline=false&price_change_percentage=24h`;
-
-  const arr = await fetchJsonRetry(url, 3);
-  return Array.isArray(arr) ? arr.map(normalizeCG) : [];
 }
 
 export async function fetchBTCGateCached() {
@@ -242,7 +265,13 @@ async function fetchBTCGate() {
   const url =
     `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin&sparkline=false&price_change_percentage=24h`;
 
-  const [x] = await fetchJsonRetry(url, 3);
+  const r = await safeFetchJson(url);
+  if (!r.ok) {
+    // BTC gate mag ook niet crashen → NEUTRAL fallback
+    return { state: "NEUTRAL", chg24: 0, range24: 0 };
+  }
+
+  const [x] = Array.isArray(r.json) ? r.json : [];
   const btc = normalizeCG(x || {});
   const chg24 = btc.change24;
   const range24 = btc.range24;
@@ -265,20 +294,20 @@ async function fetchBTCGate() {
 }
 
 function normalizeCG(x) {
-  const high = Number(x.high_24h || 0);
-  const low  = Number(x.low_24h || 0);
+  const high = Number(x?.high_24h || 0);
+  const low  = Number(x?.low_24h || 0);
   const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-  const volume = Number(x.total_volume || 0);
-  const marketCap = Number(x.market_cap || 0);
+  const volume = Number(x?.total_volume || 0);
+  const marketCap = Number(x?.market_cap || 0);
   const vm = marketCap > 0 ? volume / marketCap : 0;
 
   return {
-    id: x.id,
-    symbol: String(x.symbol || "").toUpperCase(),
-    name: x.name,
-    price: Number(x.current_price || 0),
-    change24: Number(x.price_change_percentage_24h || 0),
+    id: x?.id,
+    symbol: String(x?.symbol || "").toUpperCase(),
+    name: x?.name,
+    price: Number(x?.current_price || 0),
+    change24: Number(x?.price_change_percentage_24h || 0),
     range24,
     volume,
     marketCap,
@@ -291,8 +320,13 @@ export async function getBitgetSpotUsdtSymbols() {
   if (Array.isArray(cached) && cached.length) return new Set(cached);
 
   const url = "https://api.bitget.com/api/v2/spot/public/symbols";
-  const j = await fetchJsonRetry(url, 3);
+  const r = await safeFetchJson(url);
+  if (!r.ok) {
+    // fallback: als Bitget faalt, liever geen crash
+    return new Set(Array.isArray(cached) ? cached : []);
+  }
 
+  const j = r.json || {};
   const list = (j?.data || [])
     .filter((s) => String(s?.quoteCoin || "").toUpperCase() === "USDT")
     .map((s) => String(s?.baseCoin || "").toUpperCase())
@@ -356,7 +390,7 @@ export function calcConsistency(hist, wantedSide, windowMin = 120, minSamples = 
 // ================== CONFIDENCE ==================
 export function computeConfidence({ obScore, obAgree, vm, volAcc, btc }) {
   const obStrength = clamp01(mapLinear(Math.abs(obScore), 0.02, 0.18));
-  const obBonus = obAgree === 3 ? 1.0 : obAgree === 2 ? 0.85 : obAgree === 1 ? 0.7 : 0.5;
+  const obBonus = obAgree === 3 ? 1.0 : obAgree === 2 ? 0.85 : obAgree === 1 ? 0.70 : 0.55;
   const ob = obStrength * obBonus;
 
   const vmStrength = clamp01(mapLinear(vm, MOON.radar.vmMin, 0.35));
@@ -489,4 +523,3 @@ function short(n){
   if (n >= 1e3) return (n/1e3).toFixed(2)+"K";
   return n.toFixed(0);
 }
-function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
