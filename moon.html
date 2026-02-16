@@ -5,84 +5,73 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>CryptoCroc Moonshots</title>
   <link rel="stylesheet" href="/styles.css" />
-  <link rel="stylesheet" href="/moon.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="left">
-      <div class="brand">🌙 Moonshots</div>
-      <div class="sub" id="statusLine">Status: laden…</div>
+
+<header class="topbar">
+  <div class="left">
+    <div class="brand">🌙 Moonshots</div>
+    <div class="sub" id="statusLine">Status: laden…</div>
+  </div>
+
+  <div class="right">
+    <button id="modeBull" class="btn">BULL</button>
+    <button id="modeBear" class="btn">BEAR</button>
+    <button id="refreshBtn" class="btn">Refresh</button>
+    <a class="btn" href="/">⬅ Main Funnel</a>
+  </div>
+</header>
+
+<main class="grid">
+
+  <section class="panel">
+    <div class="panelTitle">ELITE</div>
+    <div class="stageBody" id="stageElite"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panelTitle">ALMOST</div>
+    <div class="stageBody" id="stageAlmost"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panelTitle">BUILDUP</div>
+    <div class="stageBody" id="stageBuildup"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panelTitle">RADAR</div>
+    <div class="stageBody" id="stageRadar"></div>
+  </section>
+
+</main>
+
+
+<!-- MODAL -->
+<div class="modal hidden" id="modal">
+  <div class="modalCard">
+    <div class="modalTop">
+      <div>
+        <div class="modalTitle" id="mTitle">—</div>
+        <div class="modalSub" id="mSub">—</div>
+      </div>
+      <button class="btn" id="mClose">Sluiten</button>
     </div>
 
-    <div class="right">
-      <button id="modeBull" class="btn">BULL</button>
-      <button id="modeBear" class="btn">BEAR</button>
-      <button id="refreshBtn" class="btn">Refresh</button>
-      <a class="btn" href="/">⬅ Main Funnel</a>
-    </div>
-  </header>
-
-  <main class="grid">
-    <section class="panel">
-      <div class="panelTitle">ELITE</div>
-      <div class="panelHint">Meest betrouwbaar (laatste gate).</div>
-      <div class="stageBody" id="stageElite"></div>
-    </section>
-
-    <section class="panel">
-      <div class="panelTitle">ALMOST</div>
-      <div class="panelHint">Sterk, bijna klaar.</div>
-      <div class="stageBody" id="stageAlmost"></div>
-    </section>
-
-    <section class="panel">
-      <div class="panelTitle">BUILDUP</div>
-      <div class="panelHint">In opbouw / in beeld.</div>
-      <div class="stageBody" id="stageBuildup"></div>
-    </section>
-
-    <section class="panel">
-      <div class="panelTitle">RADAR</div>
-      <div class="panelHint">Alles wat binnenkomt (instroom).</div>
-      <div class="stageBody" id="stageRadar"></div>
-    </section>
-  </main>
-
-  <!-- MODAL (popup) -->
-  <div class="modal hidden" id="modal">
-    <div class="modalCard">
-      <div class="modalTop">
-        <div>
-          <div class="modalTitle" id="mTitle">—</div>
-          <div class="modalSub" id="mSub">—</div>
-        </div>
-        <button class="btn" id="mClose">Sluiten</button>
+    <div class="modalGrid">
+      <div class="modalBox">
+        <div class="modalBoxTitle">Waarom staat hij hier</div>
+        <pre class="modalPre" id="mWhy">—</pre>
       </div>
 
-      <div class="modalGrid">
-        <div class="modalBox">
-          <div class="modalBoxTitle">Waarom staat hij hier</div>
-          <pre class="modalPre" id="mWhy">—</pre>
-        </div>
-
-        <div class="modalBox">
-          <div class="modalBoxTitle">Orderbook / Depth</div>
-          <pre class="modalPre" id="mOB">—</pre>
-        </div>
-
-        <div class="modalBox">
-          <div class="modalBoxTitle">Stats</div>
-          <pre class="modalPre" id="mStats">—</pre>
-        </div>
-
-        <div class="modalBox">
-          <div class="modalBoxTitle">Wat moet beter om te stijgen</div>
-          <pre class="modalPre" id="mNext">—</pre>
-        </div>
+      <div class="modalBox">
+        <div class="modalBoxTitle">Data</div>
+        <pre class="modalPre" id="mData">—</pre>
       </div>
     </div>
   </div>
+</div>
 
-  <script src="/moon.js"></script>
+<script src="/moon.js"></script>
 </body>
 </html>
