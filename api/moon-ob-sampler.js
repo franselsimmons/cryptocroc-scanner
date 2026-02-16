@@ -12,22 +12,33 @@ import {
 export const config = RUNTIME_CONFIG;
 
 // ================== BITGET DEPTH (SPOT) ==================
-async function fetchBitgetDepth(symbolUpper) {
-  const base = String(symbolUpper || "").toUpperCase();
-  if (!base) return null;
-
-  const sym = `${base}USDT_SPBL`; // ✅ FIX
-  const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(sym)}&limit=50`;
-
+async function fetchDepthTry(symbol) {
+  const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(symbol)}&limit=50`;
   const r = await fetch(url, { headers: { accept: "application/json" } });
   if (!r.ok) return null;
 
   const j = await r.json();
   const d = j?.data || null;
-
   if (!d?.bids?.length || !d?.asks?.length) return null;
-
   return d;
+}
+
+async function fetchBitgetDepth(symbolUpper) {
+  const base = String(symbolUpper || "").toUpperCase();
+  if (!base) return null;
+
+  // ✅ probeer meerdere symbol formats (Bitget wijzigt dit soms per endpoint)
+  const candidates = [
+    `${base}USDT`,
+    `${base}USDT_SPBL`,
+    `${base}USDT_SPOT`,
+  ];
+
+  for (const sym of candidates) {
+    const d = await fetchDepthTry(sym);
+    if (d) return d;
+  }
+  return null;
 }
 
 function sumDepth(levels, mid, pct, isBid) {
@@ -50,8 +61,6 @@ function sumDepth(levels, mid, pct, isBid) {
   return { total, biggest };
 }
 
-// ================== OB SAMPLE ==================
-// Score binnen 0.2% + depthMinUsd1p (1% liquiditeit vloer)
 function computeObSample(depth) {
   const bids = depth?.bids || [];
   const asks = depth?.asks || [];
@@ -64,7 +73,8 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  const pct = 0.002; // 0.2%
+  // 0.2% band
+  const pct = 0.002;
   const bidRes = sumDepth(bids, mid, pct, true);
   const askRes = sumDepth(asks, mid, pct, false);
 
@@ -77,6 +87,7 @@ function computeObSample(depth) {
   const biggest = Math.max(bidRes.biggest, askRes.biggest);
   const lor = denom > 0 ? biggest / denom : 1;
 
+  // 1% vloer
   const bid1 = sumDepth(bids, mid, 0.01, true);
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
@@ -93,7 +104,6 @@ function computeObSample(depth) {
   };
 }
 
-// ================== VALIDATION ==================
 function directionOk(mode, score) {
   return mode === "bull" ? score > 0 : score < 0;
 }
@@ -138,7 +148,6 @@ function validateSamples(mode, samplesFresh) {
   return { valid: true, reason: "OK", fresh: lastN, avgScore, agree };
 }
 
-// ================== MAIN ==================
 async function processCandidate(mode, symbol) {
   const depth = await fetchBitgetDepth(symbol);
   const sample = depth ? computeObSample(depth) : null;
