@@ -43,7 +43,7 @@ const MAX_SNAPSHOTS = 3;
 function updateSnapshots(prevSnapshots, snapshot) {
   const arr = Array.isArray(prevSnapshots) ? [...prevSnapshots] : [];
   arr.push(snapshot);
-  if (arr.length > MAX_SNAPSHOTS) arr.shift();
+  while (arr.length > MAX_SNAPSHOTS) arr.shift();
   return arr;
 }
 
@@ -123,6 +123,16 @@ function calcPortfolioFromPositions(mode, store) {
   };
 }
 
+function buildSymbolPriceMap(cgList) {
+  const map = new Map();
+  for (const c of cgList || []) {
+    const sym = String(c?.symbol || "").toUpperCase();
+    if (!sym) continue;
+    map.set(sym, Number(c?.price || 0));
+  }
+  return map;
+}
+
 export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
@@ -137,34 +147,43 @@ export default async function handler(req, res) {
     // ✅ HARD BLOCK (A)
     const allowed = isModeAllowedByBtc(mode, btc.state);
 
-    // load stores (ook als blocked: dan kunnen we posities sluiten bij flip)
+    // stores
     const resetAt = (await kv.get(keyMoonReset(mode))) || 0;
     const state = (await kv.get(keyMoonState(mode))) || {};
 
     const positionsPrev = await kv.get(keyMoonPositions(mode));
     const positions = normalizePositionsStore(positionsPrev);
 
-    // Als BTC gate flip + closeOnBtcFlip => sluit alles direct
+    // Als BTC flip en closeOnBtcFlip => sluit open posities met best-effort prijs
     if (!allowed && MOON.portfolio.closeOnBtcFlip && positions.open.length) {
-      const stillOpen = [];
-      for (const t of positions.open) {
-        // sluit op huidige prijs onbekend => we markeren “forced exit” zonder pnl
+      // Best effort: haal CG slice om huidige prijzen te vinden voor open symbols
+      const cgNow = await fetchCoinGeckoTopCached();
+      const priceMap = buildSymbolPriceMap(cgNow);
+
+      const toClose = [...positions.open];
+      positions.open = [];
+
+      for (const t of toClose) {
+        const px = priceMap.get(t.symbol) || Number(t.lastPrice || t.entryPrice || 0) || Number(t.entryPrice || 0);
+        const pnlPct = calcPnlPct({ mode: t.mode, entryPrice: t.entryPrice, priceNow: px });
+        const pnlUsd = (Number(t.posUsd || MOON.portfolio.posUsd) * pnlPct) / 100;
+
         positions.closed.push({
           ...t,
           status: "SELL",
           exitReason: "BTC_GATE_FLIP",
           exitAt: now,
-          exitPrice: t.entryPrice, // neutraal, want we hebben geen live prijs
-          pnlPct: 0,
-          pnlUsd: 0,
+          exitPrice: +Number(px || t.entryPrice).toFixed(8),
+          pnlPct: +pnlPct.toFixed(2),
+          pnlUsd: +pnlUsd.toFixed(2),
         });
       }
-      positions.open = stillOpen;
     }
 
-    // Als blocked: schrijf lege latest (zodat UI het snapt) + portfolio update
+    // Als blocked: schrijf lege latest + portfolio
     if (!allowed) {
       const portfolio = calcPortfolioFromPositions(mode, positions);
+
       await kv.set(keyMoonPortfolio(mode), portfolio);
       await kv.set(keyMoonPositions(mode), positions);
 
@@ -177,9 +196,11 @@ export default async function handler(req, res) {
         funnel: { elite: [], almost: [], buildup: [], radar: [] },
         portfolio,
         note:
-          mode === "bull"
-            ? "Blocked: BTC is not BULL → bull scan disabled."
-            : "Blocked: BTC is not BEAR → bear scan disabled.",
+          btc.state === "NEUTRAL"
+            ? "Blocked: BTC is NEUTRAL → scans disabled."
+            : mode === "bull"
+              ? "Blocked: BTC is not BULL → bull scan disabled."
+              : "Blocked: BTC is not BEAR → bear scan disabled.",
       };
 
       await kv.set(keyMoonLatest(mode), result);
@@ -210,10 +231,8 @@ export default async function handler(req, res) {
     const almost = [];
     const elite = [];
 
-    // helper: find open position
+    // helper: open trade find
     const findOpen = (sym) => positions.open.find((t) => t.symbol === sym);
-
-    // helper: open new position
     const canOpenNew = () => positions.open.length < MOON.portfolio.maxOpen;
 
     for (const c of radarRaw) {
@@ -244,7 +263,7 @@ export default async function handler(req, res) {
       const volAcc = volAccFromHist(volHist);
       const flat60 = priceFlatPct(priceHist, 60);
 
-      // OB result (sampler)
+      // OB
       const obRaw = await kv.get(keyMoonObResult(mode, sym));
       const obScore = Number(obRaw?.ob?.score ?? obRaw?.score ?? 0);
 
@@ -278,8 +297,7 @@ export default async function handler(req, res) {
         btc,
       });
 
-      // Consistency (nu “simpel maar echt”):
-      // bull = change24 >= 0, bear = change24 <= 0
+      // Consistency
       const wantedSide = mode === "bull" ? "BULL" : "BEAR";
       const sideNow =
         mode === "bull" ? (c.change24 >= 0 ? "BULL" : "BEAR") : (c.change24 <= 0 ? "BEAR" : "BULL");
@@ -305,7 +323,7 @@ export default async function handler(req, res) {
         range24: c.range24,
       });
 
-      // ✅ Elite extra (Rolling 15m sniper)
+      // ✅ Elite extra rolling sniper
       const rollCfg = MOON.elite.roll;
       const eliteExtra =
         rolling.deltaPrice15m <= rollCfg.maxDeltaPrice15mPct &&
@@ -342,13 +360,14 @@ export default async function handler(req, res) {
         trade = {
           symbol: sym,
           mode,
-          status: "ENTRY",      // volgende scans wordt HOLD
+          status: "ENTRY",
           entryAt: now,
           entryPrice: Number(c.price),
           qty: +qty.toFixed(8),
           sl: Number(risk.sl),
           tp3: Number(risk.tp3),
           posUsd,
+          lastPrice: Number(c.price),
           note: "Opened on ELITE",
         };
         positions.open.push(trade);
@@ -356,8 +375,9 @@ export default async function handler(req, res) {
 
       // 2) update open trade
       if (trade) {
-        // Promote ENTRY -> HOLD
         if (trade.status === "ENTRY") trade.status = "HOLD";
+
+        trade.lastPrice = Number(c.price);
 
         const pnlPct = calcPnlPct({ mode, entryPrice: trade.entryPrice, priceNow: c.price });
         const pnlUsd = (trade.posUsd * pnlPct) / 100;
@@ -365,7 +385,6 @@ export default async function handler(req, res) {
         const hit = hitStopOrTp({ mode, priceNow: c.price, sl: trade.sl, tp3: trade.tp3 });
 
         if (hit.hit) {
-          // close
           trade.status = "SELL";
           trade.exitAt = now;
           trade.exitPrice = Number(c.price);
@@ -373,13 +392,11 @@ export default async function handler(req, res) {
           trade.pnlPct = +pnlPct.toFixed(2);
           trade.pnlUsd = +pnlUsd.toFixed(2);
 
-          // move to closed
           positions.open = positions.open.filter((t) => t.symbol !== sym);
           positions.closed.push(trade);
 
-          trade = { ...trade }; // for UI
+          trade = { ...trade }; // voor UI
         } else {
-          // keep open
           trade.pnlPct = +pnlPct.toFixed(2);
           trade.pnlUsd = +pnlUsd.toFixed(2);
         }
@@ -453,7 +470,7 @@ export default async function handler(req, res) {
     // sorting
     const sortKey = (a, b) =>
       (b.confidence - a.confidence) ||
-      (b.rolling?.deltaVol15m - a.rolling?.deltaVol15m) ||
+      ((b.rolling?.deltaVol15m || 0) - (a.rolling?.deltaVol15m || 0)) ||
       (b.volAcc - a.volAcc) ||
       (b.vm - a.vm);
 
