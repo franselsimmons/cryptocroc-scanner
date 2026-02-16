@@ -29,11 +29,8 @@ function sumDepth(levels, mid, pct, isBid) {
   let biggest = 0;
 
   for (const row of levels) {
-    const price = row?.[0];
-    const size = row?.[1];
-
-    const p = Number(price);
-    const s = Number(size);
+    const p = Number(row?.[0]);
+    const s = Number(row?.[1]);
     if (!Number.isFinite(p) || !Number.isFinite(s)) continue;
 
     if (isBid && p < limit) break;
@@ -58,7 +55,7 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  // 0.2% depth (score + lor zoals jij had)
+  // 0.2% band
   const pct = 0.002;
   const bidRes = sumDepth(bids, mid, pct, true);
   const askRes = sumDepth(asks, mid, pct, false);
@@ -72,20 +69,20 @@ function computeObSample(depth) {
   const biggest = Math.max(bidRes.biggest, askRes.biggest);
   const lor = denom > 0 ? biggest / denom : 1;
 
-  // ✅ NIEUW: 1% liquiditeit vloer
+  // 1% liquiditeit vloer
   const bid1 = sumDepth(bids, mid, 0.01, true);
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
 
   return {
     ts: Date.now(),
-    score,          // <-- scan gebruikt dit voor gate + slope
+    score,
     spreadPct,
     lor,
     bidUsd,
     askUsd,
     mid,
-    depthMinUsd1p,  // ✅ nieuw veld
+    depthMinUsd1p,
   };
 }
 
@@ -151,13 +148,23 @@ async function processCandidate(mode, symbol) {
   const v = validateSamples(mode, pruned);
   const stale = (Date.now() - sample.ts) / 1000 > 15;
 
-  await kv.set(keyObResult(mode, symbol), {
+  // ✅ FIX: schrijf score/spread/lor ook BOVENAAN (compat met core)
+  const result = {
     symbol,
     side: mode,
     valid: v.valid,
     reason: v.reason,
+    stale,
+
+    // top-level (core verwacht dit)
+    score: sample.score,
+    spreadPct: sample.spreadPct,
+    lor: sample.lor,
+    depthMinUsd1p: sample.depthMinUsd1p,
     avgScore: v.avgScore ?? null,
     agree: v.agree ?? null,
+
+    // debug blok
     ob: {
       ts: sample.ts,
       mid: sample.mid,
@@ -166,10 +173,12 @@ async function processCandidate(mode, symbol) {
       askUsd: sample.askUsd,
       score: sample.score,
       lor: sample.lor,
-      depthMinUsd1p: sample.depthMinUsd1p, // ✅ nieuw
+      depthMinUsd1p: sample.depthMinUsd1p,
     },
-    stale,
-  });
+    ts: Date.now(),
+  };
+
+  await kv.set(keyObResult(mode, symbol), result);
 
   return { ok: true, symbol, valid: v.valid };
 }
@@ -211,11 +220,7 @@ export default async function handler(req, res) {
         .map((x) => String(x?.symbol || "").toUpperCase())
         .filter(Boolean);
 
-      const results = await runBatched(
-        candidates,
-        6,
-        (sym) => processCandidate(mode, sym)
-      );
+      const results = await runBatched(candidates, 6, (sym) => processCandidate(mode, sym));
 
       for (const r of results) {
         if (r?.ok) {
@@ -227,12 +232,7 @@ export default async function handler(req, res) {
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({
-      ok: true,
-      ts: Date.now(),
-      totalProcessed,
-      totalValid
-    }));
+    res.end(JSON.stringify({ ok: true, ts: Date.now(), totalProcessed, totalValid }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
