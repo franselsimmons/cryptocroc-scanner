@@ -7,11 +7,13 @@ export const MOON = {
   CG_TOP: 250,
   RADAR_LIMIT: 120,
 
+  // BTC gate
   btcChgGate: 0.6,
   btcRangeMin: 2,
   btcRangeMaxBull: 10,
   btcRangeMaxBear: 12,
 
+  // Universe caps
   mcapMin: 5_000_000,
   mcapMax: 150_000_000,
 
@@ -28,7 +30,6 @@ export const MOON = {
   },
 
   almost: {
-    // jouw waarde (lager = sneller ALMOST)
     volAccMin: 1.05,
     priceFlatMax: 1.8,
     minConfidence: 45,
@@ -58,16 +59,22 @@ export const MOON = {
     depthMaxUsd: 600_000,
   },
 
+  // no-skip stage moves
   minScansPerStage: 2,
 
+  // cache
   cgCacheSec: 60 * 10,
   btcCacheSec: 60 * 10,
   bitgetSymbolsCacheSec: 60 * 60 * 24,
+
+  // ✅ ROTATIE / “stopt met hangen”
+  // BUILDUP mag max X uur blijven hangen zonder upgrade → dan resetten/uit de lijst
+  buildupMaxAgeMin: 240,       // 4 uur
+  // als coin in ALMOST hangt te lang zonder ELITE → terug naar BUILDUP (frisser)
+  almostMaxAgeMin: 240,        // 4 uur
 };
 
 // ================== AUTH ==================
-// ✅ Fix: Vercel Cron Jobs sturen header `x-vercel-cron: 1`
-// Jouw vorige versie blokkeerde crons -> daardoor geen stage moves.
 export function requireSecret(req, res) {
   const isVercelCron = String(req.headers?.["x-vercel-cron"] || "") === "1";
   if (isVercelCron) return true;
@@ -90,13 +97,13 @@ export function requireSecret(req, res) {
 
 // ================== KV KEYS ==================
 export const keyMoonLatest = (mode) => `moon:latest:${mode}`;
-export const keyMoonState = (mode) => `moon:state:${mode}`;
-export const keyMoonReset = (mode) => `moon:resetAt:${mode}`;
+export const keyMoonState  = (mode) => `moon:state:${mode}`;
+export const keyMoonReset  = (mode) => `moon:resetAt:${mode}`;
 
 export const keyMoonBitgetSymbols = `moon:bitget:symbols:spotusdt`;
 
 export const keyMoonObSamples = (mode, symbol) => `moon:ob:samples:${mode}:${symbol}`;
-export const keyMoonObResult = (mode, symbol) => `moon:ob:result:${mode}:${symbol}`;
+export const keyMoonObResult  = (mode, symbol) => `moon:ob:result:${mode}:${symbol}`;
 
 export const keyMoonEliteLog = `moon:log:elite`;
 
@@ -117,8 +124,8 @@ export async function sendDiscord(webhookUrl, content) {
 
 export function moonWebhookForStage(stage) {
   if (stage === "BUILDUP") return process.env.DISCORD_WEBHOOK_BUILDUP_MOON;
-  if (stage === "ALMOST") return process.env.DISCORD_WEBHOOK_ALMOST_MOON;
-  if (stage === "ELITE") return process.env.DISCORD_WEBHOOK_ELITE_MOON;
+  if (stage === "ALMOST")  return process.env.DISCORD_WEBHOOK_ALMOST_MOON;
+  if (stage === "ELITE")   return process.env.DISCORD_WEBHOOK_ELITE_MOON;
   return null;
 }
 
@@ -196,7 +203,7 @@ async function fetchBTCGate() {
 
 function normalizeCG(x) {
   const high = Number(x.high_24h || 0);
-  const low = Number(x.low_24h || 0);
+  const low  = Number(x.low_24h || 0);
   const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
   const volume = Number(x.total_volume || 0);
@@ -406,26 +413,18 @@ export function stageRank(stage) {
 }
 
 // ================== HELPERS ==================
-function clamp(n, a, b) {
-  return Math.max(a, Math.min(b, n));
-}
-function clamp01(n) {
-  return clamp(n, 0, 1);
-}
-function mapLinear(x, a, b) {
+function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+function clamp01(n){ return clamp(n, 0, 1); }
+function mapLinear(x, a, b){
   if (b === a) return 0;
   return (Number(x || 0) - a) / (b - a);
 }
-function num(n) {
-  return (Number(n) || 0).toFixed(2);
-}
-function sign(n) {
-  return `${n >= 0 ? "+" : ""}${num(n)}`;
-}
-function short(n) {
-  n = Number(n) || 0;
-  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
-  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
-  if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
+function num(n) { return (Number(n) || 0).toFixed(2); }
+function sign(n){ return `${n >= 0 ? "+" : ""}${num(n)}`; }
+function short(n){
+  n = Number(n)||0;
+  if (n >= 1e9) return (n/1e9).toFixed(2)+"B";
+  if (n >= 1e6) return (n/1e6).toFixed(2)+"M";
+  if (n >= 1e3) return (n/1e3).toFixed(2)+"K";
   return n.toFixed(0);
 }
