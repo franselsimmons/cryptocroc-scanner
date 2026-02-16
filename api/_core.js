@@ -42,16 +42,14 @@ export const SETTINGS = {
     samplesWindowSec: 90,
     minAgree: 2,          // 2/3 richting
 
-    // ✅ NIEUW (Betrouwbaarheid): liquiditeitsvloer binnen 1%
-    // min(bidUSD, askUSD) binnen 1% van mid moet minstens dit zijn
+    // ✅ liquiditeitsvloer binnen 1%
     minDepthUsd1p: 200_000,
 
-    // Fase 1 hard gates
-    minConfidence: 70,          // ENTRY alleen als conf >= 70
-    entryConsistencyMin: 0.75,  // ENTRY alleen als consistency >= 75%
+    // hard gates
+    minConfidence: 70,
+    entryConsistencyMin: 0.75,
 
-    // Fase 1 OB slope (alleen als samples bestaan)
-    // bull: slope >= 0 (druk niet afnemend), bear: slope <= 0
+    // OB slope
     obSlopeEnabled: true,
     obSlopeMinBull: 0.0,
     obSlopeMaxBear: 0.0,
@@ -62,30 +60,36 @@ export const SETTINGS = {
   minScansPerStage: 2,
 
   // consistency window based
-  consistencyWindowMin: 120, // 2 uur
-  consistencyMinRatio: 0.67, // 67% (voor BUILDUP/ALMOST)
+  consistencyWindowMin: 120,
+  consistencyMinRatio: 0.67,
   consistencyMinSamples: 6,
 
-  // OB sampler selection (voor je OB-sampler job)
+  // OB sampler selection
   obPickAlmost: 12,
   obPickBuildup: 8,
 
   // CG cache
-  cgCacheSec: 60 * 10, // 10 minuten
+  cgCacheSec: 60 * 10,
 
   // Fase 2: Bitget ATR cache
-  atrCacheSec: 60 * 10, // 10 minuten
+  atrCacheSec: 60 * 10,
 };
 
 // ================== AUTH ==================
+// ✅ Fix: Vercel Cron Jobs sturen header `x-vercel-cron: 1` (of "true")
+// Zonder dit blokkeer je /api/cron + /api/ob-sampler -> geen OB beweging.
 export function requireSecret(req, res) {
+  const cronHeader = String(req.headers?.["x-vercel-cron"] || "").toLowerCase();
+  const isVercelCron = cronHeader === "1" || cronHeader === "true";
+  if (isVercelCron) return true;
+
   const secret = process.env.CRON_SECRET;
   if (!secret) return true;
 
   const auth = req.headers?.authorization || "";
   const token = req.query?.token ? String(req.query.token) : "";
-
   const ok = auth === `Bearer ${secret}` || token === secret;
+
   if (!ok) {
     res.statusCode = 401;
     res.setHeader?.("content-type", "application/json");
@@ -104,7 +108,7 @@ export const keyBitgetSymbols = "bitget:symbols:spotusdt";
 export const keyObSamples = (side, symbol) => `ob:samples:${side}:${symbol}`;
 export const keyObResult = (side, symbol) => `ob:result:${side}:${symbol}`;
 
-export const keyEntryLog = "log:entry"; // list (best effort)
+export const keyEntryLog = "log:entry";
 
 // CG cache keys
 const keyCgTopCache = `cache:cg:top:${SETTINGS.CG_TOP}`;
@@ -135,9 +139,12 @@ export function webhookForStage(stage) {
   return null;
 }
 
+// ✅ Geen harde cryptocroc URL meer (lek naar buiten).
+// Zet optioneel env: PUBLIC_SCANNER_URL als je wél een link wil.
 export function fmtCoinLine(c, mode, stage, extra = "") {
-  const base = "https://cryptocroc-scanner-omega.vercel.app";
-  const page = `${base}/?mode=${encodeURIComponent(mode)}`;
+  const base = (process.env.PUBLIC_SCANNER_URL || "").replace(/\/$/, "");
+  const page = base ? `${base}/?mode=${encodeURIComponent(mode)}` : `/?mode=${encodeURIComponent(mode)}`;
+
   const lines = [
     `**${c.symbol}** → **${stage}** (${mode.toUpperCase()})`,
     `prijs: $${num(c.price)} | chg24: ${sign(c.change24)}% | range24: ${num(c.range24)}%`,
@@ -292,25 +299,19 @@ async function fetchBitgetAtr1hPct(symbolUpper) {
   for (let i = 1; i < candles.length; i++) {
     const cur = candles[i];
     const prev = candles[i - 1];
-    const tr = Math.max(
-      cur.h - cur.l,
-      Math.abs(cur.h - prev.c),
-      Math.abs(cur.l - prev.c)
-    );
+    const tr = Math.max(cur.h - cur.l, Math.abs(cur.h - prev.c), Math.abs(cur.l - prev.c));
     if (Number.isFinite(tr) && tr > 0) trs.push(tr);
   }
-
   if (trs.length < 14) return null;
 
   const last14 = trs.slice(-14);
   const atr = last14.reduce((a, b) => a + b, 0) / last14.length;
   const lastClose = candles[candles.length - 1].c;
   const atrPct = lastClose > 0 ? atr / lastClose : null;
-
   if (!Number.isFinite(atrPct)) return null;
 
   return {
-    atr: atr,
+    atr,
     atrPct: clamp(atrPct, 0.002, 0.20),
     close: lastClose,
     ts: Date.now(),
@@ -376,7 +377,7 @@ function median(a) {
   return b.length % 2 ? b[mid] : (b[mid - 1] + b[mid]) / 2;
 }
 
-// consistency window
+// ================== CONSISTENCY WINDOW ==================
 export function updateSideHistory(prevHist, side) {
   const now = Date.now();
   const h = Array.isArray(prevHist) ? prevHist.slice(-80) : [];
@@ -404,7 +405,7 @@ export function coinRangeCapFromBTC(btcRange24) {
   return clamp(raw, SETTINGS.coinRangeCapMin, SETTINGS.coinRangeCapMax);
 }
 
-// ================== PRICE HISTORY + 1H CHANGE (FASE 1) ==================
+// ================== PRICE HISTORY + 1H CHANGE ==================
 export function updatePriceHist(prevPriceHist, price) {
   const now = Date.now();
   const hist = normalizePriceHist(prevPriceHist).slice(-80);
@@ -436,7 +437,7 @@ export function calcChange1hPct(priceHist) {
   return ((last.price - base) / base) * 100;
 }
 
-// ================== OB SLOPE (FASE 1) ==================
+// ================== OB SLOPE ==================
 export function calcObSlope(samples) {
   if (!Array.isArray(samples) || samples.length < SETTINGS.entry.obSlopeMinSamples) return null;
   const s = samples
@@ -503,13 +504,7 @@ export function passAlmost(c, mode, priceHist, consistencyOk) {
 }
 
 // ENTRY gate based on OB result + spread/lor + thresholds + slope + hard gates
-export function passEntryFromObPlus({
-  obView,
-  mode,
-  consistencyRatio,
-  confidence,
-  obSlope,
-}) {
+export function passEntryFromObPlus({ obView, mode, consistencyRatio, confidence, obSlope }) {
   const base = passEntryFromOb(obView, mode);
   if (!base.ok) return base;
 
@@ -521,12 +516,8 @@ export function passEntryFromObPlus({
   }
 
   if (SETTINGS.entry.obSlopeEnabled && Number.isFinite(obSlope)) {
-    if (mode === "bull" && obSlope < SETTINGS.entry.obSlopeMinBull) {
-      return { ok: false, why: "OB slope down" };
-    }
-    if (mode === "bear" && obSlope > SETTINGS.entry.obSlopeMaxBear) {
-      return { ok: false, why: "OB slope up" };
-    }
+    if (mode === "bull" && obSlope < SETTINGS.entry.obSlopeMinBull) return { ok: false, why: "OB slope down" };
+    if (mode === "bear" && obSlope > SETTINGS.entry.obSlopeMaxBear) return { ok: false, why: "OB slope up" };
   }
 
   return { ok: true, why: "ENTRY gates passed" };
@@ -540,7 +531,7 @@ export function passEntryFromOb(ob, mode) {
   const spreadPct = Number(ob.spreadPct ?? 999);
   const lor = Number(ob.lor ?? 1);
 
-  // ✅ NIEUW: liquiditeitsvloer (min bid/ask depth binnen 1%)
+  // liquiditeitsvloer (min bid/ask depth binnen 1%)
   const depthMinUsd1p = Number(ob.depthMinUsd1p ?? 0);
   if (depthMinUsd1p < SETTINGS.entry.minDepthUsd1p) {
     return { ok: false, why: `Depth too thin (<$${SETTINGS.entry.minDepthUsd1p})` };
