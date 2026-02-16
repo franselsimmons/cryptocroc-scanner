@@ -20,42 +20,46 @@ export const MOON = {
   mcapMin: 5_000_000,
   mcapMax: 150_000_000,
 
+  // ✅ RADAR iets soepeler (meer instroom)
   radar: {
-    volMin: 250_000,
-    vmMin: 0.10,
-    range24Max: 15,
+    volMin: 180_000,     // was 250k
+    vmMin: 0.08,         // was 0.10
+    range24Max: 20,      // was 15
 
-    bullChg24Min: -5,
-    bullChg24Max: +8,
+    bullChg24Min: -6,    // was -5
+    bullChg24Max: +10,   // was +8
 
-    bearChg24Min: -8,
-    bearChg24Max: +5,
+    bearChg24Min: -10,   // was -8
+    bearChg24Max: +6,    // was +5
   },
 
+  // ✅ ALMOST soepeler (jouw grootste blokkade was volAcc > 1.05)
   almost: {
-    volAccMin: 1.05,
-    priceFlatMax: 1.8,
-    minConfidence: 45,
-    consistencyMin: 0.60,
+    volAccMin: 0.98,     // was 1.05
+    priceFlatMax: 2.4,   // was 1.8
+    minConfidence: 35,   // was 45
+    consistencyMin: 0.50 // was 0.60
   },
 
+  // ✅ ELITE iets soepeler om “valid” te halen
   elite: {
-    minConfidence: 60,
-    consistencyMin: 0.70,
+    minConfidence: 50,          // was 60
+    consistencyMin: 0.60,       // was 0.70
 
-    obScoreMin: 0.05,
-    spreadMaxPct: 0.55,
-    largestOrderRatioMax: 0.35,
+    obScoreMin: 0.03,           // was 0.05
+    spreadMaxPct: 0.85,         // was 0.55
+    largestOrderRatioMax: 0.55, // was 0.35
     samplesNeed: 3,
-    samplesWindowSec: 90,
-    minAgree: 2,
+    samplesWindowSec: 120,      // was 90
+    minAgree: 1,                // was 2 (anders blijft alles “validating” hangen)
 
     obSlopeEnabled: true,
     obSlopeMinSamples: 3,
     obSlopeMinBull: 0.0,
     obSlopeMaxBear: 0.0,
 
-    depthFloorEnabled: true,
+    // ✅ tijdelijk UIT voor testen (depth floor blokkeert vaak alles)
+    depthFloorEnabled: false,
     depthHysteresisExitMul: 0.85,
     depthK: 28,
     depthMinUsd: 60_000,
@@ -152,6 +156,7 @@ export async function fetchCoinGeckoTopCached() {
 
 async function fetchCoinGeckoTopMulti() {
   const out = [];
+
   for (let page = 1; page <= MOON.CG_PAGES; page++) {
     const url =
       `https://api.coingecko.com/api/v3/coins/markets?` +
@@ -164,7 +169,7 @@ async function fetchCoinGeckoTopMulti() {
     out.push(...arr.map(normalizeCG));
   }
 
-  // unieke symbols (CoinGecko kan dubbele/varianten hebben)
+  // ✅ unieke symbols (CoinGecko kan duplicates hebben)
   const seen = new Set();
   const uniq = [];
   for (const c of out) {
