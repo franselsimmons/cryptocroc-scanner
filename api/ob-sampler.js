@@ -11,16 +11,25 @@ import {
 
 export const config = RUNTIME_CONFIG;
 
-// ================== BITGET DEPTH ==================
+// ================== BITGET DEPTH (SPOT) ==================
+// Bitget spot pairs zijn meestal: COINUSDT_SPBL
 async function fetchBitgetDepth(symbolUpper) {
-  const sym = `${String(symbolUpper || "").toUpperCase()}USDT`;
+  const base = String(symbolUpper || "").toUpperCase();
+  if (!base) return null;
+
+  const sym = `${base}USDT_SPBL`; // ✅ FIX
   const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(sym)}&limit=50`;
 
   const r = await fetch(url, { headers: { accept: "application/json" } });
   if (!r.ok) return null;
 
   const j = await r.json();
-  return j?.data || null;
+  const d = j?.data || null;
+
+  // ✅ harde check zodat "lege data" niet doorloopt
+  if (!d?.bids?.length || !d?.asks?.length) return null;
+
+  return d;
 }
 
 function sumDepth(levels, mid, pct, isBid) {
@@ -33,6 +42,8 @@ function sumDepth(levels, mid, pct, isBid) {
     const s = Number(row?.[1]);
     if (!Number.isFinite(p) || !Number.isFinite(s)) continue;
 
+    // Bitget depth is gesorteerd:
+    // bids: hoog -> laag, asks: laag -> hoog
     if (isBid && p < limit) break;
     if (!isBid && p > limit) break;
 
@@ -148,7 +159,7 @@ async function processCandidate(mode, symbol) {
   const v = validateSamples(mode, pruned);
   const stale = (Date.now() - sample.ts) / 1000 > 15;
 
-  // ✅ FIX: schrijf score/spread/lor ook BOVENAAN (compat met core)
+  // schrijf ook top-level velden (compat met core)
   const result = {
     symbol,
     side: mode,
@@ -156,7 +167,6 @@ async function processCandidate(mode, symbol) {
     reason: v.reason,
     stale,
 
-    // top-level (core verwacht dit)
     score: sample.score,
     spreadPct: sample.spreadPct,
     lor: sample.lor,
@@ -164,7 +174,6 @@ async function processCandidate(mode, symbol) {
     avgScore: v.avgScore ?? null,
     agree: v.agree ?? null,
 
-    // debug blok
     ob: {
       ts: sample.ts,
       mid: sample.mid,
