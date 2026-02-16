@@ -42,6 +42,18 @@ function coinSideFromMode(mode, change24) {
   return change24 <= 0 ? "BEAR" : "BULL";
 }
 
+function minutesAgo(ts) {
+  const t = Number(ts || 0);
+  if (!t) return 999999;
+  return (Date.now() - t) / 60000;
+}
+
+function nextStageUp(stage) {
+  if (stage === "BUILDUP") return "ALMOST";
+  if (stage === "ALMOST") return "ELITE";
+  return stage;
+}
+
 async function bestEffortEliteLog(obj) {
   try {
     if (typeof kv.lpush === "function") {
@@ -60,6 +72,7 @@ export default async function handler(req, res) {
     const mode = (req.query?.mode || "bull").toLowerCase();
     if (mode !== "bull" && mode !== "bear") {
       res.statusCode = 400;
+      res.setHeader("content-type", "application/json");
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull or bear" }));
     }
 
@@ -99,34 +112,66 @@ export default async function handler(req, res) {
     const almost = [];
     const elite = [];
 
+    // ✅ CLEANUP: coins die niet meer in de CG snapshot zitten → weg
+    // (anders blijft KV “spook” state hangen)
+    const liveSyms = new Set(rawCoins.map((c) => c.symbol));
+    for (const sym of Object.keys(state)) {
+      if (!liveSyms.has(sym)) delete state[sym];
+    }
+
     for (const c of rawCoins) {
       const sym = c.symbol;
+
+      // Radar pass?
+      if (!passRadarMoon(c, mode)) {
+        delete state[sym];
+        continue;
+      }
 
       const prev = state[sym] || {
         stage: "BUILDUP",
         stageScans: 0,
-        enteredAt: now,
+        enteredAt: now,     // wanneer deze coin voor het eerst in ons systeem kwam
+        stageAt: now,       // wanneer deze coin in huidige stage kwam
+        lastSeenAt: 0,
         priceHist: [],
         volHist: [],
         sideHist: [],
         depthOk: false,
       };
 
+      // reset via resetAt
       const wasReset = Number(prev.enteredAt || 0) < resetAt;
       if (wasReset) {
         prev.stage = "BUILDUP";
         prev.stageScans = 0;
         prev.enteredAt = now;
+        prev.stageAt = now;
+        prev.lastSeenAt = 0;
         prev.priceHist = [];
         prev.volHist = [];
         prev.sideHist = [];
         prev.depthOk = false;
       }
 
-      // Radar pass?
-      if (!passRadarMoon(c, mode)) {
-        delete state[sym];
-        continue;
+      // ✅ ROTATIE: te lang blijven hangen → reset stage zodat er nieuwe coins in beeld komen
+      const stage = String(prev.stage || "BUILDUP");
+      const stageAgeMin = minutesAgo(prev.stageAt || prev.enteredAt || now);
+
+      if (stage === "BUILDUP" && stageAgeMin > MOON.buildupMaxAgeMin) {
+        // coin krijgt “nieuwe kans”, maar blijft wel in radar; we resetten ALLEEN stage
+        prev.stage = "BUILDUP";
+        prev.stageScans = 0;
+        prev.stageAt = now;
+        prev.depthOk = false;
+      }
+
+      if (stage === "ALMOST" && stageAgeMin > MOON.almostMaxAgeMin) {
+        // ALMOST te lang zonder elite → terug naar BUILDUP (fris)
+        prev.stage = "BUILDUP";
+        prev.stageScans = 0;
+        prev.stageAt = now;
+        prev.depthOk = false;
       }
 
       // histories
@@ -152,10 +197,10 @@ export default async function handler(req, res) {
         ? {
             valid: !!obRaw.valid,
             stale: !!obRaw.stale,
-            score: Number(obRaw?.ob?.score ?? obRaw?.avgScore ?? 0),
-            spreadPct: Number(obRaw?.ob?.spreadPct ?? 999),
-            lor: Number(obRaw?.ob?.lor ?? 1),
-            agree: Number(obRaw?.agree ?? 0),
+            score: Number(obRaw?.ob?.score ?? obRaw?.score ?? obRaw?.avgScore ?? 0),
+            spreadPct: Number(obRaw?.ob?.spreadPct ?? obRaw?.spreadPct ?? 999),
+            lor: Number(obRaw?.ob?.lor ?? obRaw?.lor ?? 1),
+            agree: Number(obRaw?.agree ?? obRaw?.ob?.agree ?? 0),
             bidUsd: Number(obRaw?.ob?.bidUsd ?? 0),
             askUsd: Number(obRaw?.ob?.askUsd ?? 0),
             reason: obRaw?.reason || "",
@@ -178,11 +223,11 @@ export default async function handler(req, res) {
         btc,
       });
 
-      // depth floor (min bid/ask binnen 0.2%)
+      // depth floor
       const depthUsd = obView ? Math.min(obView.bidUsd || 0, obView.askUsd || 0) : 0;
       const floorUsd = depthFloorUsd(c.marketCap);
 
-      // stage gates
+      // gates
       const almostGate = passAlmostMoon({
         priceHist,
         volAcc,
@@ -201,35 +246,38 @@ export default async function handler(req, res) {
         depthWasOk: !!prev.depthOk,
       });
 
-      // desired stage
       let desired = "BUILDUP";
       if (eliteGate.ok) desired = "ELITE";
       else if (almostGate.ok) desired = "ALMOST";
 
       // stage update (no skip)
-      let stage = prev.stage || "BUILDUP";
+      let curStage = String(prev.stage || "BUILDUP");
       let stageScans = Number(prev.stageScans || 0);
       let enteredAt = Number(prev.enteredAt || now);
+      let stageAt = Number(prev.stageAt || enteredAt);
 
-      const prevRank = stageRank(stage);
+      const prevRank = stageRank(curStage);
       const desiredRank = stageRank(desired);
 
-      let nextStage = stage;
+      let nextStage = curStage;
+
       if (desiredRank > prevRank) {
+        // omhoog mag pas na X scans
         if (stageScans >= MOON.minScansPerStage) {
-          nextStage = prevRank === 1 ? "ALMOST" : "ELITE";
+          nextStage = nextStageUp(curStage);
         }
       } else if (desiredRank < prevRank) {
+        // omlaag meteen (veilig)
         nextStage = desired;
       }
 
       let stageChanged = false;
-      if (nextStage === stage) {
+      if (nextStage === curStage) {
         stageScans += 1;
       } else {
-        stage = nextStage;
+        curStage = nextStage;
         stageScans = 1;
-        enteredAt = now;
+        stageAt = now;
         stageChanged = true;
       }
 
@@ -243,7 +291,7 @@ export default async function handler(req, res) {
 
       // discord bij stage change
       if (stageChanged) {
-        const hook = moonWebhookForStage(stage);
+        const hook = moonWebhookForStage(curStage);
         if (hook) {
           const flat = priceFlatPct(priceHist, 60);
           const extra =
@@ -252,17 +300,19 @@ export default async function handler(req, res) {
             `VolAcc: ${volAcc.toFixed(2)} | Flat(60m): ${flat.toFixed(2)}%\n` +
             `OB: ${obView ? obView.score.toFixed(3) : "n/a"} | Spread: ${obView ? obView.spreadPct.toFixed(2) : "n/a"}% | LOR: ${obView ? obView.lor.toFixed(2) : "n/a"}\n` +
             `Depth(min): ${Math.round(depthUsd).toLocaleString()} | Floor: ${Math.round(floorUsd).toLocaleString()} | DepthOk: ${depthOk}\n` +
-            `Gate: ${stage === "ELITE" ? eliteGate.why : stage === "ALMOST" ? almostGate.why : "BUILDUP ok"}`;
+            `Gate: ${curStage === "ELITE" ? eliteGate.why : curStage === "ALMOST" ? almostGate.why : "BUILDUP ok"}`;
 
-          await sendDiscord(hook, fmtMoonLine(c, mode, stage, extra));
+          await sendDiscord(hook, fmtMoonLine(c, mode, curStage, extra));
         }
       }
 
       // store state
       state[sym] = {
-        stage,
+        stage: curStage,
         stageScans,
         enteredAt,
+        stageAt,
+        lastSeenAt: now,
         priceHist,
         volHist,
         sideHist,
@@ -270,7 +320,7 @@ export default async function handler(req, res) {
       };
 
       // elite log
-      if (stageChanged && stage === "ELITE") {
+      if (stageChanged && curStage === "ELITE") {
         await bestEffortEliteLog({
           ts: now,
           mode,
@@ -303,8 +353,12 @@ export default async function handler(req, res) {
         marketCap: c.marketCap,
         vm: c.vm,
 
-        stage,
+        stage: curStage,
         stageScans,
+
+        // ✅ handig voor “frisheid” in UI/sort
+        enteredAt,
+        stageAt,
 
         confidence: conf,
         consistency: cons,
@@ -331,19 +385,26 @@ export default async function handler(req, res) {
         why: {
           almost: almostGate.why,
           elite: eliteGate.why,
-        }
+        },
       };
 
-      if (stage === "ELITE") elite.push(item);
-      else if (stage === "ALMOST") almost.push(item);
+      if (curStage === "ELITE") elite.push(item);
+      else if (curStage === "ALMOST") almost.push(item);
       else buildup.push(item);
     }
 
-    // sorting
+    // ✅ SORT: ELITE/ALMOST op kwaliteit, BUILDUP op “nieuw + potentie”
     const sortKey = (a, b) => (b.confidence - a.confidence) || (b.vm - a.vm);
+
     elite.sort(sortKey);
     almost.sort(sortKey);
-    buildup.sort((a, b) => b.vm - a.vm);
+
+    // BUILDUP: eerst nieuwste stageAt (fris), daarna vm/volAcc
+    buildup.sort((a, b) =>
+      (Number(b.stageAt || 0) - Number(a.stageAt || 0)) ||
+      (b.vm - a.vm) ||
+      (b.volAcc - a.volAcc)
+    );
 
     const result = {
       ok: true,
