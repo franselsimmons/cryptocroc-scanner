@@ -7,77 +7,83 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-
-<header class="topbar">
-  <div class="left">
-    <div class="brand">🌙 Moonshots</div>
-    <div class="sub" id="statusLine">Status: laden…</div>
-  </div>
-
-  <div class="right">
-    <button id="modeBull" class="btn">BULL</button>
-    <button id="modeBear" class="btn">BEAR</button>
-    <button id="refreshBtn" class="btn">Refresh</button>
-    <a class="btn" href="/">⬅ Main Funnel</a>
-  </div>
-</header>
-
-<main class="grid">
-
-  <section class="panel">
-    <div class="panelTitle">ELITE</div>
-    <div class="stageBody" id="stageElite"></div>
-  </section>
-
-  <section class="panel">
-    <div class="panelTitle">ALMOST</div>
-    <div class="stageBody" id="stageAlmost"></div>
-  </section>
-
-  <section class="panel">
-    <div class="panelTitle">BUILDUP</div>
-    <div class="stageBody" id="stageBuildup"></div>
-  </section>
-
-  <section class="panel">
-    <div class="panelTitle">RADAR</div>
-    <div class="stageBody" id="stageRadar"></div>
-  </section>
-
-  <!-- Debug (handig op iPhone) -->
-  <section class="panel">
-    <div class="panelTitle">DEBUG (laatste API json)</div>
-    <pre class="modalPre" id="debug" style="max-height:260px; overflow:auto;">—</pre>
-  </section>
-
-</main>
-
-<!-- MODAL -->
-<div class="modal hidden" id="modal">
-  <div class="modalCard">
-    <div class="modalTop">
-      <div>
-        <div class="modalTitle" id="mTitle">—</div>
-        <div class="modalSub" id="mSub">—</div>
-      </div>
-      <button class="btn" id="mClose">Sluiten</button>
+  <header class="topbar">
+    <div class="left">
+      <div class="brand">🌙 Moonshots</div>
+      <div class="sub" id="statusLine">Status: laden…</div>
+      <div class="sub">BULL / BEAR aparte funnel (main blijft met rust)</div>
     </div>
 
-    <div class="modalGrid">
-      <div class="modalBox">
-        <div class="modalBoxTitle">Waarom / info</div>
-        <pre class="modalPre" id="mWhy">—</pre>
+    <div class="right">
+      <button id="modeBull" class="btn">BULL</button>
+      <button id="modeBear" class="btn">BEAR</button>
+      <button id="btnRefresh" class="btn">Refresh</button>
+      <button id="btnScan" class="btn danger">Scan nu</button>
+      <a class="btn" href="/">⬅ Main Funnel</a>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="panel">
+      <div class="panelTitle">ELITE</div>
+      <div class="panelHint">Meest betrouwbaar (OB + depth + confidence + consistency).</div>
+      <div class="stageBody" id="stageElite"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panelTitle">ALMOST</div>
+      <div class="panelHint">Sterk, bijna klaar.</div>
+      <div class="stageBody" id="stageAlmost"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panelTitle">BUILDUP</div>
+      <div class="panelHint">In opbouw / in beeld.</div>
+      <div class="stageBody" id="stageBuildup"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panelTitle">RADAR</div>
+      <div class="panelHint">Alles wat binnenkomt.</div>
+      <div class="stageBody" id="stageRadar"></div>
+    </section>
+  </main>
+
+  <!-- MODAL -->
+  <div class="modal hidden" id="modal">
+    <div class="modalCard">
+      <div class="modalTop">
+        <div>
+          <div class="modalTitle" id="mTitle">—</div>
+          <div class="modalSub" id="mSub">—</div>
+        </div>
+        <button class="btn" id="mClose">Sluiten</button>
       </div>
 
-      <div class="modalBox">
-        <div class="modalBoxTitle">Data</div>
-        <pre class="modalPre" id="mData">—</pre>
+      <div class="modalGrid">
+        <div class="modalBox">
+          <div class="modalBoxTitle">Waarom staat hij hier</div>
+          <pre class="modalPre" id="mWhy">—</pre>
+        </div>
+
+        <div class="modalBox">
+          <div class="modalBoxTitle">Orderbook / Depth</div>
+          <pre class="modalPre" id="mOB">—</pre>
+        </div>
+
+        <div class="modalBox">
+          <div class="modalBoxTitle">Confidence / Consistency</div>
+          <pre class="modalPre" id="mRisk">—</pre>
+        </div>
+
+        <div class="modalBox">
+          <div class="modalBoxTitle">Debug coin object</div>
+          <pre class="modalPre" id="mNext">—</pre>
+        </div>
       </div>
     </div>
   </div>
-</div>
 
-<!-- cache-bust zodat je iPhone NIET de oude JS pakt -->
-<script src="/moon.js?v=9"></script>
+  <script src="/moon.js"></script>
 </body>
 </html>
