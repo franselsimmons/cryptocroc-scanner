@@ -13,14 +13,21 @@ export const config = RUNTIME_CONFIG;
 
 // ================== BITGET DEPTH (SPOT) ==================
 async function fetchBitgetDepth(symbolUpper) {
-  const sym = `${String(symbolUpper || "").toUpperCase()}USDT`;
+  const base = String(symbolUpper || "").toUpperCase();
+  if (!base) return null;
+
+  const sym = `${base}USDT_SPBL`; // ✅ FIX
   const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(sym)}&limit=50`;
 
   const r = await fetch(url, { headers: { accept: "application/json" } });
   if (!r.ok) return null;
 
   const j = await r.json();
-  return j?.data || null;
+  const d = j?.data || null;
+
+  if (!d?.bids?.length || !d?.asks?.length) return null;
+
+  return d;
 }
 
 function sumDepth(levels, mid, pct, isBid) {
@@ -44,7 +51,7 @@ function sumDepth(levels, mid, pct, isBid) {
 }
 
 // ================== OB SAMPLE ==================
-// Score binnen 0.2% + extra: depthMinUsd1p (1% liquiditeit vloer)
+// Score binnen 0.2% + depthMinUsd1p (1% liquiditeit vloer)
 function computeObSample(depth) {
   const bids = depth?.bids || [];
   const asks = depth?.asks || [];
@@ -57,8 +64,7 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  // 0.2% band voor score + lor
-  const pct = 0.002;
+  const pct = 0.002; // 0.2%
   const bidRes = sumDepth(bids, mid, pct, true);
   const askRes = sumDepth(asks, mid, pct, false);
 
@@ -71,7 +77,6 @@ function computeObSample(depth) {
   const biggest = Math.max(bidRes.biggest, askRes.biggest);
   const lor = denom > 0 ? biggest / denom : 1;
 
-  // ✅ NIEUW: 1% liquiditeit vloer (min(bid,ask) binnen 1%)
   const bid1 = sumDepth(bids, mid, 0.01, true);
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
@@ -84,7 +89,7 @@ function computeObSample(depth) {
     bidUsd,
     askUsd,
     mid,
-    depthMinUsd1p, // ✅ belangrijk
+    depthMinUsd1p,
   };
 }
 
@@ -164,7 +169,7 @@ async function processCandidate(mode, symbol) {
       askUsd: sample.askUsd,
       score: sample.score,
       lor: sample.lor,
-      depthMinUsd1p: sample.depthMinUsd1p, // ✅ fix: wordt nu opgeslagen
+      depthMinUsd1p: sample.depthMinUsd1p,
     },
     stale,
   });
