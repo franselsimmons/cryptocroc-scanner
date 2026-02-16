@@ -1,84 +1,80 @@
 // /api/_moon_core.js
 import { kv } from "@vercel/kv";
 
+// ✅ Vercel runtime mag alleen "nodejs"
 export const RUNTIME_CONFIG = { runtime: "nodejs" };
 
 export const MOON = {
-  // CoinGecko universe (top 1000)
+  // ✅ Jij wil: 250 coins per 10 minuten
+  // En jij zegt: onze mcap-zone start rond pagina 5 (market_cap_desc)
   CG_PER_PAGE: 250,
-  CG_PAGES: 4, // 1000
+  CG_START_PAGE: 5,  // <-- HIER pak je pagina 5
+  CG_PAGES: 1,       // <-- 1 pagina = 250 coins totaal
+
   RADAR_LIMIT: 120,
 
-  // BTC gate (iets ruimer)
-  btcChgGate: 0.5,
-  btcRangeMin: 1.5,
-  btcRangeMaxBull: 14,
-  btcRangeMaxBear: 16,
+  // BTC gate
+  btcChgGate: 0.6,
+  btcRangeMin: 2,
+  btcRangeMaxBull: 10,
+  btcRangeMaxBear: 12,
 
-  // Universe caps (ruimer)
-  mcapMin: 3_000_000,
-  mcapMax: 500_000_000,
+  // Universe caps
+  mcapMin: 5_000_000,
+  mcapMax: 150_000_000,
 
-  // Radar (ruimer)
   radar: {
-    volMin: 120_000,
-    vmMin: 0.06,
-    range24Max: 25,
+    volMin: 250_000,
+    vmMin: 0.10,
+    range24Max: 15,
 
-    bullChg24Min: -8,
-    bullChg24Max: +12,
+    bullChg24Min: -5,
+    bullChg24Max: +8,
 
-    bearChg24Min: -12,
-    bearChg24Max: +8,
+    bearChg24Min: -8,
+    bearChg24Max: +5,
   },
 
-  // Almost (soepeler om te testen)
   almost: {
-    volAccMin: 1.00,      // was 1.05
-    priceFlatMax: 3.5,    // was 1.8 (te streng)
-    minConfidence: 35,    // was 45
-    consistencyMin: 0.50, // was 0.60
+    volAccMin: 1.05,
+    priceFlatMax: 1.8,
+    minConfidence: 45,
+    consistencyMin: 0.60,
   },
 
-  // Elite (iets soepeler zodat je ziet dat ie doorgroeit)
   elite: {
-    minConfidence: 50,      // was 60
-    consistencyMin: 0.60,   // was 0.70
+    minConfidence: 60,
+    consistencyMin: 0.70,
 
-    obScoreMin: 0.03,       // was 0.05
-    spreadMaxPct: 0.80,     // was 0.55
-    largestOrderRatioMax: 0.45, // was 0.35
-
+    obScoreMin: 0.05,
+    spreadMaxPct: 0.55,
+    largestOrderRatioMax: 0.35,
     samplesNeed: 3,
-    samplesWindowSec: 120,  // was 90
+    samplesWindowSec: 90,
     minAgree: 2,
 
     obSlopeEnabled: true,
     obSlopeMinSamples: 3,
-    obSlopeMinBull: -0.005, // iets toleranter
-    obSlopeMaxBear: +0.005,
+    obSlopeMinBull: 0.0,
+    obSlopeMaxBear: 0.0,
 
     depthFloorEnabled: true,
     depthHysteresisExitMul: 0.85,
-    depthK: 22,             // iets lager
-    depthMinUsd: 35_000,    // was 60k
+    depthK: 28,
+    depthMinUsd: 60_000,
     depthMaxUsd: 600_000,
   },
 
-  // stage move
   minScansPerStage: 2,
 
-  // caches
+  // ✅ 10 minuten cache zodat je 1 call per 10 min doet
   cgCacheSec: 60 * 10,
   btcCacheSec: 60 * 10,
+
   bitgetSymbolsCacheSec: 60 * 60 * 24,
 
-  // rotatie / reset als hij te lang blijft hangen
-  buildupMaxAgeMin: 120, // was 240
-  almostMaxAgeMin: 120,  // was 240
-
-  // BUILDUP rotatie percentage (nieuw vs bestaand)
-  buildupKeepFromState: 0.55,
+  buildupMaxAgeMin: 240,
+  almostMaxAgeMin: 240,
 };
 
 // ================== AUTH ==================
@@ -114,7 +110,10 @@ export const keyMoonObResult  = (mode, symbol) => `moon:ob:result:${mode}:${symb
 
 export const keyMoonEliteLog = `moon:log:elite`;
 
-const keyCgTopCache = `moon:cache:cg:top:${MOON.CG_PAGES * MOON.CG_PER_PAGE}`;
+// ✅ Cache key moet uniek zijn per start-page/per-page/pages
+const keyCgTopCache =
+  `moon:cache:cg:top:per${MOON.CG_PER_PAGE}:start${MOON.CG_START_PAGE}:pages${MOON.CG_PAGES}`;
+
 const keyCgBtcCache = `moon:cache:cg:btc`;
 
 // ================== DISCORD ==================
@@ -149,30 +148,54 @@ export function fmtMoonLine(c, mode, stage, extra = "") {
 }
 
 // ================== DATA FETCH ==================
+function cgHeaders() {
+  const h = { accept: "application/json" };
+  // ✅ Als je later CoinGecko Pro hebt, zet CG_API_KEY in Vercel env
+  const k = process.env.CG_API_KEY;
+  if (k) h["x-cg-pro-api-key"] = k;
+  return h;
+}
+
+// ✅ NO-CRASH: bij 429 of fail → gebruik oude cache
 export async function fetchCoinGeckoTopCached() {
   const cached = await kv.get(keyCgTopCache);
   if (Array.isArray(cached) && cached.length) return cached;
 
-  const fresh = await fetchCoinGeckoTopMulti();
-  await kv.set(keyCgTopCache, fresh, { ex: MOON.cgCacheSec });
-  return fresh;
+  try {
+    const fresh = await fetchCoinGeckoSlice();
+    await kv.set(keyCgTopCache, fresh, { ex: MOON.cgCacheSec });
+    return fresh;
+  } catch (e) {
+    // als er toch iets in cache staat (race) → teruggeven
+    const fallback = await kv.get(keyCgTopCache);
+    if (Array.isArray(fallback) && fallback.length) return fallback;
+    throw e;
+  }
 }
 
-async function fetchCoinGeckoTopMulti() {
+async function fetchCoinGeckoSlice() {
   const out = [];
-  for (let page = 1; page <= MOON.CG_PAGES; page++) {
+
+  const start = MOON.CG_START_PAGE;
+  const end = start + MOON.CG_PAGES - 1;
+
+  for (let page = start; page <= end; page++) {
     const url =
       `https://api.coingecko.com/api/v3/coins/markets?` +
       `vs_currency=usd&order=market_cap_desc&per_page=${MOON.CG_PER_PAGE}&page=${page}` +
       `&sparkline=false&price_change_percentage=24h`;
 
-    const r = await fetch(url, { headers: { accept: "application/json" } });
+    const r = await fetch(url, { headers: cgHeaders() });
+
+    // ✅ Rate limit: gooi duidelijke error (moon-scan vangt dit uiteindelijk)
+    if (r.status === 429) throw new Error("CoinGecko markets failed 429");
+
     if (!r.ok) throw new Error(`CoinGecko markets failed ${r.status} (page ${page})`);
     const arr = await r.json();
     out.push(...arr.map(normalizeCG));
   }
 
-  // uniq symbols
+  // unieke symbols
   const seen = new Set();
   const uniq = [];
   for (const c of out) {
@@ -188,17 +211,26 @@ export async function fetchBTCGateCached() {
   const cached = await kv.get(keyCgBtcCache);
   if (cached && cached.state) return cached;
 
-  const fresh = await fetchBTCGate();
-  await kv.set(keyCgBtcCache, fresh, { ex: MOON.btcCacheSec });
-  return fresh;
+  try {
+    const fresh = await fetchBTCGate();
+    await kv.set(keyCgBtcCache, fresh, { ex: MOON.btcCacheSec });
+    return fresh;
+  } catch (e) {
+    // ✅ BTC 429? gebruik oude cache als die er is
+    const fallback = await kv.get(keyCgBtcCache);
+    if (fallback && fallback.state) return fallback;
+    throw e;
+  }
 }
 
 async function fetchBTCGate() {
   const url =
     `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin&sparkline=false&price_change_percentage=24h`;
 
-  const r = await fetch(url, { headers: { accept: "application/json" } });
+  const r = await fetch(url, { headers: cgHeaders() });
+  if (r.status === 429) throw new Error("CoinGecko BTC failed 429");
   if (!r.ok) throw new Error(`CoinGecko BTC failed ${r.status}`);
+
   const [x] = await r.json();
 
   const btc = normalizeCG(x);
@@ -315,7 +347,7 @@ export function calcConsistency(hist, wantedSide, windowMin = 120, minSamples = 
 
 // ================== CONFIDENCE ==================
 export function computeConfidence({ obScore, obAgree, vm, volAcc, btc }) {
-  const obStrength = clamp01(mapLinear(Math.abs(obScore), 0.02, 0.15));
+  const obStrength = clamp01(mapLinear(Math.abs(obScore), 0.03, 0.18));
   const obBonus = obAgree === 3 ? 1.0 : obAgree === 2 ? 0.85 : 0.6;
   const ob = obStrength * obBonus;
 
@@ -395,6 +427,7 @@ export function passRadarMoon(c, mode) {
     if (c.change24 < MOON.radar.bearChg24Min) return false;
     if (c.change24 > MOON.radar.bearChg24Max) return false;
   }
+
   return true;
 }
 
