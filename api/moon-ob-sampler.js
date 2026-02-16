@@ -189,9 +189,12 @@ export default async function handler(req, res) {
     const bear = await kv.get(keyMoonLatest("bear"));
 
     const tasks = [];
-    if (bull?.funnel) tasks.push({ mode: "bull", data: bull });
-    if (bear?.funnel) tasks.push({ mode: "bear", data: bear });
+    if (bull?.funnel?.buildup?.length || bull?.funnel?.almost?.length)
+      tasks.push({ mode: "bull", data: bull });
 
+    if (bear?.funnel?.buildup?.length || bear?.funnel?.almost?.length)
+      tasks.push({ mode: "bear", data: bear });
+    
     let totalProcessed = 0;
     let totalValid = 0;
 
