@@ -18,31 +18,31 @@ function withToken(url) {
 }
 
 const API_LATEST = (m) => withToken(`/api/moon-latest?mode=${encodeURIComponent(m)}`);
-const API_SCAN   = (m) => withToken(`/api/moon-scan?mode=${encodeURIComponent(m)}`);
+const API_SCAN = (m) => withToken(`/api/moon-scan?mode=${encodeURIComponent(m)}`);
 
 // UI refs
-const statusLine  = document.getElementById("statusLine");
-const btnBull     = document.getElementById("modeBull");
-const btnBear     = document.getElementById("modeBear");
-const btnRefresh  = document.getElementById("btnRefresh");
-const btnScan     = document.getElementById("btnScan");
+const statusLine = document.getElementById("statusLine");
+const btnBull = document.getElementById("modeBull");
+const btnBear = document.getElementById("modeBear");
+const btnRefresh = document.getElementById("btnRefresh");
+const btnScan = document.getElementById("btnScan");
 
-const stageElite   = document.getElementById("stageElite");
-const stageAlmost  = document.getElementById("stageAlmost");
+const stageElite = document.getElementById("stageElite");
+const stageAlmost = document.getElementById("stageAlmost");
 const stageBuildup = document.getElementById("stageBuildup");
-const stageRadar   = document.getElementById("stageRadar");
+const stageRadar = document.getElementById("stageRadar");
 
 // modal refs
-const modal  = document.getElementById("modal");
+const modal = document.getElementById("modal");
 const mClose = document.getElementById("mClose");
 const mTitle = document.getElementById("mTitle");
-const mSub   = document.getElementById("mSub");
-const mWhy   = document.getElementById("mWhy");
-const mOB    = document.getElementById("mOB");
-const mRisk  = document.getElementById("mRisk");
-const mNext  = document.getElementById("mNext");
+const mSub = document.getElementById("mSub");
+const mWhy = document.getElementById("mWhy");
+const mOB = document.getElementById("mOB");
+const mRisk = document.getElementById("mRisk");
+const mNext = document.getElementById("mNext");
 
-// ============= events =============
+// ===== events =====
 btnBull.onclick = () => setMode("bull");
 btnBear.onclick = () => setMode("bear");
 btnRefresh.onclick = () => loadLatest();
@@ -53,7 +53,7 @@ modal.addEventListener("click", (e) => {
   if (e.target === modal) closeModal();
 });
 
-// ============= helpers =============
+// ===== helpers =====
 function setMode(m) {
   mode = m;
   qs.set("mode", mode);
@@ -81,11 +81,11 @@ function short(n) {
 
 function escapeHtml(s) {
   return String(s || "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function pretty(obj) {
@@ -98,7 +98,7 @@ function emptyBox(msg = "Geen coins") {
 }
 
 function pill(txt, cls = "") {
-  const c = cls ? ` pill ${cls}` : "pill";
+  const c = cls ? `pill ${cls}` : "pill";
   return `<span class="${c}">${escapeHtml(txt)}</span>`;
 }
 
@@ -114,10 +114,7 @@ function tradeBadge(trade) {
 
 function formatRisk(risk) {
   if (!risk) return { sl: "SL —", tp: "TP —" };
-  return {
-    sl: `SL ${fmt(risk.slPct, 2)}%`,
-    tp: `TP3 ${fmt(risk.tp3, 8)}`
-  };
+  return { sl: `SL ${fmt(risk.slPct, 2)}%`, tp: `TP3 ${fmt(risk.tp3, 8)}` };
 }
 
 function portfolioLine(p) {
@@ -125,7 +122,7 @@ function portfolioLine(p) {
   return ` • Portfolio: Open ${p.openCount ?? 0} | Closed ${p.closedCount ?? 0} | Realized $${fmt(p.realizedUsd ?? 0, 2)} | Avg ${fmtSign(p.avgRealizedPct ?? 0, 2)}%`;
 }
 
-// ============= render =============
+// ===== render =====
 function coinRow(c, stageName) {
   const conf = Number(c?.confidence || 0);
   const consPct = Math.round((Number(c?.consistency?.ratio || 0)) * 100);
@@ -148,9 +145,7 @@ function coinRow(c, stageName) {
         <div class="sym">${escapeHtml(c.symbol || "—")}</div>
         <div class="tag">${escapeHtml(c.name || "")}</div>
       </div>
-      <div class="right">
-        ${tradeBadge(t)}
-      </div>
+      <div class="right">${tradeBadge(t)}</div>
     </div>
 
     <div class="coinMeta">
@@ -182,7 +177,7 @@ function renderStage(list, el, stageName) {
   });
 }
 
-// ============= modal =============
+// ===== modal =====
 function openModal(c, stageName) {
   const depthMin = Math.min(Number(c?.ob?.bidUsd || 0), Number(c?.ob?.askUsd || 0));
   const floor = Number(c?.floorUsd || 0);
@@ -191,36 +186,34 @@ function openModal(c, stageName) {
 
   mTitle.textContent = `${c.symbol || "—"} • ${stageName}`;
   mSub.textContent =
-    `Price $${fmt(c.price)} • Chg24 ${fmtSign(c.change24)}% • Range24 ${fmt(c.range24)}% • VM ${fmt(c.vm, 2)} • Conf ${Number(c?.confidence||0)}`;
+    `Price $${fmt(c.price)} • Chg24 ${fmtSign(c.change24)}% • Range24 ${fmt(c.range24)}% • VM ${fmt(c.vm, 2)} • Conf ${Number(c?.confidence || 0)}`;
 
   mWhy.textContent = pretty({
     stage: stageName,
     why: c?.why || null,
     rolling: c?.rolling || null,
     depthOk: c?.depthOk ?? null,
-    note: c?.note ?? null
   });
 
   mOB.textContent = pretty({
     ob: c?.ob || null,
     depthMinUsd: depthMin,
-    floorUsd: floor
+    floorUsd: floor,
   });
 
   mRisk.textContent = pretty({
-    trade: trade ? {
-      status: trade.status,
-      entryPrice: trade.entryPrice,
-      sl: trade.sl,
-      tp3: trade.tp3,
-      pnlPct: trade.pnlPct,
-      pnlUsd: trade.pnlUsd,
-      exitReason: trade.exitReason || null
-    } : null,
+    trade: trade
+      ? {
+          status: trade.status,
+          entryPrice: trade.entryPrice,
+          sl: trade.sl,
+          tp3: trade.tp3,
+          pnlPct: trade.pnlPct,
+          pnlUsd: trade.pnlUsd,
+          exitReason: trade.exitReason || null,
+        }
+      : null,
     risk: c?.risk || null,
-    confidence: c?.confidence ?? null,
-    consistency: c?.consistency || null,
-    volAcc: c?.volAcc ?? null
   });
 
   mNext.textContent = pretty(c);
@@ -231,7 +224,7 @@ function closeModal() {
   modal.classList.add("hidden");
 }
 
-// ============= main =============
+// ===== main =====
 async function loadLatest() {
   setActiveButtons();
   statusLine.textContent = "Status: laden…";
@@ -253,11 +246,10 @@ async function loadLatest() {
       `Buildup ${counts.buildup || 0} | Radar ${counts.radar || 0}${btc}${pLine}${note}`;
 
     const funnel = j?.funnel || {};
-    renderStage(funnel.elite   || [], stageElite,   "ELITE");
-    renderStage(funnel.almost  || [], stageAlmost,  "ALMOST");
+    renderStage(funnel.elite || [], stageElite, "ELITE");
+    renderStage(funnel.almost || [], stageAlmost, "ALMOST");
     renderStage(funnel.buildup || [], stageBuildup, "BUILDUP");
-    renderStage(funnel.radar   || [], stageRadar,   "RADAR");
-
+    renderStage(funnel.radar || [], stageRadar, "RADAR");
   } catch (e) {
     statusLine.textContent = "Status: error (check Vercel logs)";
     stageElite.innerHTML = `<pre class="modalPre">${escapeHtml(String(e))}</pre>`;
@@ -268,7 +260,6 @@ async function loadLatest() {
 }
 
 async function runScan() {
-  // Scan is server job: zonder token en CRON_SECRET aan -> 401
   if (!token) {
     alert("Geen token in de URL. Gebruik ?token=JOUW_TOKEN");
     return;
@@ -287,7 +278,7 @@ async function runScan() {
   }
 }
 
-// ====== (optioneel) tiny CSS inject voor badges (geen HTML wijzig nodig) ======
+// ===== tiny CSS inject (optioneel) =====
 (function injectCss() {
   const css = `
     .coinTop{display:flex;align-items:center;justify-content:space-between;gap:10px}
