@@ -18,7 +18,6 @@ async function fetchBitgetDepth(symbolUpper) {
   const base = String(symbolUpper || "").toUpperCase();
   if (!base) return null;
 
-  // Bitget spot depth endpoint (legacy v1)
   const sym = `${base}USDT_SPBL`;
   const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(sym)}&limit=50`;
 
@@ -44,7 +43,6 @@ function sumDepth(levels, mid, pct, isBid) {
     const s = Number(row?.[1]);
     if (!Number.isFinite(p) || !Number.isFinite(s)) continue;
 
-    // bids dalen, asks stijgen (Bitget levert meestal sorted)
     if (isBid && p < limit) break;
     if (!isBid && p > limit) break;
 
@@ -55,7 +53,6 @@ function sumDepth(levels, mid, pct, isBid) {
   return { total, biggest };
 }
 
-// Sample bevat genoeg info om later rolling trend + stability te meten
 function computeObSample(depth) {
   const bids = depth?.bids || [];
   const asks = depth?.asks || [];
@@ -68,7 +65,6 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  // 0.2% band (micro depth)
   const pct = 0.002;
   const bidRes = sumDepth(bids, mid, pct, true);
   const askRes = sumDepth(asks, mid, pct, false);
@@ -77,12 +73,11 @@ function computeObSample(depth) {
   const askUsd = askRes.total;
 
   const denom = bidUsd + askUsd;
-  const score = denom > 0 ? (bidUsd - askUsd) / denom : 0; // -1..+1
+  const score = denom > 0 ? (bidUsd - askUsd) / denom : 0;
 
   const biggest = Math.max(bidRes.biggest, askRes.biggest);
-  const lor = denom > 0 ? biggest / denom : 1; // largest order ratio (spoof hint)
+  const lor = denom > 0 ? biggest / denom : 1;
 
-  // 1% band depth (robust floor)
   const bid1 = sumDepth(bids, mid, 0.01, true);
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
@@ -97,10 +92,6 @@ function directionOk(mode, score) {
 // ============================
 // Rolling window + metrics
 // ============================
-function clamp(n, a, b) {
-  return Math.max(a, Math.min(b, n));
-}
-
 function pruneSamples(samples) {
   const now = Date.now();
   const winMs = MOON.elite.samplesWindowSec * 1000;
@@ -121,11 +112,9 @@ function pruneSamples(samples) {
     .filter((s) => now - s.ts <= winMs)
     .sort((a, b) => a.ts - b.ts);
 
-  // compact houden
   return fresh.slice(-30);
 }
 
-// Simple slope over last N (average per step)
 function calcSlope(lastN) {
   if (!Array.isArray(lastN) || lastN.length < 2) return 0;
   const first = lastN[0].score;
@@ -134,7 +123,6 @@ function calcSlope(lastN) {
   return steps > 0 ? (last - first) / steps : 0;
 }
 
-// Stability = hoe “wild” was score? (std-ish, maar simpel)
 function calcStability(lastN) {
   if (!Array.isArray(lastN) || lastN.length < 2) return { std: 0, ok: true };
   const scores = lastN.map((s) => Number(s.score || 0));
@@ -142,16 +130,14 @@ function calcStability(lastN) {
   const varr = scores.reduce((a, x) => a + (x - mean) * (x - mean), 0) / scores.length;
   const std = Math.sqrt(varr);
 
-  // crypto: 0.00..0.20 realistisch; spoofing vaak “spiky”
+  // std <= 0.12 = redelijk “stabiel”
   const ok = std <= 0.12;
   return { std, ok };
 }
 
-// Rolling validation = consensus + slope + stability + spread/lor sanity
 function validateSamples(mode, samplesFresh) {
   const freshAll = pruneSamples(samplesFresh);
 
-  // minimum samples voor beslissing
   const need = Number(MOON?.elite?.samplesNeed || 3);
   if (freshAll.length < need) {
     return {
@@ -169,7 +155,6 @@ function validateSamples(mode, samplesFresh) {
 
   const lastN = freshAll.slice(-need);
 
-  // direction agreement
   const agree = lastN.filter((s) => directionOk(mode, s.score)).length;
   if (agree < Number(MOON?.elite?.minAgree || 2)) {
     const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
@@ -188,10 +173,8 @@ function validateSamples(mode, samplesFresh) {
     };
   }
 
-  // average score
   const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
 
-  // slope check (rolling) — default: >0 for bull, <0 for bear
   const slope = calcSlope(lastN);
   let slopeOk = true;
   if (MOON?.elite?.obSlopeEnabled) {
@@ -199,18 +182,15 @@ function validateSamples(mode, samplesFresh) {
     else slopeOk = slope <= Number(MOON?.elite?.obSlopeMaxBear ?? 0);
   }
 
-  // stability check
   const stab = calcStability(lastN);
   const stableOk = stab.ok;
 
-  // spread/lor sanity (rolling: pak laatste sample)
   const last = lastN[lastN.length - 1];
   const spreadOk = Number(last.spreadPct || 999) <= Number(MOON?.elite?.spreadMaxPct ?? 0.7);
   const lorOk = Number(last.lor || 1) <= Number(MOON?.elite?.largestOrderRatioMax ?? 0.4);
 
   const valid = !!(agree >= (MOON?.elite?.minAgree || 2) && slopeOk && stableOk && spreadOk && lorOk);
 
-  // reason text
   let reason = "OK";
   if (!slopeOk) reason = "Slope not ok";
   else if (!stableOk) reason = "OB too spiky (stability fail)";
@@ -247,17 +227,14 @@ async function processCandidate(mode, symbol) {
 
   const v = validateSamples(mode, pruned);
 
-  // stale check = sample zelf te oud (moet “vers” zijn)
   const stale = (Date.now() - sample.ts) / 1000 > 15;
 
-  // Result is wat moon-scan leest als obView
   await kv.set(keyMoonObResult(mode, symbol), {
     symbol,
     side: mode,
     valid: v.valid,
     reason: v.reason,
 
-    // rolling metrics
     avgScore: v.avgScore ?? null,
     agree: v.agree ?? null,
     slope: v.slope ?? 0,
@@ -294,7 +271,6 @@ async function runBatched(list, batchSize, fn) {
   return out;
 }
 
-// unique list helper
 function uniqSymbols(arr) {
   const seen = new Set();
   const out = [];
@@ -319,8 +295,6 @@ export default async function handler(req, res) {
     if (bull?.funnel) tasks.push({ mode: "bull", data: bull });
     if (bear?.funnel) tasks.push({ mode: "bear", data: bear });
 
-    // Beter: ook radar top meepakken, anders krijg je “OB komt nooit op gang”
-    // We pakken: elite+almost+buildup + top radar (op volAcc/conf) zodat rolling sneller “warm” wordt.
     let totalTried = 0;
     let totalOk = 0;
     let totalValid = 0;
@@ -329,12 +303,12 @@ export default async function handler(req, res) {
     for (const t of tasks) {
       const mode = t.mode;
 
-      const elite  = (t.data?.funnel?.elite  || []).slice(0, 8);
+      // warm-up: ook radar meepakken zodat OB sneller “aan” gaat
+      const elite = (t.data?.funnel?.elite || []).slice(0, 8);
       const almost = (t.data?.funnel?.almost || []).slice(0, 14);
-      const buildup= (t.data?.funnel?.buildup|| []).slice(0, 12);
-      const radar  = (t.data?.funnel?.radar  || []).slice(0, 18);
+      const buildup = (t.data?.funnel?.buildup || []).slice(0, 12);
+      const radar = (t.data?.funnel?.radar || []).slice(0, 18);
 
-      // candidates pool
       const candidates = uniqSymbols([
         ...elite.map((x) => x?.symbol),
         ...almost.map((x) => x?.symbol),
@@ -344,7 +318,6 @@ export default async function handler(req, res) {
 
       totalTried += candidates.length;
 
-      // batchSize: let op Vercel + Bitget; 6 is safe
       const results = await runBatched(candidates, 6, (sym) => processCandidate(mode, sym));
 
       for (const r of results) {
