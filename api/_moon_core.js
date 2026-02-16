@@ -1,7 +1,7 @@
 // /api/_moon_core.js
 import { kv } from "@vercel/kv";
 
-// ✅ Vercel runtime: "nodejs"
+// ✅ Vercel runtime: nodejs
 export const RUNTIME_CONFIG = { runtime: "nodejs" };
 
 export const MOON = {
@@ -62,20 +62,32 @@ export const MOON = {
     obScoreMin: 0.04,
     spreadMaxPct: 0.70,
     largestOrderRatioMax: 0.40,
+
     samplesNeed: 3,
     samplesWindowSec: 90,
     minAgree: 2,
+
+    // OB rolling slope checks (sampler)
+    obSlopeEnabled: true,
+    obSlopeMinBull: 0.0,
+    obSlopeMaxBear: 0.0,
+
+    // Depth floor (moet bestaan, anders crasht depthFloorUsd)
+    depthFloorEnabled: true,
+    depthK: 28,
+    depthMinUsd: 60_000,
+    depthMaxUsd: 600_000,
 
     // “niet te laat”
     range24Max: 18.0,
 
     // Rolling (15m) requirements voor 9.7 niveau
     roll: {
-      maxDeltaPrice15mPct: 4.0,   // prijs mag nog niet exploderen
-      minDeltaVol15m: 0.15,       // druk moet oplopen
-      needCompression: true,      // range krimpt
-      minObSlope: 8,              // OB bouwt op
-      maxObStability: 20,         // OB niet “flipt”
+      maxDeltaPrice15mPct: 4.0,
+      minDeltaVol15m: 0.15,
+      needCompression: true,
+      minObSlope: 8,
+      maxObStability: 20,
     },
   },
 
@@ -88,11 +100,11 @@ export const MOON = {
   buildupMaxAgeMin: 240,
   almostMaxAgeMin: 240,
 
-  // Portfolio instellingen (virtueel)
+  // Portfolio (virtueel)
   portfolio: {
-    posUsd: 100,          // $100 per entry (kan later env maken)
-    maxOpen: 8,           // max open posities tegelijk
-    closeOnBtcFlip: true, // BTC gate flip => posities sluiten
+    posUsd: 100,
+    maxOpen: 8,
+    closeOnBtcFlip: true,
   },
 };
 
@@ -119,17 +131,17 @@ export function requireSecret(req, res) {
 
 // ================== KV KEYS ==================
 export const keyMoonLatest = (mode) => `moon:latest:${mode}`;
-export const keyMoonState  = (mode) => `moon:state:${mode}`;
-export const keyMoonReset  = (mode) => `moon:resetAt:${mode}`;
+export const keyMoonState = (mode) => `moon:state:${mode}`;
+export const keyMoonReset = (mode) => `moon:resetAt:${mode}`;
 
 export const keyMoonBitgetSymbols = `moon:bitget:symbols:spotusdt`;
 
 export const keyMoonObSamples = (mode, symbol) => `moon:ob:samples:${mode}:${symbol}`;
-export const keyMoonObResult  = (mode, symbol) => `moon:ob:result:${mode}:${symbol}`;
+export const keyMoonObResult = (mode, symbol) => `moon:ob:result:${mode}:${symbol}`;
 
 // Portfolio keys
-export const keyMoonPositions = (mode) => `moon:positions:${mode}`;   // open + closed
-export const keyMoonPortfolio = (mode) => `moon:portfolio:${mode}`;   // totals
+export const keyMoonPositions = (mode) => `moon:positions:${mode}`; // {open:[], closed:[]}
+export const keyMoonPortfolio = (mode) => `moon:portfolio:${mode}`;
 
 // cache keys
 const keyCgTopCache = `moon:cache:cg:top:per${MOON.CG_PER_PAGE}:start${MOON.CG_START_PAGE}:pages${MOON.CG_PAGES}`;
@@ -225,7 +237,7 @@ async function fetchBTCGate() {
 
 function normalizeCG(x) {
   const high = Number(x.high_24h || 0);
-  const low  = Number(x.low_24h || 0);
+  const low = Number(x.low_24h || 0);
   const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
   const volume = Number(x.total_volume || 0);
@@ -271,12 +283,14 @@ export function updatePriceHist(prev, price) {
   if (p > 0) h.push({ ts: now, price: p });
   return h;
 }
+
 export function normalizePriceHist(prev) {
   if (!Array.isArray(prev)) return [];
   return prev
     .map((x) => ({ ts: Number(x?.ts || 0), price: Number(x?.price || 0) }))
     .filter((x) => x.ts > 0 && x.price > 0);
 }
+
 export function priceFlatPct(priceHist, minutes = 60) {
   const h = normalizePriceHist(priceHist).sort((a, b) => a.ts - b.ts);
   const cutoff = Date.now() - minutes * 60 * 1000;
@@ -295,6 +309,7 @@ export function updateVolHist(prev, volume) {
   arr.push(Number(volume || 0));
   return arr;
 }
+
 export function volAccFromHist(volHist) {
   const h = Array.isArray(volHist) ? volHist : [];
   const last3 = h.slice(-3);
@@ -337,6 +352,7 @@ export function passObBase(obView, mode) {
   } else {
     if (score > -MOON.elite.obScoreMin) return { ok: false, why: "OB score too low" };
   }
+
   return { ok: true, why: "OB ok" };
 }
 
@@ -345,7 +361,9 @@ export function depthFloorUsd(marketCapUsd) {
   const raw = MOON.elite.depthK * Math.sqrt(mcapM) * 1000;
   return clamp(raw, MOON.elite.depthMinUsd, MOON.elite.depthMaxUsd);
 }
+
 export function passDepthFloor({ depthUsd, floorUsd }) {
+  if (!MOON.elite.depthFloorEnabled) return { ok: true, why: "Depth disabled" };
   const ok = Number(depthUsd || 0) >= Number(floorUsd || 0);
   return { ok, why: ok ? "Depth ok" : `Depth < ${Math.round(floorUsd).toLocaleString()} USD` };
 }
@@ -440,8 +458,10 @@ export function computeMoonRisk({ mode, price, range24, confidence, depthOk }) {
 
 // ================== BTC HARD GATE ==================
 export function isModeAllowedByBtc(mode, btcState) {
-  // A: hard block. Alleen scannen als btcState matcht.
-  // Bull scan alleen als BTC=BULL; Bear scan alleen als BTC=BEAR.
+  // Hard gate:
+  // BTC=BULL => alleen bull mode toegestaan
+  // BTC=BEAR => alleen bear mode toegestaan
+  // BTC=NEUTRAL => niets toegestaan (hard veilig)
   if (btcState !== "BULL" && btcState !== "BEAR") return false;
   return mode === "bull" ? btcState === "BULL" : btcState === "BEAR";
 }
@@ -451,8 +471,6 @@ export function calcPnlPct({ mode, entryPrice, priceNow }) {
   const e = Number(entryPrice || 0);
   const p = Number(priceNow || 0);
   if (!(e > 0 && p > 0)) return 0;
-
-  // bull: winst als p>e, bear: winst als p<e
   if (mode === "bull") return ((p - e) / e) * 100;
   return ((e - p) / e) * 100;
 }
@@ -471,9 +489,14 @@ export function hitStopOrTp({ mode, priceNow, sl, tp3 }) {
   return { hit: false };
 }
 
-function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
-function clamp01(n){ return clamp(n, 0, 1); }
-function mapLinear(x, a, b){
+// ================== HELPERS ==================
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
+function clamp01(n) {
+  return clamp(n, 0, 1);
+}
+function mapLinear(x, a, b) {
   if (b === a) return 0;
   return (Number(x || 0) - a) / (b - a);
 }
