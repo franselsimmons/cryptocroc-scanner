@@ -1,54 +1,69 @@
 // /api/_moon_core.js
 import { kv } from "@vercel/kv";
 
-// ✅ Vercel runtime mag alleen "nodejs"
+// ✅ Vercel runtime: "nodejs"
 export const RUNTIME_CONFIG = { runtime: "nodejs" };
 
 export const MOON = {
-  // ✅ Jij wil: 250 coins per 10 minuten
-  // En jij zegt: onze mcap-zone start rond pagina 5 (market_cap_desc)
+  // ✅ 250 coins per 10 min, vanaf pagina 5 (jouw mcap-zone)
   CG_PER_PAGE: 250,
-  CG_START_PAGE: 5,  // <-- HIER pak je pagina 5
-  CG_PAGES: 1,       // <-- 1 pagina = 250 coins totaal
+  CG_START_PAGE: 5,
+  CG_PAGES: 1,
 
   RADAR_LIMIT: 120,
 
-  // BTC gate
+  // BTC gate (blijft zoals jij had)
   btcChgGate: 0.6,
   btcRangeMin: 2,
   btcRangeMaxBull: 10,
   btcRangeMaxBear: 12,
 
-  // Universe caps
+  // Universe caps (jouw zone)
   mcapMin: 5_000_000,
   mcapMax: 150_000_000,
 
+  // ✅ PROACTIEF: radar breder (vroeg oppikken)
   radar: {
-    volMin: 250_000,
-    vmMin: 0.10,
-    range24Max: 15,
+    volMin: 200_000,      // iets lager dan 250k → meer instroom
+    vmMin: 0.12,          // vroeg, maar niet dood
+    range24Min: 2.0,      // niet stilstaand
+    range24Max: 12.0,     // geen “al ontploft” in radar
 
-    bullChg24Min: -5,
-    bullChg24Max: +8,
-
-    bearChg24Min: -8,
-    bearChg24Max: +5,
+    // change24 niet te streng: vroeg stadium kan klein zijn
+    bullChg24Min: -6,
+    bullChg24Max: +6,
+    bearChg24Min: -6,
+    bearChg24Max: +6,
   },
 
+  // ✅ BUILDUP = druk/opbouw (volume versnelt)
+  buildup: {
+    volAccMin: 1.05,      // versnelling
+    vmMin: 0.18,
+    range24Min: 3.5,
+    chgAbsMin: 0.8,       // beetje beweging ok
+    chgAbsMax: 12.0,      // niet al “te laat”
+  },
+
+  // ✅ ALMOST = klaarzetten (nog vóór echte spike)
   almost: {
-    volAccMin: 1.05,
-    priceFlatMax: 1.8,
-    minConfidence: 45,
+    volAccMin: 1.10,
+    vmMin: 0.25,
+    range24Min: 5.5,
+    range24Max: 16.0,
+    minConfidence: 50,    // confidence kan pas goed worden met OB-result
     consistencyMin: 0.60,
+    priceFlatMax: 2.8,    // iets soepeler dan 1.8 (moon is volatiel)
   },
 
+  // ✅ ELITE = INSTAP (OB + depth bevestigt)
   elite: {
-    minConfidence: 60,
+    minConfidence: 65,
     consistencyMin: 0.70,
 
-    obScoreMin: 0.05,
-    spreadMaxPct: 0.55,
-    largestOrderRatioMax: 0.35,
+    obScoreMin: 0.04,          // iets soepeler dan 0.05
+    spreadMaxPct: 0.70,        // iets soepeler (spot kan variëren)
+    largestOrderRatioMax: 0.40,
     samplesNeed: 3,
     samplesWindowSec: 90,
     minAgree: 2,
@@ -63,16 +78,20 @@ export const MOON = {
     depthK: 28,
     depthMinUsd: 60_000,
     depthMaxUsd: 600_000,
+
+    // ✅ “niet te laat”: als range24 al huge is, geen elite-instap
+    range24Max: 18.0,
   },
 
+  // no-skip stage moves (mag blijven)
   minScansPerStage: 2,
 
-  // ✅ 10 minuten cache zodat je 1 call per 10 min doet
+  // caches
   cgCacheSec: 60 * 10,
   btcCacheSec: 60 * 10,
-
   bitgetSymbolsCacheSec: 60 * 60 * 24,
 
+  // rotatie
   buildupMaxAgeMin: 240,
   almostMaxAgeMin: 240,
 };
@@ -108,74 +127,30 @@ export const keyMoonBitgetSymbols = `moon:bitget:symbols:spotusdt`;
 export const keyMoonObSamples = (mode, symbol) => `moon:ob:samples:${mode}:${symbol}`;
 export const keyMoonObResult  = (mode, symbol) => `moon:ob:result:${mode}:${symbol}`;
 
-export const keyMoonEliteLog = `moon:log:elite`;
-
-// ✅ Cache key moet uniek zijn per start-page/per-page/pages
-const keyCgTopCache =
-  `moon:cache:cg:top:per${MOON.CG_PER_PAGE}:start${MOON.CG_START_PAGE}:pages${MOON.CG_PAGES}`;
-
+// ✅ cache key uniek per slice
+const keyCgTopCache = `moon:cache:cg:top:per${MOON.CG_PER_PAGE}:start${MOON.CG_START_PAGE}:pages${MOON.CG_PAGES}`;
 const keyCgBtcCache = `moon:cache:cg:btc`;
 
-// ================== DISCORD ==================
-export async function sendDiscord(webhookUrl, content) {
-  if (!webhookUrl) return;
-  try {
-    await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content }),
-    });
-  } catch {}
-}
-
-export function moonWebhookForStage(stage) {
-  if (stage === "BUILDUP") return process.env.DISCORD_WEBHOOK_BUILDUP_MOON;
-  if (stage === "ALMOST")  return process.env.DISCORD_WEBHOOK_ALMOST_MOON;
-  if (stage === "ELITE")   return process.env.DISCORD_WEBHOOK_ELITE_MOON;
-  return null;
-}
-
-export function fmtMoonLine(c, mode, stage, extra = "") {
-  const page = `/moon.html?mode=${encodeURIComponent(mode)}`;
-  const lines = [
-    `🌙 **${c.symbol}** → **${stage}** (${mode.toUpperCase()})`,
-    `prijs: $${num(c.price)} | chg24: ${sign(c.change24)}% | range24: ${num(c.range24)}%`,
-    `vol: $${short(c.volume)} | mc: $${short(c.marketCap)} | vm: ${num(c.vm)}`,
-  ];
-  if (extra) lines.push(extra);
-  lines.push(`open: ${page}`);
-  return lines.join("\n");
-}
-
-// ================== DATA FETCH ==================
+// ================== COINGECKO HEADERS ==================
 function cgHeaders() {
   const h = { accept: "application/json" };
-  // ✅ Als je later CoinGecko Pro hebt, zet CG_API_KEY in Vercel env
-  const k = process.env.CG_API_KEY;
+  const k = process.env.CG_API_KEY; // optioneel
   if (k) h["x-cg-pro-api-key"] = k;
   return h;
 }
 
-// ✅ NO-CRASH: bij 429 of fail → gebruik oude cache
+// ================== DATA FETCH ==================
 export async function fetchCoinGeckoTopCached() {
   const cached = await kv.get(keyCgTopCache);
   if (Array.isArray(cached) && cached.length) return cached;
 
-  try {
-    const fresh = await fetchCoinGeckoSlice();
-    await kv.set(keyCgTopCache, fresh, { ex: MOON.cgCacheSec });
-    return fresh;
-  } catch (e) {
-    // als er toch iets in cache staat (race) → teruggeven
-    const fallback = await kv.get(keyCgTopCache);
-    if (Array.isArray(fallback) && fallback.length) return fallback;
-    throw e;
-  }
+  const fresh = await fetchCoinGeckoSlice();
+  await kv.set(keyCgTopCache, fresh, { ex: MOON.cgCacheSec });
+  return fresh;
 }
 
 async function fetchCoinGeckoSlice() {
   const out = [];
-
   const start = MOON.CG_START_PAGE;
   const end = start + MOON.CG_PAGES - 1;
 
@@ -186,16 +161,14 @@ async function fetchCoinGeckoSlice() {
       `&sparkline=false&price_change_percentage=24h`;
 
     const r = await fetch(url, { headers: cgHeaders() });
-
-    // ✅ Rate limit: gooi duidelijke error (moon-scan vangt dit uiteindelijk)
     if (r.status === 429) throw new Error("CoinGecko markets failed 429");
-
     if (!r.ok) throw new Error(`CoinGecko markets failed ${r.status} (page ${page})`);
+
     const arr = await r.json();
     out.push(...arr.map(normalizeCG));
   }
 
-  // unieke symbols
+  // unique symbols
   const seen = new Set();
   const uniq = [];
   for (const c of out) {
@@ -211,16 +184,9 @@ export async function fetchBTCGateCached() {
   const cached = await kv.get(keyCgBtcCache);
   if (cached && cached.state) return cached;
 
-  try {
-    const fresh = await fetchBTCGate();
-    await kv.set(keyCgBtcCache, fresh, { ex: MOON.btcCacheSec });
-    return fresh;
-  } catch (e) {
-    // ✅ BTC 429? gebruik oude cache als die er is
-    const fallback = await kv.get(keyCgBtcCache);
-    if (fallback && fallback.state) return fallback;
-    throw e;
-  }
+  const fresh = await fetchBTCGate();
+  await kv.set(keyCgBtcCache, fresh, { ex: MOON.btcCacheSec });
+  return fresh;
 }
 
 async function fetchBTCGate() {
@@ -232,8 +198,8 @@ async function fetchBTCGate() {
   if (!r.ok) throw new Error(`CoinGecko BTC failed ${r.status}`);
 
   const [x] = await r.json();
-
   const btc = normalizeCG(x);
+
   const chg24 = btc.change24;
   const range24 = btc.range24;
 
@@ -294,7 +260,7 @@ export async function getBitgetSpotUsdtSymbols() {
   return new Set(list);
 }
 
-// ================== HISTORY ==================
+// ================== HISTORY (price + volume) ==================
 export function updatePriceHist(prev, price) {
   const now = Date.now();
   const h = normalizePriceHist(prev).slice(-120);
@@ -305,11 +271,6 @@ export function updatePriceHist(prev, price) {
 
 export function normalizePriceHist(prev) {
   if (!Array.isArray(prev)) return [];
-  if (prev.length && typeof prev[0] === "number") {
-    return prev
-      .map((p, i) => ({ ts: Date.now() - (prev.length - i) * 10 * 60 * 1000, price: Number(p || 0) }))
-      .filter((x) => x.price > 0);
-  }
   return prev
     .map((x) => ({ ts: Number(x?.ts || 0), price: Number(x?.price || 0) }))
     .filter((x) => x.ts > 0 && x.price > 0);
@@ -328,24 +289,24 @@ export function priceFlatPct(priceHist, minutes = 60) {
   return ((max - min) / min) * 100;
 }
 
-export function updateSideHistory(prevHist, side) {
-  const now = Date.now();
-  const arr = Array.isArray(prevHist) ? prevHist.slice(-80) : [];
-  arr.push({ ts: now, side });
+export function updateVolHist(prev, volume) {
+  const arr = Array.isArray(prev) ? prev.slice(-6) : [];
+  arr.push(Number(volume || 0));
   return arr;
 }
 
-export function calcConsistency(hist, wantedSide, windowMin = 120, minSamples = 6) {
-  const cutoff = Date.now() - windowMin * 60 * 1000;
-  const h = (hist || []).filter((x) => Number(x?.ts || 0) >= cutoff);
-  const total = h.length;
-  if (total < minSamples) return { ok: false, ratio: 0, total, same: 0 };
-  const same = h.filter((x) => x.side === wantedSide).length;
-  const ratio = total ? same / total : 0;
-  return { ok: true, ratio, total, same };
+export function volAccFromHist(volHist) {
+  const h = Array.isArray(volHist) ? volHist : [];
+  const last3 = h.slice(-3);
+  const prev3 = h.slice(-6, -3);
+  const sum = (a) => a.reduce((x, y) => x + (Number(y) || 0), 0);
+  const a = sum(last3);
+  const b = sum(prev3);
+  if (prev3.length < 3 || b <= 0) return 1.0;
+  return a / b;
 }
 
-// ================== CONFIDENCE ==================
+// ================== CONFIDENCE (met OB) ==================
 export function computeConfidence({ obScore, obAgree, vm, volAcc, btc }) {
   const obStrength = clamp01(mapLinear(Math.abs(obScore), 0.03, 0.18));
   const obBonus = obAgree === 3 ? 1.0 : obAgree === 2 ? 0.85 : 0.6;
@@ -359,12 +320,12 @@ export function computeConfidence({ obScore, obAgree, vm, volAcc, btc }) {
   return Math.round(clamp(score, 0, 100));
 }
 
-// ================== OB / DEPTH ==================
+// ================== OB / DEPTH gates ==================
 export function passObBase(obView, mode) {
   if (!obView || !obView.valid) return { ok: false, why: "OB validating" };
   if (obView.stale) return { ok: false, why: "OB stale" };
 
-  const score = Number(obView.score ?? obView.avgScore ?? 0);
+  const score = Number(obView.score ?? 0);
   const spreadPct = Number(obView.spreadPct ?? 999);
   const lor = Number(obView.lor ?? 1);
 
@@ -380,89 +341,115 @@ export function passObBase(obView, mode) {
   return { ok: true, why: "OB ok" };
 }
 
-export function calcObSlope(samples) {
-  if (!Array.isArray(samples) || samples.length < MOON.elite.obSlopeMinSamples) return null;
-  const s = samples
-    .map((x) => ({
-      ts: Number(x?.ts || 0),
-      score: Number(x?.score ?? x?.obScore ?? x?.avgScore ?? 0),
-    }))
-    .filter((x) => x.ts > 0 && Number.isFinite(x.score))
-    .sort((a, b) => a.ts - b.ts);
-
-  if (s.length < MOON.elite.obSlopeMinSamples) return null;
-  const first = s[0].score;
-  const last = s[s.length - 1].score;
-  const n = s.length - 1;
-  if (n <= 0) return null;
-  return (last - first) / n;
-}
-
 export function depthFloorUsd(marketCapUsd) {
   const mcapM = Math.max(0, Number(marketCapUsd || 0)) / 1_000_000;
   const raw = MOON.elite.depthK * Math.sqrt(mcapM) * 1000;
   return clamp(raw, MOON.elite.depthMinUsd, MOON.elite.depthMaxUsd);
 }
 
-export function passDepthFloor({ depthUsd, floorUsd, wasOk }) {
+export function passDepthFloor({ depthUsd, floorUsd }) {
   if (!MOON.elite.depthFloorEnabled) return { ok: true, why: "Depth disabled" };
-  const need = wasOk ? floorUsd * MOON.elite.depthHysteresisExitMul : floorUsd;
-  const ok = Number(depthUsd || 0) >= Number(need || 0);
-  return { ok, why: ok ? "Depth ok" : `Depth < ${Math.round(need).toLocaleString()} USD` };
+  const ok = Number(depthUsd || 0) >= Number(floorUsd || 0);
+  return { ok, why: ok ? "Depth ok" : `Depth < ${Math.round(floorUsd).toLocaleString()} USD` };
 }
 
-// ================== FILTERS ==================
+// ================== FILTERS (proactief) ==================
 export function passRadarMoon(c, mode) {
   if (c.marketCap < MOON.mcapMin) return false;
   if (c.marketCap > MOON.mcapMax) return false;
 
   if (c.volume < MOON.radar.volMin) return false;
   if (c.vm < MOON.radar.vmMin) return false;
-  if (c.range24 > MOON.radar.range24Max) return false;
 
+  const rng = Number(c.range24 || 0);
+  if (rng < MOON.radar.range24Min) return false;
+  if (rng > MOON.radar.range24Max) return false;
+
+  const chg = Number(c.change24 || 0);
   if (mode === "bull") {
-    if (c.change24 < MOON.radar.bullChg24Min) return false;
-    if (c.change24 > MOON.radar.bullChg24Max) return false;
+    if (chg < MOON.radar.bullChg24Min) return false;
+    if (chg > MOON.radar.bullChg24Max) return false;
   } else {
-    if (c.change24 < MOON.radar.bearChg24Min) return false;
-    if (c.change24 > MOON.radar.bearChg24Max) return false;
+    if (chg < MOON.radar.bearChg24Min) return false;
+    if (chg > MOON.radar.bearChg24Max) return false;
   }
 
   return true;
 }
 
+export function passBuildupMoon({ c, volAcc }) {
+  const chgAbs = Math.abs(Number(c.change24 || 0));
+  if (volAcc < MOON.buildup.volAccMin) return { ok: false, why: "VolAcc low" };
+  if (Number(c.vm || 0) < MOON.buildup.vmMin) return { ok: false, why: "VM low" };
+  if (Number(c.range24 || 0) < MOON.buildup.range24Min) return { ok: false, why: "Range low" };
+  if (chgAbs < MOON.buildup.chgAbsMin) return { ok: false, why: "Change too small" };
+  if (chgAbs > MOON.buildup.chgAbsMax) return { ok: false, why: "Already too hot" };
+  return { ok: true, why: "BUILDUP ok" };
+}
+
 export function passAlmostMoon({ priceHist, volAcc, confidence, consistencyRatio }) {
   const flat = priceFlatPct(priceHist, 60);
   if (volAcc < MOON.almost.volAccMin) return { ok: false, why: "VolAcc low" };
+  if (Number(confidence || 0) < MOON.almost.minConfidence) return { ok: false, why: "Confidence low" };
+  if (Number(consistencyRatio || 0) < MOON.almost.consistencyMin) return { ok: false, why: "Consistency low" };
   if (flat > MOON.almost.priceFlatMax) return { ok: false, why: "Price not flat" };
-  if (confidence < MOON.almost.minConfidence) return { ok: false, why: "Confidence low" };
-  if (consistencyRatio < MOON.almost.consistencyMin) return { ok: false, why: "Consistency low" };
+  if (Number.isFinite(Number(flat))) return { ok: true, why: "ALMOST ok" };
   return { ok: true, why: "ALMOST ok" };
 }
 
-export function passEliteMoon({ mode, obView, obSlope, confidence, consistencyRatio, depthUsd, floorUsd, depthWasOk }) {
+export function passEliteMoon({ mode, obView, confidence, consistencyRatio, depthUsd, floorUsd, range24 }) {
+  if (Number(range24 || 0) > MOON.elite.range24Max) return { ok: false, why: "Range too high (late)" };
+
   const ob = passObBase(obView, mode);
   if (!ob.ok) return { ok: false, why: ob.why };
 
-  if (MOON.elite.obSlopeEnabled && Number.isFinite(obSlope)) {
-    if (mode === "bull" && obSlope < MOON.elite.obSlopeMinBull) return { ok: false, why: "OB slope down" };
-    if (mode === "bear" && obSlope > MOON.elite.obSlopeMaxBear) return { ok: false, why: "OB slope up" };
-  }
+  if (Number(confidence || 0) < MOON.elite.minConfidence) return { ok: false, why: "Confidence < elite" };
+  if (Number(consistencyRatio || 0) < MOON.elite.consistencyMin) return { ok: false, why: "Consistency < elite" };
 
-  if (confidence < MOON.elite.minConfidence) return { ok: false, why: "Confidence < elite" };
-  if (consistencyRatio < MOON.elite.consistencyMin) return { ok: false, why: "Consistency < elite" };
-
-  const depth = passDepthFloor({ depthUsd, floorUsd, wasOk: depthWasOk });
+  const depth = passDepthFloor({ depthUsd, floorUsd });
   if (!depth.ok) return { ok: false, why: depth.why };
 
   return { ok: true, why: "ELITE ok" };
 }
 
-export function stageRank(stage) {
-  if (stage === "BUILDUP") return 1;
-  if (stage === "ALMOST") return 2;
-  if (stage === "ELITE") return 3;
-  return 0;
+// ================== RISK (SL/TP) ==================
+// Doel: simpel, stabiel, altijd aanwezig.
+// Werkt zonder candles/ATR; gebruikt range24 + confidence + depth.
+export function computeMoonRisk({ mode, price, range24, confidence, depthOk }) {
+  const p = Number(price || 0);
+  if (!(p > 0)) return null;
+
+  // basis: 24h range → “mini-ATR”
+  const r = clamp(Number(range24 || 0), 1.0, 25.0) / 100;  // 1%..25% → 0.01..0.25
+
+  // hoe hoger confidence, hoe strakker SL en ambitieuzer TP
+  const conf = clamp(Number(confidence || 0), 0, 100);
+
+  // SL basis: 0.30 * range (vroeg instap → niet te krap)
+  // daarna aanpassen door confidence en depth
+  let slMul = 0.30;
+  slMul += mapLinear(conf, 0, 100) * (-0.10);     // high conf → iets strakker
+  if (!depthOk) slMul += 0.08;                    // low depth → ruimer SL (noise)
+
+  slMul = clamp(slMul, 0.18, 0.42);
+
+  const slPct = clamp(r * slMul, 0.006, 0.06);    // 0.6%..6%
+  const sl = mode === "bull" ? p * (1 - slPct) : p * (1 + slPct);
+
+  // TP: R-multiples (moon = explosief) → 1.8R / 3.0R / 4.2R
+  const R = slPct;
+  const tp1 = mode === "bull" ? p * (1 + 1.8 * R) : p * (1 - 1.8 * R);
+  const tp2 = mode === "bull" ? p * (1 + 3.0 * R) : p * (1 - 3.0 * R);
+  const tp3 = mode === "bull" ? p * (1 + 4.2 * R) : p * (1 - 4.2 * R);
+
+  return {
+    slPct: +(slPct * 100).toFixed(2),
+    sl: +sl.toFixed(8),
+    tp1: +tp1.toFixed(8),
+    tp2: +tp2.toFixed(8),
+    tp3: +tp3.toFixed(8),
+    note: depthOk ? "Depth ok" : "Depth weak → SL wider",
+  };
 }
 
 // ================== HELPERS ==================
@@ -471,13 +458,4 @@ function clamp01(n){ return clamp(n, 0, 1); }
 function mapLinear(x, a, b){
   if (b === a) return 0;
   return (Number(x || 0) - a) / (b - a);
-}
-function num(n) { return (Number(n) || 0).toFixed(2); }
-function sign(n){ return `${n >= 0 ? "+" : ""}${num(n)}`; }
-function short(n){
-  n = Number(n)||0;
-  if (n >= 1e9) return (n/1e9).toFixed(2)+"B";
-  if (n >= 1e6) return (n/1e6).toFixed(2)+"M";
-  if (n >= 1e3) return (n/1e3).toFixed(2)+"K";
-  return n.toFixed(0);
 }
