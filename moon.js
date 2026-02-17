@@ -1,15 +1,13 @@
-// /moon.js (public) — cleaner + overzichtelijker + portfolio + ENTRY/HOLD/SELL
+// /public/moon.js (MOON)
+const el = (id) => document.getElementById(id);
 
 const qs = new URLSearchParams(location.search);
 
-// mode uit URL
-let mode = (qs.get("mode") || "bull").toLowerCase();
-if (mode !== "bull" && mode !== "bear") mode = "bull";
+let MODE = (qs.get("mode") || "bull").toLowerCase();
+if (MODE !== "bull" && MODE !== "bear") MODE = "bull";
 
-// token uit URL
 const token = (qs.get("token") || "").trim();
 
-// API helpers (token altijd mee)
 function withToken(url) {
   if (!token) return url;
   const u = new URL(url, location.origin);
@@ -17,60 +15,22 @@ function withToken(url) {
   return u.pathname + "?" + u.searchParams.toString();
 }
 
-const API_LATEST = (m) => withToken(`/api/moon-latest?mode=${encodeURIComponent(m)}`);
-const API_SCAN = (m) => withToken(`/api/moon-scan?mode=${encodeURIComponent(m)}`);
+const API = {
+  latest: (mode) => withToken(`/api/moon-latest?mode=${encodeURIComponent(mode)}`),
+};
 
-// UI refs
-const statusLine = document.getElementById("statusLine");
-const btnBull = document.getElementById("modeBull");
-const btnBear = document.getElementById("modeBear");
-const btnRefresh = document.getElementById("btnRefresh");
-const btnScan = document.getElementById("btnScan");
-
-const stageElite = document.getElementById("stageElite");
-const stageAlmost = document.getElementById("stageAlmost");
-const stageBuildup = document.getElementById("stageBuildup");
-const stageRadar = document.getElementById("stageRadar");
-
-// modal refs
-const modal = document.getElementById("modal");
-const mClose = document.getElementById("mClose");
-const mTitle = document.getElementById("mTitle");
-const mSub = document.getElementById("mSub");
-const mWhy = document.getElementById("mWhy");
-const mOB = document.getElementById("mOB");
-const mRisk = document.getElementById("mRisk");
-const mNext = document.getElementById("mNext");
-
-// ===== events =====
-btnBull.onclick = () => setMode("bull");
-btnBear.onclick = () => setMode("bear");
-btnRefresh.onclick = () => loadLatest();
-btnScan.onclick = () => runScan();
-
-mClose.onclick = closeModal;
-modal.addEventListener("click", (e) => {
-  if (e.target === modal) closeModal();
-});
-
-// ===== helpers =====
-function setMode(m) {
-  mode = m;
-  qs.set("mode", mode);
-  if (token) qs.set("token", token);
-  history.replaceState(null, "", `${location.pathname}?${qs.toString()}`);
-  setActiveButtons();
-  loadLatest();
+function fmt(n, d = 2) {
+  return (Number(n) || 0).toFixed(d);
 }
-
-function setActiveButtons() {
-  btnBull.classList.toggle("active", mode === "bull");
-  btnBear.classList.toggle("active", mode === "bear");
+function fmtPct(n) {
+  n = Number(n) || 0;
+  const s = n >= 0 ? "+" : "";
+  return s + n.toFixed(2) + "%";
 }
-
-function fmt(n, d = 2) { return (Number(n) || 0).toFixed(d); }
-function fmtSign(n, d = 2) { n = Number(n) || 0; return (n >= 0 ? "+" : "") + n.toFixed(d); }
-
+function fmtSign(n, d = 2) {
+  n = Number(n) || 0;
+  return (n >= 0 ? "+" : "") + n.toFixed(d);
+}
 function short(n) {
   n = Number(n) || 0;
   if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
@@ -79,223 +39,213 @@ function short(n) {
   return n.toFixed(0);
 }
 
-function escapeHtml(s) {
-  return String(s || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+// Confidence kleur
+function confColor(conf) {
+  const v = Number(conf) || 0;
+  if (v < 50) return "var(--bad)";
+  if (v < 70) return "var(--warn)";
+  if (v < 85) return "var(--mid)";
+  return "var(--good)";
 }
 
-function pretty(obj) {
-  try { return JSON.stringify(obj, null, 2); }
-  catch { return String(obj); }
+// Liquidity dot voor Moon: combineer ob + depthOk
+function liquidityClass(c) {
+  const depthOk = !!c?.depthOk;
+  const ob = c?.ob || null;
+  const valid = !!ob?.valid;
+  if (!ob) return "";
+  if (!valid) return "liqWarn";
+  if (valid && depthOk) return "liqGood";
+  return "liqWarn";
+}
+
+function setMode(mode) {
+  MODE = mode;
+  qs.set("mode", MODE);
+  if (token) qs.set("token", token);
+  history.replaceState(null, "", `${location.pathname}?${qs.toString()}`);
+
+  el("modeBull")?.classList.toggle("active", MODE === "bull");
+  el("modeBear")?.classList.toggle("active", MODE === "bear");
+
+  loadLatest();
 }
 
 function emptyBox(msg = "Geen coins") {
-  return `<div class="empty">${escapeHtml(msg)}</div>`;
+  return `<div class="empty">${msg}</div>`;
 }
 
-function pill(txt, cls = "") {
-  const c = cls ? `pill ${cls}` : "pill";
-  return `<span class="${c}">${escapeHtml(txt)}</span>`;
+function coinCard(c, stageName) {
+  const conf = Number(c?.confidence || 0);
+  const confPct = Math.max(0, Math.min(100, conf));
+  const liqCls = liquidityClass(c);
+
+  return `
+    <div class="coinRow" data-stage="${stageName}">
+      <div class="coinTop">
+        <div class="sym">${c?.symbol || "—"}</div>
+        <div class="confWrap">
+          <span class="liqDot ${liqCls}" title="Liquidity (OB + Depth)"></span>
+          <div class="confBar" title="Confidence">
+            <div class="confFill" style="width:${confPct}%;background:${confColor(conf)}"></div>
+          </div>
+          <div class="confNum">${conf}/100</div>
+        </div>
+      </div>
+
+      <div class="coinMeta">
+        <span>chg24: ${fmtPct(c?.change24)}</span>
+        <span>range24: ${fmt(c?.range24)}%</span>
+        <span>mc: ${short(c?.marketCap)}</span>
+        <span>vol: ${short(c?.volume)}</span>
+        <span>vm: ${fmt(c?.vm, 2)}</span>
+        <span>cons: ${Math.round((Number(c?.consistency?.ratio || 0)) * 100)}%</span>
+      </div>
+    </div>
+  `;
 }
 
-function tradeBadge(trade) {
-  if (!trade) return "";
-  const st = String(trade.status || "").toUpperCase();
-  const cls =
-    st === "ENTRY" ? "badgeEntry" :
-    st === "HOLD"  ? "badgeHold"  :
-    st === "SELL"  ? "badgeSell"  : "";
-  return `<span class="badge ${cls}">${escapeHtml(st)}</span>`;
-}
+function renderStage(list, targetEl, stageName) {
+  if (!targetEl) return;
+  if (!Array.isArray(list) || list.length === 0) {
+    targetEl.innerHTML = emptyBox();
+    return;
+  }
 
-function formatRisk(risk) {
-  if (!risk) return { sl: "SL —", tp: "TP —" };
-  return { sl: `SL ${fmt(risk.slPct, 2)}%`, tp: `TP3 ${fmt(risk.tp3, 8)}` };
+  targetEl.innerHTML = list.map((c) => coinCard(c, stageName)).join("");
+  targetEl.querySelectorAll(".coinRow").forEach((rowEl, idx) => {
+    rowEl.addEventListener("click", () => openModal(list[idx], stageName));
+  });
 }
 
 function portfolioLine(p) {
   if (!p) return "";
-  return ` • Portfolio: Open ${p.openCount ?? 0} | Closed ${p.closedCount ?? 0} | Realized $${fmt(p.realizedUsd ?? 0, 2)} | Avg ${fmtSign(p.avgRealizedPct ?? 0, 2)}%`;
+  return ` • Portfolio: Open ${p.openCount ?? 0} | Closed ${p.closedCount ?? 0} | Realized $${fmt(
+    p.realizedUsd ?? 0,
+    2
+  )} | Avg ${fmtSign(p.avgRealizedPct ?? 0, 2)}%`;
 }
 
-// ===== render =====
-function coinRow(c, stageName) {
-  const conf = Number(c?.confidence || 0);
-  const consPct = Math.round((Number(c?.consistency?.ratio || 0)) * 100);
+/* =======================
+   MODAL + TABS
+======================= */
 
-  const risk = c?.risk || null;
-  const r = formatRisk(risk);
-
-  const t = c?.trade || null;
-  const pnlTxt = t ? `PnL ${fmtSign(t.pnlPct ?? 0, 2)}% ($${fmt(t.pnlUsd ?? 0, 2)})` : "PnL —";
-
-  const roll = c?.rolling || null;
-  const rollTxt = roll
-    ? `ΔP15 ${fmtSign(roll.deltaPrice15m ?? 0, 2)}% • ΔV15 ${fmt(roll.deltaVol15m ?? 0, 3)} • OBslope ${fmt(roll.obSlope ?? 0, 2)}`
-    : "";
-
-  return `
-  <div class="coinRow" data-sym="${escapeHtml(c.symbol || "")}" data-stage="${escapeHtml(stageName)}">
-    <div class="coinTop">
-      <div class="left">
-        <div class="sym">${escapeHtml(c.symbol || "—")}</div>
-        <div class="tag">${escapeHtml(c.name || "")}</div>
-      </div>
-      <div class="right">${tradeBadge(t)}</div>
-    </div>
-
-    <div class="coinMeta">
-      ${pill(`Price $${fmt(c.price)}`)}
-      ${pill(`Chg24 ${fmtSign(c.change24)}%`)}
-      ${pill(`Range24 ${fmt(c.range24)}%`)}
-      ${pill(`MC ${short(c.marketCap)}`)}
-      ${pill(`Vol ${short(c.volume)}`)}
-      ${pill(`VM ${fmt(c.vm, 2)}`)}
-      ${pill(`Conf ${conf}`)}
-      ${pill(`Cons ${consPct}%`)}
-      ${pill(r.sl)}
-      ${pill(r.tp)}
-      ${pill(pnlTxt, t ? "pillPnl" : "")}
-    </div>
-
-    ${rollTxt ? `<div class="coinSub">${escapeHtml(rollTxt)}</div>` : ""}
-  </div>`;
+function showModal(on) {
+  const modal = el("modal");
+  if (!modal) return;
+  modal.classList.toggle("hidden", !on);
 }
 
-function renderStage(list, el, stageName) {
-  if (!Array.isArray(list) || list.length === 0) {
-    el.innerHTML = emptyBox();
-    return;
+function setTab(name) {
+  document.querySelectorAll(".tabBtn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.tab === name);
+  });
+  document.querySelectorAll(".tabPane").forEach((p) => {
+    p.classList.toggle("hidden", p.dataset.pane !== name);
+  });
+}
+
+el("mClose")?.addEventListener("click", () => showModal(false));
+el("modal")?.addEventListener("click", (e) => {
+  if (e.target && e.target.id === "modal") showModal(false);
+});
+document.querySelectorAll(".tabBtn").forEach((b) => {
+  b.addEventListener("click", () => setTab(b.dataset.tab));
+});
+
+function pretty(obj) {
+  try {
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return String(obj);
   }
-  el.innerHTML = list.map((c) => coinRow(c, stageName)).join("");
-  el.querySelectorAll(".coinRow").forEach((rowEl, idx) => {
-    rowEl.onclick = () => openModal(list[idx], stageName);
-  });
 }
 
-// ===== modal =====
 function openModal(c, stageName) {
-  const depthMin = Math.min(Number(c?.ob?.bidUsd || 0), Number(c?.ob?.askUsd || 0));
-  const floor = Number(c?.floorUsd || 0);
+  showModal(true);
+  setTab("why");
 
-  const trade = c?.trade || null;
+  el("mTitle") && (el("mTitle").textContent = `${c?.symbol || "—"} • ${stageName} • ${MODE.toUpperCase()}`);
 
-  mTitle.textContent = `${c.symbol || "—"} • ${stageName}`;
-  mSub.textContent =
-    `Price $${fmt(c.price)} • Chg24 ${fmtSign(c.change24)}% • Range24 ${fmt(c.range24)}% • VM ${fmt(c.vm, 2)} • Conf ${Number(c?.confidence || 0)}`;
+  el("mSub") &&
+    (el("mSub").textContent =
+      `Price $${fmt(c?.price)} • Chg24 ${fmtPct(c?.change24)} • Range24 ${fmt(c?.range24)}% • ` +
+      `VM ${fmt(c?.vm, 2)} • Conf ${Number(c?.confidence || 0)}`);
 
-  mWhy.textContent = pretty({
-    stage: stageName,
-    why: c?.why || null,
+  el("mWhy") &&
+    (el("mWhy").textContent =
+      `Stage: ${stageName}\n` +
+      `Why: ${pretty(c?.why || {})}\n` +
+      `Consistency: ${Math.round((Number(c?.consistency?.ratio || 0)) * 100)}%\n` +
+      `VolAcc: ${fmt(c?.volAcc, 2)}\n`);
+
+  el("mOB") &&
+    (el("mOB").textContent =
+      `OB: ${pretty(c?.ob || null)}\n` +
+      `DepthOk: ${String(!!c?.depthOk)}\n` +
+      `FloorUsd: ${Math.round(Number(c?.floorUsd || 0))}\n`);
+
+  el("mRisk") &&
+    (el("mRisk").textContent =
+      `Risk: ${pretty(c?.risk || null)}\n` +
+      `Trade: ${pretty(c?.trade || null)}\n`);
+
+  el("mNext") && (el("mNext").textContent = `Debug object (kort):\n${pretty({
+    symbol: c?.symbol,
+    confidence: c?.confidence,
+    consistency: c?.consistency,
     rolling: c?.rolling || null,
-    depthOk: c?.depthOk ?? null,
-  });
-
-  mOB.textContent = pretty({
-    ob: c?.ob || null,
-    depthMinUsd: depthMin,
-    floorUsd: floor,
-  });
-
-  mRisk.textContent = pretty({
-    trade: trade
-      ? {
-          status: trade.status,
-          entryPrice: trade.entryPrice,
-          sl: trade.sl,
-          tp3: trade.tp3,
-          pnlPct: trade.pnlPct,
-          pnlUsd: trade.pnlUsd,
-          exitReason: trade.exitReason || null,
-        }
-      : null,
-    risk: c?.risk || null,
-  });
-
-  mNext.textContent = pretty(c);
-  modal.classList.remove("hidden");
+  })}`);
 }
 
-function closeModal() {
-  modal.classList.add("hidden");
-}
+/* =======================
+   LOAD
+======================= */
 
-// ===== main =====
 async function loadLatest() {
-  setActiveButtons();
-  statusLine.textContent = "Status: laden…";
+  el("modeBull")?.classList.toggle("active", MODE === "bull");
+  el("modeBear")?.classList.toggle("active", MODE === "bear");
+
+  const statusLine = el("statusLine");
+  if (statusLine) statusLine.textContent = "Status: laden…";
 
   try {
-    const r = await fetch(API_LATEST(mode), { cache: "no-store" });
+    const r = await fetch(API.latest(MODE), { cache: "no-store" });
     const j = await r.json();
 
     const counts = j?.counts || {};
     const btc = j?.btc
       ? ` • BTC ${j.btc.state} (${fmtSign(j.btc.chg24)}% / ${fmt(j.btc.range24)}%)`
       : "";
-
     const note = j?.note ? ` • ${j.note}` : "";
     const pLine = portfolioLine(j?.portfolio);
 
-    statusLine.textContent =
-      `Mode: ${mode.toUpperCase()} • Elite ${counts.elite || 0} | Almost ${counts.almost || 0} | ` +
-      `Buildup ${counts.buildup || 0} | Radar ${counts.radar || 0}${btc}${pLine}${note}`;
+    if (statusLine) {
+      statusLine.textContent =
+        `Mode: ${MODE.toUpperCase()} • ELITE ${counts.elite || 0} • ALMOST ${counts.almost || 0} • ` +
+        `BUILDUP ${counts.buildup || 0} • RADAR ${counts.radar || 0}${btc}${pLine}${note}`;
+    }
 
     const funnel = j?.funnel || {};
-    renderStage(funnel.elite || [], stageElite, "ELITE");
-    renderStage(funnel.almost || [], stageAlmost, "ALMOST");
-    renderStage(funnel.buildup || [], stageBuildup, "BUILDUP");
-    renderStage(funnel.radar || [], stageRadar, "RADAR");
+    renderStage(funnel.elite || [], el("stageElite"), "ELITE");
+    renderStage(funnel.almost || [], el("stageAlmost"), "ALMOST");
+    renderStage(funnel.buildup || [], el("stageBuildup"), "BUILDUP");
+    renderStage(funnel.radar || [], el("stageRadar"), "RADAR");
   } catch (e) {
-    statusLine.textContent = "Status: error (check Vercel logs)";
-    stageElite.innerHTML = `<pre class="modalPre">${escapeHtml(String(e))}</pre>`;
-    stageAlmost.innerHTML = "";
-    stageBuildup.innerHTML = "";
-    stageRadar.innerHTML = "";
+    if (statusLine) statusLine.textContent = "Status: error (check Vercel logs)";
+    el("stageElite") && (el("stageElite").innerHTML = `<pre class="modalPre">${String(e)}</pre>`);
+    el("stageAlmost") && (el("stageAlmost").innerHTML = "");
+    el("stageBuildup") && (el("stageBuildup").innerHTML = "");
+    el("stageRadar") && (el("stageRadar").innerHTML = "");
   }
 }
 
-async function runScan() {
-  if (!token) {
-    alert("Geen token in de URL. Gebruik ?token=JOUW_TOKEN");
-    return;
-  }
+/* =======================
+   INIT
+======================= */
 
-  statusLine.textContent = `Status: scan starten (${mode.toUpperCase()})…`;
+el("modeBull")?.addEventListener("click", () => setMode("bull"));
+el("modeBear")?.addEventListener("click", () => setMode("bear"));
 
-  try {
-    const r = await fetch(API_SCAN(mode), { cache: "no-store" });
-    const j = await r.json();
-    if (!j?.ok) throw new Error(j?.error || "Scan failed");
-    await loadLatest();
-  } catch (e) {
-    statusLine.textContent = "Status: scan error (check Vercel logs)";
-    stageElite.innerHTML = `<pre class="modalPre">${escapeHtml(String(e))}</pre>`;
-  }
-}
-
-// ===== tiny CSS inject (optioneel) =====
-(function injectCss() {
-  const css = `
-    .coinTop{display:flex;align-items:center;justify-content:space-between;gap:10px}
-    .coinTop .left{display:flex;align-items:baseline;gap:10px}
-    .badge{display:inline-flex;align-items:center;justify-content:center;
-      padding:4px 8px;border-radius:999px;font-size:12px;letter-spacing:.5px;
-      border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06)}
-    .badgeEntry{border-color:rgba(0,200,255,.25)}
-    .badgeHold{border-color:rgba(0,255,150,.25)}
-    .badgeSell{border-color:rgba(255,80,120,.25)}
-    .coinSub{margin-top:8px;opacity:.8;font-size:12px}
-    .pillPnl{border-color:rgba(255,255,255,.18)}
-  `;
-  const s = document.createElement("style");
-  s.textContent = css;
-  document.head.appendChild(s);
-})();
-
-// start
-loadLatest();
+setMode(MODE);
+setInterval(loadLatest, 20000);
