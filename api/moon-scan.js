@@ -34,6 +34,12 @@ import {
   isModeAllowedByBtc,
   calcPnlPct,
   hitStopOrTp,
+
+  // ✅ DISCORD (nieuw)
+  sendDiscord,
+  webhookForMoonStage,
+  webhookMoonPortfolio,
+  fmtMoonLine,
 } from "./_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
@@ -168,7 +174,7 @@ export default async function handler(req, res) {
         const pnlPct = calcPnlPct({ mode: t.mode, entryPrice: t.entryPrice, priceNow: px });
         const pnlUsd = (Number(t.posUsd || MOON.portfolio.posUsd) * pnlPct) / 100;
 
-        positions.closed.push({
+        const closedTrade = {
           ...t,
           status: "SELL",
           exitReason: "BTC_GATE_FLIP",
@@ -176,7 +182,19 @@ export default async function handler(req, res) {
           exitPrice: +Number(px || t.entryPrice).toFixed(8),
           pnlPct: +pnlPct.toFixed(2),
           pnlUsd: +pnlUsd.toFixed(2),
-        });
+        };
+
+        positions.closed.push(closedTrade);
+
+        // ✅ Discord: BTC gate forced close
+        const hook = webhookMoonPortfolio() || webhookForMoonStage("ELITE");
+        if (hook) {
+          const msg =
+            `**${closedTrade.symbol}** → **SELL** (MOON ${String(closedTrade.mode).toUpperCase()})\n` +
+            `Reason: BTC_GATE_FLIP\n` +
+            `Exit: $${Number(closedTrade.exitPrice).toFixed(8)} | PnL: ${closedTrade.pnlPct >= 0 ? "+" : ""}${closedTrade.pnlPct}% ($${closedTrade.pnlUsd})`;
+          await sendDiscord(hook, msg);
+        }
       }
     }
 
@@ -338,6 +356,10 @@ export default async function handler(req, res) {
       if (almostGate.ok) stage = "ALMOST";
       if (eliteGate.ok && eliteExtra) stage = "ELITE";
 
+      // stage changed?
+      const prevStage = String(prev.stage || "RADAR");
+      const stageChanged = prevStage !== stage;
+
       // Risk model (SL/TP)
       const risk = computeMoonRisk({
         mode,
@@ -353,6 +375,7 @@ export default async function handler(req, res) {
       let trade = findOpen(sym) || null;
 
       // 1) open trade when Elite hits
+      let openedNow = false;
       if (!trade && stage === "ELITE" && canOpenNew() && risk?.sl && risk?.tp3) {
         const posUsd = MOON.portfolio.posUsd;
         const qty = posUsd / Number(c.price || 1);
@@ -371,9 +394,11 @@ export default async function handler(req, res) {
           note: "Opened on ELITE",
         };
         positions.open.push(trade);
+        openedNow = true;
       }
 
       // 2) update open trade
+      let closedNow = null;
       if (trade) {
         if (trade.status === "ENTRY") trade.status = "HOLD";
 
@@ -395,6 +420,7 @@ export default async function handler(req, res) {
           positions.open = positions.open.filter((t) => t.symbol !== sym);
           positions.closed.push(trade);
 
+          closedNow = { ...trade };
           trade = { ...trade }; // voor UI
         } else {
           trade.pnlPct = +pnlPct.toFixed(2);
@@ -449,6 +475,42 @@ export default async function handler(req, res) {
           eliteExtra: eliteExtra ? "ROLLING ok" : "ROLLING fail",
         },
       };
+
+      // ✅ DISCORD: stage change signal
+      if (stageChanged) {
+        const hook = webhookForMoonStage(stage);
+        if (hook) {
+          const extra =
+            `why: ${item.why.eliteExtra} | depth: $${Math.round(depthUsd)} (floor $${Math.round(floorUsd)})\n` +
+            `rolling: ΔP15m ${Number(rolling.deltaPrice15m || 0).toFixed(2)}% | ΔV15m ${Number(rolling.deltaVol15m || 0).toFixed(2)} | slope ${Number(rolling.obSlope || 0).toFixed(2)}`;
+
+          await sendDiscord(hook, fmtMoonLine(item, mode, extra));
+        }
+      }
+
+      // ✅ DISCORD: trade open
+      if (openedNow) {
+        const hook = webhookMoonPortfolio() || webhookForMoonStage("ELITE");
+        if (hook) {
+          const msg =
+            `**${sym}** → **OPEN** (MOON ${mode.toUpperCase()})\n` +
+            `Entry: $${Number(item.price).toFixed(8)} | SL: $${Number(item.risk?.sl || 0).toFixed(8)} | TP3: $${Number(item.risk?.tp3 || 0).toFixed(8)}\n` +
+            `confidence: ${item.confidence}/100 | depthOk: ${item.depthOk ? "yes" : "no"}`;
+          await sendDiscord(hook, msg);
+        }
+      }
+
+      // ✅ DISCORD: trade close (TP/SL)
+      if (closedNow) {
+        const hook = webhookMoonPortfolio() || webhookForMoonStage("ELITE");
+        if (hook) {
+          const msg =
+            `**${closedNow.symbol}** → **SELL** (MOON ${String(closedNow.mode).toUpperCase()})\n` +
+            `Reason: ${closedNow.exitReason}\n` +
+            `Exit: $${Number(closedNow.exitPrice).toFixed(8)} | PnL: ${closedNow.pnlPct >= 0 ? "+" : ""}${closedNow.pnlPct}% ($${closedNow.pnlUsd})`;
+          await sendDiscord(hook, msg);
+        }
+      }
 
       // store state
       state[sym] = {
