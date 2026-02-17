@@ -186,7 +186,7 @@ export function fmtCoinLine(c, mode, stage, extra = "") {
 export async function fetchCoinGeckoTop() {
   const url =
     `https://api.coingecko.com/api/v3/coins/markets?` +
-    `vs_currency=usd&order=market_cap_desc&per_page=${SETTINGS.CG_TOP}&page=1` +
+    `vs_currency=usd&order=market_cap_desc&per_page=${SETTINGS.CG_TOP}&page=3` +
     `&sparkline=false&price_change_percentage=24h`;
 
   const r = await fetch(url, { headers: { accept: "application/json" } });
