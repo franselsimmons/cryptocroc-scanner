@@ -1,3 +1,4 @@
+// /app.js
 const el = (id) => document.getElementById(id);
 
 const API = {
@@ -33,13 +34,23 @@ function fmtPct(n){
 }
 function fmt(n){ return (Number(n)||0).toFixed(2); }
 
+function sizingText(c){
+  const s = c?.sizing || null;
+  if (!s) return "Advies —";
+  return `Advies ${s.pct}% (BTC ${s.zone})`;
+}
+
 function coinRow(c){
   const div = document.createElement("div");
   div.className = "coinRow";
+
+  const adv = sizingText(c);
+
   div.innerHTML = `
     <div class="coinTop">
       <div class="sym">${c.symbol}</div>
       <div class="pill">Conf ${c.confidence}/100</div>
+      <div class="pill pillAdv">${adv}</div>
     </div>
     <div class="coinMeta">
       <span>chg24: ${fmtPct(c.change24)}</span>
@@ -130,24 +141,24 @@ async function openModal(c){
 
   if (mTitle) mTitle.textContent = `${c.symbol} • ${MODE.toUpperCase()} • ${c.stage}`;
 
+  const adv = sizingText(c);
   if (mSub) {
     mSub.textContent =
-      `prijs $${fmt(c.price)} • confidence ${c.confidence}/100 • scans ${c.stageScans} • consistency ${(c.consistency?.ratio*100||0).toFixed(0)}% (${c.consistency?.same||0}/${c.consistency?.total||0})`;
+      `prijs $${fmt(c.price)} • confidence ${c.confidence}/100 • ${adv} • scans ${c.stageScans} • consistency ${(c.consistency?.ratio*100||0).toFixed(0)}% (${c.consistency?.same||0}/${c.consistency?.total||0})`;
   }
 
   if (mWhy) {
+    const s = c?.sizing || null;
     mWhy.textContent =
       `Stage: ${c.stage}\n`+
       `Desired: ${c.why?.desired}\n`+
-      `OB gate: ${c.why?.obGate}\n`+
-      `VolAcc: ${fmt(c.volAcc)}\n`;
+      `EntryGate: ${c.why?.entryGate}\n`+
+      `VolAcc: ${fmt(c.volAcc)}\n`+
+      (s ? `\nSIZING:\n- advies: ${s.pct}%\n- BTC zone: ${s.zone}\n- caps: btc ${s.btcCap}%, stage ${s.stageCap}%, conf ${s.confPct}%\n` : "");
   }
 
   if (mNext) {
-    mNext.textContent =
-      (c.why?.missing && c.why.missing.length)
-        ? c.why.missing.map(x=>`- ${x}`).join("\n")
-        : "Niks — hij voldoet al aan de volgende eisen.";
+    mNext.textContent = "Deze UI gebruikt nu vooral ENTRY gate info (ob/cons/conf).";
   }
 
   if (mRisk) {
@@ -157,7 +168,6 @@ async function openModal(c){
       `TP: $${fmt(c.tp)}\n`;
   }
 
-  // OB live ophalen (details)
   if (mOB) mOB.textContent = "Laden…";
   try{
     const r = await fetch(API.ob(MODE, c.symbol), { cache:"no-store" });
@@ -179,6 +189,7 @@ async function openModal(c){
       `score: ${j.ob?.score ?? "-"}\n`+
       `spreadPct: ${j.ob?.spreadPct?.toFixed?.(2) ?? j.ob?.spreadPct ?? "-"}%\n`+
       `lor: ${j.ob?.lor?.toFixed?.(2) ?? j.ob?.lor ?? "-"}\n`+
+      `depth1%: $${Math.round(j.ob?.depthMinUsd1p ?? 0)}\n`+
       `bidUsd: ${Math.round(j.ob?.bidUsd ?? 0)}\n`+
       `askUsd: ${Math.round(j.ob?.askUsd ?? 0)}\n`+
       `stale: ${j.stale}\n`;
@@ -187,7 +198,6 @@ async function openModal(c){
   }
 }
 
-// reset knop: alleen als hij bestaat (anders crash)
 const resetBtn = el("resetBtn");
 if (resetBtn) {
   resetBtn.addEventListener("click", ()=>{
@@ -197,15 +207,11 @@ if (resetBtn) {
   });
 }
 
-// buttons (ook guarden, maar die bestaan normaal wel)
 const bullBtn = el("modeBull");
 if (bullBtn) bullBtn.addEventListener("click", () => setMode("bull"));
 
 const bearBtn = el("modeBear");
 if (bearBtn) bearBtn.addEventListener("click", () => setMode("bear"));
 
-// init
 setMode(MODE);
-
-// refresh UI elke 20s (cron doet scan)
 setInterval(loadLatest, 20000);
