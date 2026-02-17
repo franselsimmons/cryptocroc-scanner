@@ -1,52 +1,67 @@
 <!doctype html>
-<html lang="nl">
+<html lang="nl" data-funnel="main">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>CryptoCroc Scanner</title>
+  <title>CryptoCroc Scanner — Main</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
+
   <header class="topbar">
     <div class="left">
-      <div class="brand">CryptoCroc Scanner</div>
+      <div class="brandRow">
+        <div class="brand">CryptoCroc Scanner</div>
+        <span class="funnelPill">MAIN</span>
+      </div>
       <div class="sub" id="statusLine">Status: laden…</div>
     </div>
 
     <div class="right">
-      <button id="modeBull" class="btn">BULL</button>
-      <button id="modeBear" class="btn">BEAR</button>
-      <a class="btn" href="/moon.html">Moonshots</a>
+      <div class="toggle">
+        <button id="modeBull" class="btn btnToggle">BULL</button>
+        <button id="modeBear" class="btn btnToggle">BEAR</button>
+      </div>
+
+      <a class="btn btnGhost" href="/moon.html">Moon</a>
     </div>
   </header>
 
-  <main class="grid">
+  <main class="grid grid4">
     <section class="panel">
-      <div class="panelTitle">ENTRY</div>
-      <div class="panelHint">Alleen coins die OB gate halen (3 samples/90s).</div>
+      <div class="panelHead">
+        <div class="panelTitle">STAGE 4</div>
+        <div class="panelSub">ENTRY</div>
+      </div>
       <div class="stageBody" id="stageEntry"></div>
     </section>
 
     <section class="panel">
-      <div class="panelTitle">ALMOST</div>
-      <div class="panelHint">Sterke kandidaten + consolidatie + consistency.</div>
+      <div class="panelHead">
+        <div class="panelTitle">STAGE 3</div>
+        <div class="panelSub">ALMOST</div>
+      </div>
       <div class="stageBody" id="stageAlmost"></div>
     </section>
 
     <section class="panel">
-      <div class="panelTitle">BUILDUP</div>
-      <div class="panelHint">Richting + volume + VM + consistency.</div>
+      <div class="panelHead">
+        <div class="panelTitle">STAGE 2</div>
+        <div class="panelSub">BUILDUP</div>
+      </div>
       <div class="stageBody" id="stageBuildup"></div>
     </section>
 
     <section class="panel">
-      <div class="panelTitle">RADAR</div>
-      <div class="panelHint">Grof filter — instroom.</div>
+      <div class="panelHead">
+        <div class="panelTitle">STAGE 1</div>
+        <div class="panelSub">RADAR</div>
+      </div>
       <div class="stageBody" id="stageRadar"></div>
     </section>
   </main>
 
-  <!-- MODAL -->
+  <!-- MODAL (zelfde voor main + moon) -->
   <div class="modal hidden" id="modal">
     <div class="modalCard">
       <div class="modalTop">
@@ -57,25 +72,37 @@
         <button class="btn" id="mClose">Sluiten</button>
       </div>
 
-      <div class="modalGrid">
-        <div class="modalBox">
-          <div class="modalBoxTitle">Waarom staat hij hier</div>
-          <pre class="modalPre" id="mWhy">—</pre>
-        </div>
+      <!-- 2 tabs -->
+      <div class="tabs">
+        <button class="tabBtn active" data-tab="why">Waarom</button>
+        <button class="tabBtn" data-tab="risk">Risk</button>
+      </div>
 
-        <div class="modalBox">
-          <div class="modalBoxTitle">Orderbook (Bitget)</div>
-          <pre class="modalPre" id="mOB">—</pre>
-        </div>
+      <div class="tabPane" data-pane="why">
+        <div class="modalGrid">
+          <div class="modalBox">
+            <div class="modalBoxTitle">Waarom staat hij hier</div>
+            <pre class="modalPre" id="mWhy">—</pre>
+          </div>
 
-        <div class="modalBox">
-          <div class="modalBoxTitle">Risk (SL / TP)</div>
-          <pre class="modalPre" id="mRisk">—</pre>
+          <div class="modalBox">
+            <div class="modalBoxTitle">Liquidity (OB + Depth)</div>
+            <pre class="modalPre" id="mOB">—</pre>
+          </div>
         </div>
+      </div>
 
-        <div class="modalBox">
-          <div class="modalBoxTitle">Wat moet beter om te stijgen</div>
-          <pre class="modalPre" id="mNext">—</pre>
+      <div class="tabPane hidden" data-pane="risk">
+        <div class="modalGrid">
+          <div class="modalBox">
+            <div class="modalBoxTitle">Risk (SL / TP)</div>
+            <pre class="modalPre" id="mRisk">—</pre>
+          </div>
+
+          <div class="modalBox">
+            <div class="modalBoxTitle">Next (wat mist nog)</div>
+            <pre class="modalPre" id="mNext">—</pre>
+          </div>
         </div>
       </div>
     </div>
