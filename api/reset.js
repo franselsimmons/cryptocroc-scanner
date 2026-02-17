@@ -15,7 +15,6 @@ export default async function handler(req, res) {
     for (const m of modes) {
       if (m !== "bull" && m !== "bear") continue;
 
-      // reset marker + hard delete state/latest
       await kv.set(keyReset(m), now);
       await kv.del(keyState(m));
       await kv.del(keyLatest(m));
