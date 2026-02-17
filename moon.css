@@ -1,20 +1,251 @@
-/* /moon.css */
-/* Alleen Moon-specifieke tweaks */
+:root{
+  /* basis */
+  --bg:#0E1116;
+  --card:#141A22;
+  --card2:#101722;
+  --line:#24303F;
+  --text:#E6EDF3;
+  --muted:#9BA7B4;
 
-.panelTitle::after{
+  /* kwaliteit */
+  --good:#22C55E;
+  --warn:#F59E0B;
+  --bad:#EF4444;
+  --mid:#60A5FA;
+
+  /* funnel accents */
+  --accentMain:#3B82F6;
+  --accentMoon:#A855F7;
+
+  /* default (wordt overschreven via data-funnel) */
+  --accent: var(--accentMain);
+}
+
+html[data-funnel="main"]{ --accent: var(--accentMain); }
+html[data-funnel="moon"]{ --accent: var(--accentMoon); }
+
+*{ box-sizing:border-box; }
+body{
+  margin:0;
+  font-family:system-ui, -apple-system, Segoe UI, Arial;
+  background:var(--bg);
+  color:var(--text);
+}
+
+/* topbar */
+.topbar{
+  position:sticky; top:0; z-index:10;
+  display:flex; justify-content:space-between; align-items:center;
+  padding:14px 16px;
+  border-bottom:1px solid var(--line);
+  background:rgba(14,17,22,.88);
+  backdrop-filter: blur(10px);
+}
+
+/* accent line bovenin */
+.topbar::before{
   content:"";
+  position:absolute;
+  left:0; top:0; right:0;
+  height:3px;
+  background:var(--accent);
 }
 
-.pill.danger{
-  border-color: rgba(255,92,92,.55);
-  color: var(--text);
+.left{ display:flex; flex-direction:column; gap:6px; }
+.brandRow{ display:flex; align-items:center; gap:10px; }
+.brand{ font-weight:900; font-size:16px; letter-spacing:.2px; }
+
+.funnelPill{
+  display:inline-flex; align-items:center; justify-content:center;
+  padding:4px 10px;
+  border-radius:999px;
+  font-size:12px;
+  border:1px solid rgba(255,255,255,.12);
+  background:rgba(255,255,255,.06);
+  color:var(--text);
+  letter-spacing:.6px;
 }
 
+.sub{ color:rgba(230,237,243,.74); font-size:12px; }
+
+/* buttons */
+.right{ display:flex; align-items:center; gap:10px; }
+.toggle{ display:flex; gap:8px; }
+
+.btn{
+  padding:10px 12px;
+  border:1px solid rgba(255,255,255,.12);
+  background:rgba(255,255,255,.06);
+  color:var(--text);
+  border-radius:12px;
+  cursor:pointer;
+  text-decoration:none;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+}
+.btn:hover{ border-color:rgba(255,255,255,.22); }
+.btnToggle.active{ outline:2px solid rgba(0,0,0,0); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
+.btnGhost{ border-color: color-mix(in srgb, var(--accent) 28%, rgba(255,255,255,.12)); }
+
+/* grid */
+.grid{ display:grid; gap:12px; padding:12px; }
+.grid4{ grid-template-columns: repeat(4, 1fr); }
+
+@media (max-width: 1100px){
+  .grid4{ grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 700px){
+  .grid4{ grid-template-columns: 1fr; }
+  .right{ flex-wrap:wrap; justify-content:flex-end; }
+}
+
+/* panels */
+.panel{
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:16px;
+  padding:12px;
+  min-height:220px;
+}
+.panelHead{ display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin-bottom:10px; }
+.panelTitle{ font-weight:900; letter-spacing:.4px; font-size:12px; color:rgba(230,237,243,.78); }
+.panelSub{ font-weight:900; font-size:14px; color:var(--text); }
+
+.stageBody{ display:flex; flex-direction:column; gap:10px; }
+
+.empty{
+  color:rgba(230,237,243,.70);
+  padding:12px;
+  border:1px dashed rgba(255,255,255,.16);
+  border-radius:14px;
+}
+
+/* coin card (clean) */
+.coinRow{
+  padding:10px;
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:14px;
+  background:var(--card2);
+  cursor:pointer;
+}
+.coinRow:hover{
+  border-color: color-mix(in srgb, var(--accent) 45%, rgba(255,255,255,.12));
+  background: color-mix(in srgb, var(--card2) 90%, rgba(255,255,255,.05));
+}
+
+/* top line in coin */
+.coinTop{ display:flex; justify-content:space-between; align-items:center; gap:10px; }
+.sym{ font-weight:900; letter-spacing:.3px; font-size:14px; }
+
+/* confidence meter */
+.confWrap{
+  display:flex; align-items:center; gap:8px;
+}
+.confNum{
+  font-weight:800;
+  font-size:12px;
+  opacity:.9;
+}
+.confBar{
+  width:84px;
+  height:8px;
+  border-radius:999px;
+  background:rgba(255,255,255,.10);
+  overflow:hidden;
+  border:1px solid rgba(255,255,255,.10);
+}
+.confFill{
+  height:100%;
+  width:0%;
+  background:var(--mid);
+}
+
+/* metadata */
+.coinMeta{
+  margin-top:8px;
+  display:flex; flex-wrap:wrap; gap:10px;
+  font-size:12px;
+  color:rgba(230,237,243,.72);
+}
+
+/* liquidity dot */
+.liqDot{
+  width:10px; height:10px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.22);
+  background:rgba(255,255,255,.10);
+  flex:0 0 auto;
+}
+.liqGood{ background: color-mix(in srgb, var(--good) 80%, #000); border-color: rgba(34,197,94,.35); }
+.liqWarn{ background: color-mix(in srgb, var(--warn) 80%, #000); border-color: rgba(245,158,11,.35); }
+.liqBad{  background: color-mix(in srgb, var(--bad)  80%, #000); border-color: rgba(239,68,68,.35); }
+
+/* modal */
+.modal{
+  position:fixed; inset:0;
+  background:rgba(0,0,0,.55);
+  display:flex; align-items:center; justify-content:center;
+  padding:14px;
+}
+.modal.hidden{ display:none; }
+
+.modalCard{
+  width:min(980px,100%);
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:18px;
+  padding:14px;
+}
+
+.modalTop{
+  display:flex; justify-content:space-between; align-items:center;
+  gap:12px; margin-bottom:10px;
+}
+.modalTitle{ font-weight:900; font-size:18px; }
+.modalSub{ color:rgba(230,237,243,.72); font-size:12px; margin-top:4px; }
+
+/* tabs */
+.tabs{
+  display:flex; gap:8px;
+  margin:10px 0 12px 0;
+}
+.tabBtn{
+  padding:8px 10px;
+  border-radius:12px;
+  border:1px solid rgba(255,255,255,.12);
+  background:rgba(255,255,255,.06);
+  color:var(--text);
+  cursor:pointer;
+  font-size:12px;
+  font-weight:800;
+}
+.tabBtn.active{
+  border-color: color-mix(in srgb, var(--accent) 35%, rgba(255,255,255,.18));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.tabPane.hidden{ display:none; }
+
+.modalGrid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:12px;
+}
 @media (max-width: 900px){
-  .topbar .right{
-    display:flex;
-    gap:8px;
-    flex-wrap:wrap;
-    justify-content:flex-end;
-  }
+  .modalGrid{ grid-template-columns:1fr; }
+}
+
+.modalBox{
+  background:var(--card2);
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:14px;
+  padding:10px;
+}
+.modalBoxTitle{ font-weight:900; margin-bottom:8px; font-size:12px; opacity:.9; }
+.modalPre{
+  margin:0;
+  white-space:pre-wrap;
+  font-size:12px;
+  color:rgba(230,237,243,.92);
 }
