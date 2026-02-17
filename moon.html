@@ -1,67 +1,55 @@
 <!doctype html>
-<html lang="nl" data-funnel="moon">
+<html lang="nl">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>CryptoCroc Scanner — Moon</title>
+  <title>CryptoCroc Moonshots</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body>
-
+<body class="page-moon">
   <header class="topbar">
     <div class="left">
-      <div class="brandRow">
-        <div class="brand">CryptoCroc Scanner</div>
-        <span class="funnelPill">MOON</span>
-      </div>
+      <div class="brand">🌙 Moonshots</div>
       <div class="sub" id="statusLine">Status: laden…</div>
+      <div class="sub">Moon is “vroeg/ruisiger”. Main is “bevestigd/strakker”.</div>
     </div>
 
     <div class="right">
-      <div class="toggle">
-        <button id="modeBull" class="btn btnToggle">BULL</button>
-        <button id="modeBear" class="btn btnToggle">BEAR</button>
-      </div>
-
-      <a class="btn btnGhost" href="/">Main</a>
+      <button id="modeBull" class="btn">BULL</button>
+      <button id="modeBear" class="btn">BEAR</button>
+      <button id="btnRefresh" class="btn">Refresh</button>
+      <button id="btnScan" class="btn danger">Scan nu</button>
+      <a class="btn" href="/">Main</a>
     </div>
   </header>
 
-  <main class="grid grid4">
+  <main class="grid">
     <section class="panel">
-      <div class="panelHead">
-        <div class="panelTitle">STAGE 4</div>
-        <div class="panelSub">ELITE</div>
-      </div>
+      <div class="panelTitle">ELITE</div>
+      <div class="panelHint">Meest betrouwbaar (OB + depth + confidence + consistency).</div>
       <div class="stageBody" id="stageElite"></div>
     </section>
 
     <section class="panel">
-      <div class="panelHead">
-        <div class="panelTitle">STAGE 3</div>
-        <div class="panelSub">ALMOST</div>
-      </div>
+      <div class="panelTitle">ALMOST</div>
+      <div class="panelHint">Sterk, bijna klaar.</div>
       <div class="stageBody" id="stageAlmost"></div>
     </section>
 
     <section class="panel">
-      <div class="panelHead">
-        <div class="panelTitle">STAGE 2</div>
-        <div class="panelSub">BUILDUP</div>
-      </div>
+      <div class="panelTitle">BUILDUP</div>
+      <div class="panelHint">In opbouw / in beeld.</div>
       <div class="stageBody" id="stageBuildup"></div>
     </section>
 
     <section class="panel">
-      <div class="panelHead">
-        <div class="panelTitle">STAGE 1</div>
-        <div class="panelSub">RADAR</div>
-      </div>
+      <div class="panelTitle">RADAR</div>
+      <div class="panelHint">Alles wat binnenkomt.</div>
       <div class="stageBody" id="stageRadar"></div>
     </section>
   </main>
 
-  <!-- MODAL (zelfde) -->
+  <!-- MODAL -->
   <div class="modal hidden" id="modal">
     <div class="modalCard">
       <div class="modalTop">
@@ -72,36 +60,28 @@
         <button class="btn" id="mClose">Sluiten</button>
       </div>
 
-      <div class="tabs">
-        <button class="tabBtn active" data-tab="why">Waarom</button>
-        <button class="tabBtn" data-tab="risk">Risk</button>
-      </div>
-
-      <div class="tabPane" data-pane="why">
-        <div class="modalGrid">
-          <div class="modalBox">
-            <div class="modalBoxTitle">Waarom staat hij hier</div>
-            <pre class="modalPre" id="mWhy">—</pre>
-          </div>
-
-          <div class="modalBox">
-            <div class="modalBoxTitle">Liquidity (OB + Depth)</div>
-            <pre class="modalPre" id="mOB">—</pre>
-          </div>
+      <div class="modalGrid">
+        <div class="modalBox">
+          <div class="modalBoxTitle">Waarom staat hij hier</div>
+          <div class="modalBody" id="mWhy">—</div>
         </div>
-      </div>
 
-      <div class="tabPane hidden" data-pane="risk">
-        <div class="modalGrid">
-          <div class="modalBox">
-            <div class="modalBoxTitle">Risk / Trade</div>
-            <pre class="modalPre" id="mRisk">—</pre>
-          </div>
+        <div class="modalBox">
+          <div class="modalBoxTitle">Liquidity (OB + Depth)</div>
+          <div class="modalBody" id="mOB">—</div>
+        </div>
 
-          <div class="modalBox">
-            <div class="modalBoxTitle">Next (wat mist nog)</div>
-            <pre class="modalPre" id="mNext">—</pre>
-          </div>
+        <div class="modalBox">
+          <div class="modalBoxTitle">Risk & Actie</div>
+          <div class="modalBody" id="mRisk">—</div>
+        </div>
+
+        <div class="modalBox">
+          <div class="modalBoxTitle">Debug (optioneel)</div>
+          <details class="debug">
+            <summary>Toon ruwe data</summary>
+            <pre class="modalPre" id="mDebug">—</pre>
+          </details>
         </div>
       </div>
     </div>
