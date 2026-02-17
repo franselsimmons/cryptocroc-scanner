@@ -13,13 +13,13 @@ import {
   fetchCoinGeckoTopCached,
   fetchBTCGateCached,
   getBitgetSpotUsdtSymbols,
-  fetchBitgetAtr1hPctCached,     // fase 2
+  fetchBitgetAtr1hPctCached,
   applySpikeGuard,
   updateSideHistory,
   calcConsistency,
-  updatePriceHist,               // fase 1
-  calcChange1hPct,               // fase 1
-  calcObSlope,                   // fase 1
+  updatePriceHist,
+  calcChange1hPct,
+  calcObSlope,
   nextDesiredStage,
   stageRank,
   webhookForStage,
@@ -28,7 +28,8 @@ import {
   computeConfidence,
   computeAtrPctFromPriceHist,
   computeSLTP,
-  passEntryFromObPlus,           // fase 1 gates
+  passEntryFromObPlus,
+  allocPctRecommended, // ✅ nieuw
 } from "./_core.js";
 
 export const config = RUNTIME_CONFIG;
@@ -62,22 +63,18 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    // BTC gate (cached 10 min)
+    // BTC gate (cached)
     const btc = await fetchBTCGateCached();
     const wanted = mode === "bull" ? "BULL" : "BEAR";
 
-    // Universe (Bitget-first)
     const symbolsSet = await getBitgetSpotUsdtSymbols();
-
-    // CoinGecko top (cached 10 min)
     const all = await fetchCoinGeckoTopCached();
     const rawCoins = all.filter((c) => symbolsSet.has(c.symbol));
 
-    // KV state
     const resetAt = (await kv.get(keyReset(mode))) || 0;
     const state = (await kv.get(keyState(mode))) || {};
 
-    // BTC mismatch => output leeg
+    // ✅ HARD BTC BLOCK
     if (btc.state !== wanted) {
       const empty = {
         ok: true,
@@ -113,7 +110,6 @@ export default async function handler(req, res) {
         volHist: []
       };
 
-      // reset per coin (hard)
       const wasReset = Number(prev.enteredAt || 0) < resetAt;
       if (wasReset) {
         prev.stage = "RADAR";
@@ -128,11 +124,11 @@ export default async function handler(req, res) {
       // spike guard
       const { patched: c, nextMetrics } = applySpikeGuard(prev.metricsHist, raw);
 
-      // price history (timestamped) + 1h change
+      // price history + 1h change
       const priceHist = updatePriceHist(prev.priceHist, c.price);
       const change1h = calcChange1hPct(priceHist);
 
-      // volume history (6 samples-ish)
+      // volume history -> volAcc
       const volHist = Array.isArray(prev.volHist) ? prev.volHist.slice(-5) : [];
       volHist.push(c.volume);
 
@@ -141,13 +137,13 @@ export default async function handler(req, res) {
       const prev3 = volHist.slice(-6, -3);
       const volAcc = prev3.length ? (sum(last3) / Math.max(1, sum(prev3))) : 1.0;
 
-      // consistency (2 uur window)
+      // consistency
       const wantedSide = mode === "bull" ? "BULL" : "BEAR";
       const sideNow = coinSideFromMode(mode, c.change24);
       const sideHist = updateSideHistory(prev.sideHist, sideNow);
       const cons = calcConsistency(sideHist, wantedSide);
 
-      // OB result (ENTRY gate)
+      // OB result
       const ob = await kv.get(keyObResult(mode, sym));
       const obView = ob ? {
         valid: !!ob.valid,
@@ -156,7 +152,7 @@ export default async function handler(req, res) {
         spreadPct: Number(ob?.ob?.spreadPct ?? 999),
         lor: Number(ob?.ob?.lor ?? 1),
         agree: Number(ob?.agree ?? 0),
-        depthMinUsd1p: Number(ob?.ob?.depthMinUsd1p ?? 0), // ✅ nieuw
+        depthMinUsd1p: Number(ob?.ob?.depthMinUsd1p ?? 0),
         reason: ob?.reason || ""
       } : null;
 
@@ -176,7 +172,7 @@ export default async function handler(req, res) {
         btc
       });
 
-      // ENTRY OK? (OB + consistency(75%) + confidence>=70 + slope + depth 1%)
+      // ENTRY gate
       const entryGate = passEntryFromObPlus({
         obView,
         mode,
@@ -196,7 +192,6 @@ export default async function handler(req, res) {
         entryOk
       );
 
-      // out?
       if (desired === "OUT") {
         delete state[sym];
         continue;
@@ -231,18 +226,21 @@ export default async function handler(req, res) {
         stageChanged = true;
       }
 
-      // ATR (fase 2: Bitget 1H ATR) + fallback scan-ATR
+      // ATR (bitget 1h) + fallback
       const atrFromScan = computeAtrPctFromPriceHist(priceHist);
       const atrObj = await fetchBitgetAtr1hPctCached(sym);
       const atrPct = atrObj?.atrPct && Number.isFinite(atrObj.atrPct) ? atrObj.atrPct : atrFromScan;
 
       const sltp = computeSLTP({ mode, price: c.price, atrPct });
 
+      // ✅ SIZING ADVICE (60..100)
+      const sizing = allocPctRecommended({ stage, confidence: conf, btc });
+
       // Discord on new stage
       if (stageChanged) {
         const hook = webhookForStage(stage);
         if (hook) {
-          let extra = `Confidence: ${conf}/100`;
+          let extra = `Confidence: ${conf}/100 • Advies: ${sizing.pct}% (BTC ${sizing.zone})`;
 
           if (stage === "ENTRY") {
             const obTxt = obView
@@ -254,6 +252,7 @@ export default async function handler(req, res) {
 
             extra =
               `Confidence: ${conf}/100\n` +
+              `Advies inzet: ${sizing.pct}% (BTC ${sizing.zone} cap ${sizing.btcCap}%, stage cap ${sizing.stageCap}%)\n` +
               `EntryGate: ${entryGate.why}\n` +
               `${obTxt}\n` +
               `${slopeTxt}\n` +
@@ -296,11 +295,12 @@ export default async function handler(req, res) {
           lor: obView?.lor ?? null,
           obAgree: obView?.agree ?? null,
           obSlope,
-          depthMinUsd1p: obView?.depthMinUsd1p ?? null, // ✅ nieuw
+          depthMinUsd1p: obView?.depthMinUsd1p ?? null,
           consistency: cons,
           volAcc,
           btc,
           confidence: conf,
+          sizing,
           sl: sltp.sl,
           tp: sltp.tp,
           atrPct,
@@ -325,6 +325,8 @@ export default async function handler(req, res) {
         consistency: cons,
         volAcc,
 
+        sizing, // ✅ nieuw (pct + uitleg)
+
         ob: obView ? {
           status: obView.valid ? "valid" : "validating",
           valid: obView.valid,
@@ -333,7 +335,7 @@ export default async function handler(req, res) {
           spreadPct: obView.spreadPct,
           lor: obView.lor,
           agree: obView.agree,
-          depthMinUsd1p: obView.depthMinUsd1p, // ✅ nieuw
+          depthMinUsd1p: obView.depthMinUsd1p,
           reason: obView.reason
         } : { status: "none" },
 
@@ -357,7 +359,6 @@ export default async function handler(req, res) {
       else radar.push(item);
     }
 
-    // sort
     const sortKey = (a, b) => (b.confidence - a.confidence) || (b.vm - a.vm);
 
     entry.sort(sortKey);
