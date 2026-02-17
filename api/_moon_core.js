@@ -485,6 +485,73 @@ export function hitStopOrTp({ mode, priceNow, sl, tp3 }) {
   return { hit: false };
 }
 
+// ================== DISCORD (MOON) ==================
+const DISCORD_MAX = 1900;
+
+function splitDiscord(content) {
+  const s = String(content || "");
+  if (s.length <= DISCORD_MAX) return [s];
+  const parts = [];
+  let i = 0;
+  while (i < s.length) {
+    parts.push(s.slice(i, i + DISCORD_MAX));
+    i += DISCORD_MAX;
+  }
+  return parts;
+}
+
+export async function sendDiscord(webhookUrl, content) {
+  if (!webhookUrl) return;
+
+  const parts = splitDiscord(content);
+  for (const part of parts) {
+    try {
+      const r = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: part }),
+      });
+      if (r && r.status === 429) break;
+    } catch {
+      break;
+    }
+  }
+}
+
+export function webhookForMoonStage(stage) {
+  if (stage === "RADAR") return process.env.DISCORD_WEBHOOK_RADAR_MOON;
+  if (stage === "BUILDUP") return process.env.DISCORD_WEBHOOK_BUILDUP_MOON;
+  if (stage === "ALMOST") return process.env.DISCORD_WEBHOOK_ALMOST_MOON;
+  if (stage === "ELITE") return process.env.DISCORD_WEBHOOK_ELITE_MOON;
+  return null;
+}
+
+export function webhookMoonPortfolio() {
+  return process.env.DISCORD_WEBHOOK_PORTFOLIO_MOON || null;
+}
+
+function d2(n) { return (Number(n) || 0).toFixed(2); }
+function d8(n) { return (Number(n) || 0).toFixed(8); }
+function sgn(n) { n = Number(n) || 0; return `${n >= 0 ? "+" : ""}${d2(n)}`; }
+function short(n) {
+  n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
+  return n.toFixed(0);
+}
+
+export function fmtMoonLine(item, mode, extra = "") {
+  const lines = [
+    `**${item.symbol}** → **${item.stage}** (MOON ${String(mode || "").toUpperCase()})`,
+    `prijs: $${d8(item.price)} | chg24: ${sgn(item.change24)}% | range24: ${d2(item.range24)}%`,
+    `vol: $${short(item.volume)} | mc: $${short(item.marketCap)} | vm: ${d2(item.vm)}`,
+    `confidence: ${item.confidence}/100 | volAcc: ${d2(item.volAcc)} | depthOk: ${item.depthOk ? "yes" : "no"}`,
+  ];
+  if (extra) lines.push(extra);
+  return lines.join("\n");
+}
+
 // ================== HELPERS ==================
 function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
 function clamp01(n) { return clamp(n, 0, 1); }
