@@ -12,12 +12,11 @@ import {
 export const config = RUNTIME_CONFIG;
 
 // ================== BITGET DEPTH (SPOT) ==================
-// Bitget spot pairs zijn meestal: COINUSDT_SPBL
 async function fetchBitgetDepth(symbolUpper) {
   const base = String(symbolUpper || "").toUpperCase();
   if (!base) return null;
 
-  const sym = `${base}USDT_SPBL`; // ✅ FIX
+  const sym = `${base}USDT_SPBL`;
   const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(sym)}&limit=50`;
 
   const r = await fetch(url, { headers: { accept: "application/json" } });
@@ -25,8 +24,6 @@ async function fetchBitgetDepth(symbolUpper) {
 
   const j = await r.json();
   const d = j?.data || null;
-
-  // ✅ harde check zodat "lege data" niet doorloopt
   if (!d?.bids?.length || !d?.asks?.length) return null;
 
   return d;
@@ -42,8 +39,6 @@ function sumDepth(levels, mid, pct, isBid) {
     const s = Number(row?.[1]);
     if (!Number.isFinite(p) || !Number.isFinite(s)) continue;
 
-    // Bitget depth is gesorteerd:
-    // bids: hoog -> laag, asks: laag -> hoog
     if (isBid && p < limit) break;
     if (!isBid && p > limit) break;
 
@@ -66,7 +61,6 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  // 0.2% band
   const pct = 0.002;
   const bidRes = sumDepth(bids, mid, pct, true);
   const askRes = sumDepth(asks, mid, pct, false);
@@ -80,21 +74,11 @@ function computeObSample(depth) {
   const biggest = Math.max(bidRes.biggest, askRes.biggest);
   const lor = denom > 0 ? biggest / denom : 1;
 
-  // 1% liquiditeit vloer
   const bid1 = sumDepth(bids, mid, 0.01, true);
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
 
-  return {
-    ts: Date.now(),
-    score,
-    spreadPct,
-    lor,
-    bidUsd,
-    askUsd,
-    mid,
-    depthMinUsd1p,
-  };
+  return { ts: Date.now(), score, spreadPct, lor, bidUsd, askUsd, mid, depthMinUsd1p };
 }
 
 // ================== VALIDATION ==================
@@ -159,7 +143,6 @@ async function processCandidate(mode, symbol) {
   const v = validateSamples(mode, pruned);
   const stale = (Date.now() - sample.ts) / 1000 > 15;
 
-  // schrijf ook top-level velden (compat met core)
   const result = {
     symbol,
     side: mode,
