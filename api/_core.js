@@ -81,10 +81,7 @@ export const SETTINGS = {
   atrCacheSec: 60 * 10,
 
   // ================== POSITION SIZING (advies in %) ==================
-  // Jij hebt 1 vast bedrag per trade. Wij geven alleen een advies: 60/70/80/90/100%.
   sizing: {
-    // bands op CONFIDENCE
-    // <70 komt nooit in ENTRY (hard gate), maar voor UI in ALMOST/BUILDUP mag hij wel bestaan.
     confBands: [
       { min: 0,   pct: 60 },
       { min: 70,  pct: 70 },
@@ -92,15 +89,11 @@ export const SETTINGS = {
       { min: 90,  pct: 90 },
       { min: 95,  pct: 100 },
     ],
-
-    // cap op basis van BTC strength
     btcCaps: {
       WEAK: 70,
       NORMAL: 90,
       STRONG: 100,
     },
-
-    // cap op basis van stage (ENTRY hoogste cap)
     stageCaps: {
       RADAR: 60,
       BUILDUP: 70,
@@ -160,11 +153,27 @@ export async function sendDiscord(webhookUrl, content) {
   } catch {}
 }
 
+/**
+ * JOUW ENV NAMES:
+ * - DISCORD_WEBHOOK_RADAR
+ * - DISCORD_WEBHOOK_BUILDUP
+ * - DISCORD_WEBHOOK_ALMOST
+ * - DISCORD_WEBHOOK_ELITE
+ *
+ * Main funnel stage heet "ENTRY", maar jij gebruikt webhook naam "ELITE".
+ * Daarom mappen we ENTRY -> DISCORD_WEBHOOK_ELITE.
+ */
 export function webhookForStage(stage) {
   if (stage === "RADAR") return process.env.DISCORD_WEBHOOK_RADAR;
   if (stage === "BUILDUP") return process.env.DISCORD_WEBHOOK_BUILDUP;
   if (stage === "ALMOST") return process.env.DISCORD_WEBHOOK_ALMOST;
-  if (stage === "ENTRY") return process.env.DISCORD_WEBHOOK_ENTRY;
+
+  // ✅ FIX: main noemt het ENTRY, jouw webhook heet ELITE
+  if (stage === "ENTRY") return process.env.DISCORD_WEBHOOK_ELITE;
+
+  // ✅ extra: mocht ergens "ELITE" als stage gebruikt worden
+  if (stage === "ELITE") return process.env.DISCORD_WEBHOOK_ELITE;
+
   return null;
 }
 
@@ -426,7 +435,6 @@ export function calcConsistency(hist, wantedSide) {
   return { ok: ratio >= SETTINGS.consistencyMinRatio, ratio, total, same };
 }
 
-// dynamic range cap based on btcRange
 export function coinRangeCapFromBTC(btcRange24) {
   const raw = 30 + (Number(btcRange24 || 0) - 5) * 2;
   return clamp(raw, SETTINGS.coinRangeCapMin, SETTINGS.coinRangeCapMax);
@@ -530,7 +538,6 @@ export function passAlmost(c, mode, priceHist, consistencyOk) {
   return true;
 }
 
-// ENTRY gate based on OB result + spread/lor + thresholds + slope + hard gates
 export function passEntryFromObPlus({ obView, mode, consistencyRatio, confidence, obSlope }) {
   const base = passEntryFromOb(obView, mode);
   if (!base.ok) return base;
@@ -642,7 +649,6 @@ export function btcStrengthZone(btc) {
 
 export function allocPctFromConfidence(conf) {
   const c = Number(conf || 0);
-  // hoogste band waar c >= min
   let pct = 60;
   for (const b of SETTINGS.sizing.confBands) {
     if (c >= b.min) pct = b.pct;
@@ -658,11 +664,8 @@ export function allocPctRecommended({ stage, confidence, btc }) {
 
   const confPct = allocPctFromConfidence(confidence);
 
-  // eindadvies = kleinste cap wint (veilig)
   const pct = Math.min(confPct, btcCap, stageCap);
 
-  // altijd netjes afronden op 10-stappen die jij wilt
-  // (60/70/80/90/100)
   const allowed = [60, 70, 80, 90, 100];
   const best = allowed.reduce((prev, cur) => (cur <= pct ? cur : prev), 60);
 
