@@ -238,7 +238,12 @@ export default async function handler(req, res) {
 
       // Discord on new stage
       if (stageChanged) {
-        const hook = webhookForStage(stage);
+        let hook = webhookForStage(stage);
+
+        // ✅ EXTRA VANGNET: als iemand toch nog een mismatch heeft
+        // (ENTRY maar env heet ELITE)
+        if (!hook && stage === "ENTRY") hook = process.env.DISCORD_WEBHOOK_ELITE;
+
         if (hook) {
           let extra = `Confidence: ${conf}/100 • Advies: ${sizing.pct}% (BTC ${sizing.zone})`;
 
@@ -325,7 +330,7 @@ export default async function handler(req, res) {
         consistency: cons,
         volAcc,
 
-        sizing, // ✅ nieuw (pct + uitleg)
+        sizing,
 
         ob: obView ? {
           status: obView.valid ? "valid" : "validating",
