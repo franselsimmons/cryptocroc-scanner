@@ -1,8 +1,17 @@
-const qs = new URLSearchParams(location.search);
+// ===== topbar hoogte automatisch naar CSS var zetten =====
+function syncTopbarHeight(){
+  const tb = document.querySelector(".topbar");
+  const h = tb ? Math.ceil(tb.getBoundingClientRect().height) : 78;
+  document.documentElement.style.setProperty("--topbar-h", h + "px");
+}
+window.addEventListener("resize", syncTopbarHeight);
+window.addEventListener("load", syncTopbarHeight);
+syncTopbarHeight();
 
+// ===== URL state =====
+const qs = new URLSearchParams(location.search);
 let mode = (qs.get("mode") || "bull").toLowerCase();
 if (mode !== "bull" && mode !== "bear") mode = "bull";
-
 const token = (qs.get("token") || "").trim();
 
 function withToken(url) {
@@ -26,14 +35,26 @@ const stageAlmost  = document.getElementById("stageAlmost");
 const stageBuildup = document.getElementById("stageBuildup");
 const stageRadar   = document.getElementById("stageRadar");
 
+// ===== modal refs =====
 const modal  = document.getElementById("modal");
 const mClose = document.getElementById("mClose");
 const mTitle = document.getElementById("mTitle");
 const mSub   = document.getElementById("mSub");
-const mWhy   = document.getElementById("mWhy");
-const mOB    = document.getElementById("mOB");
-const mRisk  = document.getElementById("mRisk");
-const mDebug = document.getElementById("mDebug");
+
+const tabWhy   = document.getElementById("tabWhy");
+const tabLiq   = document.getElementById("tabLiq");
+const tabRisk  = document.getElementById("tabRisk");
+const tabDebug = document.getElementById("tabDebug");
+
+const boxWhy   = document.getElementById("boxWhy");
+const boxLiq   = document.getElementById("boxLiq");
+const boxRisk  = document.getElementById("boxRisk");
+const boxDebug = document.getElementById("boxDebug");
+
+const mWhyList = document.getElementById("mWhyList");
+const mLiqList = document.getElementById("mLiqList");
+const mRiskKv  = document.getElementById("mRiskKv");
+const mDebug   = document.getElementById("mDebug");
 
 // ===== events =====
 btnBull.onclick = () => setMode("bull");
@@ -44,7 +65,12 @@ btnScan.onclick = () => runScan();
 mClose.onclick = closeModal;
 modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
 
-// ===== helpers =====
+tabWhy.onclick   = () => setTab("Why");
+tabLiq.onclick   = () => setTab("Liq");
+tabRisk.onclick  = () => setTab("Risk");
+tabDebug.onclick = () => setTab("Debug");
+
+// ===== UI helpers =====
 function setMode(m) {
   mode = m;
   qs.set("mode", mode);
@@ -59,193 +85,233 @@ function setActiveButtons() {
   btnBear.classList.toggle("active", mode === "bear");
 }
 
-function fmt(n, d=2){ return (Number(n)||0).toFixed(d); }
-function fmtSign(n, d=2){ n=Number(n)||0; return (n>=0?"+":"")+n.toFixed(d); }
-
-function short(n){
-  n = Number(n)||0;
-  if (n >= 1e9) return (n/1e9).toFixed(2)+"B";
-  if (n >= 1e6) return (n/1e6).toFixed(2)+"M";
-  if (n >= 1e3) return (n/1e3).toFixed(2)+"K";
-  return n.toFixed(0);
+function setTab(name){
+  const map = { Why:[tabWhy,boxWhy], Liq:[tabLiq,boxLiq], Risk:[tabRisk,boxRisk], Debug:[tabDebug,boxDebug] };
+  for(const k of Object.keys(map)){
+    map[k][0].classList.toggle("active", k===name);
+    map[k][1].classList.toggle("hidden", k!==name);
+  }
 }
 
-function escapeHtml(s){
-  return String(s||"")
+function fmt(n, d = 2) { return (Number(n) || 0).toFixed(d); }
+function fmtSign(n, d = 2) { n = Number(n) || 0; return (n >= 0 ? "+" : "") + n.toFixed(d); }
+function safe(n, d=2){
+  const x = Number(n);
+  if(!Number.isFinite(x)) return "—";
+  return x.toFixed(d);
+}
+function short(n) {
+  n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
+  return n.toFixed(0);
+}
+function escapeHtml(s) {
+  return String(s || "")
     .replaceAll("&","&amp;")
     .replaceAll("<","&lt;")
     .replaceAll(">","&gt;")
     .replaceAll('"',"&quot;")
     .replaceAll("'","&#039;");
 }
-
-function confClass(conf){
-  const c = Number(conf||0);
-  if (c < 50) return "bad";
-  if (c < 70) return "mid";
-  if (c < 85) return "good";
-  return "best";
-}
-function confBar(conf){
-  const c = Math.max(0, Math.min(100, Number(conf||0)));
-  const cls = confClass(c);
-  return `
-    <div class="confBar" title="Confidence">
-      <div class="confFill ${cls}" style="width:${c}%"></div>
-    </div>`;
-}
-
-function emptyBox(msg="Geen coins"){
+function emptyBox(msg = "Geen coins") {
   return `<div class="empty">${escapeHtml(msg)}</div>`;
 }
 
-function dot(kind){
-  const cls = kind==="ok" ? "ok" : kind==="bad" ? "bad" : "wait";
-  return `<span class="dot ${cls}"></span>`;
+function confColor(conf){
+  const c = Number(conf)||0;
+  if (c < 50) return "#EF4444";
+  if (c < 70) return "#F59E0B";
+  if (c < 85) return "#3B82F6";
+  return "#22C55E";
+}
+function confBar(conf){
+  const pct = Math.max(0, Math.min(100, Number(conf)||0));
+  const col = confColor(pct);
+  return `
+    <div class="confWrap">
+      <div class="confBar"><div class="confFill" style="width:${pct}%;background:${col}"></div></div>
+      <div class="confTxt">${pct}/100</div>
+    </div>
+  `;
 }
 
-function renderCoinRow(c, stageName){
-  const conf = Number(c?.confidence||0);
-  const consPct = Math.round((Number(c?.consistency?.ratio||0))*100);
+// ===== checks =====
+function icon(ok, kind="ok"){
+  if(ok===true) return `<span class="iconOk">✓</span>`;
+  if(kind==="warn") return `<span class="iconWarn">⚠</span>`;
+  return `<span class="iconNo">✗</span>`;
+}
+function addCheck(container, ok, title, sub="", kind="ok"){
+  const div = document.createElement("div");
+  div.className = "checkItem";
+  div.innerHTML = `
+    ${icon(ok, kind)}
+    <div class="checkText">
+      <div><b>${title}</b></div>
+      ${sub ? `<div class="checkSmall">${sub}</div>` : ""}
+    </div>
+  `;
+  container.appendChild(div);
+}
+function setKV(container, rows){
+  container.innerHTML = "";
+  for(const [k,v] of rows){
+    const r = document.createElement("div");
+    r.className = "kvRow";
+    r.innerHTML = `<div class="kvKey">${k}</div><div class="kvVal">${v}</div>`;
+    container.appendChild(r);
+  }
+}
+
+// ===== render list =====
+function coinCard(c, stageName){
+  const conf = Number(c?.confidence || 0);
+  const consPct = Math.round((Number(c?.consistency?.ratio || 0)) * 100);
 
   return `
-  <div class="coinRow">
+  <div class="coinRow" data-stage="${escapeHtml(stageName)}">
     <div class="coinTop">
-      <div class="left">
-        <div class="sym">${escapeHtml(c.symbol||"—")}</div>
-        <div class="tag">${escapeHtml(stageName)}</div>
+      <div>
+        <div class="sym">${escapeHtml(c.symbol || "—")}</div>
+        <div class="tag">${escapeHtml(c.name || "")}</div>
       </div>
-      <div class="right">
-        ${confBar(conf)}
-        <span class="pill">Conf ${conf}/100</span>
-        <span class="pill">Cons ${consPct}%</span>
-      </div>
+
+      ${confBar(conf)}
+
+      <div class="pill">${escapeHtml(stageName)}</div>
+      <div class="pill">Cons ${consPct}%</div>
     </div>
 
     <div class="coinMeta">
-      <span>chg24: ${fmtSign(c.change24)}%</span>
-      <span>range24: ${fmt(c.range24)}%</span>
-      <span>vol: ${short(c.volume)}</span>
-      <span>mc: ${short(c.marketCap)}</span>
-      <span>vm: ${fmt(c.vm,2)}</span>
-      <span>volAcc: ${fmt(c.volAcc,2)}</span>
+      <span>Price $${fmt(c.price, 6)}</span>
+      <span>Chg24 ${fmtSign(c.change24)}%</span>
+      <span>Range24 ${fmt(c.range24)}%</span>
+      <span>MC ${short(c.marketCap)}</span>
+      <span>Vol ${short(c.volume)}</span>
+      <span>VM ${fmt(c.vm, 2)}</span>
     </div>
   </div>`;
 }
 
-function renderStage(list, el, stageName){
-  if (!Array.isArray(list) || list.length===0){
-    el.innerHTML = emptyBox();
+function renderStage(list, elStage, stageName){
+  if (!Array.isArray(list) || list.length === 0){
+    elStage.innerHTML = emptyBox();
     return;
   }
-  el.innerHTML = list.map((c)=>renderCoinRow(c, stageName)).join("");
-  el.querySelectorAll(".coinRow").forEach((rowEl, idx)=>{
-    rowEl.onclick = ()=>openModal(list[idx], stageName);
+  elStage.innerHTML = list.map((c) => coinCard(c, stageName)).join("");
+  elStage.querySelectorAll(".coinRow").forEach((rowEl, idx) => {
+    rowEl.onclick = () => openModalMoon(list[idx], stageName);
   });
 }
 
-/* ===== modal ===== */
-function li(icon, text){
-  return `<li>${icon} ${escapeHtml(text)}</li>`;
-}
-function closeModal(){ modal.classList.add("hidden"); }
-function openModal(c, stageName){
-  const symbol = c?.symbol || "—";
-  const conf   = Number(c?.confidence||0);
-  const consR  = Number(c?.consistency?.ratio||0);
+// ===== modal =====
+function openModalMoon(c, stageName){
+  setTab("Why");
+  syncTopbarHeight();
 
-  mTitle.textContent = `${symbol} • ${stageName} • ${mode.toUpperCase()}`;
-
+  mTitle.textContent = `${c.symbol || "—"} • ${stageName} • ${mode.toUpperCase()}`;
   mSub.textContent =
-    `Prijs $${fmt(c.price)} • Chg24 ${fmtSign(c.change24)}% • Range24 ${fmt(c.range24)}% • ` +
-    `VM ${fmt(c.vm,2)} • Conf ${conf}/100 • Cons ${(consR*100).toFixed(0)}%`;
+    `Price $${safe(c.price, 6)} • Chg24 ${fmtSign(c.change24)}% • Range24 ${fmt(c.range24)}% • VM ${fmt(c.vm,2)} • Conf ${Number(c?.confidence||0)}/100`;
 
-  // WHY checklist (menselijk)
-  const why = c?.why || {};
-  const whyHtml = `
-    <ul class="list">
-      ${li(String(why.radar||"").includes("ok") ? "✅" : "❌", `Radar: ${why.radar || "—"}`)}
-      ${li(String(why.buildup||"").includes("ok") ? "✅" : "❌", `Buildup: ${why.buildup || "—"}`)}
-      ${li(String(why.almost||"").includes("ok") ? "✅" : "❌", `Almost: ${why.almost || "—"}`)}
-      ${li(String(why.elite||"").includes("ok") ? "✅" : String(why.elite||"").toLowerCase().includes("validat") ? "⏳" : "❌", `Elite: ${why.elite || "—"}`)}
-      ${why.eliteExtra ? li("ℹ️", `Extra: ${why.eliteExtra}`) : ""}
-    </ul>
-    <div class="kv">
-      <div><b>VolAcc:</b> ${escapeHtml(fmt(c.volAcc,2))}</div>
-      <div><b>Consistency:</b> ${escapeHtml(Math.round(consR*100)+"%")}</div>
-    </div>
-  `;
-  mWhy.innerHTML = whyHtml;
+  // WHY: Moon heeft c.why met per stage regels
+  mWhyList.innerHTML = "";
 
-  // Liquidity: 1 status + stats
+  addCheck(mWhyList, true, `Stage: ${stageName}`, `Mode: ${mode.toUpperCase()}`);
+
+  const consRatio = Number(c?.consistency?.ratio || 0);
+  addCheck(
+    mWhyList,
+    consRatio >= 0.70,
+    "Consistency",
+    `Ratio: ${(consRatio*100).toFixed(0)}%`,
+    consRatio >= 0.70 ? "ok" : "warn"
+  );
+
+  addCheck(
+    mWhyList,
+    Number(c?.confidence||0) >= 50,
+    "Confidence",
+    `Score: ${Number(c?.confidence||0)}/100`,
+    Number(c?.confidence||0) >= 65 ? "ok" : "warn"
+  );
+
+  const w = c?.why || {};
+  // Menselijk: “wat faalt”
+  addCheck(mWhyList, true, "Radar", w.radar || "—");
+  addCheck(mWhyList, (String(w.buildup||"").toLowerCase().includes("ok")), "Buildup", w.buildup || "—", "warn");
+  addCheck(mWhyList, (String(w.almost||"").toLowerCase().includes("ok")), "Almost", w.almost || "—", "warn");
+  addCheck(mWhyList, (String(w.elite||"").toLowerCase().includes("ok")), "Elite", w.elite || "—", "warn");
+  if (w.eliteExtra) addCheck(mWhyList, (String(w.eliteExtra||"").toLowerCase().includes("ok")), "Elite extra", w.eliteExtra, "warn");
+
+  // LIQ
+  mLiqList.innerHTML = "";
   const ob = c?.ob || null;
   const depthOk = !!c?.depthOk;
 
-  let kind = "wait";
-  let text = "Nog geen OB";
-  if (ob?.status === "validating") { kind = "wait"; text = "OB validating"; }
-  if (ob?.status === "valid") { kind = "ok"; text = "OB ok"; }
-  if (ob?.status === "none") { kind = "wait"; text = "Geen OB"; }
+  addCheck(
+    mLiqList,
+    !!(ob && ob.status && ob.status !== "none"),
+    "Orderbook",
+    ob ? `status: ${ob.status} • score: ${safe(ob.score,3)} • spread: ${safe(ob.spreadPct,2)}%` : "geen data",
+    "warn"
+  );
 
-  // Depth komt uit Moon core (floorUsd + bidUsd/askUsd)
-  const depthMin = Math.min(Number(ob?.bidUsd||0), Number(ob?.askUsd||0));
-  const floorUsd = Number(c?.floorUsd||0);
+  addCheck(
+    mLiqList,
+    depthOk,
+    "Depth floor",
+    `depthOk: ${depthOk} • floorUsd: ${Math.round(Number(c?.floorUsd||0)).toLocaleString()}`,
+    depthOk ? "ok" : "warn"
+  );
 
-  const stats =
-    `Score ${ob?.score==null?"—":fmt(ob.score,3)} • ` +
-    `Spread ${ob?.spreadPct==null?"—":fmt(ob.spreadPct,2)+"%"} • ` +
-    `LOR ${ob?.lor==null?"—":fmt(ob.lor,2)} • ` +
-    `Depth(min) $${short(depthMin)} / floor $${short(floorUsd)}`;
-
-  mOB.innerHTML = `
-    <div class="kv">
-      <div>${dot(kind)} <b>${escapeHtml(text)}</b> • ${dot(depthOk?"ok":"bad")} <b>${depthOk?"Depth ok":"Depth low"}</b></div>
-      <div>${escapeHtml(stats)}</div>
-    </div>
-  `;
-
-  // Risk & actie
+  // RISK (Moon heeft risk object)
   const risk = c?.risk || null;
-  const sl = risk ? `SL ${fmt(risk.slPct,2)}%` : "SL —";
-  const tp = risk ? `TP3 ${fmt(risk.tp3,8)}` : "TP —";
-  mRisk.innerHTML = `
-    <div class="kv">
-      <div><b>${escapeHtml(sl)}</b> • <b>${escapeHtml(tp)}</b></div>
-      <div>${escapeHtml(risk?.note || "")}</div>
-    </div>
-  `;
+  setKV(mRiskKv, [
+    ["SL%", risk ? `${safe(risk.slPct,2)}%` : "—"],
+    ["SL", risk ? `${safe(risk.sl, 8)}` : "—"],
+    ["TP3", risk ? `${safe(risk.tp3, 8)}` : "—"],
+    ["Note", risk ? (risk.note || "—") : "—"],
+  ]);
 
-  // Debug (optioneel)
-  try { mDebug.textContent = JSON.stringify(c, null, 2); }
-  catch { mDebug.textContent = String(c); }
+  // DEBUG
+  mDebug.textContent = JSON.stringify(c, null, 2);
 
   modal.classList.remove("hidden");
 }
 
-/* ===== main ===== */
+function closeModal(){
+  modal.classList.add("hidden");
+}
+
+// ===== main =====
 async function loadLatest(){
   setActiveButtons();
   statusLine.textContent = "Status: laden…";
 
   try{
-    const r = await fetch(API_LATEST(mode), { cache:"no-store" });
+    const r = await fetch(API_LATEST(mode), { cache: "no-store" });
     const j = await r.json();
 
     const counts = j?.counts || {};
     const btc = j?.btc
       ? ` • BTC ${j.btc.state} (${fmtSign(j.btc.chg24)}% / ${fmt(j.btc.range24)}%)`
       : "";
+
     const note = j?.note ? ` • ${j.note}` : "";
+    const p = j?.portfolio ? ` • Portfolio: Open ${j.portfolio.openCount||0} | Closed ${j.portfolio.closedCount||0}` : "";
 
     statusLine.textContent =
-      `Mode: ${mode.toUpperCase()} • Elite ${counts.elite||0} | Almost ${counts.almost||0} | ` +
-      `Buildup ${counts.buildup||0} | Radar ${counts.radar||0}${btc}${note}`;
+      `Mode: ${mode.toUpperCase()} • Elite ${counts.elite || 0} | Almost ${counts.almost || 0} | ` +
+      `Buildup ${counts.buildup || 0} | Radar ${counts.radar || 0}${btc}${p}${note}`;
 
     const funnel = j?.funnel || {};
     renderStage(funnel.elite || [], stageElite, "ELITE");
     renderStage(funnel.almost || [], stageAlmost, "ALMOST");
     renderStage(funnel.buildup || [], stageBuildup, "BUILDUP");
     renderStage(funnel.radar || [], stageRadar, "RADAR");
+
   }catch(e){
     statusLine.textContent = "Status: error (check Vercel logs)";
     stageElite.innerHTML = `<pre class="modalPre">${escapeHtml(String(e))}</pre>`;
@@ -256,17 +322,15 @@ async function loadLatest(){
 }
 
 async function runScan(){
-  if (!token){
+  if(!token){
     alert("Geen token in de URL. Gebruik ?token=JOUW_TOKEN");
     return;
   }
-
   statusLine.textContent = `Status: scan starten (${mode.toUpperCase()})…`;
-
   try{
     const r = await fetch(API_SCAN(mode), { cache:"no-store" });
     const j = await r.json();
-    if (!j?.ok) throw new Error(j?.error || "Scan failed");
+    if(!j?.ok) throw new Error(j?.error || "Scan failed");
     await loadLatest();
   }catch(e){
     statusLine.textContent = "Status: scan error (check Vercel logs)";
@@ -274,4 +338,5 @@ async function runScan(){
   }
 }
 
+// start
 loadLatest();
