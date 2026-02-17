@@ -5,13 +5,17 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>CryptoCroc Moonshots</title>
   <link rel="stylesheet" href="/styles.css" />
+  <style>
+    /* MOON accent */
+    :root{ --accent:#A855F7; }
+  </style>
 </head>
-<body class="page-moon">
+<body>
   <header class="topbar">
     <div class="left">
       <div class="brand">🌙 Moonshots</div>
       <div class="sub" id="statusLine">Status: laden…</div>
-      <div class="sub">Moon is “vroeg/ruisiger”. Main is “bevestigd/strakker”.</div>
+      <div class="sub">Vroege explosies / proactief (meer setups, meer ruis).</div>
     </div>
 
     <div class="right">
@@ -19,14 +23,14 @@
       <button id="modeBear" class="btn">BEAR</button>
       <button id="btnRefresh" class="btn">Refresh</button>
       <button id="btnScan" class="btn danger">Scan nu</button>
-      <a class="btn" href="/">Main</a>
+      <a class="btn" href="/">⬅ Main</a>
     </div>
   </header>
 
   <main class="grid">
     <section class="panel">
       <div class="panelTitle">ELITE</div>
-      <div class="panelHint">Meest betrouwbaar (OB + depth + confidence + consistency).</div>
+      <div class="panelHint">Meest betrouwbaar (OB + depth + confidence + consistency + rolling).</div>
       <div class="stageBody" id="stageElite"></div>
     </section>
 
@@ -49,7 +53,7 @@
     </section>
   </main>
 
-  <!-- MODAL -->
+  <!-- MODAL (zelfde voor Main + Moon) -->
   <div class="modal hidden" id="modal">
     <div class="modalCard">
       <div class="modalTop">
@@ -60,28 +64,32 @@
         <button class="btn" id="mClose">Sluiten</button>
       </div>
 
-      <div class="modalGrid">
-        <div class="modalBox">
+      <div class="modalTabs">
+        <button class="tabBtn active" id="tabWhy">Waarom</button>
+        <button class="tabBtn" id="tabLiq">Liquidity</button>
+        <button class="tabBtn" id="tabRisk">Risk</button>
+        <button class="tabBtn" id="tabDebug">Debug</button>
+      </div>
+
+      <div class="modalBody">
+        <div class="modalBox" id="boxWhy">
           <div class="modalBoxTitle">Waarom staat hij hier</div>
-          <div class="modalBody" id="mWhy">—</div>
+          <div class="checkList" id="mWhyList"></div>
         </div>
 
-        <div class="modalBox">
-          <div class="modalBoxTitle">Liquidity (OB + Depth)</div>
-          <div class="modalBody" id="mOB">—</div>
+        <div class="modalBox hidden" id="boxLiq">
+          <div class="modalBoxTitle">Liquidity (Orderbook + Depth)</div>
+          <div class="checkList" id="mLiqList"></div>
         </div>
 
-        <div class="modalBox">
-          <div class="modalBoxTitle">Risk & Actie</div>
-          <div class="modalBody" id="mRisk">—</div>
+        <div class="modalBox hidden" id="boxRisk">
+          <div class="modalBoxTitle">Risk</div>
+          <div class="kv" id="mRiskKv"></div>
         </div>
 
-        <div class="modalBox">
-          <div class="modalBoxTitle">Debug (optioneel)</div>
-          <details class="debug">
-            <summary>Toon ruwe data</summary>
-            <pre class="modalPre" id="mDebug">—</pre>
-          </details>
+        <div class="modalBox hidden" id="boxDebug">
+          <div class="modalBoxTitle">Debug (coin object)</div>
+          <pre class="modalPre" id="mDebug">—</pre>
         </div>
       </div>
     </div>
