@@ -3,7 +3,7 @@ import { kv } from "@vercel/kv";
 
 export const RUNTIME_CONFIG = { runtime: "nodejs20.x" };
 
-// ================== SETTINGS (v1 + fases 0/1/2) ==================
+// ================== SETTINGS (Main Funnel: Quality Continuation) ==================
 export const SETTINGS = {
   // Universe
   CG_TOP: 250,
@@ -23,14 +23,20 @@ export const SETTINGS = {
   btcRangeMaxBull: 8,
   btcRangeMaxBear: 10,
 
+  // BTC strength zones (voor sizing caps)
+  btcStrength: {
+    weakMaxAbsChg: 1.2,     // <1.2% = weak
+    strongMinAbsChg: 3.0,   // >=3.0% = strong
+  },
+
   // volatility knob (light): coin range cap beweegt mee met btcRange
   coinRangeCapMin: 25,
   coinRangeCapMax: 40,
 
-  // BUILDUP
+  // BUILDUP (continuation richting)
   buildup: { chgMin: 1.2, vmMin: 0.22, volMin: 1_200_000 },
 
-  // ALMOST
+  // ALMOST (consolidatie + sterkere flow)
   almost: { vmMin: 0.26, volMin: 2_000_000, priceFlatMax: 6.5 },
 
   // ENTRY (OB gate)
@@ -42,7 +48,7 @@ export const SETTINGS = {
     samplesWindowSec: 90,
     minAgree: 2,          // 2/3 richting
 
-    // ✅ liquiditeitsvloer binnen 1%
+    // liquiditeitsvloer binnen 1%
     minDepthUsd1p: 200_000,
 
     // hard gates
@@ -73,11 +79,38 @@ export const SETTINGS = {
 
   // Fase 2: Bitget ATR cache
   atrCacheSec: 60 * 10,
+
+  // ================== POSITION SIZING (advies in %) ==================
+  // Jij hebt 1 vast bedrag per trade. Wij geven alleen een advies: 60/70/80/90/100%.
+  sizing: {
+    // bands op CONFIDENCE
+    // <70 komt nooit in ENTRY (hard gate), maar voor UI in ALMOST/BUILDUP mag hij wel bestaan.
+    confBands: [
+      { min: 0,   pct: 60 },
+      { min: 70,  pct: 70 },
+      { min: 80,  pct: 80 },
+      { min: 90,  pct: 90 },
+      { min: 95,  pct: 100 },
+    ],
+
+    // cap op basis van BTC strength
+    btcCaps: {
+      WEAK: 70,
+      NORMAL: 90,
+      STRONG: 100,
+    },
+
+    // cap op basis van stage (ENTRY hoogste cap)
+    stageCaps: {
+      RADAR: 60,
+      BUILDUP: 70,
+      ALMOST: 80,
+      ENTRY: 100,
+    },
+  },
 };
 
 // ================== AUTH ==================
-// ✅ Fix: Vercel Cron Jobs sturen header `x-vercel-cron: 1` (of "true")
-// Zonder dit blokkeer je /api/cron + /api/ob-sampler -> geen OB beweging.
 export function requireSecret(req, res) {
   const cronHeader = String(req.headers?.["x-vercel-cron"] || "").toLowerCase();
   const isVercelCron = cronHeader === "1" || cronHeader === "true";
@@ -110,11 +143,9 @@ export const keyObResult = (side, symbol) => `ob:result:${side}:${symbol}`;
 
 export const keyEntryLog = "log:entry";
 
-// CG cache keys
 const keyCgTopCache = `cache:cg:top:${SETTINGS.CG_TOP}`;
 const keyCgBtcCache = `cache:cg:btc`;
 
-// ATR cache key
 const keyAtr1hCache = (symbol) => `cache:atr1h:${symbol}`;
 
 // ================== DISCORD ==================
@@ -126,9 +157,7 @@ export async function sendDiscord(webhookUrl, content) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ content }),
     });
-  } catch {
-    // discord mag scan niet slopen
-  }
+  } catch {}
 }
 
 export function webhookForStage(stage) {
@@ -139,8 +168,6 @@ export function webhookForStage(stage) {
   return null;
 }
 
-// ✅ Geen harde cryptocroc URL meer (lek naar buiten).
-// Zet optioneel env: PUBLIC_SCANNER_URL als je wél een link wil.
 export function fmtCoinLine(c, mode, stage, extra = "") {
   const base = (process.env.PUBLIC_SCANNER_URL || "").replace(/\/$/, "");
   const page = base ? `${base}/?mode=${encodeURIComponent(mode)}` : `/?mode=${encodeURIComponent(mode)}`;
@@ -155,7 +182,7 @@ export function fmtCoinLine(c, mode, stage, extra = "") {
   return lines.join("\n");
 }
 
-// ================== DATA FETCH (CoinGecko + cache) ==================
+// ================== DATA FETCH ==================
 export async function fetchCoinGeckoTop() {
   const url =
     `https://api.coingecko.com/api/v3/coins/markets?` +
@@ -255,7 +282,7 @@ export async function getBitgetSpotUsdtSymbols() {
   return new Set(list);
 }
 
-// ================== FASE 2: Bitget ATR(14) op 1H candles (spot) ==================
+// ================== FASE 2: Bitget ATR(14) op 1H candles ==================
 export async function fetchBitgetAtr1hPctCached(symbolUpper) {
   const symbol = String(symbolUpper || "").toUpperCase();
   if (!symbol) return null;
@@ -531,7 +558,6 @@ export function passEntryFromOb(ob, mode) {
   const spreadPct = Number(ob.spreadPct ?? 999);
   const lor = Number(ob.lor ?? 1);
 
-  // liquiditeitsvloer (min bid/ask depth binnen 1%)
   const depthMinUsd1p = Number(ob.depthMinUsd1p ?? 0);
   if (depthMinUsd1p < SETTINGS.entry.minDepthUsd1p) {
     return { ok: false, why: `Depth too thin (<$${SETTINGS.entry.minDepthUsd1p})` };
@@ -604,6 +630,49 @@ export function computeSLTP({ mode, price, atrPct }) {
 
   if (mode === "bull") return { sl: price - slDist, tp: price + tpDist };
   return { sl: price + slDist, tp: price - tpDist };
+}
+
+// ================== SIZING (60..100%) ==================
+export function btcStrengthZone(btc) {
+  const absChg = Math.abs(Number(btc?.chg24 || 0));
+  if (absChg < SETTINGS.btcStrength.weakMaxAbsChg) return "WEAK";
+  if (absChg >= SETTINGS.btcStrength.strongMinAbsChg) return "STRONG";
+  return "NORMAL";
+}
+
+export function allocPctFromConfidence(conf) {
+  const c = Number(conf || 0);
+  // hoogste band waar c >= min
+  let pct = 60;
+  for (const b of SETTINGS.sizing.confBands) {
+    if (c >= b.min) pct = b.pct;
+  }
+  return pct;
+}
+
+export function allocPctRecommended({ stage, confidence, btc }) {
+  const zone = btcStrengthZone(btc);
+  const btcCap = SETTINGS.sizing.btcCaps[zone] ?? 90;
+
+  const stageCap = SETTINGS.sizing.stageCaps[String(stage || "RADAR").toUpperCase()] ?? 60;
+
+  const confPct = allocPctFromConfidence(confidence);
+
+  // eindadvies = kleinste cap wint (veilig)
+  const pct = Math.min(confPct, btcCap, stageCap);
+
+  // altijd netjes afronden op 10-stappen die jij wilt
+  // (60/70/80/90/100)
+  const allowed = [60, 70, 80, 90, 100];
+  const best = allowed.reduce((prev, cur) => (cur <= pct ? cur : prev), 60);
+
+  return {
+    pct: best,
+    zone,
+    btcCap,
+    stageCap,
+    confPct,
+  };
 }
 
 // ================== HELPERS ==================
