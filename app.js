@@ -1,3 +1,14 @@
+// ===== topbar hoogte automatisch naar CSS var zetten =====
+function syncTopbarHeight(){
+  const tb = document.querySelector(".topbar");
+  const h = tb ? Math.ceil(tb.getBoundingClientRect().height) : 78;
+  document.documentElement.style.setProperty("--topbar-h", h + "px");
+}
+window.addEventListener("resize", syncTopbarHeight);
+window.addEventListener("load", syncTopbarHeight);
+syncTopbarHeight();
+
+// ===== helpers =====
 const el = (id) => document.getElementById(id);
 
 const API = {
@@ -5,9 +16,7 @@ const API = {
   ob: (mode, symbol) => `/api/orderbook?side=${encodeURIComponent(mode)}&symbol=${encodeURIComponent(symbol)}`
 };
 
-let MODE = new URLSearchParams(location.search).get("mode")
-  || localStorage.getItem("MODE")
-  || "bull";
+let MODE = new URLSearchParams(location.search).get("mode") || localStorage.getItem("MODE") || "bull";
 
 function setMode(mode){
   MODE = mode;
@@ -33,30 +42,26 @@ function fmtPct(n){
   const s = n >= 0 ? "+" : "";
   return s + n.toFixed(2) + "%";
 }
-function fmt(n, d=2){ return (Number(n)||0).toFixed(d); }
+function fmt(n){ return (Number(n)||0).toFixed(2); }
 
-function escapeHtml(s){
-  return String(s||"")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
+// ===== confidence kleur =====
+function confColor(conf){
+  const c = Number(conf)||0;
+  if (c < 50) return "#EF4444";
+  if (c < 70) return "#F59E0B";
+  if (c < 85) return "#3B82F6";
+  return "#22C55E";
 }
 
-function confClass(conf){
-  if (conf < 50) return "bad";
-  if (conf < 70) return "mid";
-  if (conf < 85) return "good";
-  return "best";
-}
 function confBar(conf){
-  const c = Math.max(0, Math.min(100, Number(conf||0)));
-  const cls = confClass(c);
+  const pct = Math.max(0, Math.min(100, Number(conf)||0));
+  const col = confColor(pct);
   return `
-    <div class="confBar" title="Confidence">
-      <div class="confFill ${cls}" style="width:${c}%"></div>
-    </div>`;
+    <div class="confWrap">
+      <div class="confBar"><div class="confFill" style="width:${pct}%;background:${col}"></div></div>
+      <div class="confTxt">${pct}/100</div>
+    </div>
+  `;
 }
 
 function sizingText(c){
@@ -65,24 +70,23 @@ function sizingText(c){
   return `Advies ${s.pct}% (BTC ${s.zone})`;
 }
 
+// ===== coins list =====
 function coinRow(c){
   const div = document.createElement("div");
   div.className = "coinRow";
 
   const adv = sizingText(c);
-  const conf = Number(c?.confidence||0);
 
   div.innerHTML = `
     <div class="coinTop">
-      <div class="left">
-        <div class="sym">${escapeHtml(c.symbol||"—")}</div>
-        <div class="tag">${escapeHtml(c.stage||"")}</div>
+      <div>
+        <div class="sym">${c.symbol}</div>
+        <div class="tag">${c.name || ""}</div>
       </div>
-      <div class="right">
-        ${confBar(conf)}
-        <span class="pill">Conf ${conf}/100</span>
-        <span class="pill pillAdv">${escapeHtml(adv)}</span>
-      </div>
+
+      ${confBar(c.confidence)}
+
+      <div class="pill pillAdv">${adv}</div>
     </div>
 
     <div class="coinMeta">
@@ -90,11 +94,11 @@ function coinRow(c){
       <span>range24: ${fmtPct(c.range24)}</span>
       <span>vol: $${fmtUSD(c.volume)}</span>
       <span>mc: $${fmtUSD(c.marketCap)}</span>
-      <span>vm: ${fmt(c.vm,2)}</span>
-      <span>scans: ${Number(c.stageScans||0)}</span>
+      <span>vm: ${fmt(c.vm)}</span>
+      <span>scans: ${c.stageScans}</span>
     </div>
   `;
-  div.addEventListener("click", () => openModal(c));
+  div.addEventListener("click", () => openModalMain(c));
   return div;
 }
 
@@ -147,156 +151,162 @@ async function loadLatest(){
   }
 }
 
-/* ===== modal helpers ===== */
+// ===== modal shared UI =====
 function showModal(on){
   const modal = el("modal");
   if (!modal) return;
   modal.classList.toggle("hidden", !on);
 }
 
-function li(icon, text){
-  return `<li>${icon} ${escapeHtml(text)}</li>`;
-}
-function chip(kind, text){
-  const cls = kind==="ok" ? "ok" : kind==="bad" ? "bad" : "wait";
-  return `<span class="chip ${cls}">${escapeHtml(text)}</span>`;
-}
-function dot(kind){
-  const cls = kind==="ok" ? "ok" : kind==="bad" ? "bad" : "wait";
-  return `<span class="dot ${cls}"></span>`;
-}
-
-const mClose = el("mClose");
-if (mClose) mClose.addEventListener("click", ()=>showModal(false));
-
-const modalEl = el("modal");
-if (modalEl) {
-  modalEl.addEventListener("click",(e)=>{ if(e.target.id==="modal") showModal(false); });
-}
-
-async function openModal(c){
-  showModal(true);
-
-  const mTitle = el("mTitle");
-  const mSub   = el("mSub");
-  const mWhy   = el("mWhy");
-  const mOB    = el("mOB");
-  const mRisk  = el("mRisk");
-  const mDebug = el("mDebug");
-
-  const symbol = c?.symbol || "—";
-  const stage  = c?.stage  || "—";
-  const conf   = Number(c?.confidence||0);
-  const consR  = Number(c?.consistency?.ratio||0);
-  const consS  = Number(c?.consistency?.same||0);
-  const consT  = Number(c?.consistency?.total||0);
-  const adv    = sizingText(c);
-
-  if (mTitle) mTitle.textContent = `${symbol} • ${MODE.toUpperCase()} • ${stage}`;
-
-  if (mSub) {
-    mSub.textContent =
-      `Prijs $${fmt(c.price)} • Chg24 ${fmtPct(c.change24)} • Range24 ${fmtPct(c.range24)} • ` +
-      `Conf ${conf}/100 • Cons ${(consR*100).toFixed(0)}% (${consS}/${consT}) • ${adv}`;
+function setTab(name){
+  const tabs = ["Why","Liq","Risk","Debug"];
+  for(const t of tabs){
+    el("tab"+t)?.classList.toggle("active", t===name);
+    el("box"+t)?.classList.toggle("hidden", t!==name);
   }
+}
 
-  // ===== Waarom (menselijk) =====
-  const desired = c?.why?.desired || "—";
-  const entryGate = c?.why?.entryGate || c?.why?.obGate || "—";
-  const volAcc = Number(c?.volAcc||0);
+el("mClose")?.addEventListener("click", ()=>showModal(false));
+el("modal")?.addEventListener("click",(e)=>{ if(e.target.id==="modal") showModal(false); });
 
-  const whyHtml = `
-    <div class="kv">
-      <div><b>Stage:</b> ${escapeHtml(stage)}</div>
-      <div><b>Desired:</b> ${escapeHtml(desired)}</div>
-      <div><b>VolAcc:</b> ${escapeHtml(fmt(volAcc,2))}</div>
+el("tabWhy")?.addEventListener("click", ()=>setTab("Why"));
+el("tabLiq")?.addEventListener("click", ()=>setTab("Liq"));
+el("tabRisk")?.addEventListener("click", ()=>setTab("Risk"));
+el("tabDebug")?.addEventListener("click", ()=>setTab("Debug"));
+
+function icon(ok, kind="ok"){
+  if(ok===true) return `<span class="iconOk">✓</span>`;
+  if(kind==="warn") return `<span class="iconWarn">⚠</span>`;
+  return `<span class="iconNo">✗</span>`;
+}
+
+function addCheck(container, ok, title, sub="", kind="ok"){
+  const div = document.createElement("div");
+  div.className = "checkItem";
+  div.innerHTML = `
+    ${icon(ok, kind)}
+    <div class="checkText">
+      <div><b>${title}</b></div>
+      ${sub ? `<div class="checkSmall">${sub}</div>` : ""}
     </div>
-    <div style="height:10px"></div>
-    <ul class="list">
-      ${li(entryGate.toLowerCase().includes("passed") ? "✅" : entryGate.toLowerCase().includes("validat") ? "⏳" : "❌", `EntryGate: ${entryGate}`)}
-      ${li(conf >= 70 ? "✅" : "❌", `Confidence: ${conf}/100 (min 70)`)}
-      ${li(consR >= 0.75 ? "✅" : "❌", `Consistency: ${(consR*100).toFixed(0)}% (min 75%)`)}
-    </ul>
   `;
-  if (mWhy) mWhy.innerHTML = whyHtml;
+  container.appendChild(div);
+}
 
-  // ===== Risk & Actie =====
-  const sl = Number(c?.sl||0);
-  const tp = Number(c?.tp||0);
-  const atrPct = Number(c?.atrPct||0);
-
-  const action =
-    stage === "ENTRY" ? chip("ok","Entry-ready") :
-    stage === "ALMOST" ? chip("wait","Bijna") :
-    stage === "BUILDUP" ? chip("wait","Opbouw") :
-    chip("wait","Wachten");
-
-  if (mRisk) {
-    mRisk.innerHTML = `
-      <div class="kv">
-        <div><b>${escapeHtml(action)}</b></div>
-        <div>ATR ~ ${(atrPct*100).toFixed(2)}%</div>
-        <div><b>SL:</b> $${fmt(sl, 6)} • <b>TP:</b> $${fmt(tp, 6)}</div>
-      </div>
-    `;
+function setKV(container, rows){
+  container.innerHTML = "";
+  for(const [k,v] of rows){
+    const r = document.createElement("div");
+    r.className = "kvRow";
+    r.innerHTML = `<div class="kvKey">${k}</div><div class="kvVal">${v}</div>`;
+    container.appendChild(r);
   }
+}
 
-  // ===== Liquidity =====
-  if (mOB) mOB.innerHTML = `<div class="kv"><div>${dot("wait")} OB: laden…</div></div>`;
+function safe(n, d=2){
+  const x = Number(n);
+  if(!Number.isFinite(x)) return "—";
+  return x.toFixed(d);
+}
+
+// ===== Main modal content =====
+async function openModalMain(c){
+  showModal(true);
+  setTab("Why");
+  syncTopbarHeight();
+
+  el("mTitle").textContent = `${c.symbol} • ${MODE.toUpperCase()} • ${c.stage}`;
+  el("mSub").textContent =
+    `Price $${safe(c.price, 6)} • Chg24 ${fmtPct(c.change24)} • Range24 ${fmtPct(c.range24)} • VM ${safe(c.vm,2)} • Conf ${c.confidence}/100`;
+
+  // WHY (menselijk)
+  const whyList = el("mWhyList");
+  whyList.innerHTML = "";
+
+  const consRatio = Number(c?.consistency?.ratio || 0);
+  const consOk = !!c?.consistency?.ok;
+
+  addCheck(
+    whyList,
+    true,
+    `Stage: ${c.stage}`,
+    `Desired: ${c?.why?.desired || "—"} • scans: ${c.stageScans}`
+  );
+
+  addCheck(
+    whyList,
+    consOk,
+    "Consistency",
+    `Ratio: ${(consRatio*100).toFixed(0)}% (${c?.consistency?.same || 0}/${c?.consistency?.total || 0})`,
+    consOk ? "ok" : "warn"
+  );
+
+  addCheck(
+    whyList,
+    Number(c.confidence||0) >= 70,
+    "Confidence",
+    `Score: ${c.confidence}/100`,
+    Number(c.confidence||0) >= 70 ? "ok" : "warn"
+  );
+
+  addCheck(
+    whyList,
+    true,
+    "Volume acceleration",
+    `VolAcc: ${safe(c.volAcc,2)}`
+  );
+
+  addCheck(
+    whyList,
+    !!(c?.why?.entryGate && String(c.why.entryGate).toLowerCase().includes("passed")),
+    "Entry gate",
+    c?.why?.entryGate || "—",
+    "warn"
+  );
+
+  // LIQ
+  const liqList = el("mLiqList");
+  liqList.innerHTML = "";
+
+  // live OB fetch (netjes)
+  addCheck(liqList, true, "Orderbook", "Laden…", "warn");
 
   try{
-    const r = await fetch(API.ob(MODE, symbol), { cache:"no-store" });
+    const r = await fetch(API.ob(MODE, c.symbol), { cache:"no-store" });
     const j = await r.json();
 
-    let obKind = "wait";
-    let obTxt = "OB validating";
-    let stats = "—";
+    liqList.innerHTML = "";
 
-    if (j?.status === "validating") {
-      obKind = "wait";
-      obTxt = j?.tip || "Nog geen geldige OB.";
-    } else if (j?.valid === true) {
-      obKind = "ok";
-      obTxt = "OB ok";
-    } else if (j?.valid === false) {
-      obKind = "bad";
-      obTxt = j?.reason || "OB niet ok";
+    if(j.status === "validating"){
+      addCheck(liqList, false, "Orderbook validating", j.tip || "Wacht even…", "warn");
+    }else{
+      const obOk = !!j.valid && !j.stale;
+      addCheck(liqList, obOk, "OB status", `valid: ${j.valid} • stale: ${j.stale} • reason: ${j.reason || "-"}`, obOk ? "ok" : "warn");
+      addCheck(liqList, (Number(j.ob?.spreadPct||999) <= 0.55), "Spread", `spread: ${safe(j.ob?.spreadPct,2)}%`, "warn");
+      addCheck(liqList, (Number(j.ob?.lor||1) <= 0.35), "Largest order ratio", `LOR: ${safe(j.ob?.lor,2)}`, "warn");
+      addCheck(liqList, (Number(j.ob?.depthMinUsd1p||0) >= 200000), "Depth 1%", `depth1%: $${Math.round(Number(j.ob?.depthMinUsd1p||0)).toLocaleString()}`, "warn");
     }
-
-    const spread = j?.ob?.spreadPct ?? j?.spreadPct ?? null;
-    const lor    = j?.ob?.lor ?? j?.lor ?? null;
-    const d1p    = j?.ob?.depthMinUsd1p ?? null;
-
-    stats =
-      `Spread ${spread==null?"—":fmt(spread,2)+"%"} • ` +
-      `LOR ${lor==null?"—":fmt(lor,2)} • ` +
-      `Depth1% $${d1p==null?"—":fmtUSD(d1p)}`;
-
-    if (mOB) {
-      mOB.innerHTML = `
-        <div class="kv">
-          <div>${dot(obKind)} <b>${escapeHtml(obTxt)}</b></div>
-          <div>${escapeHtml(stats)}</div>
-        </div>
-      `;
-    }
-
   }catch{
-    if (mOB) mOB.innerHTML = `<div class="kv"><div>${dot("bad")} <b>OB fetch error</b></div></div>`;
+    liqList.innerHTML = "";
+    addCheck(liqList, false, "Orderbook", "OB ERROR: fetch mislukt", "warn");
   }
 
-  // Debug alleen hier
-  if (mDebug) {
-    try { mDebug.textContent = JSON.stringify(c, null, 2); }
-    catch { mDebug.textContent = String(c); }
-  }
+  // RISK
+  setKV(el("mRiskKv"), [
+    ["ATR% (proxy)", `${safe((Number(c.atrPct||0)*100),2)}%`],
+    ["SL", `$${safe(c.sl, 6)}`],
+    ["TP", `$${safe(c.tp, 6)}`],
+    ["Sizing advies", sizingText(c)],
+  ]);
+
+  // DEBUG
+  el("mDebug").textContent = JSON.stringify(c, null, 2);
 }
 
-const bullBtn = el("modeBull");
-if (bullBtn) bullBtn.addEventListener("click", () => setMode("bull"));
+// buttons
+el("modeBull")?.addEventListener("click", () => setMode("bull"));
+el("modeBear")?.addEventListener("click", () => setMode("bear"));
 
-const bearBtn = el("modeBear");
-if (bearBtn) bearBtn.addEventListener("click", () => setMode("bear"));
-
+// init
 setMode(MODE);
 setInterval(loadLatest, 20000);
