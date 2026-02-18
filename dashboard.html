@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>CryptoCroc Dashboard</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 16px; line-height: 1.35; }
+    .row { display:flex; gap:12px; flex-wrap: wrap; align-items: center; }
+    input, select, button { padding:10px; font-size: 14px; }
+    button { cursor:pointer; }
+    .card { border:1px solid #ddd; border-radius: 10px; padding: 12px; margin-top: 12px; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #eee; padding: 8px; text-align:left; font-size: 13px; }
+    th { background: #fafafa; position: sticky; top: 0; }
+    .muted { color:#666; font-size: 13px; }
+    .good { color: #0a7; font-weight: 700; }
+    .bad { color: #c33; font-weight: 700; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+    .pill { display:inline-block; padding:4px 8px; border-radius: 999px; background:#f2f2f2; font-size: 12px; }
+    .small { font-size: 12px; }
+    .right { margin-left:auto; }
+  </style>
+</head>
+<body>
+  <h1>CryptoCroc Dashboard</h1>
+  <div class="muted">
+    Dit dashboard leest <span class="mono">/api/metrics</span>.  
+    Als je <span class="mono">CRON_SECRET</span> hebt gezet, vul je hem hieronder in.
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label>
+        Token (CRON_SECRET):
+        <input id="token" placeholder="laat leeg als je geen CRON_SECRET gebruikt" style="min-width:320px" />
+      </label>
+
+      <label>
+        Funnel:
+        <select id="funnel">
+          <option value="main">MAIN</option>
+          <option value="moon">MOON</option>
+        </select>
+      </label>
+
+      <label>
+        Mode:
+        <select id="mode">
+          <option value="bull">BULL</option>
+          <option value="bear">BEAR</option>
+        </select>
+      </label>
+
+      <button id="btnLoad">Laad metrics</button>
+      <button id="btnAuto">Auto refresh: uit</button>
+
+      <div class="right small muted" id="status"></div>
+    </div>
+  </div>
+
+  <div id="out"></div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  let autoTimer = null;
+  let autoOn = false;
+
+  function fmt(n, d=2){
+    const x = Number(n);
+    if (!Number.isFinite(x)) return "-";
+    return x.toFixed(d);
+  }
+
+  function pctClass(x){
+    const v = Number(x);
+    if (!Number.isFinite(v)) return "";
+    if (v >= 0) return "good";
+    return "bad";
+  }
+
+  function renderTradesSummary(title, t){
+    return `
+      <div class="card">
+        <h2>${title}</h2>
+        <div class="grid">
+          <div>
+            <div class="pill">Trades</div>
+            <div><b>Totaal gesloten:</b> ${t.total}</div>
+            <div><b>Wins (TP):</b> ${t.wins}</div>
+            <div><b>Losses (SL):</b> ${t.losses}</div>
+          </div>
+          <div>
+            <div class="pill">Kwaliteit</div>
+            <div><b>Winrate:</b> ${fmt(t.winrate,2)}%</div>
+            <div><b>Gem. PnL:</b> <span class="${pctClass(t.avgPnlPct)}">${fmt(t.avgPnlPct,2)}%</span></div>
+          </div>
+          <div>
+            <div class="pill">Te vroeg / te laat</div>
+            <div><b>Te vroeg:</b> ${t.tooEarly}</div>
+            <div><b>Te laat:</b> ${t.tooLate}</div>
+            <div class="muted small">Te vroeg = TP geraakt, maar daarna ging hij nog veel verder. Te laat = SL geraakt terwijl hij onderweg wél +MFE had.</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderLeaks(title, leaks){
+    const c = leaks.conversionPct || {};
+    const leakRows = (leaks.leaks || []).map(x => `
+      <tr>
+        <td><b>${x.stage}</b></td>
+        <td>${x.biggestDrop}</td>
+        <td>${x.count}</td>
+        <td class="muted">${x.note}</td>
+      </tr>
+    `).join("");
+
+    return `
+      <div class="card">
+        <h2>${title}</h2>
+        <div class="grid">
+          <div>
+            <div class="pill">Conversie</div>
+            <div><b>Radar → Buildup:</b> ${fmt(c.radar_to_buildup,2)}%</div>
+            <div><b>Buildup → Almost:</b> ${fmt(c.buildup_to_almost,2)}%</div>
+            <div><b>Almost → Entry/Elite:</b> ${fmt(c.almost_to_entry_or_elite,2)}%</div>
+            <div class="muted small">Als hier 0% staat: meestal te streng in Almost of entry/elite-gates.</div>
+          </div>
+          <div>
+            <div class="pill">Terugval</div>
+            <div><b>Buildup → Radar:</b> ${fmt(c.buildup_back_to_radar,2)}%</div>
+            <div><b>Almost → Buildup:</b> ${fmt(c.almost_back_to_buildup,2)}%</div>
+            <div class="muted small">Veel terugval = “kwaliteit lekt weg”. Dáár moet je tunen.</div>
+          </div>
+        </div>
+
+        <h3>Waar lekt kwaliteit weg?</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Stage</th>
+              <th>Grootste drop</th>
+              <th>Aantal</th>
+              <th>Tip</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${leakRows || `<tr><td colspan="4" class="muted">Nog geen stage-events (laat de scanner eerst draaien).</td></tr>`}
+          </tbody>
+        </table>
+
+        <div class="muted small">Events sample size: ${leaks.sampleSizeEvents || 0}</div>
+      </div>
+    `;
+  }
+
+  function renderOptimizer(title, opt){
+    if (!opt || !opt.ok) {
+      return `
+        <div class="card">
+          <h2>${title}</h2>
+          <div class="muted">${opt?.note || "Nog geen optimizer data."}</div>
+        </div>
+      `;
+    }
+
+    const a = opt.bestAvgPnl;
+    const e = opt.bestExpectancy;
+
+    function block(name, pack){
+      if (!pack) return "";
+      const s = pack.score || {};
+      return `
+        <div class="card">
+          <h3>${name}</h3>
+          <div class="grid">
+            <div>
+              <div class="pill">Filters</div>
+              <div class="mono">vmMin: ${pack.vmMin}</div>
+              <div class="mono">confMin: ${pack.confMin}</div>
+              <div class="mono">spreadMax: ${pack.spreadMax}</div>
+              <div class="mono">depthMin: ${pack.depthMin}</div>
+            </div>
+            <div>
+              <div class="pill">Resultaat</div>
+              <div><b>Trades:</b> ${s.total}</div>
+              <div><b>Winrate:</b> ${fmt(s.winratePct,2)}%</div>
+              <div><b>Avg PnL:</b> <span class="${pctClass(s.avgPnlPct)}">${fmt(s.avgPnlPct,2)}%</span></div>
+              <div><b>Expectancy:</b> <span class="${pctClass(s.expectancyPct)}">${fmt(s.expectancyPct,2)}%</span></div>
+              <div class="muted small">Dit is “als je deze filters had gebruikt”. Perfect om drempels te finetunen zonder te gokken.</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="card">
+        <h2>${title}</h2>
+        <div class="muted">${opt.note || ""}</div>
+      </div>
+      ${block("Beste op Avg PnL", a)}
+      ${block("Beste op Expectancy", e)}
+    `;
+  }
+
+  async function loadMetrics(){
+    const token = $("token").value.trim();
+    const funnel = $("funnel").value;
+    const mode = $("mode").value;
+
+    $("status").textContent = "laden...";
+    const url = token ? `/api/metrics?token=${encodeURIComponent(token)}` : `/api/metrics`;
+
+    const r = await fetch(url);
+    const j = await r.json();
+
+    if (!j || !j.ok) {
+      $("out").innerHTML = `<div class="card"><b>Fout:</b> <span class="mono">${(j && j.error) ? j.error : "unknown"}</span></div>`;
+      $("status").textContent = "fout";
+      return;
+    }
+
+    const data = j[funnel]?.[mode];
+    if (!data) {
+      $("out").innerHTML = `<div class="card">Geen data voor ${funnel}/${mode}.</div>`;
+      $("status").textContent = "geen data";
+      return;
+    }
+
+    const title = `${funnel.toUpperCase()} ${mode.toUpperCase()}`;
+
+    $("out").innerHTML =
+      renderTradesSummary(`${title} — Trades`, data.trades || {}) +
+      renderLeaks(`${title} — Doorstroom & leaks`, data.leaks || {}) +
+      renderOptimizer(`${title} — Optimizer (VM + confidence + spread + depth)`, data.optimizer?.multi || {ok:false, note:"Geen optimizer data."});
+
+    $("status").textContent = `ok • ${new Date(j.ts).toLocaleString()}`;
+  }
+
+  $("btnLoad").addEventListener("click", loadMetrics);
+
+  $("btnAuto").addEventListener("click", async () => {
+    autoOn = !autoOn;
+    $("btnAuto").textContent = `Auto refresh: ${autoOn ? "aan" : "uit"}`;
+    if (autoTimer) clearInterval(autoTimer);
+    if (autoOn) {
+      await loadMetrics();
+      autoTimer = setInterval(loadMetrics, 60_000);
+    }
+  });
+
+  // eerste load (zonder token kan dit mislukken als je secret verplicht)
+  loadMetrics().catch(()=>{});
+</script>
+</body>
+</html>
