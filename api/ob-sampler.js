@@ -11,22 +11,32 @@ import {
 
 export const config = RUNTIME_CONFIG;
 
-// ================== BITGET DEPTH (SPOT) ==================
+// ================== BITGET DEPTH (SPOT V2) ==================
 async function fetchBitgetDepth(symbolUpper) {
   const base = String(symbolUpper || "").toUpperCase();
   if (!base) return null;
 
-  const sym = `${base}USDT_SPBL`;
-  const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(sym)}&limit=50`;
+  const sym = `${base}USDT`;
+
+  // ✅ Bitget V2 (V1 is uitgezet)
+  // type: step0 = hoogste granulariteit
+  const url =
+    `https://api.bitget.com/api/v2/spot/market/orderbook?` +
+    `symbol=${encodeURIComponent(sym)}&type=step0&limit=50`;
 
   const r = await fetch(url, { headers: { accept: "application/json" } });
   if (!r.ok) return null;
 
   const j = await r.json();
-  const d = j?.data || null;
-  if (!d?.bids?.length || !d?.asks?.length) return null;
+  if (j?.code !== "00000" || !j?.data) return null;
 
-  return d;
+  const d = j.data;
+
+  // V2 levert arrays terug; we normaliseren naar dezelfde shape als jouw oude code verwacht
+  if (!Array.isArray(d.bids) || !Array.isArray(d.asks)) return null;
+  if (!d.bids.length || !d.asks.length) return null;
+
+  return { bids: d.bids, asks: d.asks };
 }
 
 function sumDepth(levels, mid, pct, isBid) {
@@ -39,6 +49,7 @@ function sumDepth(levels, mid, pct, isBid) {
     const s = Number(row?.[1]);
     if (!Number.isFinite(p) || !Number.isFinite(s)) continue;
 
+    // Let op: Bitget depth is gesorteerd (bids hoog->laag, asks laag->hoog)
     if (isBid && p < limit) break;
     if (!isBid && p > limit) break;
 
@@ -133,7 +144,7 @@ async function processCandidate(mode, symbol) {
   const sample = depth ? computeObSample(depth) : null;
 
   if (!sample) {
-    // ✅ ook dit tellen we straks als “processed”, zodat je ziet dat er iets geprobeerd is
+    // ✅ ook dit tellen we straks als “tried”, zodat je ziet dat er iets geprobeerd is
     return { ok: false, symbol, reason: "no depth" };
   }
 
