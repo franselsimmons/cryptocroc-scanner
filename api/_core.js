@@ -113,7 +113,11 @@ export function requireSecret(req, res) {
 export const keyLatest = (mode) => `latest:${mode}`;
 export const keyState = (mode) => `state:${mode}`;
 export const keyReset = (mode) => `resetAt:${mode}`;
+
 export const keyBitgetSymbols = "bitget:symbols:spotusdt";
+
+// ✅ BINANCE universe cache key
+export const keyBinanceSymbols = "binance:symbols:spotusdt";
 
 export const keyObSamples = (side, symbol) => `ob:samples:${side}:${symbol}`;
 export const keyObResult = (side, symbol) => `ob:result:${side}:${symbol}`;
@@ -242,6 +246,31 @@ function normalizeCG(x) {
   };
 }
 
+// ================== BINANCE SYMBOLS (SPOT USDT) ==================
+// ✅ Universe voor orderbook (Binance is je OB bron)
+export async function getBinanceSpotUsdtSymbols() {
+  const cached = await kv.get(keyBinanceSymbols);
+  if (Array.isArray(cached) && cached.length) return new Set(cached);
+
+  const url = "https://api.binance.com/api/v3/exchangeInfo";
+  const r = await fetch(url, { headers: { accept: "application/json" } });
+  if (!r.ok) throw new Error(`Binance exchangeInfo failed ${r.status}`);
+
+  const j = await r.json();
+
+  const list = (j?.symbols || [])
+    .filter((s) => String(s?.status || "").toUpperCase() === "TRADING")
+    .filter((s) => String(s?.quoteAsset || "").toUpperCase() === "USDT")
+    .filter((s) => s?.isSpotTradingAllowed === true || String(s?.isSpotTradingAllowed) === "true")
+    .map((s) => String(s?.baseAsset || "").toUpperCase())
+    .filter(Boolean);
+
+  await kv.set(keyBinanceSymbols, list, { ex: 60 * 60 * 24 });
+  return new Set(list);
+}
+
+// ================== (OPTIONEEL) Bitget symbols blijft bestaan ==================
+// (Handig als je later nog Bitget wil vergelijken)
 export async function getBitgetSpotUsdtSymbols() {
   const cached = await kv.get(keyBitgetSymbols);
   if (Array.isArray(cached) && cached.length) return new Set(cached);
