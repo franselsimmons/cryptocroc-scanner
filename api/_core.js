@@ -25,8 +25,8 @@ export const SETTINGS = {
 
   // BTC strength zones (voor sizing caps)
   btcStrength: {
-    weakMaxAbsChg: 1.2,     // <1.2% = weak
-    strongMinAbsChg: 3.0,   // >=3.0% = strong
+    weakMaxAbsChg: 1.2,
+    strongMinAbsChg: 3.0,
   },
 
   // volatility knob (light): coin range cap beweegt mee met btcRange
@@ -41,65 +41,49 @@ export const SETTINGS = {
 
   // ENTRY (OB gate)
   entry: {
-    obScoreMin: 0.06,     // bull >= 0.06, bear <= -0.06
-    spreadMaxPct: 0.55,   // %
+    obScoreMin: 0.06,
+    spreadMaxPct: 0.55,
     largestOrderRatioMax: 0.35,
     samplesNeed: 3,
     samplesWindowSec: 90,
-    minAgree: 2,          // 2/3 richting
+    minAgree: 2,
 
-    // liquiditeitsvloer binnen 1%
     minDepthUsd1p: 200_000,
 
-    // hard gates
     minConfidence: 70,
     entryConsistencyMin: 0.75,
 
-    // OB slope
     obSlopeEnabled: true,
     obSlopeMinBull: 0.0,
     obSlopeMaxBear: 0.0,
     obSlopeMinSamples: 3,
   },
 
-  // No-skip
   minScansPerStage: 2,
 
-  // consistency window based
   consistencyWindowMin: 120,
   consistencyMinRatio: 0.67,
   consistencyMinSamples: 6,
 
-  // OB sampler selection
   obPickAlmost: 12,
   obPickBuildup: 8,
 
-  // CG cache
-  cgCacheSec: 60 * 10,
+  // ✅ nieuw: fallback candidates uit RADAR als buildup/almost leeg is
+  obPickRadarFallback: 20,
 
-  // Fase 2: Bitget ATR cache
+  cgCacheSec: 60 * 10,
   atrCacheSec: 60 * 10,
 
-  // ================== POSITION SIZING (advies in %) ==================
   sizing: {
     confBands: [
-      { min: 0,   pct: 60 },
-      { min: 70,  pct: 70 },
-      { min: 80,  pct: 80 },
-      { min: 90,  pct: 90 },
-      { min: 95,  pct: 100 },
+      { min: 0, pct: 60 },
+      { min: 70, pct: 70 },
+      { min: 80, pct: 80 },
+      { min: 90, pct: 90 },
+      { min: 95, pct: 100 },
     ],
-    btcCaps: {
-      WEAK: 70,
-      NORMAL: 90,
-      STRONG: 100,
-    },
-    stageCaps: {
-      RADAR: 60,
-      BUILDUP: 70,
-      ALMOST: 80,
-      ENTRY: 100,
-    },
+    btcCaps: { WEAK: 70, NORMAL: 90, STRONG: 100 },
+    stageCaps: { RADAR: 60, BUILDUP: 70, ALMOST: 80, ENTRY: 100 },
   },
 };
 
@@ -138,7 +122,6 @@ export const keyEntryLog = "log:entry";
 
 const keyCgTopCache = `cache:cg:top:${SETTINGS.CG_TOP}`;
 const keyCgBtcCache = `cache:cg:btc`;
-
 const keyAtr1hCache = (symbol) => `cache:atr1h:${symbol}`;
 
 // ================== DISCORD ==================
@@ -153,27 +136,12 @@ export async function sendDiscord(webhookUrl, content) {
   } catch {}
 }
 
-/**
- * JOUW ENV NAMES:
- * - DISCORD_WEBHOOK_RADAR
- * - DISCORD_WEBHOOK_BUILDUP
- * - DISCORD_WEBHOOK_ALMOST
- * - DISCORD_WEBHOOK_ELITE
- *
- * Main funnel stage heet "ENTRY", maar jij gebruikt webhook naam "ELITE".
- * Daarom mappen we ENTRY -> DISCORD_WEBHOOK_ELITE.
- */
 export function webhookForStage(stage) {
   if (stage === "RADAR") return process.env.DISCORD_WEBHOOK_RADAR;
   if (stage === "BUILDUP") return process.env.DISCORD_WEBHOOK_BUILDUP;
   if (stage === "ALMOST") return process.env.DISCORD_WEBHOOK_ALMOST;
-
-  // ✅ FIX: main noemt het ENTRY, jouw webhook heet ELITE
   if (stage === "ENTRY") return process.env.DISCORD_WEBHOOK_ELITE;
-
-  // ✅ extra: mocht ergens "ELITE" als stage gebruikt worden
   if (stage === "ELITE") return process.env.DISCORD_WEBHOOK_ELITE;
-
   return null;
 }
 
@@ -193,9 +161,10 @@ export function fmtCoinLine(c, mode, stage, extra = "") {
 
 // ================== DATA FETCH ==================
 export async function fetchCoinGeckoTop() {
+  // ✅ FIX: page=1 (page=3 pakt “verkeerde” slice)
   const url =
     `https://api.coingecko.com/api/v3/coins/markets?` +
-    `vs_currency=usd&order=market_cap_desc&per_page=${SETTINGS.CG_TOP}&page=3` +
+    `vs_currency=usd&order=market_cap_desc&per_page=${SETTINGS.CG_TOP}&page=1` +
     `&sparkline=false&price_change_percentage=24h`;
 
   const r = await fetch(url, { headers: { accept: "application/json" } });
@@ -659,23 +628,14 @@ export function allocPctFromConfidence(conf) {
 export function allocPctRecommended({ stage, confidence, btc }) {
   const zone = btcStrengthZone(btc);
   const btcCap = SETTINGS.sizing.btcCaps[zone] ?? 90;
-
   const stageCap = SETTINGS.sizing.stageCaps[String(stage || "RADAR").toUpperCase()] ?? 60;
-
   const confPct = allocPctFromConfidence(confidence);
-
   const pct = Math.min(confPct, btcCap, stageCap);
 
   const allowed = [60, 70, 80, 90, 100];
   const best = allowed.reduce((prev, cur) => (cur <= pct ? cur : prev), 60);
 
-  return {
-    pct: best,
-    zone,
-    btcCap,
-    stageCap,
-    confPct,
-  };
+  return { pct: best, zone, btcCap, stageCap, confPct };
 }
 
 // ================== HELPERS ==================
