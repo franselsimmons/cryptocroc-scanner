@@ -12,7 +12,7 @@ import {
   keyEntryLog,
   fetchCoinGeckoTopCached,
   fetchBTCGateCached,
-  getBitgetSpotUsdtSymbols,
+  getBinanceSpotUsdtSymbols, // ✅ BINANCE universe
   fetchBitgetAtr1hPctCached,
   applySpikeGuard,
   updateSideHistory,
@@ -30,7 +30,7 @@ import {
   computeSLTP,
   passEntryFromObPlus,
   allocPctRecommended,
-  passRadar, // ✅ nieuw: nodig voor RADAR-only mode bij BTC-block
+  passRadar, // ✅ nodig voor RADAR-only mode bij BTC-block
 } from "./_core.js";
 
 import { uid, pushEvent, readTrades, writeTrades } from "./_analytics.js";
@@ -126,10 +126,12 @@ export default async function handler(req, res) {
     const btc = await fetchBTCGateCached();
     const wanted = mode === "bull" ? "BULL" : "BEAR";
 
-    // ✅ nieuw: als BTC niet klopt -> we vullen RADAR-only
+    // ✅ BTC niet ok -> RADAR-only
     const btcBlocked = btc.state !== wanted;
 
-    const symbolsSet = await getBitgetSpotUsdtSymbols();
+    // ✅ Universe = BINANCE spot USDT
+    const symbolsSet = await getBinanceSpotUsdtSymbols();
+
     const all = await fetchCoinGeckoTopCached();
     const rawCoins = all.filter((c) => symbolsSet.has(c.symbol));
 
@@ -167,7 +169,7 @@ export default async function handler(req, res) {
 
       const { patched: c, nextMetrics } = applySpikeGuard(prev.metricsHist, raw);
 
-      // ✅ nieuw: RADAR filter ALTIJD toepassen (ook bij btcBlocked)
+      // ✅ RADAR filter altijd toepassen
       if (!passRadar(c, btc.range24)) {
         delete state[sym];
         continue;
@@ -226,7 +228,7 @@ export default async function handler(req, res) {
       });
       const entryOk = entryGate.ok;
 
-      // ✅ nieuw: bij btcBlocked forceren we desired = RADAR
+      // ✅ bij btcBlocked forceren we desired = RADAR
       const desired = btcBlocked
         ? "RADAR"
         : nextDesiredStage(c, mode, priceHist, cons.ok, btc.range24, entryOk);
@@ -239,7 +241,6 @@ export default async function handler(req, res) {
       const fromStage = stage;
 
       if (btcBlocked) {
-        // ✅ nieuw: stage mag NIET omhoog bij BTC block
         const nextStage = "RADAR";
 
         if (nextStage === stage) {
@@ -301,7 +302,7 @@ export default async function handler(req, res) {
         });
       }
 
-      // ✅ nieuw: geen Discord spam als BTC geblokkeerd is
+      // ✅ geen Discord spam als BTC geblokkeerd is
       if (!btcBlocked && stageChanged) {
         let hook = webhookForStage(stage);
         if (!hook && stage === "ENTRY") hook = process.env.DISCORD_WEBHOOK_ELITE;
@@ -353,7 +354,7 @@ export default async function handler(req, res) {
         volHist,
       };
 
-      // ✅ nieuw: geen trade open/log als BTC geblokkeerd is
+      // ✅ geen trade/log als BTC geblokkeerd is
       if (!btcBlocked && stageChanged && stage === "ENTRY") {
         await openMainTradeIfNeeded({ mode, c, sltp, conf, obView, sizing });
 
@@ -434,7 +435,6 @@ export default async function handler(req, res) {
         },
       };
 
-      // ✅ bij btcBlocked gaat alles in RADAR
       if (stage === "ENTRY") entry.push(item);
       else if (stage === "ALMOST") almost.push(item);
       else if (stage === "BUILDUP") buildup.push(item);
