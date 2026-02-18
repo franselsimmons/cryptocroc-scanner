@@ -12,7 +12,6 @@ import {
 export const config = RUNTIME_CONFIG;
 
 // ================== BINANCE DEPTH (SPOT) ==================
-// We proberen meerdere endpoints, omdat api.binance.com soms blokkeert op Vercel.
 const BINANCE_BASES = [
   "https://api.binance.com",
   "https://api1.binance.com",
@@ -60,7 +59,6 @@ async function fetchBinanceDepth(symbolUpper, limit = 100) {
       return { ok: true, url, pair, depth: r.json };
     }
 
-    // Binance geeft vaak JSON error zoals: {"code":-1121,"msg":"Invalid symbol."}
     const msg = r.json?.msg || r.json?.message || null;
 
     lastErr = {
@@ -73,10 +71,7 @@ async function fetchBinanceDepth(symbolUpper, limit = 100) {
       contentType: r.contentType,
     };
 
-    // Als het “Invalid symbol” is: dan heeft verder proberen geen zin
-    if (String(msg || "").toLowerCase().includes("invalid symbol")) {
-      break;
-    }
+    if (String(msg || "").toLowerCase().includes("invalid symbol")) break;
   }
 
   return lastErr || { ok: false, reason: "Unknown depth error" };
@@ -92,6 +87,7 @@ function sumDepth(levels, mid, pct, isBid) {
     const s = Number(row?.[1]);
     if (!Number.isFinite(p) || !Number.isFinite(s)) continue;
 
+    // Binance bids zijn normaal DESC, asks ASC -> deze break werkt dan snel/goed
     if (isBid && p < limit) break;
     if (!isBid && p > limit) break;
 
@@ -115,9 +111,12 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  const pct = 0.002; // 0.2% band
-  const bidRes = sumDepth(bids, mid, pct, true);
-  const askRes = sumDepth(asks, mid, pct, false);
+  // ✅ FIX: band moet minstens “spread/2” bevatten, anders krijg je bidUsd/askUsd = 0 bij grotere spreads.
+  // spreadPct/200 = (spread% / 2) als fractie. + kleine marge.
+  const band = Math.max(0.002, (spreadPct / 200) + 0.0002); // min 0.2%, anders spread-based
+
+  const bidRes = sumDepth(bids, mid, band, true);
+  const askRes = sumDepth(asks, mid, band, false);
 
   const bidUsd = bidRes.total;
   const askUsd = askRes.total;
@@ -128,11 +127,21 @@ function computeObSample(depth) {
   const biggest = Math.max(bidRes.biggest, askRes.biggest);
   const lor = denom > 0 ? biggest / denom : 1;
 
+  // liquiditeit vloer binnen 1% blijft hetzelfde (dat werkt bij jou al goed)
   const bid1 = sumDepth(bids, mid, 0.01, true);
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
 
-  return { ts: Date.now(), score, spreadPct, lor, bidUsd, askUsd, mid, depthMinUsd1p };
+  return {
+    ts: Date.now(),
+    score,
+    spreadPct,
+    lor,
+    bidUsd,
+    askUsd,
+    mid,
+    depthMinUsd1p,
+  };
 }
 
 function pruneSamples(samples) {
@@ -173,6 +182,20 @@ function validateSamples(mode, samples) {
   return { valid: true, reason: "OK", avgScore, agree };
 }
 
+function pickCandidatesFromLatest(latest) {
+  const almost = (latest?.funnel?.almost || []).slice(0, SETTINGS.obPickAlmost);
+  const buildup = (latest?.funnel?.buildup || []).slice(0, SETTINGS.obPickBuildup);
+
+  let picked = [...almost, ...buildup];
+
+  if (!picked.length) {
+    const radar = (latest?.funnel?.radar || []).slice(0, 20);
+    picked = radar;
+  }
+
+  return picked.map((x) => String(x?.symbol || "").toUpperCase()).filter(Boolean);
+}
+
 async function processCandidate(mode, symbol) {
   const depthRes = await fetchBinanceDepth(symbol, 100);
 
@@ -182,139 +205,4 @@ async function processCandidate(mode, symbol) {
       symbol,
       fail: {
         status: depthRes?.status ?? null,
-        msg: depthRes?.msg ?? null,
-        url: depthRes?.url ?? null,
-        preview: depthRes?.preview ?? null,
-      },
-    };
-  }
-
-  const sample = computeObSample(depthRes.depth);
-  if (!sample) {
-    return {
-      ok: false,
-      symbol,
-      fail: {
-        status: 200,
-        msg: "Depth JSON ok but sample compute failed",
-        url: depthRes.url,
-        preview: null,
-      },
-    };
-  }
-
-  const kSamples = keyObSamples(mode, symbol);
-  const prev = (await kv.get(kSamples)) || [];
-  const merged = Array.isArray(prev) ? prev.concat([sample]) : [sample];
-  const pruned = pruneSamples(merged);
-
-  await kv.set(kSamples, pruned);
-
-  const v = validateSamples(mode, pruned);
-
-  const result = {
-    symbol,
-    side: mode,
-    valid: v.valid,
-    reason: v.reason,
-    stale: false,
-
-    score: sample.score,
-    spreadPct: sample.spreadPct,
-    lor: sample.lor,
-    depthMinUsd1p: sample.depthMinUsd1p,
-    avgScore: v.avgScore ?? null,
-    agree: v.agree ?? null,
-
-    ob: {
-      ts: sample.ts,
-      mid: sample.mid,
-      spreadPct: sample.spreadPct,
-      bidUsd: sample.bidUsd,
-      askUsd: sample.askUsd,
-      score: sample.score,
-      lor: sample.lor,
-      depthMinUsd1p: sample.depthMinUsd1p,
-    },
-    ts: Date.now(),
-  };
-
-  await kv.set(keyObResult(mode, symbol), result);
-
-  return { ok: true, symbol, valid: v.valid };
-}
-
-function pickCandidatesFromLatest(latest) {
-  const almost = (latest?.funnel?.almost || []).slice(0, SETTINGS.obPickAlmost);
-  const buildup = (latest?.funnel?.buildup || []).slice(0, SETTINGS.obPickBuildup);
-
-  let picked = [...almost, ...buildup];
-
-  // fallback: als almost/buildup leeg zijn -> pak radar top 20
-  if (!picked.length) {
-    const radar = (latest?.funnel?.radar || []).slice(0, 20);
-    picked = radar;
-  }
-
-  return picked.map((x) => String(x?.symbol || "").toUpperCase()).filter(Boolean);
-}
-
-export default async function handler(req, res) {
-  try {
-    if (!requireSecret(req, res)) return;
-
-    const mode = String(req.query?.mode || "bull").toLowerCase();
-    if (mode !== "bull" && mode !== "bear") {
-      res.statusCode = 400;
-      res.setHeader("content-type", "application/json");
-      return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
-    }
-
-    const latest = await kv.get(keyLatest(mode));
-    const candidates = pickCandidatesFromLatest(latest);
-
-    let totalTried = 0;
-    let totalProcessed = 0;
-    let totalValid = 0;
-    let failed = 0;
-
-    const failedDetails = [];
-
-    for (const sym of candidates) {
-      totalTried++;
-      const r = await processCandidate(mode, sym);
-
-      if (r?.ok) {
-        totalProcessed++;
-        if (r.valid) totalValid++;
-      } else {
-        failed++;
-        if (failedDetails.length < 12) {
-          failedDetails.push({ symbol: sym, ...r.fail });
-        }
-      }
-    }
-
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.setHeader("cache-control", "no-store");
-    return res.end(
-      JSON.stringify({
-        ok: true,
-        mode,
-        ts: Date.now(),
-        candidates,
-        totalTried,
-        totalProcessed,
-        totalValid,
-        failed,
-        failedDetails,
-      })
-    );
-  } catch (e) {
-    res.statusCode = 500;
-    res.setHeader("content-type", "application/json");
-    res.setHeader("cache-control", "no-store");
-    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
-  }
-}
+        msg: depthRes?.msg ?? null
