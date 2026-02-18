@@ -61,7 +61,7 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  const pct = 0.002;
+  const pct = 0.002; // 0.2%
   const bidRes = sumDepth(bids, mid, pct, true);
   const askRes = sumDepth(asks, mid, pct, false);
 
@@ -131,7 +131,11 @@ function validateSamples(mode, samplesFresh) {
 async function processCandidate(mode, symbol) {
   const depth = await fetchBitgetDepth(symbol);
   const sample = depth ? computeObSample(depth) : null;
-  if (!sample) return { ok: false, symbol, reason: "no depth" };
+
+  if (!sample) {
+    // ✅ ook dit tellen we straks als “processed”, zodat je ziet dat er iets geprobeerd is
+    return { ok: false, symbol, reason: "no depth" };
+  }
 
   const kS = keyObSamples(mode, symbol);
   const prev = (await kv.get(kS)) || [];
@@ -188,34 +192,55 @@ async function runBatched(list, batchSize, fn) {
   return out;
 }
 
+function pickCandidatesFromLatest(latest) {
+  const almost = (latest?.funnel?.almost || []).slice(0, SETTINGS.obPickAlmost);
+  const buildup = (latest?.funnel?.buildup || []).slice(0, SETTINGS.obPickBuildup);
+
+  let picked = [...almost, ...buildup];
+
+  // ✅ fallback: als buildup/almost leeg zijn, pak RADAR top N
+  if (!picked.length) {
+    const radar = (latest?.funnel?.radar || []).slice(0, SETTINGS.obPickRadarFallback || 20);
+    picked = radar;
+  }
+
+  return picked
+    .map((x) => String(x?.symbol || "").toUpperCase())
+    .filter(Boolean);
+}
+
 export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const bull = await kv.get(keyLatest("bull"));
-    const bear = await kv.get(keyLatest("bear"));
+    const modeParam = String(req.query?.mode || "").toLowerCase(); // optioneel
+    const wantBull = !modeParam || modeParam === "bull";
+    const wantBear = !modeParam || modeParam === "bear";
+
+    const bull = wantBull ? await kv.get(keyLatest("bull")) : null;
+    const bear = wantBear ? await kv.get(keyLatest("bear")) : null;
 
     const tasks = [];
     if (bull?.funnel) tasks.push({ mode: "bull", data: bull });
     if (bear?.funnel) tasks.push({ mode: "bear", data: bear });
 
-    let totalProcessed = 0;
-    let totalValid = 0;
+    let totalTried = 0;      // geprobeerd (ook no depth)
+    let totalProcessed = 0;  // succesvolle sample gemaakt
+    let totalValid = 0;      // valid=true
 
     for (const t of tasks) {
       const mode = t.mode;
+      const candidates = pickCandidatesFromLatest(t.data);
 
-      const almost = (t.data?.funnel?.almost || []).slice(0, SETTINGS.obPickAlmost);
-      const buildup = (t.data?.funnel?.buildup || []).slice(0, SETTINGS.obPickBuildup);
-
-      const candidates = [...almost, ...buildup]
-        .map((x) => String(x?.symbol || "").toUpperCase())
-        .filter(Boolean);
+      if (!candidates.length) continue;
 
       const results = await runBatched(candidates, 6, (sym) => processCandidate(mode, sym));
 
       for (const r of results) {
-        if (r?.ok) {
+        if (!r) continue;
+        totalTried++;
+
+        if (r.ok) {
           totalProcessed++;
           if (r.valid) totalValid++;
         }
@@ -224,7 +249,15 @@ export default async function handler(req, res) {
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: true, ts: Date.now(), totalProcessed, totalValid }));
+    res.end(
+      JSON.stringify({
+        ok: true,
+        ts: Date.now(),
+        totalTried,
+        totalProcessed,
+        totalValid,
+      })
+    );
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
