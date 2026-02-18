@@ -1,5 +1,6 @@
 // /api/cron.js
 import scan from "./scan.js";
+import obSampler from "./ob-sampler.js";
 import { RUNTIME_CONFIG, requireSecret } from "./_core.js";
 
 export const config = RUNTIME_CONFIG;
@@ -33,6 +34,12 @@ export default async function handler(req, res) {
     await scan(reqBull, resBull);
     await scan(reqBear, resBear);
 
+    const resObBull = makeRes();
+    const resObBear = makeRes();
+
+    await obSampler(reqBull, resObBull);
+    await obSampler(reqBear, resObBear);
+
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({
@@ -40,6 +47,8 @@ export default async function handler(req, res) {
       ts: Date.now(),
       bull: safeJson(resBull.body),
       bear: safeJson(resBear.body),
+      obBull: safeJson(resObBull.body),
+      obBear: safeJson(resObBear.body),
     }));
   } catch (e) {
     res.statusCode = 500;
