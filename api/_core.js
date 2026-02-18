@@ -151,7 +151,9 @@ export function webhookForStage(stage) {
 
 export function fmtCoinLine(c, mode, stage, extra = "") {
   const base = (process.env.PUBLIC_SCANNER_URL || "").replace(/\/$/, "");
-  const page = base ? `${base}/?mode=${encodeURIComponent(mode)}` : `/?mode=${encodeURIComponent(mode)}`;
+  const page = base
+    ? `${base}/?mode=${encodeURIComponent(mode)}`
+    : `/?mode=${encodeURIComponent(mode)}`;
 
   const lines = [
     `**${c.symbol}** → **${stage}** (${mode.toUpperCase()})`,
@@ -248,25 +250,57 @@ function normalizeCG(x) {
 
 // ================== BINANCE SYMBOLS (SPOT USDT) ==================
 // ✅ Universe voor orderbook (Binance is je OB bron)
+// ✅ FIX: fallback endpoints (451 op api.binance.com) -> vision + api1/api2/api3
 export async function getBinanceSpotUsdtSymbols() {
   const cached = await kv.get(keyBinanceSymbols);
   if (Array.isArray(cached) && cached.length) return new Set(cached);
 
-  const url = "https://api.binance.com/api/v3/exchangeInfo";
-  const r = await fetch(url, { headers: { accept: "application/json" } });
-  if (!r.ok) throw new Error(`Binance exchangeInfo failed ${r.status}`);
+  const urls = [
+    "https://api.binance.com/api/v3/exchangeInfo",
+    "https://api1.binance.com/api/v3/exchangeInfo",
+    "https://api2.binance.com/api/v3/exchangeInfo",
+    "https://api3.binance.com/api/v3/exchangeInfo",
+    "https://data-api.binance.vision/api/v3/exchangeInfo",
+  ];
 
-  const j = await r.json();
+  async function tryUrl(url) {
+    const r = await fetch(url, { headers: { accept: "application/json" } });
+    const text = await r.text();
 
-  const list = (j?.symbols || [])
-    .filter((s) => String(s?.status || "").toUpperCase() === "TRADING")
-    .filter((s) => String(s?.quoteAsset || "").toUpperCase() === "USDT")
-    .filter((s) => s?.isSpotTradingAllowed === true || String(s?.isSpotTradingAllowed) === "true")
-    .map((s) => String(s?.baseAsset || "").toUpperCase())
-    .filter(Boolean);
+    let j = null;
+    try { j = JSON.parse(text); } catch {}
 
-  await kv.set(keyBinanceSymbols, list, { ex: 60 * 60 * 24 });
-  return new Set(list);
+    if (!r.ok) {
+      return { ok: false, status: r.status, url, preview: text.slice(0, 200) };
+    }
+
+    if (!j || !Array.isArray(j.symbols)) {
+      return { ok: false, status: 200, url, preview: text.slice(0, 200) };
+    }
+
+    return { ok: true, url, json: j };
+  }
+
+  let lastErr = null;
+  for (const url of urls) {
+    const t = await tryUrl(url);
+    if (t.ok) {
+      const list = (t.json.symbols || [])
+        .filter((s) => String(s?.status || "").toUpperCase() === "TRADING")
+        .filter((s) => String(s?.quoteAsset || "").toUpperCase() === "USDT")
+        .filter((s) => s?.isSpotTradingAllowed === true || String(s?.isSpotTradingAllowed) === "true")
+        .map((s) => String(s?.baseAsset || "").toUpperCase())
+        .filter(Boolean);
+
+      await kv.set(keyBinanceSymbols, list, { ex: 60 * 60 * 24 });
+      return new Set(list);
+    }
+    lastErr = t;
+  }
+
+  throw new Error(
+    `Binance exchangeInfo failed ${lastErr?.status || "?"} (all endpoints). Last url: ${lastErr?.url || "?"}`
+  );
 }
 
 // ================== (OPTIONEEL) Bitget symbols blijft bestaan ==================
