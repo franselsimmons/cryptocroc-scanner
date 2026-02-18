@@ -29,8 +29,10 @@ import {
   computeAtrPctFromPriceHist,
   computeSLTP,
   passEntryFromObPlus,
-  allocPctRecommended, // ✅ nieuw
+  allocPctRecommended,
 } from "./_core.js";
+
+import { uid, pushEvent, readTrades, writeTrades } from "./_analytics.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -51,6 +53,63 @@ async function bestEffortLogEntry(entryObj) {
   } catch {}
 }
 
+async function openMainTradeIfNeeded({ mode, c, sltp, conf, obView, sizing }) {
+  const trades = await readTrades("main");
+  const exists = trades.find(t =>
+    String(t.status) === "OPEN" &&
+    String(t.symbol) === String(c.symbol) &&
+    String(t.mode) === String(mode)
+  );
+  if (exists) return;
+
+  const t = {
+    id: uid("main"),
+    funnel: "main",
+    status: "OPEN",
+    mode,
+    symbol: c.symbol,
+    cgId: c.id,
+    entryAt: Date.now(),
+    entryPrice: c.price,
+    sl: sltp.sl,
+    tp: sltp.tp,
+
+    lastPrice: c.price,
+    pnlPct: 0,
+
+    snap: {
+      vm: c.vm,
+      confidence: conf,
+      spreadPct: obView?.spreadPct ?? 0,
+      depthMinUsd1p: obView?.depthMinUsd1p ?? 0,
+    },
+
+    mfePct: 0,
+    maePct: 0,
+
+    postBestPct: null,
+    postWorstPct: null,
+
+    sizing,
+  };
+
+  trades.push(t);
+  await writeTrades("main", trades);
+
+  await pushEvent("main", {
+    ts: Date.now(),
+    funnel: "main",
+    mode,
+    symbol: c.symbol,
+    type: "TRADE_OPEN",
+    entryPrice: c.price,
+    sl: sltp.sl,
+    tp: sltp.tp,
+    confidence: conf,
+    vm: c.vm,
+  });
+}
+
 export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
@@ -63,7 +122,6 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    // BTC gate (cached)
     const btc = await fetchBTCGateCached();
     const wanted = mode === "bull" ? "BULL" : "BEAR";
 
@@ -74,7 +132,6 @@ export default async function handler(req, res) {
     const resetAt = (await kv.get(keyReset(mode))) || 0;
     const state = (await kv.get(keyState(mode))) || {};
 
-    // ✅ HARD BTC BLOCK
     if (btc.state !== wanted) {
       const empty = {
         ok: true,
@@ -121,14 +178,11 @@ export default async function handler(req, res) {
         prev.volHist = [];
       }
 
-      // spike guard
       const { patched: c, nextMetrics } = applySpikeGuard(prev.metricsHist, raw);
 
-      // price history + 1h change
       const priceHist = updatePriceHist(prev.priceHist, c.price);
       const change1h = calcChange1hPct(priceHist);
 
-      // volume history -> volAcc
       const volHist = Array.isArray(prev.volHist) ? prev.volHist.slice(-5) : [];
       volHist.push(c.volume);
 
@@ -137,13 +191,11 @@ export default async function handler(req, res) {
       const prev3 = volHist.slice(-6, -3);
       const volAcc = prev3.length ? (sum(last3) / Math.max(1, sum(prev3))) : 1.0;
 
-      // consistency
       const wantedSide = mode === "bull" ? "BULL" : "BEAR";
       const sideNow = coinSideFromMode(mode, c.change24);
       const sideHist = updateSideHistory(prev.sideHist, sideNow);
       const cons = calcConsistency(sideHist, wantedSide);
 
-      // OB result
       const ob = await kv.get(keyObResult(mode, sym));
       const obView = ob ? {
         valid: !!ob.valid,
@@ -156,14 +208,12 @@ export default async function handler(req, res) {
         reason: ob?.reason || ""
       } : null;
 
-      // OB samples => slope
       let obSlope = null;
       if (SETTINGS.entry.obSlopeEnabled) {
         const samples = await kv.get(keyObSamples(mode, sym));
         obSlope = calcObSlope(samples);
       }
 
-      // Confidence
       const conf = computeConfidence({
         obScore: obView?.score ?? 0,
         obAgree: obView?.agree ?? 0,
@@ -172,7 +222,6 @@ export default async function handler(req, res) {
         btc
       });
 
-      // ENTRY gate
       const entryGate = passEntryFromObPlus({
         obView,
         mode,
@@ -182,7 +231,6 @@ export default async function handler(req, res) {
       });
       const entryOk = entryGate.ok;
 
-      // desired stage
       const desired = nextDesiredStage(
         c,
         mode,
@@ -197,7 +245,6 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // stage update (no skip)
       let stage = prev.stage || "RADAR";
       let stageScans = Number(prev.stageScans || 0);
       let enteredAt = Number(prev.enteredAt || now);
@@ -217,6 +264,8 @@ export default async function handler(req, res) {
       }
 
       let stageChanged = false;
+      const fromStage = stage;
+
       if (nextStage === stage) {
         stageScans += 1;
       } else {
@@ -226,22 +275,35 @@ export default async function handler(req, res) {
         stageChanged = true;
       }
 
-      // ATR (bitget 1h) + fallback
       const atrFromScan = computeAtrPctFromPriceHist(priceHist);
       const atrObj = await fetchBitgetAtr1hPctCached(sym);
       const atrPct = atrObj?.atrPct && Number.isFinite(atrObj.atrPct) ? atrObj.atrPct : atrFromScan;
 
       const sltp = computeSLTP({ mode, price: c.price, atrPct });
 
-      // ✅ SIZING ADVICE (60..100)
       const sizing = allocPctRecommended({ stage, confidence: conf, btc });
 
-      // Discord on new stage
+      if (stageChanged) {
+        await pushEvent("main", {
+          ts: now,
+          funnel: "main",
+          mode,
+          symbol: sym,
+          type: "STAGE",
+          from: fromStage,
+          to: stage,
+          metrics: {
+            vm: c.vm,
+            volAcc,
+            confidence: conf,
+            spreadPct: obView?.spreadPct ?? null,
+            depthMinUsd1p: obView?.depthMinUsd1p ?? null,
+          }
+        });
+      }
+
       if (stageChanged) {
         let hook = webhookForStage(stage);
-
-        // ✅ EXTRA VANGNET: als iemand toch nog een mismatch heeft
-        // (ENTRY maar env heet ELITE)
         if (!hook && stage === "ENTRY") hook = process.env.DISCORD_WEBHOOK_ELITE;
 
         if (hook) {
@@ -271,7 +333,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // store state
       state[sym] = {
         stage,
         stageScans,
@@ -282,11 +343,13 @@ export default async function handler(req, res) {
         volHist
       };
 
-      // log entry when ENTERS ENTRY
       if (stageChanged && stage === "ENTRY") {
+        await openMainTradeIfNeeded({ mode, c, sltp, conf, obView, sizing });
+
         await bestEffortLogEntry({
           ts: now,
           symbol: sym,
+          cgId: c.id,
           mode,
           price: c.price,
           change24: c.change24,
@@ -313,8 +376,8 @@ export default async function handler(req, res) {
         });
       }
 
-      // UI item
       const item = {
+        id: c.id,
         symbol: sym,
         name: c.name,
         price: c.price,
