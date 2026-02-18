@@ -7,59 +7,50 @@ export const config = RUNTIME_CONFIG;
 function normalizeBaseSymbol(input) {
   const s = String(input || "").trim().toUpperCase();
   if (!s) return "";
-  // accepteer BTC, BTCUSDT, BTC/USDT, BTC-USDT
   const cleaned = s.replace("/", "").replace("-", "");
   return cleaned.endsWith("USDT") ? cleaned.slice(0, -4) : cleaned;
 }
 
-async function fetchBybitOrderbookSpot(pair, limit = 50) {
-  // Bybit V5: GET /v5/market/orderbook?category=spot&symbol=BTCUSDT&limit=...
-  const url = `https://api.bybit.com/v5/market/orderbook?category=spot&symbol=${encodeURIComponent(
-    pair
-  )}&limit=${encodeURIComponent(String(limit))}`;
+async function fetchBitgetDepthRaw(baseSymbol, limit = 50) {
+  const base = String(baseSymbol || "").toUpperCase();
+  if (!base) return { ok: false, error: "Missing base symbol" };
 
-  const r = await fetch(url, {
-    method: "GET",
-    headers: {
-      accept: "application/json",
-      "user-agent": "CryptoCrocScanner/1.0 (+vercel)",
-    },
-  });
+  const sym = `${base}USDT_SPBL`;
+  const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(sym)}&limit=${encodeURIComponent(
+    String(limit)
+  )}`;
 
-  const ct = (r.headers.get("content-type") || "").toLowerCase();
+  const r = await fetch(url, { headers: { accept: "application/json" } });
   const text = await r.text();
 
-  // Bybit hoort JSON te geven. Als je HTML krijgt, wil je dat meteen zien.
-  if (!ct.includes("application/json")) {
-    return {
-      ok: false,
-      error: "Bybit returned non-JSON",
-      status: r.status,
-      url,
-      preview: text.slice(0, 400),
-      contentType: ct || "unknown",
-    };
-  }
+  let json = null;
+  try { json = JSON.parse(text); } catch {}
 
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
+  if (!r.ok) {
     return {
       ok: false,
-      error: "Bybit JSON parse failed",
+      error: "Bitget depth failed",
       status: r.status,
       url,
       preview: text.slice(0, 400),
     };
   }
 
-  return { ok: true, url, bybit: json };
+  if (!json) {
+    return {
+      ok: false,
+      error: "Bitget returned non-JSON",
+      status: r.status,
+      url,
+      preview: text.slice(0, 400),
+    };
+  }
+
+  return { ok: true, url, bitget: json };
 }
 
 export default async function handler(req, res) {
   try {
-    // ✅ security (zelfde als scan endpoints)
     if (!requireSecret(req, res)) return;
 
     const u = new URL(req.url, "http://localhost");
@@ -90,12 +81,12 @@ export default async function handler(req, res) {
     res.setHeader("cache-control", "no-store");
 
     // =========================
-    // RAW mode: live Bybit debug
+    // RAW mode: live Bitget depth debug
     // =========================
     if (String(rawFlag) === "1") {
       const limit = Math.max(1, Math.min(200, Number(limitRaw) || 50));
-      const live = await fetchBybitOrderbookSpot(pair, limit);
-      return res.end(JSON.stringify({ symbol: base, pair, side, ...live }));
+      const live = await fetchBitgetDepthRaw(base, limit);
+      return res.end(JSON.stringify({ ok: true, symbol: base, pair, side, ...live }));
     }
 
     // =========================
@@ -114,7 +105,7 @@ export default async function handler(req, res) {
           need: SETTINGS.entry.samplesNeed,
           windowSec: SETTINGS.entry.samplesWindowSec,
           tip:
-            "Nog geen geldige OB in KV. Run eerst /api/ob-sampler of /api/cron zodat er samples worden verzameld (bv. 3 samples/90s).",
+            "Nog geen geldige OB in KV. Run eerst /api/ob-sampler (liefst nadat /api/scan coins heeft) zodat er samples worden verzameld (bv. 3 samples/90s).",
         })
       );
     }
