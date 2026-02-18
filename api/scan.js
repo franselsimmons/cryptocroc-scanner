@@ -12,7 +12,7 @@ import {
   keyEntryLog,
   fetchCoinGeckoTopCached,
   fetchBTCGateCached,
-  getBinanceSpotUsdtSymbols, // ✅ BINANCE universe
+  getBitgetSpotUsdtSymbols,
   fetchBitgetAtr1hPctCached,
   applySpikeGuard,
   updateSideHistory,
@@ -30,7 +30,7 @@ import {
   computeSLTP,
   passEntryFromObPlus,
   allocPctRecommended,
-  passRadar, // ✅ nodig voor RADAR-only mode bij BTC-block
+  passRadar,
 } from "./_core.js";
 
 import { uid, pushEvent, readTrades, writeTrades } from "./_analytics.js";
@@ -111,6 +111,40 @@ async function openMainTradeIfNeeded({ mode, c, sltp, conf, obView, sizing }) {
   });
 }
 
+/**
+ * ✅ FIX: OB result normalize
+ * - jouw /api/orderbook returnt score/spread/lor/depth meestal op ROOT
+ * - ob.{...} is alleen detail
+ */
+function toObView(obResult) {
+  if (!obResult) return null;
+
+  const rootScore = obResult.score;
+  const rootSpread = obResult.spreadPct;
+  const rootLor = obResult.lor;
+  const rootDepth = obResult.depthMinUsd1p;
+
+  const detail = obResult.ob || {};
+
+  const score = Number(
+    rootScore ?? detail.score ?? obResult.avgScore ?? detail.avgScore ?? 0
+  );
+  const spreadPct = Number(rootSpread ?? detail.spreadPct ?? 999);
+  const lor = Number(rootLor ?? detail.lor ?? 1);
+  const depthMinUsd1p = Number(rootDepth ?? detail.depthMinUsd1p ?? 0);
+
+  return {
+    valid: !!obResult.valid,
+    stale: !!obResult.stale,
+    score,
+    spreadPct,
+    lor,
+    agree: Number(obResult.agree ?? 0),
+    depthMinUsd1p,
+    reason: obResult.reason || "",
+  };
+}
+
 export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
@@ -118,6 +152,7 @@ export default async function handler(req, res) {
     const mode = (req.query?.mode || "bull").toLowerCase();
     if (mode !== "bull" && mode !== "bear") {
       res.statusCode = 400;
+      res.setHeader("content-type", "application/json; charset=utf-8");
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull or bear" }));
     }
 
@@ -126,12 +161,9 @@ export default async function handler(req, res) {
     const btc = await fetchBTCGateCached();
     const wanted = mode === "bull" ? "BULL" : "BEAR";
 
-    // ✅ BTC niet ok -> RADAR-only
     const btcBlocked = btc.state !== wanted;
 
-    // ✅ Universe = BINANCE spot USDT
-    const symbolsSet = await getBinanceSpotUsdtSymbols();
-
+    const symbolsSet = await getBitgetSpotUsdtSymbols();
     const all = await fetchCoinGeckoTopCached();
     const rawCoins = all.filter((c) => symbolsSet.has(c.symbol));
 
@@ -169,7 +201,7 @@ export default async function handler(req, res) {
 
       const { patched: c, nextMetrics } = applySpikeGuard(prev.metricsHist, raw);
 
-      // ✅ RADAR filter altijd toepassen
+      // RADAR filter altijd
       if (!passRadar(c, btc.range24)) {
         delete state[sym];
         continue;
@@ -191,19 +223,8 @@ export default async function handler(req, res) {
       const sideHist = updateSideHistory(prev.sideHist, sideNow);
       const cons = calcConsistency(sideHist, wantedSide);
 
-      const ob = await kv.get(keyObResult(mode, sym));
-      const obView = ob
-        ? {
-            valid: !!ob.valid,
-            stale: !!ob.stale,
-            score: Number(ob?.ob?.score ?? ob?.avgScore ?? 0),
-            spreadPct: Number(ob?.ob?.spreadPct ?? 999),
-            lor: Number(ob?.ob?.lor ?? 1),
-            agree: Number(ob?.agree ?? 0),
-            depthMinUsd1p: Number(ob?.ob?.depthMinUsd1p ?? 0),
-            reason: ob?.reason || "",
-          }
-        : null;
+      const obRaw = await kv.get(keyObResult(mode, sym));
+      const obView = toObView(obRaw);
 
       let obSlope = null;
       if (SETTINGS.entry.obSlopeEnabled) {
@@ -228,10 +249,22 @@ export default async function handler(req, res) {
       });
       const entryOk = entryGate.ok;
 
-      // ✅ bij btcBlocked forceren we desired = RADAR
       const desired = btcBlocked
         ? "RADAR"
         : nextDesiredStage(c, mode, priceHist, cons.ok, btc.range24, entryOk);
+
+      // ✅ Jouw wens: zonder OB wil je niet hoger dan RADAR
+      // - BUILDUP/ALMOST: minimaal obView bestaan (dus er is al iets gemeten/gesaved)
+      // - ENTRY: moet valid zijn (entryGate regelt dat al)
+      let desired2 = desired;
+      if (!btcBlocked) {
+        if ((desired === "BUILDUP" || desired === "ALMOST") && !obView) {
+          desired2 = "RADAR";
+        }
+        if (desired === "ALMOST" && obView && obView.stale) {
+          desired2 = "RADAR";
+        }
+      }
 
       let stage = prev.stage || "RADAR";
       let stageScans = Number(prev.stageScans || 0);
@@ -242,7 +275,6 @@ export default async function handler(req, res) {
 
       if (btcBlocked) {
         const nextStage = "RADAR";
-
         if (nextStage === stage) {
           stageScans += 1;
         } else {
@@ -253,17 +285,17 @@ export default async function handler(req, res) {
         }
       } else {
         const prevRank = stageRank(stage);
-        const desiredRank = stageRank(desired);
+        const desiredRank = stageRank(desired2);
 
         let nextStage = stage;
 
         if (desiredRank > prevRank) {
           if (stageScans >= SETTINGS.minScansPerStage) {
-            if (desiredRank === prevRank + 1) nextStage = desired;
+            if (desiredRank === prevRank + 1) nextStage = desired2;
             else nextStage = prevRank === 1 ? "BUILDUP" : prevRank === 2 ? "ALMOST" : "ENTRY";
           }
         } else if (desiredRank < prevRank) {
-          nextStage = desired;
+          nextStage = desired2;
         }
 
         if (nextStage === stage) {
@@ -302,7 +334,6 @@ export default async function handler(req, res) {
         });
       }
 
-      // ✅ geen Discord spam als BTC geblokkeerd is
       if (!btcBlocked && stageChanged) {
         let hook = webhookForStage(stage);
         if (!hook && stage === "ENTRY") hook = process.env.DISCORD_WEBHOOK_ELITE;
@@ -312,11 +343,7 @@ export default async function handler(req, res) {
 
           if (stage === "ENTRY") {
             const obTxt = obView
-              ? `OB: ${obView.score.toFixed(3)} | spread: ${obView.spreadPct.toFixed(
-                  2
-                )}% | LOR: ${obView.lor.toFixed(2)} | agree: ${obView.agree}/3 | depth1%: $${Math.round(
-                  obView.depthMinUsd1p
-                )}`
+              ? `OB: ${obView.score.toFixed(3)} | spread: ${obView.spreadPct.toFixed(2)}% | LOR: ${obView.lor.toFixed(2)} | agree: ${obView.agree}/3 | depth1%: $${Math.round(obView.depthMinUsd1p)}`
               : `OB: (no data)`;
 
             const slopeTxt = Number.isFinite(obSlope) ? `OB slope: ${obSlope.toFixed(4)}` : `OB slope: n/a`;
@@ -329,14 +356,8 @@ export default async function handler(req, res) {
               `${obTxt}\n` +
               `${slopeTxt}\n` +
               `Consistency: ${(cons.ratio * 100).toFixed(0)}% (${cons.same}/${cons.total})\n` +
-              `chg1h: ${
-                change1h == null
-                  ? "n/a"
-                  : (change1h >= 0 ? "+" : "") + change1h.toFixed(2) + "%"
-              }\n` +
-              `SL: $${sltp.sl.toFixed(6)} | TP: $${sltp.tp.toFixed(6)} | ATR~: ${(atrPct * 100).toFixed(
-                2
-              )}% (${atrSrc})`;
+              `chg1h: ${change1h == null ? "n/a" : (change1h >= 0 ? "+" : "") + change1h.toFixed(2) + "%"}\n` +
+              `SL: $${sltp.sl.toFixed(6)} | TP: $${sltp.tp.toFixed(6)} | ATR~: ${(atrPct * 100).toFixed(2)}% (${atrSrc})`;
           }
 
           const msg = fmtCoinLine(c, mode, stage, extra);
@@ -354,7 +375,6 @@ export default async function handler(req, res) {
         volHist,
       };
 
-      // ✅ geen trade/log als BTC geblokkeerd is
       if (!btcBlocked && stageChanged && stage === "ENTRY") {
         await openMainTradeIfNeeded({ mode, c, sltp, conf, obView, sizing });
 
@@ -430,7 +450,7 @@ export default async function handler(req, res) {
         tp: sltp.tp,
 
         why: {
-          desired,
+          desired: desired2,
           entryGate: entryGate.why,
         },
       };
@@ -470,11 +490,11 @@ export default async function handler(req, res) {
     await kv.set(keyState(mode), state);
 
     res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
+    res.setHeader("content-type", "application/json; charset=utf-8");
     res.end(JSON.stringify(result));
   } catch (e) {
     res.statusCode = 500;
-    res.setHeader("content-type", "application/json");
+    res.setHeader("content-type", "application/json; charset=utf-8");
     res.end(JSON.stringify({ ok: false, error: String(e) }));
   }
 }
