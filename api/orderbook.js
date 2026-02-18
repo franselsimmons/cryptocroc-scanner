@@ -7,29 +7,41 @@ export const config = RUNTIME_CONFIG;
 function normalizeBaseSymbol(input) {
   const s = String(input || "").trim().toUpperCase();
   if (!s) return "";
-  const cleaned = s.replace("/", "").replace("-", "");
+  // accepteer BTC, BTCUSDT, BTC/USDT, BTC-USDT
+  const cleaned = s.replaceAll("/", "").replaceAll("-", "");
   return cleaned.endsWith("USDT") ? cleaned.slice(0, -4) : cleaned;
 }
 
-async function fetchBitgetDepthRaw(baseSymbol, limit = 50) {
+async function fetchBinanceDepthRaw(baseSymbol, limit = 100) {
   const base = String(baseSymbol || "").toUpperCase();
   if (!base) return { ok: false, error: "Missing base symbol" };
 
-  const sym = `${base}USDT_SPBL`;
-  const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(sym)}&limit=${encodeURIComponent(
-    String(limit)
-  )}`;
+  const pair = `${base}USDT`;
+  const safeLimit = Math.max(5, Math.min(1000, Number(limit) || 100));
 
-  const r = await fetch(url, { headers: { accept: "application/json" } });
+  const url = `https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(
+    pair
+  )}&limit=${encodeURIComponent(String(safeLimit))}`;
+
+  const r = await fetch(url, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      "user-agent": "CryptoCrocScanner/1.0 (+vercel)",
+    },
+  });
+
   const text = await r.text();
 
   let json = null;
-  try { json = JSON.parse(text); } catch {}
+  try {
+    json = JSON.parse(text);
+  } catch {}
 
   if (!r.ok) {
     return {
       ok: false,
-      error: "Bitget depth failed",
+      error: "Binance depth failed",
       status: r.status,
       url,
       preview: text.slice(0, 400),
@@ -39,14 +51,14 @@ async function fetchBitgetDepthRaw(baseSymbol, limit = 50) {
   if (!json) {
     return {
       ok: false,
-      error: "Bitget returned non-JSON",
+      error: "Binance returned non-JSON",
       status: r.status,
       url,
       preview: text.slice(0, 400),
     };
   }
 
-  return { ok: true, url, bitget: json };
+  return { ok: true, url, binance: json };
 }
 
 export default async function handler(req, res) {
@@ -58,7 +70,7 @@ export default async function handler(req, res) {
     const symbolRaw = u.searchParams.get("symbol") ?? req.query?.symbol;
     const sideRaw = u.searchParams.get("side") ?? req.query?.side ?? "bull";
     const rawFlag = u.searchParams.get("raw") ?? req.query?.raw ?? "0";
-    const limitRaw = u.searchParams.get("limit") ?? req.query?.limit ?? "50";
+    const limitRaw = u.searchParams.get("limit") ?? req.query?.limit ?? "100";
 
     const side = String(sideRaw || "").toLowerCase();
     if (side !== "bull" && side !== "bear") {
@@ -81,16 +93,15 @@ export default async function handler(req, res) {
     res.setHeader("cache-control", "no-store");
 
     // =========================
-    // RAW mode: live Bitget depth debug
+    // RAW mode: live Binance depth debug
     // =========================
     if (String(rawFlag) === "1") {
-      const limit = Math.max(1, Math.min(200, Number(limitRaw) || 50));
-      const live = await fetchBitgetDepthRaw(base, limit);
-      return res.end(JSON.stringify({ ok: true, symbol: base, pair, side, ...live }));
+      const live = await fetchBinanceDepthRaw(base, limitRaw);
+      return res.end(JSON.stringify({ symbol: base, pair, side, ...live }));
     }
 
     // =========================
-    // NORMAL mode: KV lookup
+    // NORMAL mode: KV lookup (sampler vult dit)
     // =========================
     const r = await kv.get(keyObResult(side, base));
 
