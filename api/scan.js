@@ -30,6 +30,7 @@ import {
   computeSLTP,
   passEntryFromObPlus,
   allocPctRecommended,
+  passRadar, // ✅ nieuw: nodig voor RADAR-only mode bij BTC-block
 } from "./_core.js";
 
 import { uid, pushEvent, readTrades, writeTrades } from "./_analytics.js";
@@ -55,10 +56,11 @@ async function bestEffortLogEntry(entryObj) {
 
 async function openMainTradeIfNeeded({ mode, c, sltp, conf, obView, sizing }) {
   const trades = await readTrades("main");
-  const exists = trades.find(t =>
-    String(t.status) === "OPEN" &&
-    String(t.symbol) === String(c.symbol) &&
-    String(t.mode) === String(mode)
+  const exists = trades.find(
+    (t) =>
+      String(t.status) === "OPEN" &&
+      String(t.symbol) === String(c.symbol) &&
+      String(t.mode) === String(mode)
   );
   if (exists) return;
 
@@ -86,7 +88,6 @@ async function openMainTradeIfNeeded({ mode, c, sltp, conf, obView, sizing }) {
 
     mfePct: 0,
     maePct: 0,
-
     postBestPct: null,
     postWorstPct: null,
 
@@ -125,29 +126,15 @@ export default async function handler(req, res) {
     const btc = await fetchBTCGateCached();
     const wanted = mode === "bull" ? "BULL" : "BEAR";
 
+    // ✅ nieuw: als BTC niet klopt -> we vullen RADAR-only
+    const btcBlocked = btc.state !== wanted;
+
     const symbolsSet = await getBitgetSpotUsdtSymbols();
     const all = await fetchCoinGeckoTopCached();
     const rawCoins = all.filter((c) => symbolsSet.has(c.symbol));
 
     const resetAt = (await kv.get(keyReset(mode))) || 0;
     const state = (await kv.get(keyState(mode))) || {};
-
-    if (btc.state !== wanted) {
-      const empty = {
-        ok: true,
-        ts: now,
-        epoch: Math.floor(now / 1000),
-        mode,
-        btc,
-        counts: { entry: 0, almost: 0, buildup: 0, radar: 0 },
-        funnel: { radar: [], buildup: [], almost: [], entry: [] },
-        note: `BTC gate: ${btc.state} (needed ${wanted})`,
-      };
-      await kv.set(keyLatest(mode), empty);
-      res.statusCode = 200;
-      res.setHeader("content-type", "application/json");
-      return res.end(JSON.stringify(empty));
-    }
 
     const radar = [];
     const buildup = [];
@@ -164,7 +151,7 @@ export default async function handler(req, res) {
         priceHist: [],
         sideHist: [],
         metricsHist: { vol: [], range: [], vm: [], chg: [] },
-        volHist: []
+        volHist: [],
       };
 
       const wasReset = Number(prev.enteredAt || 0) < resetAt;
@@ -180,6 +167,12 @@ export default async function handler(req, res) {
 
       const { patched: c, nextMetrics } = applySpikeGuard(prev.metricsHist, raw);
 
+      // ✅ nieuw: RADAR filter ALTIJD toepassen (ook bij btcBlocked)
+      if (!passRadar(c, btc.range24)) {
+        delete state[sym];
+        continue;
+      }
+
       const priceHist = updatePriceHist(prev.priceHist, c.price);
       const change1h = calcChange1hPct(priceHist);
 
@@ -189,7 +182,7 @@ export default async function handler(req, res) {
       const sum = (a) => a.reduce((x, y) => x + (Number(y) || 0), 0);
       const last3 = volHist.slice(-3);
       const prev3 = volHist.slice(-6, -3);
-      const volAcc = prev3.length ? (sum(last3) / Math.max(1, sum(prev3))) : 1.0;
+      const volAcc = prev3.length ? sum(last3) / Math.max(1, sum(prev3)) : 1.0;
 
       const wantedSide = mode === "bull" ? "BULL" : "BEAR";
       const sideNow = coinSideFromMode(mode, c.change24);
@@ -197,16 +190,18 @@ export default async function handler(req, res) {
       const cons = calcConsistency(sideHist, wantedSide);
 
       const ob = await kv.get(keyObResult(mode, sym));
-      const obView = ob ? {
-        valid: !!ob.valid,
-        stale: !!ob.stale,
-        score: Number(ob?.ob?.score ?? ob?.avgScore ?? 0),
-        spreadPct: Number(ob?.ob?.spreadPct ?? 999),
-        lor: Number(ob?.ob?.lor ?? 1),
-        agree: Number(ob?.agree ?? 0),
-        depthMinUsd1p: Number(ob?.ob?.depthMinUsd1p ?? 0),
-        reason: ob?.reason || ""
-      } : null;
+      const obView = ob
+        ? {
+            valid: !!ob.valid,
+            stale: !!ob.stale,
+            score: Number(ob?.ob?.score ?? ob?.avgScore ?? 0),
+            spreadPct: Number(ob?.ob?.spreadPct ?? 999),
+            lor: Number(ob?.ob?.lor ?? 1),
+            agree: Number(ob?.agree ?? 0),
+            depthMinUsd1p: Number(ob?.ob?.depthMinUsd1p ?? 0),
+            reason: ob?.reason || "",
+          }
+        : null;
 
       let obSlope = null;
       if (SETTINGS.entry.obSlopeEnabled) {
@@ -219,7 +214,7 @@ export default async function handler(req, res) {
         obAgree: obView?.agree ?? 0,
         vm: c.vm,
         volAcc,
-        btc
+        btc,
       });
 
       const entryGate = passEntryFromObPlus({
@@ -227,52 +222,57 @@ export default async function handler(req, res) {
         mode,
         consistencyRatio: cons.ratio,
         confidence: conf,
-        obSlope
+        obSlope,
       });
       const entryOk = entryGate.ok;
 
-      const desired = nextDesiredStage(
-        c,
-        mode,
-        priceHist,
-        cons.ok,
-        btc.range24,
-        entryOk
-      );
-
-      if (desired === "OUT") {
-        delete state[sym];
-        continue;
-      }
+      // ✅ nieuw: bij btcBlocked forceren we desired = RADAR
+      const desired = btcBlocked
+        ? "RADAR"
+        : nextDesiredStage(c, mode, priceHist, cons.ok, btc.range24, entryOk);
 
       let stage = prev.stage || "RADAR";
       let stageScans = Number(prev.stageScans || 0);
       let enteredAt = Number(prev.enteredAt || now);
 
-      const prevRank = stageRank(stage);
-      const desiredRank = stageRank(desired);
-
-      let nextStage = stage;
-
-      if (desiredRank > prevRank) {
-        if (stageScans >= SETTINGS.minScansPerStage) {
-          if (desiredRank === prevRank + 1) nextStage = desired;
-          else nextStage = prevRank === 1 ? "BUILDUP" : prevRank === 2 ? "ALMOST" : "ENTRY";
-        }
-      } else if (desiredRank < prevRank) {
-        nextStage = desired;
-      }
-
       let stageChanged = false;
       const fromStage = stage;
 
-      if (nextStage === stage) {
-        stageScans += 1;
+      if (btcBlocked) {
+        // ✅ nieuw: stage mag NIET omhoog bij BTC block
+        const nextStage = "RADAR";
+
+        if (nextStage === stage) {
+          stageScans += 1;
+        } else {
+          stage = nextStage;
+          stageScans = 1;
+          enteredAt = now;
+          stageChanged = true;
+        }
       } else {
-        stage = nextStage;
-        stageScans = 1;
-        enteredAt = now;
-        stageChanged = true;
+        const prevRank = stageRank(stage);
+        const desiredRank = stageRank(desired);
+
+        let nextStage = stage;
+
+        if (desiredRank > prevRank) {
+          if (stageScans >= SETTINGS.minScansPerStage) {
+            if (desiredRank === prevRank + 1) nextStage = desired;
+            else nextStage = prevRank === 1 ? "BUILDUP" : prevRank === 2 ? "ALMOST" : "ENTRY";
+          }
+        } else if (desiredRank < prevRank) {
+          nextStage = desired;
+        }
+
+        if (nextStage === stage) {
+          stageScans += 1;
+        } else {
+          stage = nextStage;
+          stageScans = 1;
+          enteredAt = now;
+          stageChanged = true;
+        }
       }
 
       const atrFromScan = computeAtrPctFromPriceHist(priceHist);
@@ -280,7 +280,6 @@ export default async function handler(req, res) {
       const atrPct = atrObj?.atrPct && Number.isFinite(atrObj.atrPct) ? atrObj.atrPct : atrFromScan;
 
       const sltp = computeSLTP({ mode, price: c.price, atrPct });
-
       const sizing = allocPctRecommended({ stage, confidence: conf, btc });
 
       if (stageChanged) {
@@ -298,11 +297,12 @@ export default async function handler(req, res) {
             confidence: conf,
             spreadPct: obView?.spreadPct ?? null,
             depthMinUsd1p: obView?.depthMinUsd1p ?? null,
-          }
+          },
         });
       }
 
-      if (stageChanged) {
+      // ✅ nieuw: geen Discord spam als BTC geblokkeerd is
+      if (!btcBlocked && stageChanged) {
         let hook = webhookForStage(stage);
         if (!hook && stage === "ENTRY") hook = process.env.DISCORD_WEBHOOK_ELITE;
 
@@ -311,7 +311,11 @@ export default async function handler(req, res) {
 
           if (stage === "ENTRY") {
             const obTxt = obView
-              ? `OB: ${obView.score.toFixed(3)} | spread: ${obView.spreadPct.toFixed(2)}% | LOR: ${obView.lor.toFixed(2)} | agree: ${obView.agree}/3 | depth1%: $${Math.round(obView.depthMinUsd1p)}`
+              ? `OB: ${obView.score.toFixed(3)} | spread: ${obView.spreadPct.toFixed(
+                  2
+                )}% | LOR: ${obView.lor.toFixed(2)} | agree: ${obView.agree}/3 | depth1%: $${Math.round(
+                  obView.depthMinUsd1p
+                )}`
               : `OB: (no data)`;
 
             const slopeTxt = Number.isFinite(obSlope) ? `OB slope: ${obSlope.toFixed(4)}` : `OB slope: n/a`;
@@ -324,8 +328,14 @@ export default async function handler(req, res) {
               `${obTxt}\n` +
               `${slopeTxt}\n` +
               `Consistency: ${(cons.ratio * 100).toFixed(0)}% (${cons.same}/${cons.total})\n` +
-              `chg1h: ${change1h == null ? "n/a" : (change1h >= 0 ? "+" : "") + change1h.toFixed(2) + "%"}\n` +
-              `SL: $${sltp.sl.toFixed(6)} | TP: $${sltp.tp.toFixed(6)} | ATR~: ${(atrPct * 100).toFixed(2)}% (${atrSrc})`;
+              `chg1h: ${
+                change1h == null
+                  ? "n/a"
+                  : (change1h >= 0 ? "+" : "") + change1h.toFixed(2) + "%"
+              }\n` +
+              `SL: $${sltp.sl.toFixed(6)} | TP: $${sltp.tp.toFixed(6)} | ATR~: ${(atrPct * 100).toFixed(
+                2
+              )}% (${atrSrc})`;
           }
 
           const msg = fmtCoinLine(c, mode, stage, extra);
@@ -340,10 +350,11 @@ export default async function handler(req, res) {
         priceHist,
         sideHist,
         metricsHist: nextMetrics,
-        volHist
+        volHist,
       };
 
-      if (stageChanged && stage === "ENTRY") {
+      // ✅ nieuw: geen trade open/log als BTC geblokkeerd is
+      if (!btcBlocked && stageChanged && stage === "ENTRY") {
         await openMainTradeIfNeeded({ mode, c, sltp, conf, obView, sizing });
 
         await bestEffortLogEntry({
@@ -395,17 +406,19 @@ export default async function handler(req, res) {
 
         sizing,
 
-        ob: obView ? {
-          status: obView.valid ? "valid" : "validating",
-          valid: obView.valid,
-          stale: obView.stale,
-          score: obView.score,
-          spreadPct: obView.spreadPct,
-          lor: obView.lor,
-          agree: obView.agree,
-          depthMinUsd1p: obView.depthMinUsd1p,
-          reason: obView.reason
-        } : { status: "none" },
+        ob: obView
+          ? {
+              status: obView.valid ? "valid" : "validating",
+              valid: obView.valid,
+              stale: obView.stale,
+              score: obView.score,
+              spreadPct: obView.spreadPct,
+              lor: obView.lor,
+              agree: obView.agree,
+              depthMinUsd1p: obView.depthMinUsd1p,
+              reason: obView.reason,
+            }
+          : { status: "none" },
 
         obSlope,
 
@@ -418,16 +431,17 @@ export default async function handler(req, res) {
         why: {
           desired,
           entryGate: entryGate.why,
-        }
+        },
       };
 
+      // ✅ bij btcBlocked gaat alles in RADAR
       if (stage === "ENTRY") entry.push(item);
       else if (stage === "ALMOST") almost.push(item);
       else if (stage === "BUILDUP") buildup.push(item);
       else radar.push(item);
     }
 
-    const sortKey = (a, b) => (b.confidence - a.confidence) || (b.vm - a.vm);
+    const sortKey = (a, b) => b.confidence - a.confidence || b.vm - a.vm;
 
     entry.sort(sortKey);
     almost.sort(sortKey);
@@ -449,6 +463,7 @@ export default async function handler(req, res) {
         radar: radarLimited.length,
       },
       funnel: { entry, almost, buildup, radar: radarLimited },
+      note: btcBlocked ? `BTC gate BLOCKED: ${btc.state} (wanted ${wanted}) → RADAR only` : undefined,
     };
 
     await kv.set(keyLatest(mode), result);
