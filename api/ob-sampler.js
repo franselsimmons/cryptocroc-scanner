@@ -11,32 +11,21 @@ import {
 
 export const config = RUNTIME_CONFIG;
 
-// ================== BITGET DEPTH (SPOT V2) ==================
-async function fetchBitgetDepth(symbolUpper) {
+// ================== BINANCE DEPTH ==================
+async function fetchBinanceDepth(symbolUpper) {
   const base = String(symbolUpper || "").toUpperCase();
   if (!base) return null;
 
-  const sym = `${base}USDT`;
-
-  // ✅ Bitget V2 (V1 is uitgezet)
-  // type: step0 = hoogste granulariteit
-  const url =
-    `https://api.bitget.com/api/v2/spot/market/orderbook?` +
-    `symbol=${encodeURIComponent(sym)}&type=step0&limit=50`;
+  const pair = `${base}USDT`;
+  const url = `https://api.binance.com/api/v3/depth?symbol=${pair}&limit=100`;
 
   const r = await fetch(url, { headers: { accept: "application/json" } });
   if (!r.ok) return null;
 
   const j = await r.json();
-  if (j?.code !== "00000" || !j?.data) return null;
+  if (!j?.bids?.length || !j?.asks?.length) return null;
 
-  const d = j.data;
-
-  // V2 levert arrays terug; we normaliseren naar dezelfde shape als jouw oude code verwacht
-  if (!Array.isArray(d.bids) || !Array.isArray(d.asks)) return null;
-  if (!d.bids.length || !d.asks.length) return null;
-
-  return { bids: d.bids, asks: d.asks };
+  return j;
 }
 
 function sumDepth(levels, mid, pct, isBid) {
@@ -49,7 +38,6 @@ function sumDepth(levels, mid, pct, isBid) {
     const s = Number(row?.[1]);
     if (!Number.isFinite(p) || !Number.isFinite(s)) continue;
 
-    // Let op: Bitget depth is gesorteerd (bids hoog->laag, asks laag->hoog)
     if (isBid && p < limit) break;
     if (!isBid && p > limit) break;
 
@@ -57,6 +45,7 @@ function sumDepth(levels, mid, pct, isBid) {
     total += usd;
     if (usd > biggest) biggest = usd;
   }
+
   return { total, biggest };
 }
 
@@ -65,8 +54,8 @@ function computeObSample(depth) {
   const asks = depth?.asks || [];
   if (!bids.length || !asks.length) return null;
 
-  const bid = Number(bids[0]?.[0]);
-  const ask = Number(asks[0]?.[0]);
+  const bid = Number(bids[0][0]);
+  const ask = Number(asks[0][0]);
   if (!(bid > 0) || !(ask > 0)) return null;
 
   const mid = (bid + ask) / 2;
@@ -89,189 +78,112 @@ function computeObSample(depth) {
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
 
-  return { ts: Date.now(), score, spreadPct, lor, bidUsd, askUsd, mid, depthMinUsd1p };
-}
-
-// ================== VALIDATION ==================
-function directionOk(mode, score) {
-  return mode === "bull" ? score > 0 : score < 0;
+  return {
+    ts: Date.now(),
+    score,
+    spreadPct,
+    lor,
+    bidUsd,
+    askUsd,
+    mid,
+    depthMinUsd1p,
+  };
 }
 
 function pruneSamples(samples) {
   const now = Date.now();
   const winMs = SETTINGS.entry.samplesWindowSec * 1000;
 
-  const arr = Array.isArray(samples) ? samples : [];
-  const fresh = arr
-    .map((s) => ({
-      ts: Number(s?.ts || 0),
-      score: Number(s?.score ?? s?.obScore ?? s?.avgScore ?? 0),
-      spreadPct: Number(s?.spreadPct ?? 999),
-      lor: Number(s?.lor ?? 1),
-      bidUsd: Number(s?.bidUsd ?? 0),
-      askUsd: Number(s?.askUsd ?? 0),
-      mid: Number(s?.mid ?? 0),
-      depthMinUsd1p: Number(s?.depthMinUsd1p ?? 0),
-    }))
-    .filter((s) => s.ts > 0 && Number.isFinite(s.score))
-    .filter((s) => now - s.ts <= winMs)
-    .sort((a, b) => a.ts - b.ts);
-
-  return fresh.slice(-20);
+  return (samples || [])
+    .filter(s => now - s.ts <= winMs)
+    .slice(-20);
 }
 
-function validateSamples(mode, samplesFresh) {
-  const fresh = pruneSamples(samplesFresh);
-
-  if (fresh.length < SETTINGS.entry.samplesNeed) {
-    return { valid: false, reason: "Not enough samples", fresh };
+function validateSamples(mode, samples) {
+  if (samples.length < SETTINGS.entry.samplesNeed) {
+    return { valid: false, reason: "Not enough samples" };
   }
 
-  const lastN = fresh.slice(-SETTINGS.entry.samplesNeed);
-  const agree = lastN.filter((s) => directionOk(mode, s.score)).length;
+  const lastN = samples.slice(-SETTINGS.entry.samplesNeed);
+  const agree = lastN.filter(s =>
+    mode === "bull" ? s.score > 0 : s.score < 0
+  ).length;
 
   if (agree < SETTINGS.entry.minAgree) {
-    return { valid: false, reason: "Direction not consistent", fresh: lastN, agree };
+    return { valid: false, reason: "Direction not consistent", agree };
   }
 
   const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
-  return { valid: true, reason: "OK", fresh: lastN, avgScore, agree };
+
+  return { valid: true, avgScore, agree };
 }
 
-// ================== MAIN ==================
 async function processCandidate(mode, symbol) {
-  const depth = await fetchBitgetDepth(symbol);
+  const depth = await fetchBinanceDepth(symbol);
   const sample = depth ? computeObSample(depth) : null;
+  if (!sample) return { ok: false };
 
-  if (!sample) {
-    // ✅ ook dit tellen we straks als “tried”, zodat je ziet dat er iets geprobeerd is
-    return { ok: false, symbol, reason: "no depth" };
-  }
-
-  const kS = keyObSamples(mode, symbol);
-  const prev = (await kv.get(kS)) || [];
-  const merged = Array.isArray(prev) ? prev.concat([sample]) : [sample];
-
+  const kSamples = keyObSamples(mode, symbol);
+  const prev = (await kv.get(kSamples)) || [];
+  const merged = [...prev, sample];
   const pruned = pruneSamples(merged);
-  await kv.set(kS, pruned);
+
+  await kv.set(kSamples, pruned);
 
   const v = validateSamples(mode, pruned);
-  const stale = (Date.now() - sample.ts) / 1000 > 15;
 
   const result = {
     symbol,
     side: mode,
     valid: v.valid,
-    reason: v.reason,
-    stale,
-
     score: sample.score,
     spreadPct: sample.spreadPct,
     lor: sample.lor,
     depthMinUsd1p: sample.depthMinUsd1p,
     avgScore: v.avgScore ?? null,
     agree: v.agree ?? null,
-
-    ob: {
-      ts: sample.ts,
-      mid: sample.mid,
-      spreadPct: sample.spreadPct,
-      bidUsd: sample.bidUsd,
-      askUsd: sample.askUsd,
-      score: sample.score,
-      lor: sample.lor,
-      depthMinUsd1p: sample.depthMinUsd1p,
-    },
     ts: Date.now(),
   };
 
   await kv.set(keyObResult(mode, symbol), result);
 
-  return { ok: true, symbol, valid: v.valid };
-}
-
-async function runBatched(list, batchSize, fn) {
-  const out = [];
-  for (let i = 0; i < list.length; i += batchSize) {
-    const chunk = list.slice(i, i + batchSize);
-    const results = await Promise.allSettled(chunk.map(fn));
-    for (const r of results) {
-      if (r.status === "fulfilled") out.push(r.value);
-      else out.push({ ok: false, reason: String(r.reason || "rejected") });
-    }
-  }
-  return out;
-}
-
-function pickCandidatesFromLatest(latest) {
-  const almost = (latest?.funnel?.almost || []).slice(0, SETTINGS.obPickAlmost);
-  const buildup = (latest?.funnel?.buildup || []).slice(0, SETTINGS.obPickBuildup);
-
-  let picked = [...almost, ...buildup];
-
-  // ✅ fallback: als buildup/almost leeg zijn, pak RADAR top N
-  if (!picked.length) {
-    const radar = (latest?.funnel?.radar || []).slice(0, SETTINGS.obPickRadarFallback || 20);
-    picked = radar;
-  }
-
-  return picked
-    .map((x) => String(x?.symbol || "").toUpperCase())
-    .filter(Boolean);
+  return { ok: true, valid: v.valid };
 }
 
 export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const modeParam = String(req.query?.mode || "").toLowerCase(); // optioneel
-    const wantBull = !modeParam || modeParam === "bull";
-    const wantBear = !modeParam || modeParam === "bear";
+    const mode = String(req.query?.mode || "bull").toLowerCase();
+    const latest = await kv.get(keyLatest(mode));
+    if (!latest?.funnel) {
+      return res.end(JSON.stringify({ ok: true, totalTried: 0 }));
+    }
 
-    const bull = wantBull ? await kv.get(keyLatest("bull")) : null;
-    const bear = wantBear ? await kv.get(keyLatest("bear")) : null;
+    const candidates = [
+      ...(latest.funnel.almost || []).slice(0, SETTINGS.obPickAlmost),
+      ...(latest.funnel.buildup || []).slice(0, SETTINGS.obPickBuildup),
+    ].map(x => x.symbol);
 
-    const tasks = [];
-    if (bull?.funnel) tasks.push({ mode: "bull", data: bull });
-    if (bear?.funnel) tasks.push({ mode: "bear", data: bear });
+    let totalProcessed = 0;
+    let totalValid = 0;
 
-    let totalTried = 0;      // geprobeerd (ook no depth)
-    let totalProcessed = 0;  // succesvolle sample gemaakt
-    let totalValid = 0;      // valid=true
-
-    for (const t of tasks) {
-      const mode = t.mode;
-      const candidates = pickCandidatesFromLatest(t.data);
-
-      if (!candidates.length) continue;
-
-      const results = await runBatched(candidates, 6, (sym) => processCandidate(mode, sym));
-
-      for (const r of results) {
-        if (!r) continue;
-        totalTried++;
-
-        if (r.ok) {
-          totalProcessed++;
-          if (r.valid) totalValid++;
-        }
+    for (const sym of candidates) {
+      const r = await processCandidate(mode, sym);
+      if (r.ok) {
+        totalProcessed++;
+        if (r.valid) totalValid++;
       }
     }
 
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.end(
-      JSON.stringify({
-        ok: true,
-        ts: Date.now(),
-        totalTried,
-        totalProcessed,
-        totalValid,
-      })
-    );
+    res.end(JSON.stringify({
+      ok: true,
+      totalProcessed,
+      totalValid
+    }));
+
   } catch (e) {
     res.statusCode = 500;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: false, error: String(e) }));
+    res.end(JSON.stringify({ ok:false, error:String(e) }));
   }
 }
