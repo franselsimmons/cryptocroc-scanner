@@ -35,16 +35,26 @@ import {
   calcPnlPct,
   hitStopOrTp,
 
-  // ✅ DISCORD (nieuw)
+  // DISCORD
   sendDiscord,
   webhookForMoonStage,
   webhookMoonPortfolio,
   fmtMoonLine,
 } from "./_moon_core.js";
 
+import {
+  uid,
+  pushEvent,
+  readTrades,
+  writeTrades,
+  addPostWatch,
+  pnlPctFromPrices,
+} from "./_analytics.js";
+
 export const config = RUNTIME_CONFIG;
 
 const MAX_SNAPSHOTS = 3;
+const POST_WATCH_HOURS = 24;
 
 function updateSnapshots(prevSnapshots, snapshot) {
   const arr = Array.isArray(prevSnapshots) ? [...prevSnapshots] : [];
@@ -84,7 +94,7 @@ function computeRollingMetrics(snaps) {
   const obStability = Math.sqrt(variance);
 
   const move1 = s1.price > 0 ? Math.abs((s2.price - s1.price) / s1.price) : 0;
-  const move2 = s2.price > 0 ? Math.abs((s3.price - s2.price) / s2.price) : 0;
+  const move2 = s2.price > 0 ? Math.abs((s3.price - s2.price) / s3.price) : 0;
   const atrEst = (move1 + move2) / 2;
 
   return { deltaPrice15m, deltaVol15m, compression, obSlope, obStability, atrEst };
@@ -139,6 +149,125 @@ function buildSymbolPriceMap(cgList) {
   return map;
 }
 
+async function openMoonTradeMirror({ mode, c, risk, confidence, obView, depthUsd }) {
+  const trades = await readTrades("moon");
+
+  // al open? (zelfde symbol + mode)
+  const exists = trades.find(
+    (t) => String(t.status) === "OPEN" && String(t.symbol) === String(c.symbol) && String(t.mode) === String(mode)
+  );
+  if (exists) return;
+
+  const t = {
+    id: uid("moon"),
+    funnel: "moon",
+    status: "OPEN",
+    mode,
+    symbol: c.symbol,
+    cgId: c.id,
+
+    entryAt: Date.now(),
+    entryPrice: Number(c.price),
+
+    // MOON gebruikt tp3 als “TP”
+    sl: Number(risk?.sl || 0),
+    tp: Number(risk?.tp3 || 0),
+
+    lastPrice: Number(c.price),
+    pnlPct: 0,
+
+    snap: {
+      vm: Number(c.vm || 0),
+      confidence: Number(confidence || 0),
+      spreadPct: Number(obView?.spreadPct ?? 0),
+      depthUsd: Number(depthUsd || 0),
+    },
+
+    mfePct: 0,
+    maePct: 0,
+
+    postBestPct: null,
+    postWorstPct: null,
+  };
+
+  trades.push(t);
+  await writeTrades("moon", trades);
+
+  await pushEvent("moon", {
+    ts: Date.now(),
+    funnel: "moon",
+    mode,
+    symbol: c.symbol,
+    type: "TRADE_OPEN",
+    entryPrice: c.price,
+    sl: t.sl,
+    tp: t.tp,
+    confidence,
+    vm: c.vm,
+  });
+}
+
+async function closeMoonTradeMirror({ mode, symbol, priceNow, reason }) {
+  const trades = await readTrades("moon");
+  const now = Date.now();
+
+  const idx = trades.findIndex(
+    (t) =>
+      String(t.status) === "OPEN" &&
+      String(t.mode) === String(mode) &&
+      String(t.symbol) === String(symbol)
+  );
+  if (idx < 0) return;
+
+  const t = trades[idx];
+
+  t.status = "CLOSED";
+  t.exitAt = now;
+  t.exitPrice = Number(priceNow || t.entryPrice);
+  t.exitReason = String(reason || "SELL");
+
+  const pnl = pnlPctFromPrices({ mode: t.mode, entryPrice: t.entryPrice, priceNow: t.exitPrice });
+  t.pnlPct = +Number(pnl || 0).toFixed(2);
+
+  // post-watch starten (24h na close)
+  const until = now + POST_WATCH_HOURS * 60 * 60 * 1000;
+  await addPostWatch("moon", t.id, until);
+
+  trades[idx] = t;
+  await writeTrades("moon", trades);
+
+  await pushEvent("moon", {
+    ts: now,
+    funnel: "moon",
+    mode,
+    symbol,
+    type: "TRADE_CLOSE",
+    reason: t.exitReason,
+    pnlPct: t.pnlPct,
+  });
+}
+
+async function updateMoonTradeMfeMae({ mode, symbol, priceNow }) {
+  const trades = await readTrades("moon");
+  const idx = trades.findIndex(
+    (t) => String(t.status) === "OPEN" && String(t.mode) === String(mode) && String(t.symbol) === String(symbol)
+  );
+  if (idx < 0) return;
+
+  const t = trades[idx];
+  t.lastPrice = Number(priceNow || t.lastPrice || 0);
+
+  const pnl = pnlPctFromPrices({ mode: t.mode, entryPrice: t.entryPrice, priceNow: t.lastPrice });
+  const pnlPct = +Number(pnl || 0).toFixed(2);
+  t.pnlPct = pnlPct;
+
+  t.mfePct = t.mfePct == null ? pnlPct : Math.max(Number(t.mfePct || 0), pnlPct);
+  t.maePct = t.maePct == null ? pnlPct : Math.min(Number(t.maePct || 0), pnlPct);
+
+  trades[idx] = t;
+  await writeTrades("moon", trades);
+}
+
 export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
@@ -149,8 +278,6 @@ export default async function handler(req, res) {
 
     // 1) BTC gate
     const btc = await fetchBTCGateCached();
-
-    // ✅ HARD BLOCK (A)
     const allowed = isModeAllowedByBtc(mode, btc.state);
 
     // stores
@@ -160,9 +287,8 @@ export default async function handler(req, res) {
     const positionsPrev = await kv.get(keyMoonPositions(mode));
     const positions = normalizePositionsStore(positionsPrev);
 
-    // Als BTC flip en closeOnBtcFlip => sluit open posities met best-effort prijs
+    // BTC flip -> close open positions (portfolio logic)
     if (!allowed && MOON.portfolio.closeOnBtcFlip && positions.open.length) {
-      // Best effort: haal CG slice om huidige prijzen te vinden voor open symbols
       const cgNow = await fetchCoinGeckoTopCached();
       const priceMap = buildSymbolPriceMap(cgNow);
 
@@ -186,7 +312,14 @@ export default async function handler(req, res) {
 
         positions.closed.push(closedTrade);
 
-        // ✅ Discord: BTC gate forced close
+        // Mirror close naar analytics-trades
+        await closeMoonTradeMirror({
+          mode: t.mode,
+          symbol: t.symbol,
+          priceNow: px,
+          reason: "BTC_GATE_FLIP",
+        });
+
         const hook = webhookMoonPortfolio() || webhookForMoonStage("ELITE");
         if (hook) {
           const msg =
@@ -198,7 +331,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // Als blocked: schrijf lege latest + portfolio
+    // blocked -> empty latest + portfolio
     if (!allowed) {
       const portfolio = calcPortfolioFromPositions(mode, positions);
 
@@ -249,7 +382,6 @@ export default async function handler(req, res) {
     const almost = [];
     const elite = [];
 
-    // helper: open trade find
     const findOpen = (sym) => positions.open.find((t) => t.symbol === sym);
     const canOpenNew = () => positions.open.length < MOON.portfolio.maxOpen;
 
@@ -315,7 +447,7 @@ export default async function handler(req, res) {
         btc,
       });
 
-      // Consistency
+      // Consistency (moon is simpel)
       const wantedSide = mode === "bull" ? "BULL" : "BEAR";
       const sideNow =
         mode === "bull" ? (c.change24 >= 0 ? "BULL" : "BEAR") : (c.change24 <= 0 ? "BEAR" : "BULL");
@@ -341,7 +473,7 @@ export default async function handler(req, res) {
         range24: c.range24,
       });
 
-      // ✅ Elite extra rolling sniper
+      // Elite extra rolling sniper
       const rollCfg = MOON.elite.roll;
       const eliteExtra =
         rolling.deltaPrice15m <= rollCfg.maxDeltaPrice15mPct &&
@@ -356,7 +488,6 @@ export default async function handler(req, res) {
       if (almostGate.ok) stage = "ALMOST";
       if (eliteGate.ok && eliteExtra) stage = "ELITE";
 
-      // stage changed?
       const prevStage = String(prev.stage || "RADAR");
       const stageChanged = prevStage !== stage;
 
@@ -369,12 +500,32 @@ export default async function handler(req, res) {
         depthOk,
       });
 
-      // =============================
-      // ENTRY/HOLD/SELL tracking
-      // =============================
+      // ======= Analytics: stage events =======
+      if (stageChanged) {
+        await pushEvent("moon", {
+          ts: now,
+          funnel: "moon",
+          mode,
+          symbol: sym,
+          type: "STAGE",
+          from: prevStage,
+          to: stage,
+          metrics: {
+            vm: c.vm,
+            volAcc,
+            confidence,
+            spreadPct: obView?.spreadPct ?? null,
+            depthUsd,
+            depthFloorUsd: floorUsd,
+            rolling,
+          },
+        });
+      }
+
+      // ======= ENTRY/HOLD/SELL tracking (portfolio) =======
       let trade = findOpen(sym) || null;
 
-      // 1) open trade when Elite hits
+      // open trade when Elite hits
       let openedNow = false;
       if (!trade && stage === "ELITE" && canOpenNew() && risk?.sl && risk?.tp3) {
         const posUsd = MOON.portfolio.posUsd;
@@ -395,14 +546,20 @@ export default async function handler(req, res) {
         };
         positions.open.push(trade);
         openedNow = true;
+
+        // Mirror open naar analytics-trades
+        await openMoonTradeMirror({ mode, c, risk, confidence, obView, depthUsd });
       }
 
-      // 2) update open trade
+      // update open trade
       let closedNow = null;
       if (trade) {
         if (trade.status === "ENTRY") trade.status = "HOLD";
 
         trade.lastPrice = Number(c.price);
+
+        // Mirror mfe/mae update
+        await updateMoonTradeMfeMae({ mode, symbol: sym, priceNow: c.price });
 
         const pnlPct = calcPnlPct({ mode, entryPrice: trade.entryPrice, priceNow: c.price });
         const pnlUsd = (trade.posUsd * pnlPct) / 100;
@@ -421,7 +578,15 @@ export default async function handler(req, res) {
           positions.closed.push(trade);
 
           closedNow = { ...trade };
-          trade = { ...trade }; // voor UI
+          trade = { ...trade };
+
+          // Mirror close naar analytics-trades + postwatch
+          await closeMoonTradeMirror({
+            mode,
+            symbol: sym,
+            priceNow: c.price,
+            reason: hit.kind,
+          });
         } else {
           trade.pnlPct = +pnlPct.toFixed(2);
           trade.pnlUsd = +pnlUsd.toFixed(2);
@@ -429,6 +594,7 @@ export default async function handler(req, res) {
       }
 
       const item = {
+        id: c.id,
         symbol: sym,
         name: c.name,
         price: c.price,
@@ -476,19 +642,18 @@ export default async function handler(req, res) {
         },
       };
 
-      // ✅ DISCORD: stage change signal
+      // Discord stage change
       if (stageChanged) {
         const hook = webhookForMoonStage(stage);
         if (hook) {
           const extra =
             `why: ${item.why.eliteExtra} | depth: $${Math.round(depthUsd)} (floor $${Math.round(floorUsd)})\n` +
             `rolling: ΔP15m ${Number(rolling.deltaPrice15m || 0).toFixed(2)}% | ΔV15m ${Number(rolling.deltaVol15m || 0).toFixed(2)} | slope ${Number(rolling.obSlope || 0).toFixed(2)}`;
-
           await sendDiscord(hook, fmtMoonLine(item, mode, extra));
         }
       }
 
-      // ✅ DISCORD: trade open
+      // Discord trade open
       if (openedNow) {
         const hook = webhookMoonPortfolio() || webhookForMoonStage("ELITE");
         if (hook) {
@@ -500,7 +665,7 @@ export default async function handler(req, res) {
         }
       }
 
-      // ✅ DISCORD: trade close (TP/SL)
+      // Discord trade close (TP/SL)
       if (closedNow) {
         const hook = webhookMoonPortfolio() || webhookForMoonStage("ELITE");
         if (hook) {
@@ -541,7 +706,6 @@ export default async function handler(req, res) {
     buildup.sort(sortKey);
     radar.sort((a, b) => (b.volAcc - a.volAcc) || (b.vm - a.vm));
 
-    // portfolio
     const portfolio = calcPortfolioFromPositions(mode, positions);
 
     const result = {
