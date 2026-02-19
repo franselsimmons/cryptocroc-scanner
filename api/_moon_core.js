@@ -447,18 +447,23 @@ export function computeMoonRisk({ mode, price, range24, confidence, depthOk }) {
   const r = clamp(Number(range24 || 0), 1.0, 25.0) / 100;
   const conf = clamp(Number(confidence || 0), 0, 100);
 
-  let slMul = 0.30;
+  // ✅ SL iets ruimer default (minder snel “aangetikt”)
+  let slMul = 0.34; // was 0.30
   slMul += mapLinear(conf, 0, 100) * (-0.10);
   if (!depthOk) slMul += 0.08;
-  slMul = clamp(slMul, 0.18, 0.42);
 
-  const slPct = clamp(r * slMul, 0.006, 0.06);
+  // ✅ clamp iets ruimer
+  slMul = clamp(slMul, 0.22, 0.46); // was 0.18..0.42
+
+  const slPct = clamp(r * slMul, 0.008, 0.07); // was 0.006..0.06
   const sl = mode === "bull" ? p * (1 - slPct) : p * (1 + slPct);
 
   const R = slPct;
-  const tp1 = mode === "bull" ? p * (1 + 1.8 * R) : p * (1 - 1.8 * R);
-  const tp2 = mode === "bull" ? p * (1 + 3.0 * R) : p * (1 - 3.0 * R);
-  const tp3 = mode === "bull" ? p * (1 + 4.2 * R) : p * (1 - 4.2 * R);
+
+  // ✅ TP ladder iets verder voor runners (zeker als jij zegt: coin loopt vaak door)
+  const tp1 = mode === "bull" ? p * (1 + 2.0 * R) : p * (1 - 2.0 * R); // was 1.8R
+  const tp2 = mode === "bull" ? p * (1 + 3.2 * R) : p * (1 - 3.2 * R); // was 3.0R
+  const tp3 = mode === "bull" ? p * (1 + 4.6 * R) : p * (1 - 4.6 * R); // was 4.2R
 
   return {
     slPct: +(slPct * 100).toFixed(2),
