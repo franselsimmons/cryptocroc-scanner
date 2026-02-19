@@ -43,6 +43,9 @@ import {
   webhookForMoonStage,
   webhookMoonPortfolio,
   fmtMoonLine,
+  fmtTs,
+  durMinutes,
+  fmtModeLabel,
 } from "./_moon_core.js";
 
 import {
@@ -367,8 +370,13 @@ export default async function handler(req, res) {
 
         const hook = webhookMoonPortfolio() || webhookForMoonStage("ELITE");
         if (hook) {
+          const mins = durMinutes(closedTrade.entryAt, closedTrade.exitAt);
+
           const msg =
-            `**${closedTrade.symbol}** → **SELL** (MOON ${String(closedTrade.mode).toUpperCase()})\n` +
+            `**${closedTrade.symbol}** → **SELL** (MOON ${fmtModeLabel(closedTrade.mode)})\n` +
+            `Opened: ${fmtTs(closedTrade.entryAt)}\n` +
+            `Closed: ${fmtTs(closedTrade.exitAt)}\n` +
+            `Duration: ${mins} min\n` +
             `Reason: BTC_GATE_FLIP\n` +
             `Exit: $${Number(closedTrade.exitPrice).toFixed(8)} | PnL: ${closedTrade.pnlPct >= 0 ? "+" : ""}${closedTrade.pnlPct}% ($${closedTrade.pnlUsd})`;
           await sendDiscord(hook, msg);
@@ -689,7 +697,7 @@ export default async function handler(req, res) {
           const extra =
             `why: ${item.why.eliteExtra} | depth: $${Math.round(depthUsd)} (floor $${Math.round(floorUsd)})\n` +
             `rolling: ΔP15m ${Number(rolling.deltaPrice15m || 0).toFixed(2)}% | ΔV15m ${Number(rolling.deltaVol15m || 0).toFixed(2)} | slope ${Number(rolling.obSlope || 0).toFixed(4)} | stab ${Number(rolling.obStability || 0).toFixed(4)}`;
-          await sendDiscord(hook, fmtMoonLine(item, mode, extra));
+          await sendDiscord(hook, fmtMoonLine(item, mode, extra, now));
         }
       }
 
@@ -697,7 +705,8 @@ export default async function handler(req, res) {
         const hook = webhookMoonPortfolio() || webhookForMoonStage("ELITE");
         if (hook) {
           const msg =
-            `**${sym}** → **OPEN** (MOON ${mode.toUpperCase()})\n` +
+            `**${sym}** → **OPEN** (MOON ${fmtModeLabel(mode)})\n` +
+            `Opened: ${fmtTs(trade.entryAt)}\n` +
             `Entry: $${Number(item.price).toFixed(8)} | SL: $${Number(item.risk?.sl || 0).toFixed(8)} | TP3: $${Number(item.risk?.tp3 || 0).toFixed(8)}\n` +
             `confidence: ${item.confidence}/100 | depthOk: ${item.depthOk ? "yes" : "no"}`;
           await sendDiscord(hook, msg);
@@ -707,8 +716,13 @@ export default async function handler(req, res) {
       if (closedNow) {
         const hook = webhookMoonPortfolio() || webhookForMoonStage("ELITE");
         if (hook) {
+          const mins = durMinutes(closedNow.entryAt, closedNow.exitAt);
+
           const msg =
-            `**${closedNow.symbol}** → **SELL** (MOON ${String(closedNow.mode).toUpperCase()})\n` +
+            `**${closedNow.symbol}** → **SELL** (MOON ${fmtModeLabel(closedNow.mode)})\n` +
+            `Opened: ${fmtTs(closedNow.entryAt)}\n` +
+            `Closed: ${fmtTs(closedNow.exitAt)}\n` +
+            `Duration: ${mins} min\n` +
             `Reason: ${closedNow.exitReason}\n` +
             `Exit: $${Number(closedNow.exitPrice).toFixed(8)} | PnL: ${closedNow.pnlPct >= 0 ? "+" : ""}${closedNow.pnlPct}% ($${closedNow.pnlUsd})`;
           await sendDiscord(hook, msg);
