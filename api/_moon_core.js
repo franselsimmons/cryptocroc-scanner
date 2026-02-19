@@ -1,8 +1,8 @@
 // /api/_moon_core.js
 import { kv } from "@vercel/kv";
 
-// ✅ Vercel runtime: nodejs
-export const RUNTIME_CONFIG = { runtime: "nodejs" };
+// ✅ Vercel runtime
+export const RUNTIME_CONFIG = { runtime: "nodejs20.x" };
 
 export const MOON = {
   // ✅ 250 coins per scan, vanaf pagina 5
@@ -10,7 +10,7 @@ export const MOON = {
   CG_START_PAGE: 5,
   CG_PAGES: 1,
 
-  RADAR_LIMIT: 120,
+  RADAR_LIMIT: 140, // iets ruimer voor doorloop
 
   // BTC gate
   btcChgGate: 0.6,
@@ -20,74 +20,76 @@ export const MOON = {
 
   // Universe caps
   mcapMin: 5_000_000,
-  mcapMax: 150_000_000,
+  mcapMax: 180_000_000, // iets ruimer
 
   // ✅ PROACTIEF radar
   radar: {
-    volMin: 200_000,
-    vmMin: 0.12,
-    range24Min: 2.0,
-    range24Max: 12.0,
-    bullChg24Min: -6,
-    bullChg24Max: +6,
-    bearChg24Min: -6,
-    bearChg24Max: +6,
+    volMin: 180_000,   // iets soepeler
+    vmMin: 0.11,       // iets soepeler
+    range24Min: 1.8,
+    range24Max: 14.0,  // iets ruimer
+
+    // bull/bear “rustig genoeg”
+    bullChg24Min: -7,
+    bullChg24Max: +7,
+    bearChg24Min: -7,
+    bearChg24Max: +7,
   },
 
   // ✅ BUILDUP
   buildup: {
-    volAccMin: 1.05,
-    vmMin: 0.18,
-    range24Min: 3.5,
-    chgAbsMin: 0.8,
-    chgAbsMax: 12.0,
+    volAccMin: 1.04,   // iets soepeler
+    vmMin: 0.17,
+    range24Min: 3.2,
+    chgAbsMin: 0.7,
+    chgAbsMax: 13.0,
   },
 
   // ✅ ALMOST
   almost: {
-    volAccMin: 1.10,
-    vmMin: 0.25,
-    range24Min: 5.5,
-    range24Max: 16.0,
-    minConfidence: 50,
+    volAccMin: 1.08,     // iets soepeler
+    vmMin: 0.23,         // iets soepeler
+    range24Min: 5.0,
+    range24Max: 18.0,
+    minConfidence: 45,   // was 50
     consistencyMin: 0.60,
-    priceFlatMax: 2.8,
+    priceFlatMax: 3.2,   // was 2.8 (iets soepeler)
   },
 
   // ✅ ELITE = instap
   elite: {
-    minConfidence: 65,
+    minConfidence: 60,   // was 65 (iets soepeler)
     consistencyMin: 0.70,
 
-    obScoreMin: 0.04,
-    spreadMaxPct: 0.70,
-    largestOrderRatioMax: 0.40,
+    obScoreMin: 0.03,         // was 0.04
+    spreadMaxPct: 1.10,       // was 0.70
+    largestOrderRatioMax: 0.65,// was 0.40
 
-    samplesNeed: 3,
-    samplesWindowSec: 90,
-    minAgree: 2,
+    samplesNeed: 2,           // was 3 (sneller valid)
+    samplesWindowSec: 180,    // was 90
+    minAgree: 1,              // was 2
 
     // OB rolling slope checks (sampler)
     obSlopeEnabled: true,
     obSlopeMinBull: 0.0,
     obSlopeMaxBear: 0.0,
 
-    // Depth floor (moet bestaan, anders crasht depthFloorUsd)
+    // Depth floor
     depthFloorEnabled: true,
-    depthK: 28,
-    depthMinUsd: 60_000,
-    depthMaxUsd: 600_000,
+    depthK: 20,               // was 28 (iets soepeler)
+    depthMinUsd: 30_000,       // was 60k
+    depthMaxUsd: 500_000,      // was 600k
 
     // “niet te laat”
-    range24Max: 18.0,
+    range24Max: 20.0,          // was 18.0
 
-    // Rolling (15m) requirements voor 9.7 niveau
+    // ✅ Rolling (15m) requirements — REALISTISCH
     roll: {
-      maxDeltaPrice15mPct: 4.0,
-      minDeltaVol15m: 0.15,
-      needCompression: true,
-      minObSlope: 8,
-      maxObStability: 20,
+      maxDeltaPrice15mPct: 4.8, // iets ruimer
+      minDeltaVol15m: 0.10,     // was 0.15
+      needCompression: false,   // was true (te streng voor startfase)
+      minObSlope: 0.01,         // was 8 (impossible)
+      maxObStability: 0.08,     // was 20 (niet zinvol)
     },
   },
 
@@ -110,7 +112,8 @@ export const MOON = {
 
 // ================== AUTH ==================
 export function requireSecret(req, res) {
-  const isVercelCron = String(req.headers?.["x-vercel-cron"] || "") === "1";
+  const cronHeader = String(req.headers?.["x-vercel-cron"] || "").toLowerCase();
+  const isVercelCron = cronHeader === "1" || cronHeader === "true";
   if (isVercelCron) return true;
 
   const secret = process.env.CRON_SECRET;
@@ -137,11 +140,26 @@ export const keyMoonReset = (mode) => `moon:resetAt:${mode}`;
 export const keyMoonBitgetSymbols = `moon:bitget:symbols:spotusdt`;
 
 export const keyMoonObSamples = (mode, symbol) => `moon:ob:samples:${mode}:${symbol}`;
-export const keyMoonObResult = (mode, symbol) => `moon:ob:result:${mode}:${symbol}`;
+export const keyMoonObResult  = (mode, symbol) => `moon:ob:result:${mode}:${symbol}`;
 
 // Portfolio keys
-export const keyMoonPositions = (mode) => `moon:positions:${mode}`; // {open:[], closed:[]}
+export const keyMoonPositions = (mode) => `moon:positions:${mode}`;
 export const keyMoonPortfolio = (mode) => `moon:portfolio:${mode}`;
+
+// ✅ DIAG keys (voor analyze)
+export const keyMoonDiagList = (mode) => `moon:diag:list:${mode}`; // lpush/ltrim
+export const keyMoonDiagSnap = (mode) => `moon:diag:snap:${mode}`; // fallback set
+
+export async function saveMoonDiag(mode, diag) {
+  try {
+    if (typeof kv.lpush === "function" && typeof kv.ltrim === "function") {
+      await kv.lpush(keyMoonDiagList(mode), JSON.stringify(diag));
+      await kv.ltrim(keyMoonDiagList(mode), 0, 200);
+    } else {
+      await kv.set(keyMoonDiagSnap(mode), diag, { ex: 60 * 60 * 24 * 7 });
+    }
+  } catch {}
+}
 
 // cache keys
 const keyCgTopCache = `moon:cache:cg:top:per${MOON.CG_PER_PAGE}:start${MOON.CG_START_PAGE}:pages${MOON.CG_PAGES}`;
@@ -365,7 +383,7 @@ export function depthFloorUsd(marketCapUsd) {
 export function passDepthFloor({ depthUsd, floorUsd }) {
   if (!MOON.elite.depthFloorEnabled) return { ok: true, why: "Depth disabled" };
   const ok = Number(depthUsd || 0) >= Number(floorUsd || 0);
-  return { ok, why: ok ? "Depth ok" : `Depth < ${Math.round(floorUsd).toLocaleString()} USD` };
+  return { ok, why: ok ? "Depth ok" : `Depth < ${Math.round(floorUsd)} USD` };
 }
 
 // ================== FILTERS ==================
@@ -456,10 +474,17 @@ export function computeMoonRisk({ mode, price, range24, confidence, depthOk }) {
   };
 }
 
-// ================== BTC HARD GATE ==================
+// ================== BTC SOFT GATE ==================
 export function isModeAllowedByBtc(mode, btcState) {
+  // ✅ NEUTRAL mag scannen (SOFT-OPEN)
+  if (btcState === "NEUTRAL") return true;
   if (btcState !== "BULL" && btcState !== "BEAR") return false;
-  return mode === "bull" ? btcState === "BULL" : btcState === "BEAR";
+
+  // ✅ Alleen blokkeren als BTC echt de andere kant op is
+  if (mode === "bull" && btcState === "BEAR") return false;
+  if (mode === "bear" && btcState === "BULL") return false;
+
+  return true;
 }
 
 // ================== PORTFOLIO HELPERS ==================
