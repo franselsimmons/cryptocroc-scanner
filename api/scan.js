@@ -1,4 +1,3 @@
-// /api/scan.js
 import { kv } from "@vercel/kv";
 import {
   RUNTIME_CONFIG,
@@ -148,12 +147,9 @@ export default async function handler(req, res) {
 
     const btc = await fetchBTCGateCached();
 
-    // ✅ Testfase: NEUTRAL mag meedoen.
-    // Alleen blokkeren als BTC echt de andere kant op is.
-    const wanted = mode === "bull" ? "BULL" : "BEAR";
-    const btcBlocked =
-      (mode === "bull" && btc.state === "BEAR") ||
-      (mode === "bear" && btc.state === "BULL");
+    // ✅ BTC‑gate minder streng: LONG (bull) wordt nooit geblokkeerd,
+    //    SHORT (bear) alleen als BTC BULL is.
+    const btcBlocked = (mode === "bear" && btc.state === "BULL");
 
     const symbolsSet = await getBitgetSpotUsdtSymbols();
     const all = await fetchCoinGeckoTopCached();
