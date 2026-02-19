@@ -11,6 +11,13 @@ import {
 
 export const config = RUNTIME_CONFIG;
 
+// ✅ HARD LIMIT: hoeveel coins max per minuut per mode
+// Aanrader: 12 (veilig + genoeg doorstroom)
+const MAX_PER_RUN = 12;
+
+// ✅ fallback groter maken zodat je altijd genoeg candidates hebt
+const RADAR_FALLBACK = SETTINGS.obPickRadarFallback || 40;
+
 // ================== BINANCE DEPTH ==================
 async function fetchBinanceDepthRaw(baseSymbol, limit = 100) {
   const base = String(baseSymbol || "").toUpperCase();
@@ -18,9 +25,6 @@ async function fetchBinanceDepthRaw(baseSymbol, limit = 100) {
 
   const pair = `${base}USDT`;
 
-  // ✅ Binance “data-api.binance.vision” is prima voor data,
-// maar api.binance.com is meest standaard.
-// We gebruiken vision als fallback als binance.com even rate-limit doet.
   const url1 = `https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(pair)}&limit=${encodeURIComponent(String(limit))}`;
   const url2 = `https://data-api.binance.vision/api/v3/depth?symbol=${encodeURIComponent(pair)}&limit=${encodeURIComponent(String(limit))}`;
 
@@ -56,7 +60,6 @@ async function fetchBinanceDepthRaw(baseSymbol, limit = 100) {
   const b = await tryUrl(url2);
   if (b.ok) return b;
 
-  // beide failed → geef beste info terug
   return a.status ? a : b;
 }
 
@@ -152,18 +155,38 @@ function validateSamples(mode, samplesFresh) {
   return { valid: true, reason: "OK", fresh: lastN, avgScore, agree };
 }
 
+// ✅ Fisher-Yates shuffle (zodat je niet elke minuut dezelfde coins pakt)
+function shuffle(arr) {
+  const a = Array.isArray(arr) ? arr.slice() : [];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 function pickCandidatesFromLatest(latest) {
   const almost = (latest?.funnel?.almost || []).slice(0, SETTINGS.obPickAlmost);
   const buildup = (latest?.funnel?.buildup || []).slice(0, SETTINGS.obPickBuildup);
 
-  let picked = [...almost, ...buildup];
+  // ✅ pak ook RADAR mee als “buffer”
+  const radar = (latest?.funnel?.radar || []).slice(0, RADAR_FALLBACK);
 
-  // fallback: RADAR top 20 als buildup/almost leeg
-  if (!picked.length) picked = (latest?.funnel?.radar || []).slice(0, 20);
-
-  return picked
+  // ✅ combine + unique
+  const merged = [...almost, ...buildup, ...radar]
     .map((x) => String(x?.symbol || "").toUpperCase())
     .filter(Boolean);
+
+  const uniq = [];
+  const seen = new Set();
+  for (const s of merged) {
+    if (seen.has(s)) continue;
+    seen.add(s);
+    uniq.push(s);
+  }
+
+  // ✅ shuffle + hard cap
+  return shuffle(uniq).slice(0, MAX_PER_RUN);
 }
 
 async function processCandidate(mode, symbol) {
@@ -261,6 +284,8 @@ export default async function handler(req, res) {
       ok: true,
       mode,
       ts: Date.now(),
+      maxPerRun: MAX_PER_RUN,
+      radarFallback: RADAR_FALLBACK,
       candidates,
       totalTried,
       totalProcessed,
