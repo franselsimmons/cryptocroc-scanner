@@ -35,6 +35,9 @@ import {
   calcPnlPct,
   hitStopOrTp,
 
+  // ✅ DIAG save
+  saveMoonDiag,
+
   // DISCORD
   sendDiscord,
   webhookForMoonStage,
@@ -55,6 +58,11 @@ export const config = RUNTIME_CONFIG;
 
 const MAX_SNAPSHOTS = 3;
 const POST_WATCH_HOURS = 24;
+
+function inc(map, k) {
+  const key = String(k || "unknown");
+  map[key] = (map[key] || 0) + 1;
+}
 
 function updateSnapshots(prevSnapshots, snapshot) {
   const arr = Array.isArray(prevSnapshots) ? [...prevSnapshots] : [];
@@ -152,7 +160,6 @@ function buildSymbolPriceMap(cgList) {
 async function openMoonTradeMirror({ mode, c, risk, confidence, obView, depthUsd }) {
   const trades = await readTrades("moon");
 
-  // al open? (zelfde symbol + mode)
   const exists = trades.find(
     (t) => String(t.status) === "OPEN" && String(t.symbol) === String(c.symbol) && String(t.mode) === String(mode)
   );
@@ -169,7 +176,6 @@ async function openMoonTradeMirror({ mode, c, risk, confidence, obView, depthUsd
     entryAt: Date.now(),
     entryPrice: Number(c.price),
 
-    // MOON gebruikt tp3 als “TP”
     sl: Number(risk?.sl || 0),
     tp: Number(risk?.tp3 || 0),
 
@@ -212,10 +218,7 @@ async function closeMoonTradeMirror({ mode, symbol, priceNow, reason }) {
   const now = Date.now();
 
   const idx = trades.findIndex(
-    (t) =>
-      String(t.status) === "OPEN" &&
-      String(t.mode) === String(mode) &&
-      String(t.symbol) === String(symbol)
+    (t) => String(t.status) === "OPEN" && String(t.mode) === String(mode) && String(t.symbol) === String(symbol)
   );
   if (idx < 0) return;
 
@@ -229,7 +232,6 @@ async function closeMoonTradeMirror({ mode, symbol, priceNow, reason }) {
   const pnl = pnlPctFromPrices({ mode: t.mode, entryPrice: t.entryPrice, priceNow: t.exitPrice });
   t.pnlPct = +Number(pnl || 0).toFixed(2);
 
-  // post-watch starten (24h na close)
   const until = now + POST_WATCH_HOURS * 60 * 60 * 1000;
   await addPostWatch("moon", t.id, until);
 
@@ -276,9 +278,53 @@ export default async function handler(req, res) {
     const mode = modeRaw === "bear" ? "bear" : "bull";
     const now = Date.now();
 
+    // ===== DIAG collectors =====
+    const diag = {
+      ts: now,
+      mode,
+      btc: null,
+      allowed: null,
+      universe: { cgTotal: 0, afterBitget: 0, afterRadar: 0 },
+      counts: { radar: 0, buildup: 0, almost: 0, elite: 0 },
+      reasons: {
+        radarOut: {},
+        buildupWhy: {},
+        almostWhy: {},
+        eliteWhy: {},
+        eliteExtraFail: {},
+        obReason: {},
+      },
+      samples: {
+        radarOut: [],
+        eliteBlocked: [],
+      },
+      settings: {
+        radar: MOON.radar,
+        buildup: MOON.buildup,
+        almost: MOON.almost,
+        elite: {
+          minConfidence: MOON.elite.minConfidence,
+          consistencyMin: MOON.elite.consistencyMin,
+          obScoreMin: MOON.elite.obScoreMin,
+          spreadMaxPct: MOON.elite.spreadMaxPct,
+          largestOrderRatioMax: MOON.elite.largestOrderRatioMax,
+          samplesNeed: MOON.elite.samplesNeed,
+          samplesWindowSec: MOON.elite.samplesWindowSec,
+          minAgree: MOON.elite.minAgree,
+          depthK: MOON.elite.depthK,
+          depthMinUsd: MOON.elite.depthMinUsd,
+          depthMaxUsd: MOON.elite.depthMaxUsd,
+          range24Max: MOON.elite.range24Max,
+          roll: MOON.elite.roll,
+        },
+      },
+    };
+
     // 1) BTC gate
     const btc = await fetchBTCGateCached();
     const allowed = isModeAllowedByBtc(mode, btc.state);
+    diag.btc = btc;
+    diag.allowed = allowed;
 
     // stores
     const resetAt = (await kv.get(keyMoonReset(mode))) || 0;
@@ -312,7 +358,6 @@ export default async function handler(req, res) {
 
         positions.closed.push(closedTrade);
 
-        // Mirror close naar analytics-trades
         await closeMoonTradeMirror({
           mode: t.mode,
           symbol: t.symbol,
@@ -346,15 +391,14 @@ export default async function handler(req, res) {
         counts: { radar: 0, buildup: 0, almost: 0, elite: 0 },
         funnel: { elite: [], almost: [], buildup: [], radar: [] },
         portfolio,
-        note:
-          btc.state === "NEUTRAL"
-            ? "Blocked: BTC is NEUTRAL → scans disabled."
-            : mode === "bull"
-              ? "Blocked: BTC is not BULL → bull scan disabled."
-              : "Blocked: BTC is not BEAR → bear scan disabled.",
+        note: "Blocked: BTC is opposite side for this mode.",
       };
 
       await kv.set(keyMoonLatest(mode), result);
+
+      // ✅ diag save
+      diag.counts = result.counts;
+      await saveMoonDiag(mode, diag);
 
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");
@@ -365,14 +409,22 @@ export default async function handler(req, res) {
     const bitgetSet = await getBitgetSpotUsdtSymbols();
     const cg = await fetchCoinGeckoTopCached();
 
+    diag.universe.cgTotal = cg.length;
+
     // 3) Candidates
     const radarRaw = cg
-      .filter((c) => bitgetSet.has(String(c.symbol || "").toUpperCase()))
+      .filter((c) => bitgetSet.has(String(c.symbol || "").toUpperCase()));
+
+    diag.universe.afterBitget = radarRaw.length;
+
+    const radarFiltered = radarRaw
       .filter((c) => passRadarMoon(c, mode))
       .slice(0, MOON.RADAR_LIMIT);
 
+    diag.universe.afterRadar = radarFiltered.length;
+
     // cleanup state
-    const liveSyms = new Set(radarRaw.map((c) => c.symbol));
+    const liveSyms = new Set(radarFiltered.map((c) => c.symbol));
     for (const sym of Object.keys(state)) {
       if (!liveSyms.has(sym)) delete state[sym];
     }
@@ -385,7 +437,7 @@ export default async function handler(req, res) {
     const findOpen = (sym) => positions.open.find((t) => t.symbol === sym);
     const canOpenNew = () => positions.open.length < MOON.portfolio.maxOpen;
 
-    for (const c of radarRaw) {
+    for (const c of radarFiltered) {
       const sym = c.symbol;
 
       const prev = state[sym] || {
@@ -407,13 +459,11 @@ export default async function handler(req, res) {
         prev.stage = "RADAR";
       }
 
-      // histories
       const priceHist = updatePriceHist(prev.priceHist, c.price);
       const volHist = updateVolHist(prev.volHist, c.volume);
       const volAcc = volAccFromHist(volHist);
       const flat60 = priceFlatPct(priceHist, 60);
 
-      // OB
       const obRaw = await kv.get(keyMoonObResult(mode, sym));
       const obScore = Number(obRaw?.ob?.score ?? obRaw?.score ?? 0);
 
@@ -435,6 +485,8 @@ export default async function handler(req, res) {
           }
         : null;
 
+      if (obView?.reason) inc(diag.reasons.obReason, obView.reason);
+
       const depthUsd = obView ? Math.min(obView.bidUsd, obView.askUsd) : 0;
       const floorUsd = depthFloorUsd(c.marketCap);
       const depthOk = depthUsd >= floorUsd;
@@ -447,21 +499,16 @@ export default async function handler(req, res) {
         btc,
       });
 
-      // Consistency (moon is simpel)
       const wantedSide = mode === "bull" ? "BULL" : "BEAR";
       const sideNow =
         mode === "bull" ? (c.change24 >= 0 ? "BULL" : "BEAR") : (c.change24 <= 0 ? "BEAR" : "BULL");
       const consistencyRatio = sideNow === wantedSide ? 1.0 : 0.0;
 
-      // gates
       const buildupGate = passBuildupMoon({ c, volAcc });
+      inc(diag.reasons.buildupWhy, buildupGate.why);
 
-      const almostGate = passAlmostMoon({
-        priceHist,
-        volAcc,
-        confidence,
-        consistencyRatio,
-      });
+      const almostGate = passAlmostMoon({ priceHist, volAcc, confidence, consistencyRatio });
+      inc(diag.reasons.almostWhy, almostGate.why);
 
       const eliteGate = passEliteMoon({
         mode,
@@ -472,8 +519,8 @@ export default async function handler(req, res) {
         floorUsd,
         range24: c.range24,
       });
+      inc(diag.reasons.eliteWhy, eliteGate.why);
 
-      // Elite extra rolling sniper
       const rollCfg = MOON.elite.roll;
       const eliteExtra =
         rolling.deltaPrice15m <= rollCfg.maxDeltaPrice15mPct &&
@@ -482,7 +529,16 @@ export default async function handler(req, res) {
         rolling.obSlope >= rollCfg.minObSlope &&
         rolling.obStability <= rollCfg.maxObStability;
 
-      // stage keuze
+      if (!eliteExtra) {
+        // heel handig voor analyse: welke sub-check faalt het meest?
+        if (rolling.deltaPrice15m > rollCfg.maxDeltaPrice15mPct) inc(diag.reasons.eliteExtraFail, "ΔP15m too high");
+        else if (rolling.deltaVol15m < rollCfg.minDeltaVol15m) inc(diag.reasons.eliteExtraFail, "ΔV15m too low");
+        else if (rollCfg.needCompression && !rolling.compression) inc(diag.reasons.eliteExtraFail, "No compression");
+        else if (rolling.obSlope < rollCfg.minObSlope) inc(diag.reasons.eliteExtraFail, "OB slope too low");
+        else if (rolling.obStability > rollCfg.maxObStability) inc(diag.reasons.eliteExtraFail, "OB too spiky");
+        else inc(diag.reasons.eliteExtraFail, "Unknown");
+      }
+
       let stage = "RADAR";
       if (buildupGate.ok) stage = "BUILDUP";
       if (almostGate.ok) stage = "ALMOST";
@@ -491,7 +547,6 @@ export default async function handler(req, res) {
       const prevStage = String(prev.stage || "RADAR");
       const stageChanged = prevStage !== stage;
 
-      // Risk model (SL/TP)
       const risk = computeMoonRisk({
         mode,
         price: c.price,
@@ -500,7 +555,6 @@ export default async function handler(req, res) {
         depthOk,
       });
 
-      // ======= Analytics: stage events =======
       if (stageChanged) {
         await pushEvent("moon", {
           ts: now,
@@ -522,10 +576,8 @@ export default async function handler(req, res) {
         });
       }
 
-      // ======= ENTRY/HOLD/SELL tracking (portfolio) =======
       let trade = findOpen(sym) || null;
 
-      // open trade when Elite hits
       let openedNow = false;
       if (!trade && stage === "ELITE" && canOpenNew() && risk?.sl && risk?.tp3) {
         const posUsd = MOON.portfolio.posUsd;
@@ -547,18 +599,15 @@ export default async function handler(req, res) {
         positions.open.push(trade);
         openedNow = true;
 
-        // Mirror open naar analytics-trades
         await openMoonTradeMirror({ mode, c, risk, confidence, obView, depthUsd });
       }
 
-      // update open trade
       let closedNow = null;
       if (trade) {
         if (trade.status === "ENTRY") trade.status = "HOLD";
 
         trade.lastPrice = Number(c.price);
 
-        // Mirror mfe/mae update
         await updateMoonTradeMfeMae({ mode, symbol: sym, priceNow: c.price });
 
         const pnlPct = calcPnlPct({ mode, entryPrice: trade.entryPrice, priceNow: c.price });
@@ -570,7 +619,7 @@ export default async function handler(req, res) {
           trade.status = "SELL";
           trade.exitAt = now;
           trade.exitPrice = Number(c.price);
-          trade.exitReason = hit.kind; // SL or TP
+          trade.exitReason = hit.kind;
           trade.pnlPct = +pnlPct.toFixed(2);
           trade.pnlUsd = +pnlUsd.toFixed(2);
 
@@ -580,13 +629,7 @@ export default async function handler(req, res) {
           closedNow = { ...trade };
           trade = { ...trade };
 
-          // Mirror close naar analytics-trades + postwatch
-          await closeMoonTradeMirror({
-            mode,
-            symbol: sym,
-            priceNow: c.price,
-            reason: hit.kind,
-          });
+          await closeMoonTradeMirror({ mode, symbol: sym, priceNow: c.price, reason: hit.kind });
         } else {
           trade.pnlPct = +pnlPct.toFixed(2);
           trade.pnlUsd = +pnlUsd.toFixed(2);
@@ -634,7 +677,6 @@ export default async function handler(req, res) {
           : null,
 
         why: {
-          radar: "RADAR ok",
           buildup: buildupGate.why,
           almost: almostGate.why,
           elite: eliteGate.why,
@@ -642,18 +684,16 @@ export default async function handler(req, res) {
         },
       };
 
-      // Discord stage change
       if (stageChanged) {
         const hook = webhookForMoonStage(stage);
         if (hook) {
           const extra =
             `why: ${item.why.eliteExtra} | depth: $${Math.round(depthUsd)} (floor $${Math.round(floorUsd)})\n` +
-            `rolling: ΔP15m ${Number(rolling.deltaPrice15m || 0).toFixed(2)}% | ΔV15m ${Number(rolling.deltaVol15m || 0).toFixed(2)} | slope ${Number(rolling.obSlope || 0).toFixed(2)}`;
+            `rolling: ΔP15m ${Number(rolling.deltaPrice15m || 0).toFixed(2)}% | ΔV15m ${Number(rolling.deltaVol15m || 0).toFixed(2)} | slope ${Number(rolling.obSlope || 0).toFixed(4)} | stab ${Number(rolling.obStability || 0).toFixed(4)}`;
           await sendDiscord(hook, fmtMoonLine(item, mode, extra));
         }
       }
 
-      // Discord trade open
       if (openedNow) {
         const hook = webhookMoonPortfolio() || webhookForMoonStage("ELITE");
         if (hook) {
@@ -665,7 +705,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // Discord trade close (TP/SL)
       if (closedNow) {
         const hook = webhookMoonPortfolio() || webhookForMoonStage("ELITE");
         if (hook) {
@@ -677,7 +716,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // store state
       state[sym] = {
         enteredAt: prev.enteredAt || now,
         stageAt: prev.stageAt || now,
@@ -694,7 +732,6 @@ export default async function handler(req, res) {
       if (stage === "ELITE") elite.push(item);
     }
 
-    // sorting
     const sortKey = (a, b) =>
       (b.confidence - a.confidence) ||
       ((b.rolling?.deltaVol15m || 0) - (a.rolling?.deltaVol15m || 0)) ||
@@ -708,25 +745,26 @@ export default async function handler(req, res) {
 
     const portfolio = calcPortfolioFromPositions(mode, positions);
 
+    diag.counts = { radar: radar.length, buildup: buildup.length, almost: almost.length, elite: elite.length };
+
     const result = {
       ok: true,
       ts: now,
       mode,
       btc,
-      counts: {
-        radar: radar.length,
-        buildup: buildup.length,
-        almost: almost.length,
-        elite: elite.length,
-      },
+      counts: diag.counts,
       funnel: { elite, almost, buildup, radar },
       portfolio,
+      note: btc.state === "NEUTRAL" ? "BTC gate SOFT-OPEN: NEUTRAL allowed." : undefined,
     };
 
     await kv.set(keyMoonLatest(mode), result);
     await kv.set(keyMoonState(mode), state);
     await kv.set(keyMoonPositions(mode), positions);
     await kv.set(keyMoonPortfolio(mode), portfolio);
+
+    // ✅ diag save
+    await saveMoonDiag(mode, diag);
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
