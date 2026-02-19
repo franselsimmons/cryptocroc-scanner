@@ -11,20 +11,23 @@ import {
 
 export const config = RUNTIME_CONFIG;
 
-// ================== BITGET DEPTH (SPOT) ==================
-// Docs: GET /api/spot/v1/market/depth?symbol=BTCUSDT_SPBL&type=step0&limit=100
-// Rate limit: 20 times/1s (IP)
-async function fetchBitgetDepthRaw(baseSymbol, limit = 100) {
+// ================== BITGET V2 ORDERBOOK (SPOT) ==================
+// Docs: GET /api/v2/spot/market/orderbook?symbol=BTCUSDT&type=step0&limit=100   [oai_citation:1‡Bitget](https://www.bitget.com/api-doc/spot/market/Get-Orderbook)
+async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
   const base = String(baseSymbol || "").toUpperCase();
   if (!base) return { ok: false, status: 400, msg: "Missing symbol" };
 
-  const pair = `${base}USDT_SPBL`;
+  const pair = `${base}USDT`;
+  const safeLimit = Math.max(5, Math.min(150, Number(limit) || 100)); // max 150  [oai_citation:2‡Bitget](https://www.bitget.com/api-doc/spot/market/Get-Orderbook)
+  const type = "step0";
+
   const url =
-    `https://api.bitget.com/api/spot/v1/market/depth?` +
-    `symbol=${encodeURIComponent(pair)}&type=step0&limit=${encodeURIComponent(String(limit))}`;
+    `https://api.bitget.com/api/v2/spot/market/orderbook?` +
+    `symbol=${encodeURIComponent(pair)}&type=${encodeURIComponent(type)}&limit=${encodeURIComponent(String(safeLimit))}`;
 
   const r = await fetch(url, { headers: { accept: "application/json" } });
   const text = await r.text();
+
   let j = null;
   try { j = JSON.parse(text); } catch {}
 
@@ -32,28 +35,36 @@ async function fetchBitgetDepthRaw(baseSymbol, limit = 100) {
     return {
       ok: false,
       status: r.status,
-      msg: j?.msg || j?.message || "Bitget depth failed",
+      msg: j?.msg || "Bitget orderbook failed",
       url,
       preview: text.slice(0, 200),
     };
   }
 
-  // Bitget response shape: { code:"00000", data:{ bids:[["p","s"],...], asks:[...], ts:"..." } }
-  const data = j?.data || null;
-  const bids = data?.bids || [];
-  const asks = data?.asks || [];
+  // Bitget success code = "00000"
+  if (String(j?.code || "") !== "00000") {
+    return {
+      ok: false,
+      status: 400,
+      msg: j?.msg || "Bitget returned non-success code",
+      url,
+      preview: text.slice(0, 200),
+    };
+  }
 
-  if (j?.code !== "00000" || !Array.isArray(bids) || !Array.isArray(asks) || !bids.length || !asks.length) {
+  const depth = j?.data;
+  if (!depth?.bids?.length || !depth?.asks?.length) {
     return {
       ok: false,
       status: 200,
-      msg: j?.msg || "Empty orderbook",
+      msg: "Empty orderbook",
       url,
       preview: text.slice(0, 200),
     };
   }
 
-  return { ok: true, url, depth: { bids, asks } };
+  // depth format is { asks: [[price, size], ...], bids: [[price, size], ...] }
+  return { ok: true, url, depth };
 }
 
 function sumDepth(levels, mid, pct, isBid) {
@@ -66,6 +77,7 @@ function sumDepth(levels, mid, pct, isBid) {
     const s = Number(row?.[1]);
     if (!Number.isFinite(p) || !Number.isFinite(s)) continue;
 
+    // Bitget levels are typically already sorted best->worse, but we still break safely:
     if (isBid && p < limit) break;
     if (!isBid && p > limit) break;
 
@@ -101,6 +113,7 @@ function computeObSample(depth) {
   const biggest = Math.max(bidRes.biggest, askRes.biggest);
   const lor = denom > 0 ? biggest / denom : 1;
 
+  // depth within 1%
   const bid1 = sumDepth(bids, mid, 0.01, true);
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
@@ -148,23 +161,23 @@ function validateSamples(mode, samplesFresh) {
   return { valid: true, reason: "OK", fresh: lastN, avgScore, agree };
 }
 
-function pickCandidatesFromLatest(latest, maxPerRun, radarFallback) {
+function pickCandidatesFromLatest(latest, maxPerRun = 12, radarFallback = 25) {
   const almost = (latest?.funnel?.almost || []).slice(0, SETTINGS.obPickAlmost);
   const buildup = (latest?.funnel?.buildup || []).slice(0, SETTINGS.obPickBuildup);
 
   let picked = [...almost, ...buildup];
 
-  // fallback: RADAR als buildup/almost leeg is
+  // fallback: RADAR top N als buildup/almost leeg
   if (!picked.length) picked = (latest?.funnel?.radar || []).slice(0, radarFallback);
 
   return picked
-    .slice(0, maxPerRun)
     .map((x) => String(x?.symbol || "").toUpperCase())
-    .filter(Boolean);
+    .filter(Boolean)
+    .slice(0, maxPerRun);
 }
 
 async function processCandidate(mode, symbol) {
-  const live = await fetchBitgetDepthRaw(symbol, 100);
+  const live = await fetchBitgetOrderbookRaw(symbol, 100);
   if (!live.ok) {
     return { ok: false, symbol, ...live };
   }
@@ -225,22 +238,10 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
-    // ✅ hoeveel per run
-    const maxPerRun = Math.max(
-      1,
-      Math.min(
-        25,
-        Number(req.query?.maxPerRun || SETTINGS.obMaxPerRun || 12)
-      )
-    );
-
-    const radarFallback = Math.max(
-      5,
-      Math.min(
-        50,
-        Number(req.query?.radarFallback || SETTINGS.obPickRadarFallback || 25)
-      )
-    );
+    // ✅ regelbaar via URL:
+    // /api/ob-sampler?mode=bear&max=30&token=...
+    const maxPerRun = Math.max(1, Math.min(80, Number(req.query?.max || 12) || 12));
+    const radarFallback = Math.max(5, Math.min(80, Number(req.query?.radar || 25) || 25));
 
     const latest = await kv.get(keyLatest(mode));
     const candidates = pickCandidatesFromLatest(latest, maxPerRun, radarFallback);
