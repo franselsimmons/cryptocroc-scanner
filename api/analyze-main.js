@@ -1,20 +1,17 @@
 // /api/analyze-main.js
 import { kv } from "@vercel/kv";
-import {
-  RUNTIME_CONFIG,
-  requireSecret,
-  keyLatest,
-  keyDiagList,
-  keyDiagSnap,
-} from "./_core.js";
+import { RUNTIME_CONFIG, requireSecret, keyLatest } from "./_core.js";
 import { readEvents, readTrades } from "./_analytics.js";
 
 export const config = RUNTIME_CONFIG;
 
+// ---- local diag key helpers (zodat het nooit crasht door ontbrekende exports)
+const keyDiagList = (mode) => `diag:list:${mode}`;
+const keyDiagSnap = (mode) => `diag:snap:${mode}`;
+
 function fmtDateMin(ms) {
   const d = new Date(Number(ms || 0));
   if (!Number.isFinite(d.getTime())) return "-";
-  // NL stijl, zonder seconden
   return d.toLocaleString("nl-NL", {
     year: "numeric",
     month: "2-digit",
@@ -24,23 +21,13 @@ function fmtDateMin(ms) {
   });
 }
 
-function pct(n) {
-  const x = Number(n || 0);
-  return `${(x * 100).toFixed(0)}%`;
-}
-
 function safeArr(x) {
   return Array.isArray(x) ? x : [];
 }
 
-function getLast(arr) {
-  const a = safeArr(arr);
-  return a.length ? a[a.length - 1] : null;
-}
-
 async function readLatestDiag(mode) {
+  // Prefer list (newest at index 0 because lpush)
   try {
-    // Prefer list history (newest at index 0 because lpush)
     if (typeof kv.lrange === "function") {
       const raw = await kv.lrange(keyDiagList(mode), 0, 0);
       const one = safeArr(raw)[0];
@@ -48,6 +35,7 @@ async function readLatestDiag(mode) {
       return typeof one === "string" ? JSON.parse(one) : one;
     }
   } catch {}
+  // Fallback snapshot
   try {
     const snap = await kv.get(keyDiagSnap(mode));
     return snap || null;
@@ -56,91 +44,63 @@ async function readLatestDiag(mode) {
   }
 }
 
+function top2(mapObj) {
+  const e = Object.entries(mapObj || {});
+  e.sort((a, b) => (b[1] || 0) - (a[1] || 0));
+  return e.slice(0, 2);
+}
+
 function suggestFromDiag(diag, modeLabel) {
   if (!diag) {
     return [
-      `Geen diagnose gevonden voor ${modeLabel}. Tip: run eerst /api/scan?mode=... zodat diag wordt opgeslagen.`,
+      `Geen diagnose gevonden voor ${modeLabel}. Run eerst /api/scan?mode=... zodat diag wordt opgeslagen.`,
     ];
   }
 
-  const s = diag.settings || {};
   const counts = diag.counts || {};
   const reasons = diag.reasons || {};
   const entryGate = reasons.entryGate || {};
   const obReason = reasons.obReason || {};
+  const uni = diag.universe || {};
 
   const sug = [];
 
-  // 1) Te weinig RADAR -> filters te streng
   if ((counts.radar || 0) < 10) {
-    sug.push(
-      `Weinig coins in RADAR (${counts.radar || 0}). Maak RADAR iets ruimer: verlaag vmMinRadar of volMinRadar, of verhoog mcapMax.`
-    );
+    sug.push(`Weinig coins in RADAR (${counts.radar || 0}). Maak RADAR iets ruimer (vmMinRadar of volMinRadar omlaag).`);
   }
 
-  // 2) Veel RADAR maar bijna geen BUILDUP/ALMOST -> buildup/almost te streng of consistency te streng
   if ((counts.radar || 0) > 80 && (counts.buildup || 0) < 5) {
-    sug.push(
-      `Veel RADAR maar bijna geen BUILDUP. Tip: verlaag BUILDUP eisen (buildup.vmMin / buildup.volMin) of maak consistencyMinRatio iets lager.`
-    );
+    sug.push(`Veel RADAR maar bijna geen BUILDUP. Maak BUILDUP iets ruimer (buildup.vmMin / buildup.volMin omlaag).`);
   }
 
   if ((counts.buildup || 0) > 20 && (counts.almost || 0) === 0) {
-    sug.push(
-      `Wel BUILDUP maar geen ALMOST. Tip: ALMOST is te streng (volMin / vmMin / priceFlatMax). Maak priceFlatMax iets hoger.`
-    );
+    sug.push(`Wel BUILDUP maar geen ALMOST. Maak ALMOST iets ruimer (priceFlatMax iets hoger of volMin/vmMin omlaag).`);
   }
 
-  // 3) ENTRY block redenen (meest voorkomende)
-  const topEntryBlock = Object.entries(entryGate)
-    .sort((a, b) => (b[1] || 0) - (a[1] || 0))
-    .slice(0, 2);
-
-  if (topEntryBlock.length) {
-    const [r1, r2] = topEntryBlock;
-    sug.push(
-      `Top ENTRY blokkade: "${r1[0]}" (${r1[1]}x)` + (r2 ? `, daarna "${r2[0]}" (${r2[1]}x).` : ".")
-    );
+  const te = top2(entryGate);
+  if (te.length) {
+    const [a, b] = te;
+    sug.push(`Top ENTRY blokkade: "${a[0]}" (${a[1]}x)` + (b ? `, daarna "${b[0]}" (${b[1]}x).` : "."));
   }
 
-  // 4) OB issues (validating / not enough / stale)
-  const topOb = Object.entries(obReason)
-    .sort((a, b) => (b[1] || 0) - (a[1] || 0))
-    .slice(0, 2);
-
-  if (topOb.length) {
-    const [o1, o2] = topOb;
-    sug.push(
-      `Top orderbook-reden: "${o1[0]}" (${o1[1]}x)` + (o2 ? `, daarna "${o2[0]}" (${o2[1]}x).` : ".")
-    );
-    sug.push(
-      `Als "Not enough samples" vaak voorkomt: verhoog samplesWindowSec of verlaag samplesNeed (maar liever window groter, dat is netter).`
-    );
+  const to = top2(obReason);
+  if (to.length) {
+    const [a, b] = to;
+    sug.push(`Top orderbook-reden: "${a[0]}" (${a[1]}x)` + (b ? `, daarna "${b[0]}" (${b[1]}x).` : "."));
+    sug.push(`Als "Not enough samples" vaak voorkomt: maak samplesWindowSec groter (netter dan samplesNeed verlagen).`);
   }
 
-  // 5) Universe drop (CG -> Bitget -> Radar)
-  const uni = diag.universe || {};
-  if ((uni.cgTotal || 0) > 0) {
-    const a = uni.afterSymbols || uni.afterBitget || 0;
-    const b = uni.afterRadar || 0;
-    if (a > 0 && b / a < 0.25) {
-      sug.push(
-        `Veel coins vallen af bij RADAR (afterRadar is laag). Dat betekent: jouw RADAR filters zijn streng t.o.v. jouw universe.`
-      );
-    }
+  const afterUni = uni.afterSymbols || uni.afterBitget || 0;
+  const afterRadar = uni.afterRadar || 0;
+  if (afterUni > 0 && afterRadar / afterUni < 0.25) {
+    sug.push(`Veel coins vallen af bij RADAR. Dat betekent: RADAR filters zijn streng t.o.v. jouw universe.`);
   }
 
-  // 6) Concrete hint per mode
-  if (String(diag.btc?.state || "").toUpperCase() === "NEUTRAL") {
-    sug.push(
-      `BTC is NEUTRAL. Dat is oké met jouw SOFT-open setup. Wil je minder ruis? Dan kun je NEUTRAL alsnog blokkeren voor ${modeLabel}.`
-    );
+  if (String(diag?.btc?.state || "").toUpperCase() === "NEUTRAL") {
+    sug.push(`BTC is NEUTRAL. Wil je minder ruis? Dan kun je NEUTRAL blokkeren (hard gate) voor ${modeLabel}.`);
   }
 
-  if (!sug.length) {
-    sug.push(`Ziet er gezond uit. Eerst meer data verzamelen (meer scans), daarna pas thresholds tweaken.`);
-  }
-
+  if (!sug.length) sug.push(`Ziet er gezond uit. Eerst meer scans draaien, daarna pas thresholds tweaken.`);
   return sug;
 }
 
@@ -164,13 +124,11 @@ function htmlPage({ tokenPresent, long, short, diagLong, diagShort, sugLong, sug
   const longTs = long?.ts ? fmtDateMin(long.ts) : "-";
   const shortTs = short?.ts ? fmtDateMin(short.ts) : "-";
 
-  const longCounts = long?.counts || long?.funnel?.counts || long?.counts || {};
-  const shortCounts = short?.counts || short?.funnel?.counts || short?.counts || {};
+  const openTrades = safeArr(trades).filter((t) => String(t?.status) === "OPEN");
+  const lastEv = safeArr(events).slice(-1)[0] || null;
 
-  const openTrades = safeArr(trades).filter(t => String(t?.status) === "OPEN");
-  const closedTrades = safeArr(trades).filter(t => String(t?.status) === "CLOSED");
-
-  const lastEv = getLast(events);
+  const longCounts = long?.counts || {};
+  const shortCounts = short?.counts || {};
 
   return `<!doctype html>
   <html><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -178,9 +136,9 @@ function htmlPage({ tokenPresent, long, short, diagLong, diagShort, sugLong, sug
   <body><div class="wrap">
     <h1>Analyze MAIN (LONG vs SHORT)</h1>
     <div class="muted">
-      Token: ${tokenPresent ? "ok" : "niet meegestuurd / niet nodig"} •
+      Token: ${tokenPresent ? "ok" : "niet meegestuurd"} •
       Laatste event: ${lastEv?.ts ? fmtDateMin(lastEv.ts) : "-"} •
-      Trades open: ${openTrades.length} • Trades closed: ${closedTrades.length}
+      Trades open: ${openTrades.length}
     </div>
 
     <div class="grid">
@@ -197,13 +155,9 @@ function htmlPage({ tokenPresent, long, short, diagLong, diagShort, sugLong, sug
           <tr><td>BUILDUP</td><td>${longCounts.buildup ?? long?.funnel?.buildup?.length ?? 0}</td></tr>
           <tr><td>RADAR</td><td>${longCounts.radar ?? long?.funnel?.radar?.length ?? 0}</td></tr>
         </table>
-
         <div style="margin-top:10px"><b>Suggesties (LONG)</b></div>
-        <ul>${sugLong.map(x => `<li>${x}</li>`).join("")}</ul>
-
-        <div style="margin-top:10px" class="muted">
-          Diagnose ts: ${diagLong?.ts ? fmtDateMin(diagLong.ts) : "-"}
-        </div>
+        <ul>${sugLong.map((x) => `<li>${x}</li>`).join("")}</ul>
+        <div style="margin-top:10px" class="muted">Diagnose ts: ${diagLong?.ts ? fmtDateMin(diagLong.ts) : "-"}</div>
       </div>
 
       <div class="card">
@@ -219,24 +173,20 @@ function htmlPage({ tokenPresent, long, short, diagLong, diagShort, sugLong, sug
           <tr><td>BUILDUP</td><td>${shortCounts.buildup ?? short?.funnel?.buildup?.length ?? 0}</td></tr>
           <tr><td>RADAR</td><td>${shortCounts.radar ?? short?.funnel?.radar?.length ?? 0}</td></tr>
         </table>
-
         <div style="margin-top:10px"><b>Suggesties (SHORT)</b></div>
-        <ul>${sugShort.map(x => `<li>${x}</li>`).join("")}</ul>
-
-        <div style="margin-top:10px" class="muted">
-          Diagnose ts: ${diagShort?.ts ? fmtDateMin(diagShort.ts) : "-"}
-        </div>
+        <ul>${sugShort.map((x) => `<li>${x}</li>`).join("")}</ul>
+        <div style="margin-top:10px" class="muted">Diagnose ts: ${diagShort?.ts ? fmtDateMin(diagShort.ts) : "-"}</div>
       </div>
     </div>
 
     <div class="card" style="margin-top:14px">
       <b>Test links</b>
       <div class="muted" style="margin-top:6px">
-        1) Eerst scan draaien zodat analyze data heeft:
+        1) Eerst scan draaien:
         <div><code>/api/scan?mode=bull&token=JOUW_TOKEN</code></div>
         <div><code>/api/scan?mode=bear&token=JOUW_TOKEN</code></div>
         <br/>
-        2) Dan analyze openen:
+        2) Daarna analyze:
         <div><code>/api/analyze-main?format=html&token=JOUW_TOKEN</code></div>
         <div><code>/api/analyze-main?token=JOUW_TOKEN</code> (JSON)</div>
       </div>
@@ -252,19 +202,15 @@ export default async function handler(req, res) {
     const format = String(req.query?.format || "html").toLowerCase();
     const tokenPresent = !!req.query?.token;
 
-    // latest scan snapshots
     const long = await kv.get(keyLatest("bull"));
     const short = await kv.get(keyLatest("bear"));
 
-    // last diag snapshots
     const diagLong = await readLatestDiag("bull");
     const diagShort = await readLatestDiag("bear");
 
-    // suggestions
     const sugLong = suggestFromDiag(diagLong, "LONG");
     const sugShort = suggestFromDiag(diagShort, "SHORT");
 
-    // analytics (events + trades)
     const trades = await readTrades("main");
     const events = await readEvents("main", 2000);
 
