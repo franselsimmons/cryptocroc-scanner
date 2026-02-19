@@ -191,7 +191,7 @@ async function fetchCoinGeckoSlice() {
       `&sparkline=false&price_change_percentage=24h`;
 
     const r = await fetch(url, { headers: cgHeaders() });
-    if (r.status === 429) throw new Error("CoinGecko markets failed 429");
+    if (r.status === 429) throw new Error(`CoinGecko markets failed 429 (page ${page})`);
     if (!r.ok) throw new Error(`CoinGecko markets failed ${r.status} (page ${page})`);
 
     const arr = await r.json();
@@ -569,15 +569,43 @@ function short(n) {
   return n.toFixed(0);
 }
 
-export function fmtMoonLine(item, mode, extra = "") {
+export function fmtMoonLine(item, mode, extra = "", ts = Date.now()) {
   const lines = [
-    `**${item.symbol}** → **${item.stage}** (MOON ${String(mode || "").toUpperCase()})`,
+    `**${item.symbol}** → **${item.stage}** (MOON ${fmtModeLabel(mode)})`,
+    `tijd: ${fmtTs(ts)}`,
     `prijs: $${d8(item.price)} | chg24: ${sgn(item.change24)}% | range24: ${d2(item.range24)}%`,
     `vol: $${short(item.volume)} | mc: $${short(item.marketCap)} | vm: ${d2(item.vm)}`,
     `confidence: ${item.confidence}/100 | volAcc: ${d2(item.volAcc)} | depthOk: ${item.depthOk ? "yes" : "no"}`,
   ];
   if (extra) lines.push(extra);
   return lines.join("\n");
+}
+
+// ================== TIME + LABEL HELPERS ==================
+export function roundToMinute(ts) {
+  const d = new Date(Number(ts || Date.now()));
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes());
+}
+
+export function fmtTs(ts) {
+  const d = roundToMinute(ts);
+  return d.toLocaleString("nl-NL", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function fmtModeLabel(mode) {
+  return String(mode || "").toLowerCase() === "bear" ? "SHORT" : "LONG";
+}
+
+export function durMinutes(fromTs, toTs) {
+  const a = roundToMinute(fromTs).getTime();
+  const b = roundToMinute(toTs).getTime();
+  return Math.max(0, Math.round((b - a) / 60000));
 }
 
 // ================== HELPERS ==================
