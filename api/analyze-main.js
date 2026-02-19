@@ -1,6 +1,5 @@
 // /api/analyze-main.js
 import { kv } from "@vercel/kv";
-import { SETTINGS } from "./_core.js";
 
 export const config = { runtime: "nodejs" };
 
@@ -72,6 +71,13 @@ function pct(x, digits = 2) {
   if (!Number.isFinite(v)) return "-";
   return `${v.toFixed(digits)}%`;
 }
+function money(x) {
+  const v = Number(x);
+  if (!Number.isFinite(v)) return "-";
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(2)}K`;
+  return `$${v.toFixed(2)}`;
+}
 function inc(map, key) {
   const k = String(key || "Unknown");
   map[k] = (map[k] || 0) + 1;
@@ -84,24 +90,6 @@ function topN(map, k = 6) {
 }
 function clamp(x, a, b) {
   return Math.max(a, Math.min(b, x));
-}
-function fmtNum(x, d = 2) {
-  const v = Number(x);
-  if (!Number.isFinite(v)) return "-";
-  return v.toFixed(d);
-}
-function fmtUsd(x) {
-  const v = Number(x);
-  if (!Number.isFinite(v)) return "-";
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
-  if (v >= 1_000) return `$${(v / 1_000).toFixed(2)}K`;
-  return `$${v.toFixed(2)}`;
-}
-function durMin(a, b) {
-  const A = Number(a || 0);
-  const B = Number(b || 0);
-  if (!(A > 0 && B > 0)) return null;
-  return Math.max(0, Math.round((B - A) / 60000));
 }
 
 // ======================================================
@@ -116,6 +104,7 @@ async function readTrades(funnel) {
 }
 
 async function readEvents(funnel, max = 500) {
+  // ✅ events is een LIST -> altijd lrange
   try {
     if (typeof kv.lrange === "function") {
       const raw = await kv.lrange(keyEvents(funnel), 0, Math.max(0, max - 1));
@@ -134,19 +123,156 @@ async function readEvents(funnel, max = 500) {
 }
 
 // ======================================================
-// COIN/GATE ANALYSE (zoals je al had)
+// COINS: “WAT BLOKKEERT MIJ?” UIT LATEST
 // ======================================================
 function flattenCoins(latest) {
   const f = latest?.funnel || {};
-  const all = [
+  return [
     ...safeArr(f.entry).map((c) => ({ ...c, _stage: "ENTRY" })),
     ...safeArr(f.almost).map((c) => ({ ...c, _stage: "ALMOST" })),
     ...safeArr(f.buildup).map((c) => ({ ...c, _stage: "BUILDUP" })),
     ...safeArr(f.radar).map((c) => ({ ...c, _stage: "RADAR" })),
   ];
-  return all;
 }
 
+// ======================================================
+// TRADES: “WAAR LATEN WE GELD LIGGEN?”
+// Werkt met jouw trades:main array
+// - mfePct / maePct als aanwezig
+// - anders schatten we met lastPrice vs entry
+// ======================================================
+function tradeOutcome(t) {
+  const mode = String(t?.mode || "bull");
+  const entry = n(t?.entryPrice, 0);
+  const last = n(t?.lastPrice, 0);
+  const sl = n(t?.sl, 0);
+  const tp = n(t?.tp, 0);
+
+  // Als status niet CLOSED is: geen outcome
+  const status = String(t?.status || "OPEN").toUpperCase();
+  if (status !== "CLOSED") return "OPEN";
+
+  // Best effort: als lastPrice over SL/TP gegaan is -> label
+  if (mode === "bull") {
+    if (sl > 0 && last > 0 && last <= sl) return "SL";
+    if (tp > 0 && last > 0 && last >= tp) return "TP";
+  } else {
+    if (sl > 0 && last > 0 && last >= sl) return "SL";
+    if (tp > 0 && last > 0 && last <= tp) return "TP";
+  }
+
+  // fallback: pnl
+  const pnl = n(t?.pnlPct, 0);
+  if (pnl >= 0.1) return "WIN";
+  if (pnl <= -0.1) return "LOSS";
+  return "FLAT";
+}
+
+function summarizeTrades(trades) {
+  const all = safeArr(trades);
+  const open = all.filter((t) => String(t?.status || "").toUpperCase() === "OPEN");
+  const closed = all.filter((t) => String(t?.status || "").toUpperCase() === "CLOSED");
+
+  const outMap = {};
+  for (const t of closed) inc(outMap, tradeOutcome(t));
+
+  // SL/TP afstand analyse: hoe vaak is TP “net niet” gehaald?
+  // “net niet” = mfePct >= 0.7 * tpDist (bull) of <= -0.7 * tpDist (bear)
+  let tpTooFar = 0;
+  let slTooTight = 0;
+  let haveMfe = 0;
+
+  for (const t of closed) {
+    const mode = String(t?.mode || "bull");
+    const entry = n(t?.entryPrice, 0);
+    const sl = n(t?.sl, 0);
+    const tp = n(t?.tp, 0);
+
+    const mfe = Number.isFinite(Number(t?.mfePct)) ? n(t?.mfePct, 0) : null;
+    const mae = Number.isFinite(Number(t?.maePct)) ? n(t?.maePct, 0) : null;
+
+    // Als mfe/mae niet bestaat, kunnen we niet netjes tunen.
+    if (mfe === null || mae === null) continue;
+    haveMfe++;
+
+    // Maak de “R” schaal: SL afstand in %
+    let slPct = 0;
+    if (entry > 0 && sl > 0) {
+      slPct = mode === "bull" ? ((entry - sl) / entry) * 100 : ((sl - entry) / entry) * 100;
+      slPct = Math.max(0.0001, slPct);
+    }
+
+    // TP afstand in %:
+    let tpPct = 0;
+    if (entry > 0 && tp > 0) {
+      tpPct = mode === "bull" ? ((tp - entry) / entry) * 100 : ((entry - tp) / entry) * 100;
+      tpPct = Math.max(0.0001, tpPct);
+    }
+
+    // SL te strak: vaak SL hit + MAE klein (bijv. -0.7R) betekent “tikje en weg”
+    const outcome = tradeOutcome(t);
+    if (outcome === "SL" && slPct > 0) {
+      // MAE is meestal negatief voor bull; we nemen abs in “R”
+      const maeR = Math.abs(mae) / slPct;
+      if (maeR <= 1.15) slTooTight++;
+    }
+
+    // TP te ver: MFE vaak 0.6..0.95 van TP afstand maar geen TP
+    if (outcome !== "TP" && tpPct > 0) {
+      const mfeRtp = Math.abs(mfe) / tpPct;
+      if (mfeRtp >= 0.65 && mfeRtp <= 0.95) tpTooFar++;
+    }
+  }
+
+  // Simpele, duidelijke “zet dit zo” adviezen
+  const tuning = [];
+  if (haveMfe >= 5) {
+    if (slTooTight >= Math.ceil(haveMfe * 0.35)) {
+      tuning.push({
+        title: "SL wordt te snel geraakt",
+        now: "Je SL afstand is vaak te klein: coins tikken SL en draaien daarna alsnog jouw kant op.",
+        fix: [
+          "Maak SL 25% wijder (grotere afstand).",
+          "In code: verhoog SL-multiplier (bijv. 1.8 → 2.25).",
+        ],
+      });
+    }
+    if (tpTooFar >= Math.ceil(haveMfe * 0.35)) {
+      tuning.push({
+        title: "TP is vaak nét te ver",
+        now: "Coins komen vaak dicht bij TP, maar pakken hem net niet en vallen terug.",
+        fix: [
+          "Maak TP 15% dichterbij (kleinere afstand).",
+          "In code: verlaag TP-multiplier (bijv. 3.0 → 2.6) of voeg TP1/TP2 toe.",
+        ],
+      });
+    }
+  } else {
+    tuning.push({
+      title: "Nog te weinig trade-data voor SL/TP tuning",
+      now: "Je trades hebben (bijna) geen mfePct/maePct of je hebt te weinig CLOSED trades.",
+      fix: [
+        "Laat je trade-engine mfePct/maePct vullen (live tracking).",
+        "Of draai eerst 20–50 trades voordat je SL/TP conclusies trekt.",
+      ],
+    });
+  }
+
+  return {
+    counts: {
+      total: all.length,
+      open: open.length,
+      closed: closed.length,
+    },
+    outcomesTop: topN(outMap, 8),
+    tuning,
+    sampleClosed: closed.slice(-10),
+  };
+}
+
+// ======================================================
+// “WAT BLOKKEERT MIJ?” SUGGESTIES UIT LATEST
+// ======================================================
 function summarizeSide(latest, label) {
   const coins = flattenCoins(latest);
 
@@ -156,8 +282,8 @@ function summarizeSide(latest, label) {
   const stageMap = { ENTRY: 0, ALMOST: 0, BUILDUP: 0, RADAR: 0 };
 
   for (const c of coins) {
-    stageMap[String(c?._stage || "RADAR")] =
-      (stageMap[String(c?._stage || "RADAR")] || 0) + 1;
+    const st = String(c?._stage || "RADAR");
+    stageMap[st] = (stageMap[st] || 0) + 1;
 
     const gate = c?.why?.entryGate || "";
     if (gate) inc(gateMap, gate);
@@ -175,14 +301,14 @@ function summarizeSide(latest, label) {
   if (label === "LONG" && btcState === "BEAR") {
     suggestions.push({
       title: "BTC staat BEAR maar je draait LONG",
-      what: "Dan blokkeert je systeem meestal (of je krijgt alleen RADAR).",
+      what: "Dan blokkeert je systeem vaak (of je krijgt alleen RADAR).",
       fix: [
         "Optie A: draai SHORT scan als BTC BEAR is.",
-        "Optie B: maak je BTC-gate minder streng (NEUTRAL toelaten voor LONG).",
+        "Optie B: maak BTC-gate zachter (NEUTRAL toelaten voor LONG).",
       ],
       where: [
-        { file: "/api/_core.js", search: "btcChgGate" },
-        { file: "/api/_core.js", search: "btcRange" },
+        { file: "/api/scan.js", search: "btc" },
+        { file: "/api/_core.js", search: "BTC" },
       ],
     });
   }
@@ -191,30 +317,28 @@ function summarizeSide(latest, label) {
   const tObReason = topN(obReasonMap, 3);
   const tObStatus = topN(obStatusMap, 3);
 
-  if ((gateMap["OB validating"] || 0) >= 3 || (obStatusMap["validating"] || 0) >= 3) {
+  if (gateMap["OB validating"] >= 3 || obStatusMap["validating"] >= 3) {
     suggestions.push({
       title: "Veel coins blijven hangen op ‘OB validating’",
-      what: "Je orderbook meting is te traag of je ENTRY vereist ‘valid’ te vaak.",
+      what: "Je orderbook meting is te kort / te streng (te weinig samples).",
       fix: [
-        `Huidig: entry.samplesNeed = ${SETTINGS.entry.samplesNeed} → zet bv naar 2 (of 1 voor test)`,
-        `Huidig: entry.samplesWindowSec = ${SETTINGS.entry.samplesWindowSec} → zorg dat sampler echt genoeg meetmomenten pakt`,
-        `Als je sneller wil: laat ALMOST door als OB nog 'validating' is (staat al aan).`,
+        "Maak sample-window langer (bv. 180s → 300s) óf verlaag samplesNeed.",
+        "Maar: ENTRY moet wél ‘valid’ blijven (geen ‘gok’).",
       ],
       where: [
-        { file: "/api/_core.js", search: "samplesNeed" },
         { file: "/api/_core.js", search: "samplesWindowSec" },
-        { file: "/api/_core.js", search: "allowValidatingForAlmost" },
+        { file: "/api/_core.js", search: "samplesNeed" },
       ],
     });
   }
 
-  if ((obReasonMap["Direction not consistent"] || 0) >= 3) {
+  if (obReasonMap["Direction not consistent"] >= 3) {
     suggestions.push({
       title: "‘Direction not consistent’ komt vaak voor",
-      what: "Je OB wil dat bid/ask-dominantie hetzelfde blijft. Bij smallcaps wisselt dat vaak.",
+      what: "Je OB-confirmatie wisselt te snel van kant (bid/ask).",
       fix: [
-        "Maak je agreement-eis iets lager (minAgree).",
-        "Of maak de ‘direction’ check minder streng in je OB code (tolerantie op lor/slope).",
+        "Maak ‘minAgree’ lager (bv. 2 → 1) of maak tolerantie ruimer.",
+        "Of meet langer (meer samples) zodat richting stabieler wordt.",
       ],
       where: [
         { file: "/api/_core.js", search: "minAgree" },
@@ -229,10 +353,10 @@ function summarizeSide(latest, label) {
   if (depthGates.length) {
     suggestions.push({
       title: "‘Depth too thin’ blokkeert entry",
-      what: "Je minimum orderbook diepte (USD) is te hoog voor jouw type coins.",
+      what: "Je minimum orderbook diepte (USD) staat te hoog voor jouw coins.",
       fix: [
-        `Bull: minDepthUsd1pBull = ${SETTINGS.entry.minDepthUsd1pBull} → zet bv ${Math.max(10_000, Math.round(SETTINGS.entry.minDepthUsd1pBull * 0.7))}`,
-        `Bear: minDepthUsd1pBear = ${SETTINGS.entry.minDepthUsd1pBear} → zet bv ${Math.max(10_000, Math.round(SETTINGS.entry.minDepthUsd1pBear * 0.7))}`,
+        "Verlaag minDepthUsd1pBull/Bear (bv. 30000 → 20000).",
+        "Of maak depth afhankelijk van marketcap (kleinere coins lagere drempel).",
       ],
       where: [
         { file: "/api/_core.js", search: "minDepthUsd1pBull" },
@@ -244,11 +368,10 @@ function summarizeSide(latest, label) {
   if ((stageMap.ENTRY || 0) === 0 && (stageMap.ALMOST || 0) === 0 && (stageMap.BUILDUP || 0) === 0) {
     suggestions.push({
       title: "Alles blijft in RADAR (geen BUILDUP/ALMOST/ENTRY)",
-      what: "Dan is je doorstroom te streng.",
+      what: "Je doorgang RADAR→BUILDUP→ALMOST→ENTRY is te streng.",
       fix: [
-        `BUILDUP: vmMin ${SETTINGS.buildup.vmMin} → zet bv ${Math.max(0.08, +(SETTINGS.buildup.vmMin * 0.9).toFixed(3))}`,
-        `BUILDUP: volMin ${SETTINGS.buildup.volMin} → zet bv ${Math.max(200_000, Math.round(SETTINGS.buildup.volMin * 0.85))}`,
-        `ALMOST: priceFlatMax ${SETTINGS.almost.priceFlatMax}% → zet bv ${(SETTINGS.almost.priceFlatMax + 2).toFixed(1)}%`,
+        "Maak BUILDUP iets ruimer (vmMin/volMin omlaag).",
+        "Maak ALMOST iets ruimer (priceFlatMax omhoog).",
       ],
       where: [
         { file: "/api/_core.js", search: "buildup" },
@@ -269,185 +392,7 @@ function summarizeSide(latest, label) {
 }
 
 // ======================================================
-// TRADE-BASED RISK ANALYSE (MAIN)
-// Doel: SL te snel? TP te vaak niet? -> “nu → nieuw”
-// ======================================================
-function normalizeExitKind(t) {
-  const k =
-    String(t?.exitKind || t?.closeKind || t?.resultKind || t?.reason || t?.kind || "")
-      .toUpperCase();
-
-  // vaak voorkomende varianten
-  if (k.includes("STOP") || k === "SL") return "SL";
-  if (k.includes("TAKE") || k.includes("TP")) return "TP";
-  if (k.includes("MANUAL")) return "MANUAL";
-  if (k.includes("TIME")) return "TIME";
-  if (k.includes("BTC")) return "BTC";
-  return k || "UNKNOWN";
-}
-
-function isClosed(t) {
-  const s = String(t?.status || "").toUpperCase();
-  return s === "CLOSED" || s === "DONE" || !!t?.closedAt || !!t?.exitTs;
-}
-
-function getOpenedAt(t) {
-  return (
-    Number(t?.openedAt || t?.openTs || t?.entryTs || t?.tsOpen || t?.ts || 0) || 0
-  );
-}
-function getClosedAt(t) {
-  return (
-    Number(t?.closedAt || t?.closeTs || t?.exitTs || t?.tsClose || 0) || 0
-  );
-}
-
-function getPnLPct(t) {
-  const v = Number(t?.pnlPct ?? t?.pnl_percent ?? t?.pnl ?? t?.resultPct ?? t?.profitPct);
-  if (Number.isFinite(v)) return v;
-
-  // fallback: calc from entry/exit if present
-  const e = Number(t?.entryPrice || t?.entry || t?.priceEntry);
-  const x = Number(t?.exitPrice || t?.exit || t?.priceExit);
-  const mode = String(t?.mode || t?.side || "").toLowerCase();
-  if (e > 0 && x > 0) {
-    if (mode === "bear" || mode === "short") return ((e - x) / e) * 100;
-    return ((x - e) / e) * 100;
-  }
-  return null;
-}
-
-function tradeStats(trades, { lookback = 200 } = {}) {
-  const list = safeArr(trades).slice(-lookback).filter(Boolean);
-  const closed = list.filter((t) => isClosed(t));
-  const open = list.filter((t) => !isClosed(t));
-
-  const byKind = { SL: 0, TP: 0, MANUAL: 0, TIME: 0, BTC: 0, UNKNOWN: 0 };
-  let wins = 0;
-  let losses = 0;
-  let pnlSum = 0;
-  let pnlN = 0;
-
-  let slFast30 = 0;
-  let slFast60 = 0;
-  let slCount = 0;
-  let tpCount = 0;
-
-  for (const t of closed) {
-    const kind = normalizeExitKind(t);
-    byKind[kind] = (byKind[kind] || 0) + 1;
-
-    if (kind === "SL") slCount++;
-    if (kind === "TP") tpCount++;
-
-    const pnl = getPnLPct(t);
-    if (Number.isFinite(pnl)) {
-      pnlSum += pnl;
-      pnlN++;
-      if (pnl > 0) wins++;
-      else if (pnl < 0) losses++;
-    }
-
-    if (kind === "SL") {
-      const m = durMin(getOpenedAt(t), getClosedAt(t));
-      if (m != null && m <= 30) slFast30++;
-      if (m != null && m <= 60) slFast60++;
-    }
-  }
-
-  const closedN = closed.length || 0;
-  const wr = closedN ? wins / closedN : 0;
-  const avgPnl = pnlN ? pnlSum / pnlN : 0;
-
-  const slFast30Pct = slCount ? slFast30 / slCount : 0;
-  const slFast60Pct = slCount ? slFast60 / slCount : 0;
-
-  return {
-    total: list.length,
-    closed: closedN,
-    open: open.length,
-    byKind,
-    winrate: wr,
-    avgPnl,
-    slCount,
-    tpCount,
-    slFast30Pct,
-    slFast60Pct,
-  };
-}
-
-function riskSuggestionFromTrades(stats) {
-  // Huidige MAIN: computeSLTP gebruikt 1.8 & 3.0 ATR
-  // We geven advies als je data genoeg is.
-  const curSlAtrMul = 1.8;
-  const curTpAtrMul = 3.0;
-
-  const minClosed = 20;
-  if (!stats || stats.closed < minClosed) {
-    return {
-      ok: false,
-      note: `Te weinig gesloten trades (${stats?.closed || 0}). Pas aan zodra je ≥ ${minClosed} closed trades hebt.`,
-      current: { slAtrMul: curSlAtrMul, tpAtrMul: curTpAtrMul },
-      suggested: null,
-      why: [],
-    };
-  }
-
-  const why = [];
-
-  // Heuristiek:
-  // - Veel snelle SL’s => SL is te strak
-  // - Heel weinig TP hits => TP is te ver (of entries niet goed)
-  // - Heel veel TP maar lage avgPnL => TP te dichtbij
-  const slFast = stats.slFast60Pct;
-  const tpHitRate = stats.closed ? stats.tpCount / stats.closed : 0;
-
-  let newSl = curSlAtrMul;
-  let newTp = curTpAtrMul;
-
-  if (slFast >= 0.45) {
-    why.push(`SL wordt vaak snel geraakt (${Math.round(slFast * 100)}% binnen 60 min) → SL is te strak.`);
-    newSl = curSlAtrMul + 0.5; // ruimer
-  } else if (slFast >= 0.30) {
-    why.push(`SL wordt best vaak snel geraakt (${Math.round(slFast * 100)}% binnen 60 min) → SL iets ruimer.`);
-    newSl = curSlAtrMul + 0.3;
-  }
-
-  if (tpHitRate <= 0.12) {
-    why.push(`TP wordt weinig geraakt (${Math.round(tpHitRate * 100)}% van closed) → TP is waarschijnlijk te ver of entries zijn te vroeg.`);
-    // hier kiezen we NIET blind “dichterbij”, want jij zei: coin gaat vaak nog verder.
-    // Dus we koppelen aan winrate + avgPnL:
-    if (stats.winrate >= 0.55) {
-      why.push(`Winrate is ok (${Math.round(stats.winrate * 100)}%) → TP mag juist verder (je pakt te weinig van de move).`);
-      newTp = curTpAtrMul + 0.4;
-    } else {
-      why.push(`Winrate is laag (${Math.round(stats.winrate * 100)}%) → eerst entries/filters strakker maken, TP niet agressief aanpassen.`);
-      newTp = curTpAtrMul;
-    }
-  } else if (tpHitRate >= 0.45 && stats.avgPnl < 0.6) {
-    why.push(`Veel TP’s maar lage gemiddelde winst (${fmtNum(stats.avgPnl, 2)}%) → TP te dichtbij.`);
-    newTp = curTpAtrMul + 0.3;
-  } else if (tpHitRate <= 0.20 && stats.winrate >= 0.60) {
-    why.push(`Weinig TP maar hoge winrate → TP staat waarschijnlijk te dichtbij/SL te strak; we zetten TP iets verder.`);
-    newTp = curTpAtrMul + 0.3;
-  }
-
-  newSl = clamp(newSl, 1.8, 3.0);
-  newTp = clamp(newTp, 2.2, 4.2);
-
-  const changed = Math.abs(newSl - curSlAtrMul) > 0.001 || Math.abs(newTp - curTpAtrMul) > 0.001;
-
-  return {
-    ok: true,
-    note: changed ? "Advies gebaseerd op jouw gesloten trades." : "Geen sterke aanwijzing om SL/TP te veranderen.",
-    current: { slAtrMul: curSlAtrMul, tpAtrMul: curTpAtrMul },
-    suggested: { slAtrMul: newSl, tpAtrMul: newTp },
-    why,
-  };
-}
-
-// ======================================================
-// HTML UI helpers
+// HTML UI
 // ======================================================
 function pill(text, cls = "") {
   return `<span class="pill ${cls}">${text}</span>`;
@@ -455,8 +400,9 @@ function pill(text, cls = "") {
 
 function renderTopList(title, items) {
   const li =
-    (items || []).map((x) => `<li><b>${x.key}</b> <span class="muted">(${x.count}x)</span></li>`).join("") ||
-    `<li class="muted">n/a</li>`;
+    (items || [])
+      .map((x) => `<li><b>${x.key}</b> <span class="muted">(${x.count}x)</span></li>`)
+      .join("") || `<li class="muted">n/a</li>`;
   return `
     <div class="box">
       <div class="boxtitle">${title}</div>
@@ -467,7 +413,6 @@ function renderTopList(title, items) {
 
 function renderSuggestions(sugs) {
   if (!sugs?.length) return `<div class="muted">Geen duidelijke actie gevonden. Draai meer scans.</div>`;
-
   return sugs
     .map((s) => {
       const fixes = (s.fix || []).map((x) => `<li>${x}</li>`).join("");
@@ -489,6 +434,23 @@ function renderSuggestions(sugs) {
               <ul class="list">${where || `<li class="muted">n/a</li>`}</ul>
             </div>
           </div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function renderTuning(tuning) {
+  if (!tuning?.length) return `<div class="muted">Geen tuning advies.</div>`;
+  return tuning
+    .map((t) => {
+      const fixes = (t.fix || []).map((x) => `<li>${x}</li>`).join("");
+      return `
+        <div class="suggest">
+          <div class="suggestTitle">${t.title}</div>
+          <div class="muted">${t.now}</div>
+          <div class="miniTitle">Zet dit zo</div>
+          <ul class="list">${fixes || `<li class="muted">n/a</li>`}</ul>
         </div>
       `;
     })
@@ -543,69 +505,40 @@ function renderCoinsTable(coins, limit = 25) {
   `;
 }
 
-function renderSettingsBox(riskAdvice, stats) {
-  const e = SETTINGS.entry || {};
-  const lines = [
-    `<li><code>entry.obScoreMin</code>: <b>${e.obScoreMin}</b></li>`,
-    `<li><code>entry.spreadMaxPct</code>: <b>${e.spreadMaxPct}</b></li>`,
-    `<li><code>entry.largestOrderRatioMax</code>: <b>${e.largestOrderRatioMax}</b></li>`,
-    `<li><code>entry.samplesNeed</code>: <b>${e.samplesNeed}</b></li>`,
-    `<li><code>entry.samplesWindowSec</code>: <b>${e.samplesWindowSec}</b></li>`,
-    `<li><code>entry.minAgree</code>: <b>${e.minAgree}</b></li>`,
-    `<li><code>entry.minDepthUsd1pBull</code>: <b>${fmtUsd(e.minDepthUsd1pBull)}</b></li>`,
-    `<li><code>entry.minDepthUsd1pBear</code>: <b>${fmtUsd(e.minDepthUsd1pBear)}</b></li>`,
-    `<li><code>entry.minConfidence</code>: <b>${e.minConfidence}</b></li>`,
-    `<li><code>entry.entryConsistencyMin</code>: <b>${Math.round(e.entryConsistencyMin * 100)}%</b></li>`,
-  ].join("");
-
-  const t = stats || {};
-  const tradeLine = `
-    <div class="muted" style="margin-top:6px">
-      Closed: <b>${t.closed || 0}</b> • Winrate: <b>${Math.round((t.winrate || 0) * 100)}%</b> •
-      SL: <b>${t.slCount || 0}</b> • TP: <b>${t.tpCount || 0}</b> •
-      SL snel (≤60m): <b>${Math.round((t.slFast60Pct || 0) * 100)}%</b>
-    </div>
-  `;
-
-  const cur = riskAdvice?.current || { slAtrMul: 1.8, tpAtrMul: 3.0 };
-  const sug = riskAdvice?.suggested;
-
-  const why = (riskAdvice?.why || []).map((x) => `<li>${x}</li>`).join("") || `<li class="muted">n/a</li>`;
-
-  const adviceBlock = sug
-    ? `
-      <ul class="list">
-        <li><b>SL ATR-mul</b>: ${cur.slAtrMul} → <b>${fmtNum(sug.slAtrMul, 2)}</b></li>
-        <li><b>TP ATR-mul</b>: ${cur.tpAtrMul} → <b>${fmtNum(sug.tpAtrMul, 2)}</b></li>
-      </ul>
-      <div class="muted">${riskAdvice.note}</div>
-      <div class="miniTitle">Waarom</div>
-      <ul class="list">${why}</ul>
-      <div class="muted" style="margin-top:8px">
-        Waar aanpassen: <code>/api/_core.js</code> → functie <code>computeSLTP()</code> (zie onder).
-      </div>
-    `
-    : `
-      <div class="muted">${riskAdvice?.note || "n/a"}</div>
-      <div class="miniTitle">Waarom</div>
-      <ul class="list">${why}</ul>
-    `;
-
+function renderTradesBox(tradeSum) {
+  const outs = (tradeSum?.outcomesTop || []).map((x) => `<li><b>${x.key}</b> <span class="muted">(${x.count}x)</span></li>`).join("") || `<li class="muted">n/a</li>`;
   return `
-    <div class="box" style="margin-top:12px">
-      <div class="boxtitle">Huidige ENTRY/OB instellingen (MAIN)</div>
-      <ul class="list">${lines}</ul>
-      ${tradeLine}
+    <div class="card" style="margin-top:12px">
+      <div class="head">
+        <div>
+          <div class="title">TRADES (MAIN) — SL/TP tuning</div>
+          <div class="mini">Open: ${tradeSum?.counts?.open || 0} • Closed: ${tradeSum?.counts?.closed || 0} • Total: ${tradeSum?.counts?.total || 0}</div>
+        </div>
+      </div>
 
-      <div class="boxtitle" style="margin-top:12px">SL/TP diagnose op basis van trades</div>
-      ${adviceBlock}
+      <div class="boxes">
+        <div class="box">
+          <div class="boxtitle">Outcomes (closed)</div>
+          <ul class="list">${outs}</ul>
+        </div>
+
+        <div class="box">
+          <div class="boxtitle">Wat moet je aanpassen</div>
+          ${renderTuning(tradeSum?.tuning)}
+        </div>
+
+        <div class="box">
+          <div class="boxtitle">Waar zit je SL/TP in code?</div>
+          <ul class="list">
+            <li><code>/api/_core.js</code> — zoek: <code>computeSLTP</code></li>
+            <li><code>/api/_core.js</code> — zoek: <code>computeAtrPctFromPriceHist</code></li>
+          </ul>
+        </div>
+      </div>
     </div>
   `;
 }
 
-// ======================================================
-// HTML PAGE
-// ======================================================
 function htmlPage({ tokenPresent, longLatest, shortLatest, trades, events }) {
   const css = `
     :root{
@@ -661,11 +594,9 @@ function htmlPage({ tokenPresent, longLatest, shortLatest, trades, events }) {
   const longSum = summarizeSide(longLatest, "LONG");
   const shortSum = summarizeSide(shortLatest, "SHORT");
 
-  const openTrades = safeArr(trades).filter((t) => String(t?.status).toUpperCase() === "OPEN");
-  const lastEv = safeArr(events).slice(-1)[0] || null;
+  const tradeSum = summarizeTrades(trades);
 
-  const stats = tradeStats(trades, { lookback: 250 });
-  const riskAdvice = riskSuggestionFromTrades(stats);
+  const lastEv = safeArr(events).slice(-1)[0] || null;
 
   const badge = (state) => {
     const s = String(state || "").toUpperCase();
@@ -706,7 +637,7 @@ function htmlPage({ tokenPresent, longLatest, shortLatest, trades, events }) {
       </div>
 
       <div style="margin-top:12px">
-        <div class="boxtitle">Wat moet je aanpassen (automatisch)</div>
+        <div class="boxtitle">Wat moet je aanpassen (coins → stages)</div>
         ${renderSuggestions(sum.suggestions)}
       </div>
 
@@ -724,22 +655,21 @@ function htmlPage({ tokenPresent, longLatest, shortLatest, trades, events }) {
 </head>
 <body>
   <div class="wrap">
-    <h1>Analyze MAIN (LONG vs SHORT)</h1>
+    <h1>Analyze MAIN (LONG vs SHORT) + Trades tuning</h1>
 
     <div class="topline">
       ${pill(tokenPresent ? "Token: ok" : "Token: niet meegestuurd", tokenPresent ? "ok" : "warn")}
-      ${pill(\`Trades open: ${openTrades.length}\`)}
-      ${pill(\`Trades closed (lookback): ${stats.closed}\`)}
-      ${pill(\`Events: ${safeArr(events).length}\`)}
-      ${pill(\`Laatste event: ${lastEv?.ts ? fmtDateMin(lastEv.ts) : "-"}\`)}
+      ${pill(`Trades total: ${tradeSum?.counts?.total || 0}`)}
+      ${pill(`Events(list): ${safeArr(events).length}`)}
+      ${pill(`Laatste event: ${lastEv?.ts ? fmtDateMin(lastEv.ts) : "-"}`)}
     </div>
-
-    ${renderSettingsBox(riskAdvice, stats)}
 
     <div class="grid">
       ${renderSide("LONG", longLatest, longSum, longTs)}
       ${renderSide("SHORT", shortLatest, shortSum, shortTs)}
     </div>
+
+    ${renderTradesBox(tradeSum)}
 
     <div class="footer">
       <div class="boxtitle">Test links</div>
@@ -756,8 +686,8 @@ function htmlPage({ tokenPresent, longLatest, shortLatest, trades, events }) {
       </div>
 
       <div class="muted" style="margin-top:10px">
-        Tip: dit scherm kijkt naar jouw coin gates én jouw trades.
-        Dus je krijgt advies met “nu → nieuw”, en je ziet precies welke bottleneck (OB/Depth/Spread/etc) jouw entries blokkeert.
+        Belangrijk: <b>events</b> is een LIST in KV (lpush/lrange). Daarom werkt <code>kv.get("events:main")</code> niet.
+        Deze analyze pagina gebruikt correct <code>lrange</code>.
       </div>
     </div>
 
@@ -782,9 +712,6 @@ export default async function handler(req, res) {
     const trades = await readTrades("main");
     const events = await readEvents("main", 500);
 
-    const stats = tradeStats(trades, { lookback: 250 });
-    const riskAdvice = riskSuggestionFromTrades(stats);
-
     if (format === "json") {
       res.statusCode = 200;
       res.setHeader("content-type", "application/json; charset=utf-8");
@@ -798,16 +725,7 @@ export default async function handler(req, res) {
             long: summarizeSide(longLatest, "LONG"),
             short: summarizeSide(shortLatest, "SHORT"),
           },
-          tradeAnalytics: {
-            lookback: 250,
-            stats,
-            riskAdvice,
-            settingsSnapshot: {
-              entry: SETTINGS.entry,
-              buildup: SETTINGS.buildup,
-              almost: SETTINGS.almost,
-            },
-          },
+          trades: summarizeTrades(trades),
           analytics: {
             tradesCount: safeArr(trades).length,
             eventsCount: safeArr(events).length,
