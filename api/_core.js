@@ -1,3 +1,4 @@
+// /api/_core.js
 import { kv } from "@vercel/kv";
 
 export const RUNTIME_CONFIG = { runtime: "nodejs20.x" };
@@ -44,28 +45,37 @@ export const SETTINGS = {
     spreadMaxPct: 1.20,
     largestOrderRatioMax: 0.70,
 
-    // ✅ Minder streng: 2 samples i.p.v. 3, 1 agreement i.p.v. 2
     samplesNeed: 2,
     samplesWindowSec: 3600, // 1 uur window
     minAgree: 1,
 
-    // ✅ Depth drempel voor bull verlaagd naar 30k (was 60k)
     minDepthUsd1pBull: 30_000,
     minDepthUsd1pBear: 30_000,
 
     minConfidence: 45,
     entryConsistencyMin: 0.50,
 
-    // OB slope: nog steeds uit (minder blokkades)
     obSlopeEnabled: false,
     obSlopeMinBull: -0.02,
     obSlopeMaxBear: +0.02,
     obSlopeMinSamples: 3,
 
-    // ✅ SOFT doorstroom voor ALMOST/BUILDUP (alleen als OB nog validating is)
     allowValidatingForAlmost: true,
     minConfidenceAlmost: 35,
     minConsistencyAlmost: 0.45,
+  },
+
+  // ✅ RISK / SLTP (NIEUW)
+  // Dit zijn je basis-multipliers (op ATR).
+  // Analyze-main kan adviseren om deze te tweaken.
+  risk: {
+    slAtrMulBase: 2.20,  // was effectief 1.80 → nu standaard ruimer (minder “te snel aangetikt”)
+    tpAtrMulBase: 3.20,  // was 3.00 → iets verder (pakt vaker “coin gaat nog verder”)
+    // grenzen zodat het niet doorslaat
+    slMin: 1.80,
+    slMax: 3.00,
+    tpMin: 2.20,
+    tpMax: 4.20,
   },
 
   minScansPerStage: 1,
@@ -76,8 +86,6 @@ export const SETTINGS = {
 
   obPickAlmost: 14,
   obPickBuildup: 10,
-
-  // fallback candidates uit RADAR als buildup/almost leeg is
   obPickRadarFallback: 25,
 
   cgCacheSec: 60 * 10,
@@ -128,16 +136,14 @@ export const keyBitgetSymbols = "bitget:symbols:spotusdt";
 export const keyObSamples = (side, symbol) => `ob:samples:${side}:${symbol}`;
 export const keyObResult  = (side, symbol) => `ob:result:${side}:${symbol}`;
 
-// ✅ OB rotation / queue helpers
 export const keyObQueue = (mode) => `ob:queue:${mode}`;
 export const keyObCursor = (mode) => `ob:cursor:${mode}`;
 export const keyObQueueTs = (mode) => `ob:queueTs:${mode}`;
 
 export const keyEntryLog  = "log:entry";
 
-// ✅ diagnose keys (voor analyse endpoint)
-export const keyDiagList = (mode) => `diag:list:${mode}`; // lpush/ltrim
-export const keyDiagSnap = (mode) => `diag:snap:${mode}`; // fallback set
+export const keyDiagList = (mode) => `diag:list:${mode}`;
+export const keyDiagSnap = (mode) => `diag:snap:${mode}`;
 
 const keyCgTopCache = `cache:cg:top:${SETTINGS.CG_TOP}`;
 const keyCgBtcCache = `cache:cg:btc`;
@@ -354,50 +360,6 @@ async function safeJsonFetch(url, timeoutMs) {
   }
 }
 
-// ================== MINI-UPGRADES ==================
-export function applySpikeGuard(prevMetrics, cur) {
-  const m = prevMetrics || { vol: [], range: [], vm: [], chg: [] };
-
-  const vol = guarded(m.vol, cur.volume);
-  const range = guarded(m.range, cur.range24);
-  const vm = guarded(m.vm, cur.vm);
-  const chg = guarded(m.chg, cur.change24);
-
-  const next = {
-    vol: push3(m.vol, vol),
-    range: push3(m.range, range),
-    vm: push3(m.vm, vm),
-    chg: push3(m.chg, chg),
-  };
-
-  const patched = { ...cur, volume: vol, range24: range, vm, change24: chg };
-  return { patched, nextMetrics: next };
-}
-
-function guarded(arr, value) {
-  const v = Number(value || 0);
-  const a = Array.isArray(arr) ? arr.filter(Number.isFinite) : [];
-  if (a.length < 2) return v;
-
-  const med = median(a);
-  if (!Number.isFinite(med) || med === 0) return v;
-
-  const diff = Math.abs(v - med) / Math.abs(med);
-  return diff > 1.0 ? med : v;
-}
-
-function push3(arr, v) {
-  const a = Array.isArray(arr) ? arr.slice(-2) : [];
-  a.push(Number(v || 0));
-  return a;
-}
-
-function median(a) {
-  const b = [...a].sort((x, y) => x - y);
-  const mid = Math.floor(b.length / 2);
-  return b.length % 2 ? b[mid] : (b[mid - 1] + b[mid]) / 2;
-}
-
 // ================== CONSISTENCY WINDOW ==================
 export function updateSideHistory(prevHist, side) {
   const now = Date.now();
@@ -455,26 +417,6 @@ export function calcChange1hPct(priceHist) {
   const base = older[older.length - 1].price;
   if (!base || base <= 0) return null;
   return ((last.price - base) / base) * 100;
-}
-
-// ================== OB SLOPE ==================
-export function calcObSlope(samples) {
-  if (!Array.isArray(samples) || samples.length < SETTINGS.entry.obSlopeMinSamples) return null;
-  const s = samples
-    .map((x) => ({
-      ts: Number(x?.ts || 0),
-      score: Number(x?.score ?? x?.obScore ?? x?.avgScore ?? 0),
-    }))
-    .filter((x) => x.ts > 0 && Number.isFinite(x.score))
-    .sort((a, b) => a.ts - b.ts);
-
-  if (s.length < SETTINGS.entry.obSlopeMinSamples) return null;
-
-  const first = s[0].score;
-  const last = s[s.length - 1].score;
-  const n = s.length - 1;
-  if (n <= 0) return null;
-  return (last - first) / n;
 }
 
 // ================== FILTERS ==================
@@ -543,7 +485,6 @@ export function passEntryFromObPlus({ obView, mode, consistencyRatio, confidence
 }
 
 export function passEntryFromOb(ob, mode) {
-  // ✅ STRICT: ENTRY vereist valid OB
   if (!ob || !ob.valid) return { ok: false, why: "OB validating" };
   if (ob.stale) return { ok: false, why: "OB stale" };
 
@@ -615,13 +556,29 @@ export function computeAtrPctFromPriceHist(priceHist) {
   return clamp(avg, 0.002, 0.12);
 }
 
-export function computeSLTP({ mode, price, atrPct }) {
-  const atr = price * atrPct;
-  const slDist = 1.8 * atr;
-  const tpDist = 3.0 * atr;
+// ✅ SL/TP die met confidence meebeweegt (minder snelle SL, meer ruimte voor runners)
+export function computeSLTP({ mode, price, atrPct, confidence }) {
+  const p = Number(price || 0);
+  const a = Number(atrPct || 0.01);
+  const conf = clamp(Number(confidence || 50), 0, 100);
 
-  if (mode === "bull") return { sl: price - slDist, tp: price + tpDist };
-  return { sl: price + slDist, tp: price - tpDist };
+  const atr = p * a;
+
+  // basis uit SETTINGS
+  const baseSl = SETTINGS.risk.slAtrMulBase;
+  const baseTp = SETTINGS.risk.tpAtrMulBase;
+
+  // confidence effect (simpel):
+  // - lage conf: SL iets wijder, TP iets minder ver
+  // - hoge conf: SL iets strakker, TP verder (coin kan “doorlopen”)
+  const slMul = clamp(baseSl * (1.10 - conf / 500), SETTINGS.risk.slMin, SETTINGS.risk.slMax);
+  const tpMul = clamp(baseTp * (0.95 + conf / 350), SETTINGS.risk.tpMin, SETTINGS.risk.tpMax);
+
+  const slDist = slMul * atr;
+  const tpDist = tpMul * atr;
+
+  if (mode === "bull") return { sl: p - slDist, tp: p + tpDist, slMul, tpMul };
+  return { sl: p + slDist, tp: p - tpDist, slMul, tpMul };
 }
 
 // ================== SIZING (60..100%) ==================
