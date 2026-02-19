@@ -10,6 +10,8 @@ import {
   keyObResult,
   keyObSamples,
   keyEntryLog,
+  keyDiagList,
+  keyDiagSnap,
   fetchCoinGeckoTopCached,
   fetchBTCGateCached,
   getBitgetSpotUsdtSymbols,
@@ -40,6 +42,24 @@ export const config = RUNTIME_CONFIG;
 function coinSideFromMode(mode, change24) {
   if (mode === "bull") return change24 >= 0 ? "BULL" : "BEAR";
   return change24 <= 0 ? "BEAR" : "BULL";
+}
+
+function inc(map, k) {
+  const key = String(k || "unknown");
+  map[key] = (map[key] || 0) + 1;
+}
+
+async function saveDiag(mode, diag) {
+  try {
+    // Prefer list (history)
+    if (typeof kv.lpush === "function" && typeof kv.ltrim === "function") {
+      await kv.lpush(keyDiagList(mode), JSON.stringify(diag));
+      await kv.ltrim(keyDiagList(mode), 0, 200);
+    } else {
+      // Fallback: keep last snapshot
+      await kv.set(keyDiagSnap(mode), diag, { ex: 60 * 60 * 24 * 7 });
+    }
+  } catch {}
 }
 
 async function bestEffortLogEntry(entryObj) {
@@ -111,40 +131,6 @@ async function openMainTradeIfNeeded({ mode, c, sltp, conf, obView, sizing }) {
   });
 }
 
-/**
- * ✅ FIX: OB result normalize
- * - jouw /api/orderbook returnt score/spread/lor/depth meestal op ROOT
- * - ob.{...} is alleen detail
- */
-function toObView(obResult) {
-  if (!obResult) return null;
-
-  const rootScore = obResult.score;
-  const rootSpread = obResult.spreadPct;
-  const rootLor = obResult.lor;
-  const rootDepth = obResult.depthMinUsd1p;
-
-  const detail = obResult.ob || {};
-
-  const score = Number(
-    rootScore ?? detail.score ?? obResult.avgScore ?? detail.avgScore ?? 0
-  );
-  const spreadPct = Number(rootSpread ?? detail.spreadPct ?? 999);
-  const lor = Number(rootLor ?? detail.lor ?? 1);
-  const depthMinUsd1p = Number(rootDepth ?? detail.depthMinUsd1p ?? 0);
-
-  return {
-    valid: !!obResult.valid,
-    stale: !!obResult.stale,
-    score,
-    spreadPct,
-    lor,
-    agree: Number(obResult.agree ?? 0),
-    depthMinUsd1p,
-    reason: obResult.reason || "",
-  };
-}
-
 export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
@@ -152,7 +138,6 @@ export default async function handler(req, res) {
     const mode = (req.query?.mode || "bull").toLowerCase();
     if (mode !== "bull" && mode !== "bear") {
       res.statusCode = 400;
-      res.setHeader("content-type", "application/json; charset=utf-8");
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull or bear" }));
     }
 
@@ -160,7 +145,6 @@ export default async function handler(req, res) {
 
     const btc = await fetchBTCGateCached();
     const wanted = mode === "bull" ? "BULL" : "BEAR";
-
     const btcBlocked = btc.state !== wanted;
 
     const symbolsSet = await getBitgetSpotUsdtSymbols();
@@ -174,6 +158,52 @@ export default async function handler(req, res) {
     const buildup = [];
     const almost = [];
     const entry = [];
+
+    // ===== DIAG collectors =====
+    const diag = {
+      ts: now,
+      mode,
+      btc,
+      btcBlocked,
+      settings: {
+        radar: {
+          mcapMin: SETTINGS.mcapMin,
+          mcapMax: SETTINGS.mcapMax,
+          volMinRadar: SETTINGS.volMinRadar,
+          vmMinRadar: SETTINGS.vmMinRadar,
+          maxAbsChg24: SETTINGS.maxAbsChg24,
+          maxRange24: SETTINGS.maxRange24,
+        },
+        entry: {
+          obScoreMin: SETTINGS.entry.obScoreMin,
+          spreadMaxPct: SETTINGS.entry.spreadMaxPct,
+          largestOrderRatioMax: SETTINGS.entry.largestOrderRatioMax,
+          samplesNeed: SETTINGS.entry.samplesNeed,
+          samplesWindowSec: SETTINGS.entry.samplesWindowSec,
+          minAgree: SETTINGS.entry.minAgree,
+          minDepthBull: SETTINGS.entry.minDepthUsd1pBull,
+          minDepthBear: SETTINGS.entry.minDepthUsd1pBear,
+          minConfidence: SETTINGS.entry.minConfidence,
+          entryConsistencyMin: SETTINGS.entry.entryConsistencyMin,
+        },
+      },
+      universe: {
+        cgTotal: all.length,
+        afterSymbols: rawCoins.length,
+        afterRadar: 0,
+      },
+      counts: { radar: 0, buildup: 0, almost: 0, entry: 0 },
+      reasons: {
+        radarOut: {},      // fail radar
+        desiredWhy: {},    // desired stage + entryGate reasons
+        entryGate: {},     // entryGate.why
+        obReason: {},      // obView.reason
+      },
+      samples: {
+        radarOut: [],
+        entryBlocked: [],
+      },
+    };
 
     for (const raw of rawCoins) {
       const sym = raw.symbol;
@@ -201,11 +231,23 @@ export default async function handler(req, res) {
 
       const { patched: c, nextMetrics } = applySpikeGuard(prev.metricsHist, raw);
 
-      // RADAR filter altijd
+      // RADAR always
       if (!passRadar(c, btc.range24)) {
+        inc(diag.reasons.radarOut, "radar_fail");
+        if (diag.samples.radarOut.length < 12) {
+          diag.samples.radarOut.push({
+            symbol: sym,
+            mcap: c.marketCap,
+            vol: c.volume,
+            vm: c.vm,
+            chg24: c.change24,
+            range24: c.range24,
+          });
+        }
         delete state[sym];
         continue;
       }
+      diag.universe.afterRadar += 1;
 
       const priceHist = updatePriceHist(prev.priceHist, c.price);
       const change1h = calcChange1hPct(priceHist);
@@ -223,8 +265,21 @@ export default async function handler(req, res) {
       const sideHist = updateSideHistory(prev.sideHist, sideNow);
       const cons = calcConsistency(sideHist, wantedSide);
 
-      const obRaw = await kv.get(keyObResult(mode, sym));
-      const obView = toObView(obRaw);
+      const ob = await kv.get(keyObResult(mode, sym));
+      const obView = ob
+        ? {
+            valid: !!ob.valid,
+            stale: !!ob.stale,
+            score: Number(ob?.ob?.score ?? ob?.avgScore ?? 0),
+            spreadPct: Number(ob?.ob?.spreadPct ?? 999),
+            lor: Number(ob?.ob?.lor ?? 1),
+            agree: Number(ob?.agree ?? 0),
+            depthMinUsd1p: Number(ob?.ob?.depthMinUsd1p ?? 0),
+            reason: ob?.reason || "",
+          }
+        : null;
+
+      if (obView?.reason) inc(diag.reasons.obReason, obView.reason);
 
       let obSlope = null;
       if (SETTINGS.entry.obSlopeEnabled) {
@@ -247,24 +302,15 @@ export default async function handler(req, res) {
         confidence: conf,
         obSlope,
       });
+      inc(diag.reasons.entryGate, entryGate.why);
+
       const entryOk = entryGate.ok;
 
       const desired = btcBlocked
         ? "RADAR"
         : nextDesiredStage(c, mode, priceHist, cons.ok, btc.range24, entryOk);
 
-      // ✅ Jouw wens: zonder OB wil je niet hoger dan RADAR
-      // - BUILDUP/ALMOST: minimaal obView bestaan (dus er is al iets gemeten/gesaved)
-      // - ENTRY: moet valid zijn (entryGate regelt dat al)
-      let desired2 = desired;
-      if (!btcBlocked) {
-        if ((desired === "BUILDUP" || desired === "ALMOST") && !obView) {
-          desired2 = "RADAR";
-        }
-        if (desired === "ALMOST" && obView && obView.stale) {
-          desired2 = "RADAR";
-        }
-      }
+      inc(diag.reasons.desiredWhy, `${desired} | ${entryGate.why}`);
 
       let stage = prev.stage || "RADAR";
       let stageScans = Number(prev.stageScans || 0);
@@ -275,9 +321,8 @@ export default async function handler(req, res) {
 
       if (btcBlocked) {
         const nextStage = "RADAR";
-        if (nextStage === stage) {
-          stageScans += 1;
-        } else {
+        if (nextStage === stage) stageScans += 1;
+        else {
           stage = nextStage;
           stageScans = 1;
           enteredAt = now;
@@ -285,22 +330,21 @@ export default async function handler(req, res) {
         }
       } else {
         const prevRank = stageRank(stage);
-        const desiredRank = stageRank(desired2);
+        const desiredRank = stageRank(desired);
 
         let nextStage = stage;
 
         if (desiredRank > prevRank) {
           if (stageScans >= SETTINGS.minScansPerStage) {
-            if (desiredRank === prevRank + 1) nextStage = desired2;
+            if (desiredRank === prevRank + 1) nextStage = desired;
             else nextStage = prevRank === 1 ? "BUILDUP" : prevRank === 2 ? "ALMOST" : "ENTRY";
           }
         } else if (desiredRank < prevRank) {
-          nextStage = desired2;
+          nextStage = desired;
         }
 
-        if (nextStage === stage) {
-          stageScans += 1;
-        } else {
+        if (nextStage === stage) stageScans += 1;
+        else {
           stage = nextStage;
           stageScans = 1;
           enteredAt = now;
@@ -334,6 +378,7 @@ export default async function handler(req, res) {
         });
       }
 
+      // Discord only if not blocked
       if (!btcBlocked && stageChanged) {
         let hook = webhookForStage(stage);
         if (!hook && stage === "ENTRY") hook = process.env.DISCORD_WEBHOOK_ELITE;
@@ -343,7 +388,9 @@ export default async function handler(req, res) {
 
           if (stage === "ENTRY") {
             const obTxt = obView
-              ? `OB: ${obView.score.toFixed(3)} | spread: ${obView.spreadPct.toFixed(2)}% | LOR: ${obView.lor.toFixed(2)} | agree: ${obView.agree}/3 | depth1%: $${Math.round(obView.depthMinUsd1p)}`
+              ? `OB: ${obView.score.toFixed(3)} | spread: ${obView.spreadPct.toFixed(2)}% | LOR: ${obView.lor.toFixed(
+                  2
+                )} | agree: ${obView.agree}/3 | depth1%: $${Math.round(obView.depthMinUsd1p)}`
               : `OB: (no data)`;
 
             const slopeTxt = Number.isFinite(obSlope) ? `OB slope: ${obSlope.toFixed(4)}` : `OB slope: n/a`;
@@ -357,7 +404,9 @@ export default async function handler(req, res) {
               `${slopeTxt}\n` +
               `Consistency: ${(cons.ratio * 100).toFixed(0)}% (${cons.same}/${cons.total})\n` +
               `chg1h: ${change1h == null ? "n/a" : (change1h >= 0 ? "+" : "") + change1h.toFixed(2) + "%"}\n` +
-              `SL: $${sltp.sl.toFixed(6)} | TP: $${sltp.tp.toFixed(6)} | ATR~: ${(atrPct * 100).toFixed(2)}% (${atrSrc})`;
+              `SL: $${sltp.sl.toFixed(6)} | TP: $${sltp.tp.toFixed(6)} | ATR~: ${(atrPct * 100).toFixed(
+                2
+              )}% (${atrSrc})`;
           }
 
           const msg = fmtCoinLine(c, mode, stage, extra);
@@ -375,6 +424,7 @@ export default async function handler(req, res) {
         volHist,
       };
 
+      // Trade open only if not blocked
       if (!btcBlocked && stageChanged && stage === "ENTRY") {
         await openMainTradeIfNeeded({ mode, c, sltp, conf, obView, sizing });
 
@@ -450,10 +500,14 @@ export default async function handler(req, res) {
         tp: sltp.tp,
 
         why: {
-          desired: desired2,
+          desired,
           entryGate: entryGate.why,
         },
       };
+
+      if (btcBlocked && diag.samples.entryBlocked.length < 8) {
+        diag.samples.entryBlocked.push({ symbol: sym, note: "btcBlocked -> forced RADAR" });
+      }
 
       if (stage === "ENTRY") entry.push(item);
       else if (stage === "ALMOST") almost.push(item);
@@ -470,31 +524,36 @@ export default async function handler(req, res) {
 
     const radarLimited = radar.slice(0, SETTINGS.RADAR_LIMIT);
 
+    diag.counts = {
+      entry: entry.length,
+      almost: almost.length,
+      buildup: buildup.length,
+      radar: radarLimited.length,
+    };
+
     const result = {
       ok: true,
       ts: now,
       epoch: Math.floor(now / 1000),
       mode,
       btc,
-      counts: {
-        entry: entry.length,
-        almost: almost.length,
-        buildup: buildup.length,
-        radar: radarLimited.length,
-      },
+      counts: diag.counts,
       funnel: { entry, almost, buildup, radar: radarLimited },
-      note: btcBlocked ? `BTC gate BLOCKED: ${btc.state} (wanted ${wanted}) → RADAR only` : undefined,
+      note: btcBlocked ? `BTC gate BLOCKED: ${btc.state} (wanted ${wanted}) -> RADAR only` : undefined,
     };
 
     await kv.set(keyLatest(mode), result);
     await kv.set(keyState(mode), state);
 
+    // ✅ store diagnosis for analyze page
+    await saveDiag(mode, diag);
+
     res.statusCode = 200;
-    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.setHeader("content-type", "application/json");
     res.end(JSON.stringify(result));
   } catch (e) {
     res.statusCode = 500;
-    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ ok: false, error: String(e) }));
   }
 }
