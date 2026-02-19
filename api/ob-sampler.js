@@ -7,18 +7,20 @@ import {
   keyLatest,
   keyObSamples,
   keyObResult,
+  keyObQueue,
+  keyObCursor,
+  keyObQueueTs,
 } from "./_core.js";
 
 export const config = RUNTIME_CONFIG;
 
 // ================== BITGET V2 ORDERBOOK (SPOT) ==================
-// Docs: GET /api/v2/spot/market/orderbook?symbol=BTCUSDT&type=step0&limit=100   [oai_citation:1‡Bitget](https://www.bitget.com/api-doc/spot/market/Get-Orderbook)
 async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
   const base = String(baseSymbol || "").toUpperCase();
   if (!base) return { ok: false, status: 400, msg: "Missing symbol" };
 
   const pair = `${base}USDT`;
-  const safeLimit = Math.max(5, Math.min(150, Number(limit) || 100)); // max 150  [oai_citation:2‡Bitget](https://www.bitget.com/api-doc/spot/market/Get-Orderbook)
+  const safeLimit = Math.max(5, Math.min(150, Number(limit) || 100));
   const type = "step0";
 
   const url =
@@ -41,7 +43,6 @@ async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
     };
   }
 
-  // Bitget success code = "00000"
   if (String(j?.code || "") !== "00000") {
     return {
       ok: false,
@@ -63,7 +64,6 @@ async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
     };
   }
 
-  // depth format is { asks: [[price, size], ...], bids: [[price, size], ...] }
   return { ok: true, url, depth };
 }
 
@@ -77,7 +77,6 @@ function sumDepth(levels, mid, pct, isBid) {
     const s = Number(row?.[1]);
     if (!Number.isFinite(p) || !Number.isFinite(s)) continue;
 
-    // Bitget levels are typically already sorted best->worse, but we still break safely:
     if (isBid && p < limit) break;
     if (!isBid && p > limit) break;
 
@@ -123,7 +122,7 @@ function computeObSample(depth) {
 
 function pruneSamples(samples) {
   const now = Date.now();
-  const winMs = SETTINGS.entry.samplesWindowSec * 1000;
+  const winMs = Number(SETTINGS.entry.samplesWindowSec || 3600) * 1000;
 
   const arr = Array.isArray(samples) ? samples : [];
   return arr
@@ -140,40 +139,115 @@ function pruneSamples(samples) {
     .filter((s) => s.ts > 0 && Number.isFinite(s.score))
     .filter((s) => now - s.ts <= winMs)
     .sort((a, b) => a.ts - b.ts)
-    .slice(-20);
+    .slice(-60); // PRO: meer geschiedenis bewaren
 }
 
 function validateSamples(mode, samplesFresh) {
   const fresh = pruneSamples(samplesFresh);
 
-  if (fresh.length < SETTINGS.entry.samplesNeed) {
+  const need = Number(SETTINGS.entry.samplesNeed || 3);
+  const minAgree = Number(SETTINGS.entry.minAgree || 2);
+
+  if (fresh.length < need) {
     return { valid: false, reason: "Not enough samples", fresh };
   }
 
-  const lastN = fresh.slice(-SETTINGS.entry.samplesNeed);
+  const lastN = fresh.slice(-need);
   const agree = lastN.filter((s) => (mode === "bull" ? s.score > 0 : s.score < 0)).length;
+  const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
 
-  if (agree < SETTINGS.entry.minAgree) {
-    return { valid: false, reason: "Direction not consistent", fresh: lastN, agree };
+  // PRO: beide moeten kloppen: average richting + agree
+  const avgOk = mode === "bull" ? avgScore > 0 : avgScore < 0;
+  if (!avgOk || agree < minAgree) {
+    return { valid: false, reason: "Direction not consistent", fresh: lastN, avgScore, agree };
   }
 
-  const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
   return { valid: true, reason: "OK", fresh: lastN, avgScore, agree };
 }
 
-function pickCandidatesFromLatest(latest, maxPerRun = 12, radarFallback = 25) {
+function uniqueUpper(list) {
+  const out = [];
+  const seen = new Set();
+  for (const x of list) {
+    const s = String(x || "").toUpperCase().trim();
+    if (!s) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+/**
+ * PRO Candidate picking:
+ * 1) Build pool: ALMOST + BUILDUP + RADAR fallback
+ * 2) Sticky: coins met weinig samples eerst (0,1,2) totdat ze valid kunnen worden
+ * 3) Rotatie: cursor over de rest zodat je door je radar heen “loopt”
+ */
+async function pickCandidatesSmart(mode, latest, maxPerRun = 12, radarFallback = 25) {
   const almost = (latest?.funnel?.almost || []).slice(0, SETTINGS.obPickAlmost);
   const buildup = (latest?.funnel?.buildup || []).slice(0, SETTINGS.obPickBuildup);
-
   let picked = [...almost, ...buildup];
 
-  // fallback: RADAR top N als buildup/almost leeg
   if (!picked.length) picked = (latest?.funnel?.radar || []).slice(0, radarFallback);
+  const pool = uniqueUpper(picked.map((x) => x?.symbol));
 
-  return picked
-    .map((x) => String(x?.symbol || "").toUpperCase())
-    .filter(Boolean)
-    .slice(0, maxPerRun);
+  if (!pool.length) return [];
+
+  // 1) Sticky low-sample first
+  const need = Number(SETTINGS.entry.samplesNeed || 3);
+  const sampleCounts = [];
+
+  for (const sym of pool) {
+    const s = await kv.get(keyObSamples(mode, sym));
+    const pruned = pruneSamples(s);
+    sampleCounts.push({ sym, n: pruned.length });
+  }
+
+  const sticky = sampleCounts
+    .filter((x) => x.n < need)
+    .sort((a, b) => a.n - b.n)
+    .map((x) => x.sym);
+
+  // 2) Rest rotatie queue
+  const rest = sampleCounts
+    .filter((x) => x.n >= need)
+    .map((x) => x.sym);
+
+  // We houden een queue + cursor per mode in KV, zodat “rest” niet steeds dezelfde top is
+  const qKey = keyObQueue(mode);
+  const cKey = keyObCursor(mode);
+  const tsKey = keyObQueueTs(mode);
+
+  const now = Date.now();
+  const lastTs = Number((await kv.get(tsKey)) || 0);
+
+  // queue refresh elke 10 minuten of als leeg
+  let queue = await kv.get(qKey);
+  if (!Array.isArray(queue) || !queue.length || now - lastTs > 10 * 60 * 1000) {
+    queue = uniqueUpper(rest);
+    await kv.set(qKey, queue);
+    await kv.set(tsKey, now);
+    await kv.set(cKey, 0);
+  }
+
+  let cursor = Number((await kv.get(cKey)) || 0);
+  if (!Number.isFinite(cursor) || cursor < 0) cursor = 0;
+  if (cursor >= queue.length) cursor = 0;
+
+  const rotated = [];
+  for (let i = 0; i < queue.length && rotated.length < maxPerRun; i++) {
+    const idx = (cursor + i) % queue.length;
+    rotated.push(queue[idx]);
+  }
+
+  // cursor vooruit zetten (zodat volgende run andere coins pakt)
+  const nextCursor = queue.length ? (cursor + rotated.length) % queue.length : 0;
+  await kv.set(cKey, nextCursor);
+
+  // 3) Combine: sticky eerst, dan rotatie
+  const out = uniqueUpper([...sticky, ...rotated]).slice(0, maxPerRun);
+  return out;
 }
 
 async function processCandidate(mode, symbol) {
@@ -224,7 +298,7 @@ async function processCandidate(mode, symbol) {
   };
 
   await kv.set(keyObResult(mode, symbol), result);
-  return { ok: true, symbol, valid: v.valid };
+  return { ok: true, symbol, valid: v.valid, reason: v.reason };
 }
 
 export default async function handler(req, res) {
@@ -238,19 +312,19 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
-    // ✅ regelbaar via URL:
-    // /api/ob-sampler?mode=bear&max=30&token=...
+    // /api/ob-sampler?mode=bear&max=30&radar=40&token=...
     const maxPerRun = Math.max(1, Math.min(80, Number(req.query?.max || 12) || 12));
-    const radarFallback = Math.max(5, Math.min(80, Number(req.query?.radar || 25) || 25));
+    const radarFallback = Math.max(5, Math.min(120, Number(req.query?.radar || 25) || 25));
 
     const latest = await kv.get(keyLatest(mode));
-    const candidates = pickCandidatesFromLatest(latest, maxPerRun, radarFallback);
+    const candidates = await pickCandidatesSmart(mode, latest, maxPerRun, radarFallback);
 
     let totalTried = 0;
     let totalProcessed = 0;
     let totalValid = 0;
     let failed = 0;
     const failedDetails = [];
+    const processed = [];
 
     for (const sym of candidates) {
       totalTried++;
@@ -258,6 +332,7 @@ export default async function handler(req, res) {
       if (r.ok) {
         totalProcessed++;
         if (r.valid) totalValid++;
+        processed.push({ symbol: sym, valid: r.valid, reason: r.reason });
       } else {
         failed++;
         failedDetails.push({
@@ -279,6 +354,7 @@ export default async function handler(req, res) {
       maxPerRun,
       radarFallback,
       candidates,
+      processed,
       totalTried,
       totalProcessed,
       totalValid,
