@@ -24,10 +24,10 @@ export const MOON = {
 
   // ✅ PROACTIEF radar
   radar: {
-    volMin: 180_000,   // iets soepeler
-    vmMin: 0.11,       // iets soepeler
+    volMin: 180_000, // iets soepeler
+    vmMin: 0.11, // iets soepeler
     range24Min: 1.8,
-    range24Max: 14.0,  // iets ruimer
+    range24Max: 14.0, // iets ruimer
 
     // bull/bear “rustig genoeg”
     bullChg24Min: -7,
@@ -36,63 +36,63 @@ export const MOON = {
     bearChg24Max: +7,
   },
 
-  // ✅ BUILDUP
+  // ✅ BUILDUP (TRAINING MODE: iets meer doorloop)
   buildup: {
-    volAccMin: 1.04,   // iets soepeler
-    vmMin: 0.17,
-    range24Min: 3.2,
-    chgAbsMin: 0.7,
-    chgAbsMax: 13.0,
+    volAccMin: 1.02, // was 1.04
+    vmMin: 0.15, // was 0.17
+    range24Min: 2.8, // was 3.2
+    chgAbsMin: 0.5, // was 0.7
+    chgAbsMax: 15.0, // was 13.0
   },
 
-  // ✅ ALMOST
+  // ✅ ALMOST (TRAINING MODE: soepeler zodat analyze zinvol wordt)
   almost: {
-    volAccMin: 1.08,     // iets soepeler
-    vmMin: 0.23,         // iets soepeler
-    range24Min: 5.0,
-    range24Max: 18.0,
-    minConfidence: 45,   // was 50
-    consistencyMin: 0.60,
-    priceFlatMax: 3.2,   // was 2.8 (iets soepeler)
+    volAccMin: 1.04, // was 1.08
+    vmMin: 0.20, // was 0.23
+    range24Min: 4.0, // was 5.0
+    range24Max: 20.0, // was 18.0
+    minConfidence: 40, // was 45
+    consistencyMin: 0.55, // was 0.60
+    priceFlatMax: 4.0, // was 3.2
   },
 
-  // ✅ ELITE = instap
+  // ✅ ELITE = instap (TRAINING MODE: iets minder “onmogelijk”)
   elite: {
-    minConfidence: 60,   // was 65 (iets soepeler)
-    consistencyMin: 0.70,
+    minConfidence: 55, // was 60
+    consistencyMin: 0.65, // was 0.70
 
-    obScoreMin: 0.03,          // was 0.04
-    spreadMaxPct: 1.10,        // was 0.70
-    largestOrderRatioMax: 0.65,// was 0.40
+    obScoreMin: 0.02, // was 0.03
+    spreadMaxPct: 1.10, // blijft
+    largestOrderRatioMax: 0.75, // was 0.65
 
-    samplesNeed: 2,            // was 3 (sneller valid)
-    samplesWindowSec: 180,     // was 90
-    minAgree: 1,               // was 2
+    samplesNeed: 2, // blijft
+    samplesWindowSec: 180, // blijft
+    minAgree: 1, // blijft
 
     // OB rolling slope checks (sampler)
     obSlopeEnabled: true,
     obSlopeMinBull: 0.0,
     obSlopeMaxBear: 0.0,
 
-    // Depth floor
+    // Depth floor (iets soepeler zodat depth niet alles sloopt)
     depthFloorEnabled: true,
-    depthK: 20,                // was 28 (iets soepeler)
-    depthMinUsd: 30_000,        // was 60k
-    depthMaxUsd: 500_000,       // was 600k
+    depthK: 20, // blijft
+    depthMinUsd: 20_000, // was 30_000
+    depthMaxUsd: 500_000, // blijft
 
     // “niet te laat”
-    range24Max: 20.0,           // was 18.0
+    range24Max: 20.0, // blijft
 
-    // ✅ Rolling (15m) requirements — REALISTISCH
+    // ✅ Rolling (15m) requirements — TRAINING MODE
     roll: {
-      maxDeltaPrice15mPct: 4.8, // iets ruimer
-      // BELANGRIJK: jouw deltaVol15m is (volAcc verschil), dat is vaak klein → 0.10 was te streng
-      minDeltaVol15m: 0.02,
-      needCompression: false,   // was true (te streng voor startfase)
-      // BELANGRIJK: jouw obSlope in output is ~0.0–0.5 → 0.01 kan, maar iets zinniger = 0.05
-      minObSlope: 0.05,
-      // BELANGRIJK: obStability (std) zit vaak ~0.2–0.7 → 0.08 was “impossible”
-      maxObStability: 1.00,
+      maxDeltaPrice15mPct: 6.0, // was 4.8
+      // deltaVol15m is vaak klein → 0.02 is al prima, maar training mag lager
+      minDeltaVol15m: 0.05, // training: was 0.02 in jouw versie, nu iets realistischer maar niet streng
+      needCompression: false,
+      // obSlope in output is ~0.0–0.5 → training: niet blokkeren
+      minObSlope: 0.0, // was 0.05
+      // obStability zit vaak 0.2–0.7 → training: veel ruimer
+      maxObStability: 1.20, // was 1.00
     },
   },
 
@@ -143,7 +143,7 @@ export const keyMoonReset = (mode) => `moon:resetAt:${mode}`;
 export const keyMoonBitgetSymbols = `moon:bitget:symbols:spotusdt`;
 
 export const keyMoonObSamples = (mode, symbol) => `moon:ob:samples:${mode}:${symbol}`;
-export const keyMoonObResult  = (mode, symbol) => `moon:ob:result:${mode}:${symbol}`;
+export const keyMoonObResult = (mode, symbol) => `moon:ob:result:${mode}:${symbol}`;
 
 // Portfolio keys
 export const keyMoonPositions = (mode) => `moon:positions:${mode}`;
@@ -558,9 +558,16 @@ export function webhookMoonPortfolio() {
   return process.env.DISCORD_WEBHOOK_PORTFOLIO_MOON || null;
 }
 
-function d2(n) { return (Number(n) || 0).toFixed(2); }
-function d8(n) { return (Number(n) || 0).toFixed(8); }
-function sgn(n) { n = Number(n) || 0; return `${n >= 0 ? "+" : ""}${d2(n)}`; }
+function d2(n) {
+  return (Number(n) || 0).toFixed(2);
+}
+function d8(n) {
+  return (Number(n) || 0).toFixed(8);
+}
+function sgn(n) {
+  n = Number(n) || 0;
+  return `${n >= 0 ? "+" : ""}${d2(n)}`;
+}
 function short(n) {
   n = Number(n) || 0;
   if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
@@ -581,8 +588,12 @@ export function fmtMoonLine(item, mode, extra = "") {
 }
 
 // ================== HELPERS ==================
-function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
-function clamp01(n) { return clamp(n, 0, 1); }
+function clamp(n, a, b) {
+  return Math.max(a, Math.min(b, n));
+}
+function clamp01(n) {
+  return clamp(n, 0, 1);
+}
 function mapLinear(x, a, b) {
   if (b === a) return 0;
   return (Number(x || 0) - a) / (b - a);
