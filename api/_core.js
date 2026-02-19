@@ -1,4 +1,3 @@
-// /api/_core.js
 import { kv } from "@vercel/kv";
 
 export const RUNTIME_CONFIG = { runtime: "nodejs20.x" };
@@ -34,10 +33,10 @@ export const SETTINGS = {
   coinRangeCapMax: 55,
 
   // BUILDUP (soepeler)
-  buildup: { chgMin: 0.9, vmMin: 0.18, volMin: 900_000 },
+  buildup: { chgMin: 0.9, vmMin: 0.15, volMin: 600_000 },
 
   // ALMOST (soepeler)
-  almost: { vmMin: 0.20, volMin: 1_200_000, priceFlatMax: 9.0 },
+  almost: { vmMin: 0.16, volMin: 800_000, priceFlatMax: 12.0 },
 
   // ENTRY (professioneel: OB moet “leren” over tijd)
   entry: {
@@ -45,14 +44,13 @@ export const SETTINGS = {
     spreadMaxPct: 1.20,
     largestOrderRatioMax: 0.70,
 
-    // ✅ PRO: 3 samples in een ruim window
-    // Als je ob-sampler ~ elke 10 min draait: dit is perfect (3 samples in ~30 min)
-    samplesNeed: 3,
-    samplesWindowSec: 3600, // 1 uur window → "Not enough samples" verdwijnt
-    minAgree: 2,
+    // ✅ Minder streng: 2 samples i.p.v. 3, 1 agreement i.p.v. 2
+    samplesNeed: 2,
+    samplesWindowSec: 3600, // 1 uur window
+    minAgree: 1,
 
-    // ✅ per mode — BEAR vaak dunner
-    minDepthUsd1pBull: 60_000,
+    // ✅ Depth drempel voor bull verlaagd naar 30k (was 60k)
+    minDepthUsd1pBull: 30_000,
     minDepthUsd1pBear: 30_000,
 
     minConfidence: 45,
