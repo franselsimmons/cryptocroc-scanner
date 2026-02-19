@@ -543,7 +543,11 @@ export default async function handler(req, res) {
       btc,
       counts: diag.counts,
       funnel: { entry, almost, buildup, radar: radarLimited },
-      note: btcBlocked ? `BTC gate BLOCKED: ${btc.state} (wanted ${wanted}) -> RADAR only` : undefined,
+      note: btcBlocked
+        ? `BTC gate BLOCKED: ${btc.state} (mode ${mode}) -> RADAR only`
+        : (btc.state === "NEUTRAL"
+            ? `BTC gate SOFT-OPEN: NEUTRAL allowed (mode ${mode})`
+            : undefined),
     };
 
     await kv.set(keyLatest(mode), result);
