@@ -87,7 +87,7 @@ export const MOON = {
     roll: {
       maxDeltaPrice15mPct: 6.0, // was 4.8
       // deltaVol15m is vaak klein → 0.02 is al prima, maar training mag lager
-      minDeltaVol15m: 0.05, // training: was 0.02 in jouw versie, nu iets realistischer maar niet streng
+      minDeltaVol15m: 0.01, // training: was 0.02 in jouw versie, nu iets realistischer maar niet streng
       needCompression: false,
       // obSlope in output is ~0.0–0.5 → training: niet blokkeren
       minObSlope: 0.0, // was 0.05
