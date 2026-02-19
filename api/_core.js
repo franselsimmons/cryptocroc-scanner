@@ -166,12 +166,13 @@ export function webhookForStage(stage) {
   return null;
 }
 
-export function fmtCoinLine(c, mode, stage, extra = "") {
+export function fmtCoinLine(c, mode, stage, extra = "", ts = Date.now()) {
   const base = (process.env.PUBLIC_SCANNER_URL || "").replace(/\/$/, "");
   const page = base ? `${base}/?mode=${encodeURIComponent(mode)}` : `/?mode=${encodeURIComponent(mode)}`;
 
   const lines = [
-    `**${c.symbol}** → **${stage}** (${mode.toUpperCase()})`,
+    `**${c.symbol}** → **${stage}** (${fmtModeLabel(mode)})`,
+    `tijd: ${fmtTs(ts)}`,
     `prijs: $${num(c.price)} | chg24: ${sign(c.change24)}% | range24: ${num(c.range24)}%`,
     `vol: $${short(c.volume)} | mc: $${short(c.marketCap)} | vm: ${num(c.vm)}`,
   ];
@@ -653,6 +654,27 @@ export function allocPctRecommended({ stage, confidence, btc }) {
   const best = allowed.reduce((prev, cur) => (cur <= pct ? cur : prev), 60);
 
   return { pct: best, zone, btcCap, stageCap, confPct };
+}
+
+// ================== TIME + LABEL HELPERS ==================
+export function roundToMinute(ts) {
+  const d = new Date(Number(ts || Date.now()));
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes());
+}
+
+export function fmtTs(ts) {
+  const d = roundToMinute(ts);
+  return d.toLocaleString("nl-NL", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function fmtModeLabel(mode) {
+  return String(mode || "").toLowerCase() === "bear" ? "SHORT" : "LONG";
 }
 
 // ================== HELPERS ==================
