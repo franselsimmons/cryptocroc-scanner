@@ -11,28 +11,40 @@ import {
 
 export const config = RUNTIME_CONFIG;
 
-// ============================
-// Bitget depth fetch
-// ============================
-async function fetchBitgetDepth(symbolUpper) {
-  const base = String(symbolUpper || "").toUpperCase();
-  if (!base) return null;
+// ================== BITGET V2 ORDERBOOK (SPOT) ==================
+async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
+  const base = String(baseSymbol || "").toUpperCase();
+  if (!base) return { ok: false, status: 400, msg: "Missing symbol" };
 
-  const sym = `${base}USDT_SPBL`;
-  const url = `https://api.bitget.com/api/spot/v1/market/depth?symbol=${encodeURIComponent(sym)}&limit=50`;
+  const pair = `${base}USDT`;
+  const safeLimit = Math.max(5, Math.min(150, Number(limit) || 100));
+  const type = "step0";
+
+  const url =
+    `https://api.bitget.com/api/v2/spot/market/orderbook?` +
+    `symbol=${encodeURIComponent(pair)}&type=${encodeURIComponent(type)}&limit=${encodeURIComponent(String(safeLimit))}`;
 
   const r = await fetch(url, { headers: { accept: "application/json" } });
-  if (!r.ok) return null;
+  const text = await r.text();
 
-  const j = await r.json();
-  const d = j?.data || null;
-  if (!d?.bids?.length || !d?.asks?.length) return null;
-  return d;
+  let j = null;
+  try { j = JSON.parse(text); } catch {}
+
+  if (!r.ok) {
+    return { ok: false, status: r.status, msg: j?.msg || "Bitget orderbook failed", url, preview: text.slice(0, 200) };
+  }
+  if (String(j?.code || "") !== "00000") {
+    return { ok: false, status: 400, msg: j?.msg || "Bitget returned non-success code", url, preview: text.slice(0, 200) };
+  }
+
+  const depth = j?.data;
+  if (!depth?.bids?.length || !depth?.asks?.length) {
+    return { ok: false, status: 200, msg: "Empty orderbook", url, preview: text.slice(0, 200) };
+  }
+
+  return { ok: true, url, depth };
 }
 
-// ============================
-// Helpers: depth math
-// ============================
 function sumDepth(levels, mid, pct, isBid) {
   const limit = isBid ? mid * (1 - pct) : mid * (1 + pct);
   let total = 0;
@@ -65,7 +77,7 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  const pct = 0.002;
+  const pct = 0.002; // 0.2%
   const bidRes = sumDepth(bids, mid, pct, true);
   const askRes = sumDepth(asks, mid, pct, false);
 
@@ -89,9 +101,6 @@ function directionOk(mode, score) {
   return mode === "bull" ? score > 0 : score < 0;
 }
 
-// ============================
-// Rolling window + metrics
-// ============================
 function pruneSamples(samples) {
   const now = Date.now();
   const winMs = MOON.elite.samplesWindowSec * 1000;
@@ -129,8 +138,6 @@ function calcStability(lastN) {
   const mean = scores.reduce((a, x) => a + x, 0) / scores.length;
   const varr = scores.reduce((a, x) => a + (x - mean) * (x - mean), 0) / scores.length;
   const std = Math.sqrt(varr);
-
-  // std <= 0.12 = redelijk “stabiel”
   const ok = std <= 0.12;
   return { std, ok };
 }
@@ -138,7 +145,7 @@ function calcStability(lastN) {
 function validateSamples(mode, samplesFresh) {
   const freshAll = pruneSamples(samplesFresh);
 
-  const need = Number(MOON?.elite?.samplesNeed || 3);
+  const need = Number(MOON?.elite?.samplesNeed || 2);
   if (freshAll.length < need) {
     return {
       valid: false,
@@ -156,7 +163,7 @@ function validateSamples(mode, samplesFresh) {
   const lastN = freshAll.slice(-need);
 
   const agree = lastN.filter((s) => directionOk(mode, s.score)).length;
-  if (agree < Number(MOON?.elite?.minAgree || 2)) {
+  if (agree < Number(MOON?.elite?.minAgree || 1)) {
     const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
     const slope = calcSlope(lastN);
     const stab = calcStability(lastN);
@@ -186,10 +193,10 @@ function validateSamples(mode, samplesFresh) {
   const stableOk = stab.ok;
 
   const last = lastN[lastN.length - 1];
-  const spreadOk = Number(last.spreadPct || 999) <= Number(MOON?.elite?.spreadMaxPct ?? 0.7);
-  const lorOk = Number(last.lor || 1) <= Number(MOON?.elite?.largestOrderRatioMax ?? 0.4);
+  const spreadOk = Number(last.spreadPct || 999) <= Number(MOON?.elite?.spreadMaxPct ?? 1.1);
+  const lorOk = Number(last.lor || 1) <= Number(MOON?.elite?.largestOrderRatioMax ?? 0.65);
 
-  const valid = !!(agree >= (MOON?.elite?.minAgree || 2) && slopeOk && stableOk && spreadOk && lorOk);
+  const valid = !!(agree >= (MOON?.elite?.minAgree || 1) && slopeOk && stableOk && spreadOk && lorOk);
 
   let reason = "OK";
   if (!slopeOk) reason = "Slope not ok";
@@ -210,13 +217,12 @@ function validateSamples(mode, samplesFresh) {
   };
 }
 
-// ============================
-// Candidate processing
-// ============================
 async function processCandidate(mode, symbol) {
-  const depth = await fetchBitgetDepth(symbol);
-  const sample = depth ? computeObSample(depth) : null;
-  if (!sample) return { ok: false, symbol, reason: "no depth" };
+  const live = await fetchBitgetOrderbookRaw(symbol, 100);
+  if (!live.ok) return { ok: false, symbol, reason: live.msg || "orderbook failed" };
+
+  const sample = computeObSample(live.depth);
+  if (!sample) return { ok: false, symbol, reason: "could not compute sample" };
 
   const kS = keyMoonObSamples(mode, symbol);
   const prev = (await kv.get(kS)) || [];
@@ -227,21 +233,17 @@ async function processCandidate(mode, symbol) {
 
   const v = validateSamples(mode, pruned);
 
-  const stale = (Date.now() - sample.ts) / 1000 > 15;
-
   await kv.set(keyMoonObResult(mode, symbol), {
     symbol,
     side: mode,
     valid: v.valid,
     reason: v.reason,
-
     avgScore: v.avgScore ?? null,
     agree: v.agree ?? null,
     slope: v.slope ?? 0,
     stable: !!v.stable,
     stabilityStd: v.stabilityStd ?? null,
     windowN: v.windowN ?? null,
-
     ob: {
       ts: sample.ts,
       mid: sample.mid,
@@ -252,7 +254,7 @@ async function processCandidate(mode, symbol) {
       lor: sample.lor,
       depthMinUsd1p: sample.depthMinUsd1p,
     },
-    stale,
+    stale: false,
   });
 
   return { ok: true, symbol, valid: v.valid, reason: v.reason };
@@ -303,8 +305,7 @@ export default async function handler(req, res) {
     for (const t of tasks) {
       const mode = t.mode;
 
-      // warm-up: ook radar meepakken zodat OB sneller “aan” gaat
-      const elite = (t.data?.funnel?.elite || []).slice(0, 8);
+      const elite = (t.data?.funnel?.elite || []).slice(0, 10);
       const almost = (t.data?.funnel?.almost || []).slice(0, 14);
       const buildup = (t.data?.funnel?.buildup || []).slice(0, 12);
       const radar = (t.data?.funnel?.radar || []).slice(0, 18);
@@ -332,21 +333,18 @@ export default async function handler(req, res) {
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    res.end(
-      JSON.stringify({
-        ok: true,
-        ts: Date.now(),
-        totalTried,
-        totalOk,
-        totalValid,
-        note:
-          "Rolling OB: consensus + slope + stability + spread + LOR. Also warms up from RADAR so OB can start building early.",
-        sampleErrors,
-      })
-    );
+    res.end(JSON.stringify({
+      ok: true,
+      ts: Date.now(),
+      totalTried,
+      totalOk,
+      totalValid,
+      note: "MOON OB: consensus + slope + stability + spread + LOR. Warms up from radar/buildup/almost/elite.",
+      sampleErrors: sampleErrors.slice(0, 30),
+    }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: false, error: String(e) }));
+    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
