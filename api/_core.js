@@ -39,27 +39,33 @@ export const SETTINGS = {
   // ALMOST (soepeler)
   almost: { vmMin: 0.20, volMin: 1_200_000, priceFlatMax: 9.0 },
 
-  // ENTRY (realistisch voor jouw mcap band)
+  // ENTRY (testfase: realistisch + iets soepeler)
   entry: {
-    obScoreMin: 0.05,
-    spreadMaxPct: 0.85,
-    largestOrderRatioMax: 0.50,
+    obScoreMin: 0.03,          // was 0.05
+    spreadMaxPct: 1.20,        // was 0.85
+    largestOrderRatioMax: 0.70,// was 0.50
 
-    samplesNeed: 3,
-    samplesWindowSec: 120,
-    minAgree: 2,
+    samplesNeed: 2,            // was 3 (sneller valid)
+    samplesWindowSec: 180,     // was 120
+    minAgree: 1,               // was 2
 
     // ✅ per mode — BEAR vaak dunner
-    minDepthUsd1pBull: 120_000,
-    minDepthUsd1pBear: 60_000,
+    minDepthUsd1pBull: 60_000, // was 120k
+    minDepthUsd1pBear: 30_000, // was 60k
 
-    minConfidence: 60,
-    entryConsistencyMin: 0.67,
+    minConfidence: 45,         // was 60
+    entryConsistencyMin: 0.50, // was 0.67
 
-    obSlopeEnabled: true,
+    // OB slope: testfase uit (minder blokkades)
+    obSlopeEnabled: false,
     obSlopeMinBull: -0.02,
     obSlopeMaxBear: +0.02,
     obSlopeMinSamples: 3,
+
+    // ✅ SOFT doorstroom voor ALMOST/BUILDUP (alleen als OB nog validating is)
+    allowValidatingForAlmost: true,
+    minConfidenceAlmost: 35,
+    minConsistencyAlmost: 0.45,
   },
 
   minScansPerStage: 1,
@@ -531,6 +537,7 @@ export function passEntryFromObPlus({ obView, mode, consistencyRatio, confidence
 }
 
 export function passEntryFromOb(ob, mode) {
+  // ✅ STRICT: ENTRY vereist valid OB
   if (!ob || !ob.valid) return { ok: false, why: "OB validating" };
   if (ob.stale) return { ok: false, why: "OB stale" };
 
