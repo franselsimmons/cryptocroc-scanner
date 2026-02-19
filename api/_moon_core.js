@@ -61,13 +61,13 @@ export const MOON = {
     minConfidence: 60,   // was 65 (iets soepeler)
     consistencyMin: 0.70,
 
-    obScoreMin: 0.03,         // was 0.04
-    spreadMaxPct: 1.10,       // was 0.70
+    obScoreMin: 0.03,          // was 0.04
+    spreadMaxPct: 1.10,        // was 0.70
     largestOrderRatioMax: 0.65,// was 0.40
 
-    samplesNeed: 2,           // was 3 (sneller valid)
-    samplesWindowSec: 180,    // was 90
-    minAgree: 1,              // was 2
+    samplesNeed: 2,            // was 3 (sneller valid)
+    samplesWindowSec: 180,     // was 90
+    minAgree: 1,               // was 2
 
     // OB rolling slope checks (sampler)
     obSlopeEnabled: true,
@@ -76,20 +76,23 @@ export const MOON = {
 
     // Depth floor
     depthFloorEnabled: true,
-    depthK: 20,               // was 28 (iets soepeler)
-    depthMinUsd: 30_000,       // was 60k
-    depthMaxUsd: 500_000,      // was 600k
+    depthK: 20,                // was 28 (iets soepeler)
+    depthMinUsd: 30_000,        // was 60k
+    depthMaxUsd: 500_000,       // was 600k
 
     // “niet te laat”
-    range24Max: 20.0,          // was 18.0
+    range24Max: 20.0,           // was 18.0
 
     // ✅ Rolling (15m) requirements — REALISTISCH
     roll: {
       maxDeltaPrice15mPct: 4.8, // iets ruimer
-      minDeltaVol15m: 0.10,     // was 0.15
+      // BELANGRIJK: jouw deltaVol15m is (volAcc verschil), dat is vaak klein → 0.10 was te streng
+      minDeltaVol15m: 0.02,
       needCompression: false,   // was true (te streng voor startfase)
-      minObSlope: 0.01,         // was 8 (impossible)
-      maxObStability: 0.08,     // was 20 (niet zinvol)
+      // BELANGRIJK: jouw obSlope in output is ~0.0–0.5 → 0.01 kan, maar iets zinniger = 0.05
+      minObSlope: 0.05,
+      // BELANGRIJK: obStability (std) zit vaak ~0.2–0.7 → 0.08 was “impossible”
+      maxObStability: 1.00,
     },
   },
 
