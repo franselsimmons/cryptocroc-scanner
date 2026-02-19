@@ -39,24 +39,26 @@ export const SETTINGS = {
   // ALMOST (soepeler)
   almost: { vmMin: 0.20, volMin: 1_200_000, priceFlatMax: 9.0 },
 
-  // ENTRY (testfase: realistisch + iets soepeler)
+  // ENTRY (professioneel: OB moet “leren” over tijd)
   entry: {
-    obScoreMin: 0.03,          // was 0.05
-    spreadMaxPct: 1.20,        // was 0.85
-    largestOrderRatioMax: 0.70,// was 0.50
+    obScoreMin: 0.03,
+    spreadMaxPct: 1.20,
+    largestOrderRatioMax: 0.70,
 
-    samplesNeed: 2,            // was 3 (sneller valid)
-    samplesWindowSec: 300,     // was 120
-    minAgree: 1,               // was 2
+    // ✅ PRO: 3 samples in een ruim window
+    // Als je ob-sampler ~ elke 10 min draait: dit is perfect (3 samples in ~30 min)
+    samplesNeed: 3,
+    samplesWindowSec: 3600, // 1 uur window → "Not enough samples" verdwijnt
+    minAgree: 2,
 
     // ✅ per mode — BEAR vaak dunner
-    minDepthUsd1pBull: 60_000, // was 120k
-    minDepthUsd1pBear: 30_000, // was 60k
+    minDepthUsd1pBull: 60_000,
+    minDepthUsd1pBear: 30_000,
 
-    minConfidence: 45,         // was 60
-    entryConsistencyMin: 0.50, // was 0.67
+    minConfidence: 45,
+    entryConsistencyMin: 0.50,
 
-    // OB slope: testfase uit (minder blokkades)
+    // OB slope: nog steeds uit (minder blokkades)
     obSlopeEnabled: false,
     obSlopeMinBull: -0.02,
     obSlopeMaxBear: +0.02,
@@ -127,6 +129,11 @@ export const keyBitgetSymbols = "bitget:symbols:spotusdt";
 
 export const keyObSamples = (side, symbol) => `ob:samples:${side}:${symbol}`;
 export const keyObResult  = (side, symbol) => `ob:result:${side}:${symbol}`;
+
+// ✅ OB rotation / queue helpers
+export const keyObQueue = (mode) => `ob:queue:${mode}`;
+export const keyObCursor = (mode) => `ob:cursor:${mode}`;
+export const keyObQueueTs = (mode) => `ob:queueTs:${mode}`;
 
 export const keyEntryLog  = "log:entry";
 
