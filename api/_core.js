@@ -46,7 +46,7 @@ export const SETTINGS = {
     largestOrderRatioMax: 0.70,// was 0.50
 
     samplesNeed: 2,            // was 3 (sneller valid)
-    samplesWindowSec: 180,     // was 120
+    samplesWindowSec: 300,     // was 120
     minAgree: 1,               // was 2
 
     // ✅ per mode — BEAR vaak dunner
