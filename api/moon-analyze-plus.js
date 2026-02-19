@@ -19,6 +19,9 @@ function normalizeMode(v) {
   if (m === "short" || m === "bear") return "bear";
   return "all";
 }
+function label(mode) {
+  return mode === "bull" ? "LONG" : "SHORT";
+}
 function n(x, d = 0) {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
@@ -37,14 +40,7 @@ function addCounts(to, from) {
 function clamp(x, a, b) {
   return Math.max(a, Math.min(b, x));
 }
-function durMin(a, b) {
-  const A = Number(a || 0);
-  const B = Number(b || 0);
-  if (!(A > 0 && B > 0)) return null;
-  return Math.max(0, Math.round((B - A) / 60000));
-}
 
-// ===== DIAGS read =====
 async function readDiags(mode, limit) {
   try {
     if (typeof kv.lrange === "function") {
@@ -66,26 +62,29 @@ async function readDiags(mode, limit) {
   }
 }
 
-// ===== portfolio read (best-effort) =====
-async function readMoonPortfolio(mode) {
+async function readPositions(mode) {
+  try {
+    const p = await kv.get(keyMoonPositions(mode));
+    // verwacht { open:[], closed:[] } maar we blijven safe
+    return {
+      open: Array.isArray(p?.open) ? p.open : [],
+      closed: Array.isArray(p?.closed) ? p.closed : [],
+    };
+  } catch {
+    return { open: [], closed: [] };
+  }
+}
+
+async function readPortfolio(mode) {
   try {
     const p = await kv.get(keyMoonPortfolio(mode));
-    return p || null;
+    return p && typeof p === "object" ? p : null;
   } catch {
     return null;
   }
 }
-async function readMoonPositions(mode) {
-  try {
-    const x = await kv.get(keyMoonPositions(mode));
-    return Array.isArray(x) ? x : [];
-  } catch {
-    return [];
-  }
-}
 
-// ===== diag summarize =====
-function summarize(diags) {
+function summarizeDiags(diags) {
   const s = {
     scans: diags.length,
     lastTs: diags[0]?.ts || null,
@@ -129,106 +128,108 @@ function summarize(diags) {
   return s;
 }
 
-// ===== trade-ish stats from portfolio/positions =====
-function normalizeExitKind(x) {
-  const k = String(x || "").toUpperCase();
-  if (k.includes("STOP") || k === "SL") return "SL";
-  if (k.includes("TP") || k.includes("TAKE")) return "TP";
-  return k || "UNKNOWN";
+// ===== Trade tuning (Moon) =====
+function inferHitKind(pos, mode) {
+  // we proberen netjes:
+  const kind = String(pos?.exitKind || pos?.closeKind || pos?.kind || "").toUpperCase();
+  if (kind === "SL" || kind === "TP" || kind === "TP1" || kind === "TP2" || kind === "TP3") return kind;
+
+  const entry = n(pos?.entryPrice, 0);
+  const last = n(pos?.exitPrice ?? pos?.priceNow ?? pos?.lastPrice, 0);
+  const sl = n(pos?.sl, 0);
+  const tp3 = n(pos?.tp3 ?? pos?.tp, 0);
+
+  if (!(entry > 0 && last > 0)) return "CLOSED";
+
+  if (mode === "bull") {
+    if (sl > 0 && last <= sl) return "SL";
+    if (tp3 > 0 && last >= tp3) return "TP";
+  } else {
+    if (sl > 0 && last >= sl) return "SL";
+    if (tp3 > 0 && last <= tp3) return "TP";
+  }
+  return "CLOSED";
 }
 
-function moonTradeStatsFromPortfolio(portfolio) {
-  // We proberen verschillende mogelijke shapes:
-  // - portfolio.trades = []
-  // - portfolio.history = []
-  // - portfolio.closed = []
-  const list =
-    (Array.isArray(portfolio?.trades) && portfolio.trades) ||
-    (Array.isArray(portfolio?.history) && portfolio.history) ||
-    (Array.isArray(portfolio?.closed) && portfolio.closed) ||
-    [];
+function summarizeMoonTrades(positions, mode) {
+  const open = Array.isArray(positions?.open) ? positions.open : [];
+  const closed = Array.isArray(positions?.closed) ? positions.closed : [];
 
-  const closed = list.filter(Boolean);
-  const byKind = { SL: 0, TP: 0, MANUAL: 0, BTC: 0, TIME: 0, UNKNOWN: 0 };
+  const outMap = {};
+  let tpTooFar = 0;
+  let slTooTight = 0;
+  let haveMetrics = 0;
 
-  let slFast60 = 0;
-  let slCount = 0;
-  let tpCount = 0;
+  for (const p of closed) {
+    const k = inferHitKind(p, mode);
+    outMap[k] = (outMap[k] || 0) + 1;
 
-  for (const t of closed) {
-    const kind = normalizeExitKind(t?.kind || t?.exitKind || t?.reason);
-    byKind[kind] = (byKind[kind] || 0) + 1;
+    // tuning met mfe/mae als die bestaat
+    const mfe = Number.isFinite(Number(p?.mfePct)) ? n(p.mfePct, 0) : null;
+    const mae = Number.isFinite(Number(p?.maePct)) ? n(p.maePct, 0) : null;
+    if (mfe === null || mae === null) continue;
 
-    if (kind === "SL") {
-      slCount++;
-      const m = durMin(t?.openedAt || t?.openTs || t?.entryTs, t?.closedAt || t?.closeTs || t?.exitTs);
-      if (m != null && m <= 60) slFast60++;
+    const entry = n(p?.entryPrice, 0);
+    const sl = n(p?.sl, 0);
+    const tp = n(p?.tp3 ?? p?.tp, 0);
+    if (!(entry > 0 && sl > 0 && tp > 0)) continue;
+    haveMetrics++;
+
+    const slPct = mode === "bull" ? ((entry - sl) / entry) * 100 : ((sl - entry) / entry) * 100;
+    const tpPct = mode === "bull" ? ((tp - entry) / entry) * 100 : ((entry - tp) / entry) * 100;
+
+    if (k === "SL") {
+      const maeR = Math.abs(mae) / Math.max(0.0001, slPct);
+      if (maeR <= 1.15) slTooTight++;
+    } else if (k !== "TP") {
+      const mfeRtp = Math.abs(mfe) / Math.max(0.0001, tpPct);
+      if (mfeRtp >= 0.65 && mfeRtp <= 0.95) tpTooFar++;
     }
-    if (kind === "TP") tpCount++;
   }
 
-  const slFast60Pct = slCount ? slFast60 / slCount : 0;
-  const tpHitRate = closed.length ? tpCount / closed.length : 0;
-
-  return { closed: closed.length, byKind, slCount, tpCount, slFast60Pct, tpHitRate };
-}
-
-function moonRiskSuggestion(stats) {
-  const minClosed = 15;
-  if (!stats || stats.closed < minClosed) {
-    return {
-      ok: false,
-      note: `Te weinig gesloten Moon trades (${stats?.closed || 0}). Wacht tot ≥ ${minClosed}.`,
-      current: {
-        // Moon gebruikt computeMoonRisk (range/conf based), geen simpele ATR-mul.
-        slLogic: "range24 * slMul (confidence-based)",
-        tpLogic: "R-multiples (tp1,tp2,tp3)",
-      },
-      suggested: null,
-      why: [],
-    };
-  }
-
-  const why = [];
-  let tweak = "none";
-
-  if (stats.slFast60Pct >= 0.45) {
-    why.push(`Veel snelle SL (${Math.round(stats.slFast60Pct * 100)}% binnen 60 min) → SL iets wijder maken in computeMoonRisk().`);
-    tweak = "wider_sl";
-  }
-
-  if (stats.tpHitRate <= 0.15) {
-    why.push(`Weinig TP hits (${Math.round(stats.tpHitRate * 100)}%) → TP ladder of entry-kwaliteit checken.`);
-    if (tweak === "none") tweak = "tp_review";
+  const tuning = [];
+  if (haveMetrics >= 5) {
+    if (slTooTight >= Math.ceil(haveMetrics * 0.35)) {
+      tuning.push({
+        title: "SL te strak (MOON)",
+        now: "SL wordt vaak aangetikt en daarna loopt de coin alsnog door.",
+        fix: [
+          "Maak SL 25% wijder.",
+          "In code: in /api/_moon_core.js → zoek computeMoonRisk → verhoog slMul basis (0.30 → 0.34) of maak clamp-min hoger.",
+        ],
+      });
+    }
+    if (tpTooFar >= Math.ceil(haveMetrics * 0.35)) {
+      tuning.push({
+        title: "TP te ver (MOON)",
+        now: "Coins komen vaak dicht bij TP maar pakken hem net niet.",
+        fix: [
+          "Maak TP’s iets dichterbij (bijv. tp3 multiplier omlaag).",
+          "Of: neem TP2 vaker als ‘main TP’ en TP3 als runner.",
+        ],
+      });
+    }
+  } else {
+    tuning.push({
+      title: "Nog te weinig moon trade-data voor harde tuning",
+      now: "Je hebt te weinig CLOSED met mfePct/maePct.",
+      fix: [
+        "Laat je portfolio-engine mfePct/maePct vullen tijdens open pos.",
+        "Pas daarna knoppen (slMul/tp multipliers) aan.",
+      ],
+    });
   }
 
   return {
-    ok: true,
-    note: "Advies gebaseerd op Moon portfolio gesloten posities.",
-    current: {
-      slMulRange: "0.18..0.42 (clamp)",
-      tpR: "1.8R / 3.0R / 4.2R",
-    },
-    suggested:
-      tweak === "wider_sl"
-        ? {
-            change: "SL wider",
-            what: "Verhoog slMul clamp ondergrens en/of +0.02 op slMul",
-            where: "/api/_moon_core.js → computeMoonRisk()",
-          }
-        : tweak === "tp_review"
-          ? {
-              change: "TP check",
-              what: "Als winrate ok is: tp2/tp3 iets verder (bijv 3.2R / 4.6R). Anders eerst entries strakker.",
-              where: "/api/_moon_core.js → computeMoonRisk()",
-            }
-          : null,
-    why,
+    counts: { open: open.length, closed: closed.length, total: open.length + closed.length },
+    outcomesTop: topN(outMap, 8),
+    tuning,
+    sampleClosed: closed.slice(-10),
   };
 }
 
-// “perfecte” suggesties = klein en gebaseerd op jouw grootste blokkade
-function suggestions(sum) {
+// “perfecte” suggesties = gebaseerd op grootste blokkade in diags (filters)
+function filterSuggestions(sum) {
   const avgElite = n(sum?.avg?.elite, 0);
   const desiredMin = 3;
   const desiredMax = 10;
@@ -255,7 +256,7 @@ function suggestions(sum) {
       out.changes["MOON.elite.minConfidence"] = `${elite.minConfidence} -> ${Math.max(0, elite.minConfidence - 3)}`;
     } else if (mainBlock.toLowerCase().includes("depth")) {
       out.changes["MOON.elite.depthMinUsd"] = `${elite.depthMinUsd} -> ${Math.max(0, Math.round(elite.depthMinUsd * 0.9))}`;
-    } else if (extraBlock.toLowerCase().includes("Δv") || extraBlock.toLowerCase().includes("dv") || extraBlock.toLowerCase().includes("vol")) {
+    } else if (extraBlock.toLowerCase().includes("vol") || extraBlock.toLowerCase().includes("dv")) {
       out.changes["MOON.elite.roll.minDeltaVol15m"] = `${roll.minDeltaVol15m} -> ${(roll.minDeltaVol15m * 0.8).toFixed(4)}`;
     } else {
       out.changes["MOON.elite.spreadMaxPct"] = `${elite.spreadMaxPct} -> ${(elite.spreadMaxPct + 0.1).toFixed(2)}`;
@@ -291,33 +292,23 @@ function fmtDateMin(ts) {
 function htmlPage(data) {
   const { long, short } = data;
 
-  const list = (arr) =>
-    (arr || []).map((x) => `<li><b>${x.key}</b> — ${x.count}</li>`).join("") || "<li>n/a</li>";
+  const card = (title, s, sug, tradeSum, portfolio, mode) => {
+    const blocks = sug.topBlocks || {};
+    const list = (arr) =>
+      (arr || []).map((x) => `<li><b>${x.key}</b> — ${x.count}</li>`).join("") || "<li>n/a</li>";
 
-  const changesList = (changesObj) =>
-    Object.entries(changesObj || {})
+    const changes = Object.entries(sug.changes || {})
       .map(([k, v]) => `<li><code>${k}</code>: <b>${v}</b></li>`)
       .join("") || "<li>n/a</li>";
 
-  const riskBox = (r) => {
-    if (!r) return `<div class="muted">n/a</div>`;
-    const why = (r.why || []).map((x) => `<li>${x}</li>`).join("") || "<li>n/a</li>";
-    const sug = r.suggested
-      ? `<ul><li><b>${r.suggested.change}</b> — ${r.suggested.what}<br/><span class="muted">${r.suggested.where}</span></li></ul>`
-      : `<div class="muted">Geen harde tweak.</div>`;
-    return `
-      <div class="box">
-        <h3>Moon SL/TP diagnose (op basis van portfolio)</h3>
-        <div class="muted">${r.note}</div>
-        ${sug}
-        <h3 style="margin-top:10px">Waarom</h3>
-        <ul>${why}</ul>
-      </div>
-    `;
-  };
+    const outs = (tradeSum?.outcomesTop || [])
+      .map((x) => `<li><b>${x.key}</b> — ${x.count}</li>`)
+      .join("") || "<li>n/a</li>";
 
-  const card = (title, s, sug, port, pos, risk) => {
-    const blocks = sug.topBlocks || {};
+    const tune = (tradeSum?.tuning || [])
+      .map((t) => `<div class="tune"><b>${t.title}</b><div class="muted">${t.now}</div><ul>${(t.fix || []).map((x) => `<li>${x}</li>`).join("")}</ul></div>`)
+      .join("") || `<div class="muted">n/a</div>`;
+
     return `
       <div class="card">
         <h2>${title}</h2>
@@ -335,9 +326,9 @@ function htmlPage(data) {
           </div>
 
           <div class="box">
-            <h3>Suggestie (filters)</h3>
+            <h3>Filter-suggestie (coins → ELITE)</h3>
             <div class="muted">${sug.goal}<br/>${sug.now}</div>
-            <ul>${changesList(sug.changes)}</ul>
+            <ul>${changes}</ul>
             <div class="muted">${(sug.reason || []).join(" • ")}</div>
           </div>
         </div>
@@ -363,11 +354,39 @@ function htmlPage(data) {
 
         <div class="grid">
           <div class="box">
-            <h3>Moon portfolio snapshot</h3>
-            <div class="muted">portfolio: ${port ? "gevonden" : "n/a"} • positions open: <b>${(pos || []).length}</b></div>
-            ${port ? `<pre style="white-space:pre-wrap;font-size:12px">${escapeHtml(JSON.stringify(port, null, 2)).slice(0, 1800)}</pre>` : `<div class="muted">Geen portfolio object gevonden in KV.</div>`}
+            <h3>Trades (MOON) — status</h3>
+            <div class="muted">Open: <b>${tradeSum?.counts?.open || 0}</b> • Closed: <b>${tradeSum?.counts?.closed || 0}</b></div>
+            <ul>${outs}</ul>
           </div>
-          ${riskBox(risk)}
+
+          <div class="box">
+            <h3>Trades (MOON) — SL/TP tuning</h3>
+            ${tune}
+          </div>
+
+          <div class="box">
+            <h3>Portfolio (MOON)</h3>
+            ${
+              portfolio
+                ? `<ul>
+                    <li>posUsd: <b>${portfolio.posUsd}</b></li>
+                    <li>openCount: <b>${portfolio.openCount}</b></li>
+                    <li>closedCount: <b>${portfolio.closedCount}</b></li>
+                    <li>realizedUsd: <b>${portfolio.realizedUsd}</b></li>
+                    <li>avgRealizedPct: <b>${portfolio.avgRealizedPct}</b></li>
+                    <li>updatedAt: <b>${fmtDateMin(portfolio.updatedAt)}</b></li>
+                  </ul>`
+                : `<div class="muted">n/a</div>`
+            }
+          </div>
+
+          <div class="box">
+            <h3>Waar SL/TP in code</h3>
+            <ul>
+              <li><code>/api/_moon_core.js</code> — zoek: <code>computeMoonRisk</code></li>
+              <li><code>/api/_moon_core.js</code> — zoek: <code>hitStopOrTp</code></li>
+            </ul>
+          </div>
         </div>
       </div>
     `;
@@ -392,19 +411,15 @@ function htmlPage(data) {
     h3{margin:0 0 8px 0;font-size:14px}
     ul{margin:0;padding-left:18px}
     code{background:#0a1b2b;border:1px solid #15334e;padding:2px 6px;border-radius:8px}
-    pre{margin:0}
-    @media (max-width: 980px){
-      .grid{grid-template-columns:1fr}
-      .row{flex-direction:column}
-    }
+    .tune{margin-top:8px;padding:8px;border:1px solid #15334e;border-radius:10px;background:#0a1b2b}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>MOON Analyze+ (LONG vs SHORT)</h1>
+    <h1>MOON Analyze+ (LONG vs SHORT) + Trades tuning</h1>
     <div class="row">
-      ${card("LONG (bull)", long.summary, long.suggestions, long.portfolio, long.positions, long.risk)}
-      ${card("SHORT (bear)", short.summary, short.suggestions, short.portfolio, short.positions, short.risk)}
+      ${long ? card("LONG (bull)", long.summary, long.suggestions, long.trades, long.portfolio, "bull") : ""}
+      ${short ? card("SHORT (bear)", short.summary, short.suggestions, short.trades, short.portfolio, "bear") : ""}
     </div>
     <div class="muted" style="margin-top:10px">
       Tip: voeg <code>?format=json</code> toe als je de ruwe data wil zien.
@@ -412,13 +427,6 @@ function htmlPage(data) {
   </div>
 </body>
 </html>`;
-}
-
-function escapeHtml(s) {
-  return String(s || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
 }
 
 export default async function handler(req, res) {
@@ -431,16 +439,11 @@ export default async function handler(req, res) {
 
     const make = async (m) => {
       const diags = await readDiags(m, limit);
-      const summary = summarize(diags);
-      const sug = suggestions(summary);
-
-      const portfolio = await readMoonPortfolio(m);
-      const positions = await readMoonPositions(m);
-
-      const tstats = portfolio ? moonTradeStatsFromPortfolio(portfolio) : { closed: 0 };
-      const risk = moonRiskSuggestion(tstats);
-
-      return { summary, suggestions: sug, diags, portfolio, positions, tradeStats: tstats, risk };
+      const summary = summarizeDiags(diags);
+      const positions = await readPositions(m);
+      const portfolio = await readPortfolio(m);
+      const trades = summarizeMoonTrades(positions, m);
+      return { summary, suggestions: filterSuggestions(summary), diags, trades, portfolio };
     };
 
     const data =
