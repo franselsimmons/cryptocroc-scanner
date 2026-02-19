@@ -3,25 +3,25 @@ import { kv } from "@vercel/kv";
 
 export const RUNTIME_CONFIG = { runtime: "nodejs20.x" };
 
-// ================== SETTINGS (Main Funnel: Quality Continuation) ==================
+// ================== SETTINGS (SOFT DEFAULT) ==================
 export const SETTINGS = {
   // Universe
   CG_TOP: 250,
-  RADAR_LIMIT: 160,
+  RADAR_LIMIT: 180,
 
-  // RADAR (breed)
+  // RADAR (breed / soepel)
   mcapMin: 5_000_000,
-  mcapMax: 400_000_000,
-  volMinRadar: 500_000,
-  vmMinRadar: 0.15,
-  maxAbsChg24: 35,
-  maxRange24: 30,
+  mcapMax: 450_000_000,
+  volMinRadar: 350_000,
+  vmMinRadar: 0.12,
+  maxAbsChg24: 45,
+  maxRange24: 45,
 
   // BTC gate
-  btcChgGate: 0.8, // +/- 0.8%
+  btcChgGate: 0.8,
   btcRangeMin: 2,
-  btcRangeMaxBull: 8,
-  btcRangeMaxBear: 10,
+  btcRangeMaxBull: 10,
+  btcRangeMaxBear: 12,
 
   // BTC strength zones (voor sizing caps)
   btcStrength: {
@@ -31,45 +31,48 @@ export const SETTINGS = {
 
   // volatility knob (light): coin range cap beweegt mee met btcRange
   coinRangeCapMin: 25,
-  coinRangeCapMax: 40,
+  coinRangeCapMax: 55,
 
-  // BUILDUP (continuation richting)
-  buildup: { chgMin: 1.2, vmMin: 0.22, volMin: 1_200_000 },
+  // BUILDUP (soepeler)
+  buildup: { chgMin: 0.9, vmMin: 0.18, volMin: 900_000 },
 
-  // ALMOST (consolidatie + sterkere flow)
-  almost: { vmMin: 0.26, volMin: 2_000_000, priceFlatMax: 6.5 },
+  // ALMOST (soepeler)
+  almost: { vmMin: 0.20, volMin: 1_200_000, priceFlatMax: 9.0 },
 
-  // ENTRY (OB gate)
+  // ENTRY (realistisch voor jouw mcap band)
   entry: {
-    obScoreMin: 0.06,
-    spreadMaxPct: 0.55,
-    largestOrderRatioMax: 0.35,
+    obScoreMin: 0.05,
+    spreadMaxPct: 0.85,
+    largestOrderRatioMax: 0.50,
+
     samplesNeed: 3,
-    samplesWindowSec: 90,
+    samplesWindowSec: 120,
     minAgree: 2,
 
-    minDepthUsd1p: 200_000,
+    // ✅ per mode — BEAR vaak dunner
+    minDepthUsd1pBull: 120_000,
+    minDepthUsd1pBear: 60_000,
 
-    minConfidence: 70,
-    entryConsistencyMin: 0.75,
+    minConfidence: 60,
+    entryConsistencyMin: 0.67,
 
     obSlopeEnabled: true,
-    obSlopeMinBull: 0.0,
-    obSlopeMaxBear: 0.0,
+    obSlopeMinBull: -0.02,
+    obSlopeMaxBear: +0.02,
     obSlopeMinSamples: 3,
   },
 
-  minScansPerStage: 2,
+  minScansPerStage: 1,
 
   consistencyWindowMin: 120,
-  consistencyMinRatio: 0.67,
+  consistencyMinRatio: 0.60,
   consistencyMinSamples: 6,
 
-  obPickAlmost: 12,
-  obPickBuildup: 8,
+  obPickAlmost: 14,
+  obPickBuildup: 10,
 
-  // ✅ nieuw: fallback candidates uit RADAR als buildup/almost leeg is
-  obPickRadarFallback: 20,
+  // fallback candidates uit RADAR als buildup/almost leeg is
+  obPickRadarFallback: 25,
 
   cgCacheSec: 60 * 10,
   atrCacheSec: 60 * 10,
@@ -77,10 +80,10 @@ export const SETTINGS = {
   sizing: {
     confBands: [
       { min: 0, pct: 60 },
-      { min: 70, pct: 70 },
-      { min: 80, pct: 80 },
-      { min: 90, pct: 90 },
-      { min: 95, pct: 100 },
+      { min: 60, pct: 70 },
+      { min: 70, pct: 80 },
+      { min: 80, pct: 90 },
+      { min: 90, pct: 100 },
     ],
     btcCaps: { WEAK: 70, NORMAL: 90, STRONG: 100 },
     stageCaps: { RADAR: 60, BUILDUP: 70, ALMOST: 80, ENTRY: 100 },
@@ -111,18 +114,19 @@ export function requireSecret(req, res) {
 
 // ================== KV KEYS ==================
 export const keyLatest = (mode) => `latest:${mode}`;
-export const keyState = (mode) => `state:${mode}`;
-export const keyReset = (mode) => `resetAt:${mode}`;
+export const keyState  = (mode) => `state:${mode}`;
+export const keyReset  = (mode) => `resetAt:${mode}`;
 
 export const keyBitgetSymbols = "bitget:symbols:spotusdt";
 
-// ✅ BINANCE universe cache key
-export const keyBinanceSymbols = "binance:symbols:spotusdt";
-
 export const keyObSamples = (side, symbol) => `ob:samples:${side}:${symbol}`;
-export const keyObResult = (side, symbol) => `ob:result:${side}:${symbol}`;
+export const keyObResult  = (side, symbol) => `ob:result:${side}:${symbol}`;
 
-export const keyEntryLog = "log:entry";
+export const keyEntryLog  = "log:entry";
+
+// ✅ diagnose keys (voor analyse endpoint)
+export const keyDiagList = (mode) => `diag:list:${mode}`; // lpush/ltrim
+export const keyDiagSnap = (mode) => `diag:snap:${mode}`; // fallback set
 
 const keyCgTopCache = `cache:cg:top:${SETTINGS.CG_TOP}`;
 const keyCgBtcCache = `cache:cg:btc`;
@@ -151,9 +155,7 @@ export function webhookForStage(stage) {
 
 export function fmtCoinLine(c, mode, stage, extra = "") {
   const base = (process.env.PUBLIC_SCANNER_URL || "").replace(/\/$/, "");
-  const page = base
-    ? `${base}/?mode=${encodeURIComponent(mode)}`
-    : `/?mode=${encodeURIComponent(mode)}`;
+  const page = base ? `${base}/?mode=${encodeURIComponent(mode)}` : `/?mode=${encodeURIComponent(mode)}`;
 
   const lines = [
     `**${c.symbol}** → **${stage}** (${mode.toUpperCase()})`,
@@ -167,7 +169,6 @@ export function fmtCoinLine(c, mode, stage, extra = "") {
 
 // ================== DATA FETCH ==================
 export async function fetchCoinGeckoTop() {
-  // ✅ FIX: page=1 (page=3 pakt “verkeerde” slice)
   const url =
     `https://api.coingecko.com/api/v3/coins/markets?` +
     `vs_currency=usd&order=market_cap_desc&per_page=${SETTINGS.CG_TOP}&page=1` +
@@ -248,63 +249,6 @@ function normalizeCG(x) {
   };
 }
 
-// ================== BINANCE SYMBOLS (SPOT USDT) ==================
-// ✅ Universe voor orderbook (Binance is je OB bron)
-// ✅ FIX: fallback endpoints (451 op api.binance.com) -> vision + api1/api2/api3
-export async function getBinanceSpotUsdtSymbols() {
-  const cached = await kv.get(keyBinanceSymbols);
-  if (Array.isArray(cached) && cached.length) return new Set(cached);
-
-  const urls = [
-    "https://api.binance.com/api/v3/exchangeInfo",
-    "https://api1.binance.com/api/v3/exchangeInfo",
-    "https://api2.binance.com/api/v3/exchangeInfo",
-    "https://api3.binance.com/api/v3/exchangeInfo",
-    "https://data-api.binance.vision/api/v3/exchangeInfo",
-  ];
-
-  async function tryUrl(url) {
-    const r = await fetch(url, { headers: { accept: "application/json" } });
-    const text = await r.text();
-
-    let j = null;
-    try { j = JSON.parse(text); } catch {}
-
-    if (!r.ok) {
-      return { ok: false, status: r.status, url, preview: text.slice(0, 200) };
-    }
-
-    if (!j || !Array.isArray(j.symbols)) {
-      return { ok: false, status: 200, url, preview: text.slice(0, 200) };
-    }
-
-    return { ok: true, url, json: j };
-  }
-
-  let lastErr = null;
-  for (const url of urls) {
-    const t = await tryUrl(url);
-    if (t.ok) {
-      const list = (t.json.symbols || [])
-        .filter((s) => String(s?.status || "").toUpperCase() === "TRADING")
-        .filter((s) => String(s?.quoteAsset || "").toUpperCase() === "USDT")
-        .filter((s) => s?.isSpotTradingAllowed === true || String(s?.isSpotTradingAllowed) === "true")
-        .map((s) => String(s?.baseAsset || "").toUpperCase())
-        .filter(Boolean);
-
-      await kv.set(keyBinanceSymbols, list, { ex: 60 * 60 * 24 });
-      return new Set(list);
-    }
-    lastErr = t;
-  }
-
-  throw new Error(
-    `Binance exchangeInfo failed ${lastErr?.status || "?"} (all endpoints). Last url: ${lastErr?.url || "?"}`
-  );
-}
-
-// ================== (OPTIONEEL) Bitget symbols blijft bestaan ==================
-// (Handig als je later nog Bitget wil vergelijken)
 export async function getBitgetSpotUsdtSymbols() {
   const cached = await kv.get(keyBitgetSymbols);
   if (Array.isArray(cached) && cached.length) return new Set(cached);
@@ -323,7 +267,7 @@ export async function getBitgetSpotUsdtSymbols() {
   return new Set(list);
 }
 
-// ================== FASE 2: Bitget ATR(14) op 1H candles ==================
+// ================== ATR 1H (Bitget) ==================
 export async function fetchBitgetAtr1hPctCached(symbolUpper) {
   const symbol = String(symbolUpper || "").toUpperCase();
   if (!symbol) return null;
@@ -346,14 +290,11 @@ async function fetchBitgetAtr1hPct(symbolUpper) {
     `category=SPOT&symbol=${encodeURIComponent(sym)}&interval=1H&type=MARKET&limit=20`;
 
   const j = await safeJsonFetch(url, 6500);
-  if (!j || j.code !== "00000" || !Array.isArray(j.data) || j.data.length < 15) {
-    return null;
-  }
+  if (!j || j.code !== "00000" || !Array.isArray(j.data) || j.data.length < 15) return null;
 
   const candles = j.data
     .map((row) => ({
       ts: Number(row?.[0] || 0),
-      o: Number(row?.[1] || 0),
       h: Number(row?.[2] || 0),
       l: Number(row?.[3] || 0),
       c: Number(row?.[4] || 0),
@@ -598,9 +539,8 @@ export function passEntryFromOb(ob, mode) {
   const lor = Number(ob.lor ?? 1);
 
   const depthMinUsd1p = Number(ob.depthMinUsd1p ?? 0);
-  if (depthMinUsd1p < SETTINGS.entry.minDepthUsd1p) {
-    return { ok: false, why: `Depth too thin (<$${SETTINGS.entry.minDepthUsd1p})` };
-  }
+  const depthNeed = mode === "bull" ? SETTINGS.entry.minDepthUsd1pBull : SETTINGS.entry.minDepthUsd1pBear;
+  if (depthMinUsd1p < depthNeed) return { ok: false, why: `Depth too thin (<$${depthNeed})` };
 
   if (lor > SETTINGS.entry.largestOrderRatioMax) return { ok: false, why: "OB suspicious (largest order)" };
   if (spreadPct > SETTINGS.entry.spreadMaxPct) return { ok: false, why: "Spread too wide" };
