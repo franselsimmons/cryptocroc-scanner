@@ -11,56 +11,49 @@ import {
 
 export const config = RUNTIME_CONFIG;
 
-// ✅ HARD LIMIT: hoeveel coins max per minuut per mode
-// Aanrader: 12 (veilig + genoeg doorstroom)
-const MAX_PER_RUN = 12;
-
-// ✅ fallback groter maken zodat je altijd genoeg candidates hebt
-const RADAR_FALLBACK = SETTINGS.obPickRadarFallback || 40;
-
-// ================== BINANCE DEPTH ==================
-async function fetchBinanceDepthRaw(baseSymbol, limit = 100) {
+// ================== BITGET DEPTH (SPOT) ==================
+// Docs: GET /api/spot/v1/market/depth?symbol=BTCUSDT_SPBL&type=step0&limit=100
+// Rate limit: 20 times/1s (IP)
+async function fetchBitgetDepthRaw(baseSymbol, limit = 100) {
   const base = String(baseSymbol || "").toUpperCase();
   if (!base) return { ok: false, status: 400, msg: "Missing symbol" };
 
-  const pair = `${base}USDT`;
+  const pair = `${base}USDT_SPBL`;
+  const url =
+    `https://api.bitget.com/api/spot/v1/market/depth?` +
+    `symbol=${encodeURIComponent(pair)}&type=step0&limit=${encodeURIComponent(String(limit))}`;
 
-  const url1 = `https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(pair)}&limit=${encodeURIComponent(String(limit))}`;
-  const url2 = `https://data-api.binance.vision/api/v3/depth?symbol=${encodeURIComponent(pair)}&limit=${encodeURIComponent(String(limit))}`;
+  const r = await fetch(url, { headers: { accept: "application/json" } });
+  const text = await r.text();
+  let j = null;
+  try { j = JSON.parse(text); } catch {}
 
-  async function tryUrl(url) {
-    const r = await fetch(url, { headers: { accept: "application/json" } });
-    const text = await r.text();
-    let j = null;
-    try { j = JSON.parse(text); } catch {}
-    if (!r.ok) {
-      return {
-        ok: false,
-        status: r.status,
-        msg: j?.msg || "Binance depth failed",
-        url,
-        preview: text.slice(0, 200),
-      };
-    }
-    if (!j?.bids?.length || !j?.asks?.length) {
-      return {
-        ok: false,
-        status: 200,
-        msg: "Empty orderbook",
-        url,
-        preview: text.slice(0, 200),
-      };
-    }
-    return { ok: true, url, depth: j };
+  if (!r.ok) {
+    return {
+      ok: false,
+      status: r.status,
+      msg: j?.msg || j?.message || "Bitget depth failed",
+      url,
+      preview: text.slice(0, 200),
+    };
   }
 
-  const a = await tryUrl(url1);
-  if (a.ok) return a;
+  // Bitget response shape: { code:"00000", data:{ bids:[["p","s"],...], asks:[...], ts:"..." } }
+  const data = j?.data || null;
+  const bids = data?.bids || [];
+  const asks = data?.asks || [];
 
-  const b = await tryUrl(url2);
-  if (b.ok) return b;
+  if (j?.code !== "00000" || !Array.isArray(bids) || !Array.isArray(asks) || !bids.length || !asks.length) {
+    return {
+      ok: false,
+      status: 200,
+      msg: j?.msg || "Empty orderbook",
+      url,
+      preview: text.slice(0, 200),
+    };
+  }
 
-  return a.status ? a : b;
+  return { ok: true, url, depth: { bids, asks } };
 }
 
 function sumDepth(levels, mid, pct, isBid) {
@@ -155,42 +148,23 @@ function validateSamples(mode, samplesFresh) {
   return { valid: true, reason: "OK", fresh: lastN, avgScore, agree };
 }
 
-// ✅ Fisher-Yates shuffle (zodat je niet elke minuut dezelfde coins pakt)
-function shuffle(arr) {
-  const a = Array.isArray(arr) ? arr.slice() : [];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-function pickCandidatesFromLatest(latest) {
+function pickCandidatesFromLatest(latest, maxPerRun, radarFallback) {
   const almost = (latest?.funnel?.almost || []).slice(0, SETTINGS.obPickAlmost);
   const buildup = (latest?.funnel?.buildup || []).slice(0, SETTINGS.obPickBuildup);
 
-  // ✅ pak ook RADAR mee als “buffer”
-  const radar = (latest?.funnel?.radar || []).slice(0, RADAR_FALLBACK);
+  let picked = [...almost, ...buildup];
 
-  // ✅ combine + unique
-  const merged = [...almost, ...buildup, ...radar]
+  // fallback: RADAR als buildup/almost leeg is
+  if (!picked.length) picked = (latest?.funnel?.radar || []).slice(0, radarFallback);
+
+  return picked
+    .slice(0, maxPerRun)
     .map((x) => String(x?.symbol || "").toUpperCase())
     .filter(Boolean);
-
-  const uniq = [];
-  const seen = new Set();
-  for (const s of merged) {
-    if (seen.has(s)) continue;
-    seen.add(s);
-    uniq.push(s);
-  }
-
-  // ✅ shuffle + hard cap
-  return shuffle(uniq).slice(0, MAX_PER_RUN);
 }
 
 async function processCandidate(mode, symbol) {
-  const live = await fetchBinanceDepthRaw(symbol, 100);
+  const live = await fetchBitgetDepthRaw(symbol, 100);
   if (!live.ok) {
     return { ok: false, symbol, ...live };
   }
@@ -251,8 +225,25 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
+    // ✅ hoeveel per run
+    const maxPerRun = Math.max(
+      1,
+      Math.min(
+        25,
+        Number(req.query?.maxPerRun || SETTINGS.obMaxPerRun || 12)
+      )
+    );
+
+    const radarFallback = Math.max(
+      5,
+      Math.min(
+        50,
+        Number(req.query?.radarFallback || SETTINGS.obPickRadarFallback || 25)
+      )
+    );
+
     const latest = await kv.get(keyLatest(mode));
-    const candidates = pickCandidatesFromLatest(latest);
+    const candidates = pickCandidatesFromLatest(latest, maxPerRun, radarFallback);
 
     let totalTried = 0;
     let totalProcessed = 0;
@@ -284,8 +275,8 @@ export default async function handler(req, res) {
       ok: true,
       mode,
       ts: Date.now(),
-      maxPerRun: MAX_PER_RUN,
-      radarFallback: RADAR_FALLBACK,
+      maxPerRun,
+      radarFallback,
       candidates,
       totalTried,
       totalProcessed,
