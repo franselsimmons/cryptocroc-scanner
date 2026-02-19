@@ -10,7 +10,7 @@ export const MOON = {
   CG_START_PAGE: 5,
   CG_PAGES: 1,
 
-  RADAR_LIMIT: 140, // iets ruimer voor doorloop
+  RADAR_LIMIT: 180, // verhoogd van 140 voor meer doorstroom
 
   // BTC gate
   btcChgGate: 0.6,
@@ -18,81 +18,74 @@ export const MOON = {
   btcRangeMaxBull: 10,
   btcRangeMaxBear: 12,
 
-  // Universe caps
+  // Universe caps (iets ruimer voor analyse)
   mcapMin: 5_000_000,
-  mcapMax: 180_000_000, // iets ruimer
+  mcapMax: 250_000_000, // verhoogd van 180M
 
-  // ✅ PROACTIEF radar
+  // ✅ RADAR – versoepeld voor analyse
   radar: {
-    volMin: 180_000, // iets soepeler
-    vmMin: 0.11, // iets soepeler
-    range24Min: 1.8,
-    range24Max: 14.0, // iets ruimer
+    volMin: 150_000,          // omlaag van 180k
+    vmMin: 0.09,              // omlaag van 0.11
+    range24Min: 1.5,          // omlaag van 1.8
+    range24Max: 16.0,         // omhoog van 14.0
 
-    // bull/bear “rustig genoeg”
-    bullChg24Min: -7,
-    bullChg24Max: +7,
-    bearChg24Min: -7,
-    bearChg24Max: +7,
+    bullChg24Min: -10,        // ruimer
+    bullChg24Max: +10,
+    bearChg24Min: -10,
+    bearChg24Max: +10,
   },
 
-  // ✅ BUILDUP (TRAINING MODE: iets meer doorloop)
+  // ✅ BUILDUP – soepeler voor training
   buildup: {
-    volAccMin: 1.02, // was 1.04
-    vmMin: 0.15, // was 0.17
-    range24Min: 2.8, // was 3.2
-    chgAbsMin: 0.5, // was 0.7
-    chgAbsMax: 15.0, // was 13.0
+    volAccMin: 1.01,          // omlaag van 1.02
+    vmMin: 0.12,              // omlaag van 0.15
+    range24Min: 2.5,          // omlaag van 2.8
+    chgAbsMin: 0.3,           // omlaag van 0.5
+    chgAbsMax: 18.0,          // omhoog van 15.0
   },
 
-  // ✅ ALMOST (TRAINING MODE: soepeler zodat analyze zinvol wordt)
+  // ✅ ALMOST – ruimer voor analyse
   almost: {
-    volAccMin: 1.04, // was 1.08
-    vmMin: 0.20, // was 0.23
-    range24Min: 4.0, // was 5.0
-    range24Max: 20.0, // was 18.0
-    minConfidence: 40, // was 45
-    consistencyMin: 0.55, // was 0.60
-    priceFlatMax: 4.0, // was 3.2
+    volAccMin: 1.02,          // omlaag van 1.04
+    vmMin: 0.16,              // omlaag van 0.20
+    range24Min: 3.0,          // omlaag van 4.0
+    range24Max: 22.0,         // omhoog van 20.0
+    minConfidence: 35,        // omlaag van 40
+    consistencyMin: 0.50,     // omlaag van 0.55
+    priceFlatMax: 5.0,        // omhoog van 4.0
   },
 
-  // ✅ ELITE = instap (TRAINING MODE: iets minder “onmogelijk”)
+  // ✅ ELITE – instapdrempels verlaagd voor meer entries
   elite: {
-    minConfidence: 55, // was 60
-    consistencyMin: 0.65, // was 0.70
+    minConfidence: 50,                // omlaag van 55
+    consistencyMin: 0.60,             // omlaag van 0.65
 
-    obScoreMin: 0.02, // was 0.03
-    spreadMaxPct: 1.10, // blijft
-    largestOrderRatioMax: 0.75, // was 0.65
+    obScoreMin: 0.015,                // omlaag van 0.02
+    spreadMaxPct: 1.20,               // omhoog van 1.10
+    largestOrderRatioMax: 0.80,       // omhoog van 0.75
 
-    samplesNeed: 2, // blijft
-    samplesWindowSec: 180, // blijft
-    minAgree: 1, // blijft
+    samplesNeed: 2,
+    samplesWindowSec: 180,
+    minAgree: 1,
 
-    // OB rolling slope checks (sampler)
     obSlopeEnabled: true,
     obSlopeMinBull: 0.0,
     obSlopeMaxBear: 0.0,
 
-    // Depth floor (iets soepeler zodat depth niet alles sloopt)
     depthFloorEnabled: true,
-    depthK: 20, // blijft
-    depthMinUsd: 20_000, // was 30_000
-    depthMaxUsd: 500_000, // blijft
+    depthK: 20,
+    depthMinUsd: 15_000,              // omlaag van 20k
+    depthMaxUsd: 500_000,
 
-    // “niet te laat”
-    range24Max: 20.0, // blijft
+    range24Max: 22.0,                 // omhoog van 20.0
 
-    // ✅ Rolling (15m) requirements — TRAINING MODE
+    // ✅ Rolling eisen versoepeld
     roll: {
-      maxDeltaPrice15mPct: 6.0, // was 4.8
-      // deltaVol15m is vaak klein → 0.02 is al prima, maar training mag lager
-      minDeltaVol15m: 0.01, // training: was 0.02 in jouw versie, nu iets realistischer maar niet streng
+      maxDeltaPrice15mPct: 7.0,       // omhoog van 6.0
+      minDeltaVol15m: 0.005,           // omlaag van 0.01
       needCompression: false,
-      // obSlope in output is ~0.0–0.5 → training: niet blokkeren
-      minObSlope: 0.0, // was 0.05
-      // obStability zit vaak 0.2–0.7 → training: veel ruimer
-      maxObStability: 1.20, // was 1.00
+      minObSlope: 0.0,
+      maxObStability: 1.40,            // omhoog van 1.20
     },
   },
 
