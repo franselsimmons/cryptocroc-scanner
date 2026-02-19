@@ -144,9 +144,13 @@ export default async function handler(req, res) {
     const now = Date.now();
 
     const btc = await fetchBTCGateCached();
-    const wanted = mode === "bull" ? "BULL" : "BEAR";
-    const btcBlocked = btc.state !== wanted;
 
+    // We willen in testfase: NEUTRAL mag meedoen.
+    // Alleen blokkeren als BTC echt de andere kant op is.
+    const wanted = mode === "bull" ? "BULL" : "BEAR";
+    const btcBlocked =
+      (mode === "bull" && btc.state === "BEAR") ||
+      (mode === "bear" && btc.state === "BULL");
     const symbolsSet = await getBitgetSpotUsdtSymbols();
     const all = await fetchCoinGeckoTopCached();
     const rawCoins = all.filter((c) => symbolsSet.has(c.symbol));
