@@ -1,13 +1,41 @@
 // /api/analyze-main.js
 import { kv } from "@vercel/kv";
-import { RUNTIME_CONFIG, requireSecret, keyLatest } from "./_core.js";
-import { readEvents, readTrades } from "./_analytics.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs" };
 
-// ---- local diag key helpers (zodat het nooit crasht door ontbrekende exports)
-const keyDiagList = (mode) => `diag:list:${mode}`;
-const keyDiagSnap = (mode) => `diag:snap:${mode}`;
+// ===== Secret check (zelfde idee als requireSecret) =====
+// Zet in Vercel env: CC_TOKEN = jouw token (cc_...)
+// (Als je al een andere naam gebruikt, zet CC_TOKEN er óók bij, dat is het makkelijkst.)
+function requireSecret(req, res) {
+  const got = String(req.query?.token || req.headers?.["x-token"] || "");
+  const want =
+    String(process.env.CC_TOKEN || process.env.SECRET_TOKEN || process.env.ADMIN_TOKEN || "");
+
+  if (!want) {
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ ok: false, error: "Server missing CC_TOKEN env var" }));
+    return false;
+  }
+  if (!got || got !== want) {
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
+    return false;
+  }
+  return true;
+}
+
+// ===== Keys (matcht wat 99% scanners doen) =====
+const keyLatest = (mode) => `latest:${String(mode || "bull")}`;
+const keyDiagList = (mode) => `diag:list:${String(mode || "bull")}`;
+const keyDiagSnap = (mode) => `diag:snap:${String(mode || "bull")}`;
+const keyTrades = (funnel) => `trades:${String(funnel || "main")}`;
+const keyEvents = (funnel) => `events:${String(funnel || "main")}`;
+
+function safeArr(x) {
+  return Array.isArray(x) ? x : [];
+}
 
 function fmtDateMin(ms) {
   const d = new Date(Number(ms || 0));
@@ -21,12 +49,7 @@ function fmtDateMin(ms) {
   });
 }
 
-function safeArr(x) {
-  return Array.isArray(x) ? x : [];
-}
-
 async function readLatestDiag(mode) {
-  // Prefer list (newest at index 0 because lpush)
   try {
     if (typeof kv.lrange === "function") {
       const raw = await kv.lrange(keyDiagList(mode), 0, 0);
@@ -35,13 +58,38 @@ async function readLatestDiag(mode) {
       return typeof one === "string" ? JSON.parse(one) : one;
     }
   } catch {}
-  // Fallback snapshot
   try {
     const snap = await kv.get(keyDiagSnap(mode));
     return snap || null;
   } catch {
     return null;
   }
+}
+
+async function readTrades(funnel) {
+  try {
+    return safeArr(await kv.get(keyTrades(funnel)));
+  } catch {
+    return [];
+  }
+}
+
+async function readEvents(funnel, max = 2000) {
+  try {
+    if (typeof kv.lrange === "function") {
+      const raw = await kv.lrange(keyEvents(funnel), 0, Math.min(max, 40000) - 1);
+      return safeArr(raw)
+        .map((x) => {
+          try {
+            return typeof x === "string" ? JSON.parse(x) : x;
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+    }
+  } catch {}
+  return [];
 }
 
 function top2(mapObj) {
@@ -53,7 +101,7 @@ function top2(mapObj) {
 function suggestFromDiag(diag, modeLabel) {
   if (!diag) {
     return [
-      `Geen diagnose gevonden voor ${modeLabel}. Run eerst /api/scan?mode=... zodat diag wordt opgeslagen.`,
+      `Geen diagnose gevonden voor ${modeLabel}. Draai eerst /api/scan?mode=... zodat diag wordt opgeslagen.`,
     ];
   }
 
@@ -66,41 +114,51 @@ function suggestFromDiag(diag, modeLabel) {
   const sug = [];
 
   if ((counts.radar || 0) < 10) {
-    sug.push(`Weinig coins in RADAR (${counts.radar || 0}). Maak RADAR iets ruimer (vmMinRadar of volMinRadar omlaag).`);
+    sug.push(
+      `Weinig coins in RADAR (${counts.radar || 0}). Maak RADAR ruimer (vmMinRadar of volMinRadar omlaag).`
+    );
   }
 
   if ((counts.radar || 0) > 80 && (counts.buildup || 0) < 5) {
-    sug.push(`Veel RADAR maar bijna geen BUILDUP. Maak BUILDUP iets ruimer (buildup.vmMin / buildup.volMin omlaag).`);
+    sug.push(
+      `Veel RADAR maar bijna geen BUILDUP. Maak BUILDUP ruimer (buildup.vmMin / buildup.volMin omlaag).`
+    );
   }
 
   if ((counts.buildup || 0) > 20 && (counts.almost || 0) === 0) {
-    sug.push(`Wel BUILDUP maar geen ALMOST. Maak ALMOST iets ruimer (priceFlatMax iets hoger of volMin/vmMin omlaag).`);
+    sug.push(
+      `Wel BUILDUP maar geen ALMOST. Maak ALMOST ruimer (priceFlatMax iets hoger of volMin/vmMin omlaag).`
+    );
   }
 
   const te = top2(entryGate);
   if (te.length) {
     const [a, b] = te;
-    sug.push(`Top ENTRY blokkade: "${a[0]}" (${a[1]}x)` + (b ? `, daarna "${b[0]}" (${b[1]}x).` : "."));
+    sug.push(
+      `Top ENTRY blokkade: "${a[0]}" (${a[1]}x)` + (b ? `, daarna "${b[0]}" (${b[1]}x).` : ".")
+    );
   }
 
   const to = top2(obReason);
   if (to.length) {
     const [a, b] = to;
-    sug.push(`Top orderbook-reden: "${a[0]}" (${a[1]}x)` + (b ? `, daarna "${b[0]}" (${b[1]}x).` : "."));
-    sug.push(`Als "Not enough samples" vaak voorkomt: maak samplesWindowSec groter (netter dan samplesNeed verlagen).`);
+    sug.push(
+      `Top orderbook-reden: "${a[0]}" (${a[1]}x)` + (b ? `, daarna "${b[0]}" (${b[1]}x).` : ".")
+    );
+    sug.push(`Als "Not enough samples" vaak voorkomt: maak samplesWindowSec groter.`);
   }
 
   const afterUni = uni.afterSymbols || uni.afterBitget || 0;
   const afterRadar = uni.afterRadar || 0;
   if (afterUni > 0 && afterRadar / afterUni < 0.25) {
-    sug.push(`Veel coins vallen af bij RADAR. Dat betekent: RADAR filters zijn streng t.o.v. jouw universe.`);
+    sug.push(`Veel coins vallen af bij RADAR. RADAR filters zijn streng t.o.v. jouw universe.`);
   }
 
   if (String(diag?.btc?.state || "").toUpperCase() === "NEUTRAL") {
-    sug.push(`BTC is NEUTRAL. Wil je minder ruis? Dan kun je NEUTRAL blokkeren (hard gate) voor ${modeLabel}.`);
+    sug.push(`BTC is NEUTRAL. Wil je minder ruis? Dan kun je NEUTRAL blokkeren voor ${modeLabel}.`);
   }
 
-  if (!sug.length) sug.push(`Ziet er gezond uit. Eerst meer scans draaien, daarna pas thresholds tweaken.`);
+  if (!sug.length) sug.push(`Ziet er gezond uit. Eerst meer scans draaien, daarna pas tweaken.`);
   return sug;
 }
 
