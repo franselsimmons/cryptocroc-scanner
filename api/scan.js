@@ -33,6 +33,8 @@ import {
   passEntryFromObPlus,
   allocPctRecommended,
   passRadar,
+  passBuildup,
+  passAlmost,
 } from "./_core.js";
 
 import { uid, pushEvent, readTrades, writeTrades } from "./_analytics.js";
@@ -145,12 +147,13 @@ export default async function handler(req, res) {
 
     const btc = await fetchBTCGateCached();
 
-    // We willen in testfase: NEUTRAL mag meedoen.
+    // ✅ Testfase: NEUTRAL mag meedoen.
     // Alleen blokkeren als BTC echt de andere kant op is.
     const wanted = mode === "bull" ? "BULL" : "BEAR";
     const btcBlocked =
       (mode === "bull" && btc.state === "BEAR") ||
       (mode === "bear" && btc.state === "BULL");
+
     const symbolsSet = await getBitgetSpotUsdtSymbols();
     const all = await fetchCoinGeckoTopCached();
     const rawCoins = all.filter((c) => symbolsSet.has(c.symbol));
@@ -189,6 +192,9 @@ export default async function handler(req, res) {
           minDepthBear: SETTINGS.entry.minDepthUsd1pBear,
           minConfidence: SETTINGS.entry.minConfidence,
           entryConsistencyMin: SETTINGS.entry.entryConsistencyMin,
+          allowValidatingForAlmost: !!SETTINGS.entry.allowValidatingForAlmost,
+          minConfidenceAlmost: SETTINGS.entry.minConfidenceAlmost,
+          minConsistencyAlmost: SETTINGS.entry.minConsistencyAlmost,
         },
       },
       universe: {
@@ -198,10 +204,10 @@ export default async function handler(req, res) {
       },
       counts: { radar: 0, buildup: 0, almost: 0, entry: 0 },
       reasons: {
-        radarOut: {},      // fail radar
-        desiredWhy: {},    // desired stage + entryGate reasons
-        entryGate: {},     // entryGate.why
-        obReason: {},      // obView.reason
+        radarOut: {},
+        desiredWhy: {},
+        entryGate: {},
+        obReason: {},
       },
       samples: {
         radarOut: [],
@@ -235,7 +241,7 @@ export default async function handler(req, res) {
 
       const { patched: c, nextMetrics } = applySpikeGuard(prev.metricsHist, raw);
 
-      // RADAR always
+      // RADAR
       if (!passRadar(c, btc.range24)) {
         inc(diag.reasons.radarOut, "radar_fail");
         if (diag.samples.radarOut.length < 12) {
@@ -299,6 +305,7 @@ export default async function handler(req, res) {
         btc,
       });
 
+      // ✅ STRICT: alleen voor ENTRY
       const entryGate = passEntryFromObPlus({
         obView,
         mode,
@@ -307,12 +314,35 @@ export default async function handler(req, res) {
         obSlope,
       });
       inc(diag.reasons.entryGate, entryGate.why);
+      const strictEntryOk = entryGate.ok;
 
-      const entryOk = entryGate.ok;
-
-      const desired = btcBlocked
+      // ✅ Baseline desired (zoals altijd)
+      let desired = btcBlocked
         ? "RADAR"
-        : nextDesiredStage(c, mode, priceHist, cons.ok, btc.range24, entryOk);
+        : nextDesiredStage(c, mode, priceHist, cons.ok, btc.range24, strictEntryOk);
+
+      // ✅ SOFT DOORSTROOM: als coin eigenlijk ALMOST/BUIDLUP waard is,
+      // maar OB nog "validating" is: laat hem wél door naar ALMOST/BUILDUP.
+      if (!btcBlocked && !strictEntryOk) {
+        const minConfAlmost = Number(SETTINGS.entry.minConfidenceAlmost ?? 35);
+        const minConsAlmost = Number(SETTINGS.entry.minConsistencyAlmost ?? 0.45);
+        const allowValidating = !!SETTINGS.entry.allowValidatingForAlmost;
+
+        const obIsValidating =
+          !obView || obView.valid !== true || String(obView.reason || "").includes("Not enough");
+
+        const softOk =
+          allowValidating &&
+          obIsValidating &&
+          conf >= minConfAlmost &&
+          cons.ratio >= minConsAlmost;
+
+        if (softOk) {
+          if (passAlmost(c, mode, priceHist, cons.ok)) desired = "ALMOST";
+          else if (passBuildup(c, mode, cons.ok)) desired = "BUILDUP";
+          else desired = "RADAR";
+        }
+      }
 
       inc(diag.reasons.desiredWhy, `${desired} | ${entryGate.why}`);
 
