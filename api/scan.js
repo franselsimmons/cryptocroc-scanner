@@ -27,6 +27,7 @@ import {
   webhookForStage,
   sendDiscord,
   fmtCoinLine,
+  fmtTs,
   computeConfidence,
   computeAtrPctFromPriceHist,
   computeSLTP,
@@ -443,7 +444,7 @@ export default async function handler(req, res) {
               )}% (${atrSrc})`;
           }
 
-          const msg = fmtCoinLine(c, mode, stage, extra);
+          const msg = fmtCoinLine(c, mode, stage, extra, now);
           await sendDiscord(hook, msg);
         }
       }
