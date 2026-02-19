@@ -102,7 +102,7 @@ function computeRollingMetrics(snaps) {
   const obStability = Math.sqrt(variance);
 
   const move1 = s1.price > 0 ? Math.abs((s2.price - s1.price) / s1.price) : 0;
-  const move2 = s2.price > 0 ? Math.abs((s3.price - s2.price) / s3.price) : 0;
+  const move2 = s2.price > 0 ? Math.abs((s3.price - s2.price) / s2.price) : 0;
   const atrEst = (move1 + move2) / 2;
 
   return { deltaPrice15m, deltaVol15m, compression, obSlope, obStability, atrEst };
@@ -412,9 +412,7 @@ export default async function handler(req, res) {
     diag.universe.cgTotal = cg.length;
 
     // 3) Candidates
-    const radarRaw = cg
-      .filter((c) => bitgetSet.has(String(c.symbol || "").toUpperCase()));
-
+    const radarRaw = cg.filter((c) => bitgetSet.has(String(c.symbol || "").toUpperCase()));
     diag.universe.afterBitget = radarRaw.length;
 
     const radarFiltered = radarRaw
@@ -429,6 +427,7 @@ export default async function handler(req, res) {
       if (!liveSyms.has(sym)) delete state[sym];
     }
 
+    // ✅ EXCLUSIVE lists
     const radar = [];
     const buildup = [];
     const almost = [];
@@ -530,7 +529,6 @@ export default async function handler(req, res) {
         rolling.obStability <= rollCfg.maxObStability;
 
       if (!eliteExtra) {
-        // heel handig voor analyse: welke sub-check faalt het meest?
         if (rolling.deltaPrice15m > rollCfg.maxDeltaPrice15mPct) inc(diag.reasons.eliteExtraFail, "ΔP15m too high");
         else if (rolling.deltaVol15m < rollCfg.minDeltaVol15m) inc(diag.reasons.eliteExtraFail, "ΔV15m too low");
         else if (rollCfg.needCompression && !rolling.compression) inc(diag.reasons.eliteExtraFail, "No compression");
@@ -539,10 +537,11 @@ export default async function handler(req, res) {
         else inc(diag.reasons.eliteExtraFail, "Unknown");
       }
 
+      // ✅ EXCLUSIVE stage keuze (ELITE > ALMOST > BUILDUP > RADAR)
       let stage = "RADAR";
-      if (buildupGate.ok) stage = "BUILDUP";
-      if (almostGate.ok) stage = "ALMOST";
       if (eliteGate.ok && eliteExtra) stage = "ELITE";
+      else if (almostGate.ok) stage = "ALMOST";
+      else if (buildupGate.ok) stage = "BUILDUP";
 
       const prevStage = String(prev.stage || "RADAR");
       const stageChanged = prevStage !== stage;
@@ -726,10 +725,11 @@ export default async function handler(req, res) {
         stage,
       };
 
-      radar.push(item);
-      if (stage === "BUILDUP") buildup.push(item);
-      if (stage === "ALMOST") almost.push(item);
+      // ✅ EXCLUSIVE push: coin gaat naar precies 1 lijst
       if (stage === "ELITE") elite.push(item);
+      else if (stage === "ALMOST") almost.push(item);
+      else if (stage === "BUILDUP") buildup.push(item);
+      else radar.push(item);
     }
 
     const sortKey = (a, b) =>
