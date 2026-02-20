@@ -1,6 +1,6 @@
 // /api/analyze-main.js
 import { kv } from "@vercel/kv";
-import { SETTINGS } from "./_core.js";
+import { SETTINGS, getCfg } from "./_core.js";
 
 export const config = { runtime: "nodejs" };
 
@@ -173,10 +173,11 @@ function summarizeTrades(trades) {
 }
 
 function buildCopyPayload({ mode, latestSummary, tradeSum }) {
-  const entry = SETTINGS?.entry || {};
-  const buildup = SETTINGS?.buildup || {};
-  const almost = SETTINGS?.almost || {};
-  const sizing = SETTINGS?.sizing || {};
+  const CFG = getCfg(mode);
+  const entry = CFG?.entry || {};
+  const buildup = CFG?.buildup || {};
+  const almost = CFG?.almost || {};
+  const sizing = CFG?.sizing || {};
   return {
     funnel: "main",
     mode,
@@ -192,20 +193,20 @@ function buildCopyPayload({ mode, latestSummary, tradeSum }) {
       outcomesTop: tradeSum?.outcomesTop || [],
     },
     filters: {
-      universe: { CG_TOP: SETTINGS.CG_TOP, RADAR_LIMIT: SETTINGS.RADAR_LIMIT },
+      universe: { CG_TOP: CFG.CG_TOP, RADAR_LIMIT: CFG.RADAR_LIMIT },
       radar: {
-        mcapMin: SETTINGS.mcapMin,
-        mcapMax: SETTINGS.mcapMax,
-        volMinRadar: SETTINGS.volMinRadar,
-        vmMinRadar: SETTINGS.vmMinRadar,
-        maxAbsChg24: SETTINGS.maxAbsChg24,
-        maxRange24: SETTINGS.maxRange24,
+        mcapMin: CFG.mcapMin,
+        mcapMax: CFG.mcapMax,
+        volMinRadar: CFG.volMinRadar,
+        vmMinRadar: CFG.vmMinRadar,
+        maxAbsChg24: CFG.maxAbsChg24,
+        maxRange24: CFG.maxRange24,
       },
       btcGate: {
-        btcChgGate: SETTINGS.btcChgGate,
-        btcRangeMin: SETTINGS.btcRangeMin,
-        btcRangeMaxBull: SETTINGS.btcRangeMaxBull,
-        btcRangeMaxBear: SETTINGS.btcRangeMaxBear,
+        btcChgGate: CFG.btcChgGate,
+        btcRangeMin: CFG.btcRangeMin,
+        btcRangeMaxBull: CFG.btcRangeMaxBull,
+        btcRangeMaxBear: CFG.btcRangeMaxBear,
       },
       buildup,
       almost,
@@ -247,7 +248,7 @@ function renderCopyBlock(id, payload) {
 }
 
 // ===== NIEUW: recommendMainChanges & buildCopyBlockMain =====
-function recommendMainChanges(derived) {
+function recommendMainChanges(derived, cfg) {
   const gates = derived?.topGate || [];
   const ob = derived?.topObReason || [];
   const topGate = String(gates[0]?.key || "");
@@ -257,7 +258,7 @@ function recommendMainChanges(derived) {
 
   // voorbeeld: als validating / not enough samples dominant zijn, stel samplesWindowSec voor
   if (topGate.toLowerCase().includes("validating") || topOb.toLowerCase().includes("not enough samples")) {
-    changes["SETTINGS.entry.samplesWindowSec"] = `${SETTINGS.entry.samplesWindowSec} -> 900`;
+    changes["SETTINGS.entry.samplesWindowSec"] = `${cfg.entry.samplesWindowSec} -> 900`;
     // eventueel ook samplesNeed verlagen:
     // changes["SETTINGS.entry.samplesNeed"] = `${SETTINGS.entry.samplesNeed} -> 1`;
   }
@@ -266,6 +267,7 @@ function recommendMainChanges(derived) {
 }
 
 function buildCopyBlockMain({ mode, latest, derived, tradeSum }) {
+  const CFG = getCfg(mode);
   return {
     funnel: "main",
     mode,
@@ -279,25 +281,25 @@ function buildCopyBlockMain({ mode, latest, derived, tradeSum }) {
 
     // ✅ HUIDIGE instellingen (de waarheid)
     filtersNow: {
-      universe: { CG_TOP: SETTINGS.CG_TOP, RADAR_LIMIT: SETTINGS.RADAR_LIMIT },
+      universe: { CG_TOP: CFG.CG_TOP, RADAR_LIMIT: CFG.RADAR_LIMIT },
       radar: {
-        mcapMin: SETTINGS.mcapMin,
-        mcapMax: SETTINGS.mcapMax,
-        volMinRadar: SETTINGS.volMinRadar,
-        vmMinRadar: SETTINGS.vmMinRadar,
-        maxAbsChg24: SETTINGS.maxAbsChg24,
-        maxRange24: SETTINGS.maxRange24,
+        mcapMin: CFG.mcapMin,
+        mcapMax: CFG.mcapMax,
+        volMinRadar: CFG.volMinRadar,
+        vmMinRadar: CFG.vmMinRadar,
+        maxAbsChg24: CFG.maxAbsChg24,
+        maxRange24: CFG.maxRange24,
       },
       btcGate: {
-        btcChgGate: SETTINGS.btcChgGate,
-        btcRangeMin: SETTINGS.btcRangeMin,
-        btcRangeMaxBull: SETTINGS.btcRangeMaxBull,
-        btcRangeMaxBear: SETTINGS.btcRangeMaxBear,
+        btcChgGate: CFG.btcChgGate,
+        btcRangeMin: CFG.btcRangeMin,
+        btcRangeMaxBull: CFG.btcRangeMaxBull,
+        btcRangeMaxBear: CFG.btcRangeMaxBear,
       },
-      buildup: SETTINGS.buildup,
-      almost: SETTINGS.almost,
-      ob: SETTINGS.entry,
-      risk: SETTINGS.risk,
+      buildup: CFG.buildup,
+      almost: CFG.almost,
+      ob: CFG.entry,
+      risk: CFG.risk,
       riskWhere: {
         file: "/api/_core.js",
         sltpFunc: "computeSLTP",
@@ -306,7 +308,7 @@ function buildCopyBlockMain({ mode, latest, derived, tradeSum }) {
     },
 
     // ✅ Analyzer advies
-    recommendedChanges: recommendMainChanges(derived),
+    recommendedChanges: recommendMainChanges(derived, CFG),
   };
 }
 
