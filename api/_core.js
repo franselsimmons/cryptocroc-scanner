@@ -46,7 +46,7 @@ export const SETTINGS = {
     largestOrderRatioMax: 0.70,
 
     samplesNeed: 2,
-    samplesWindowSec: 3000, // 1 uur window
+    samplesWindowSec: 3600, // 1 uur window
     minAgree: 1,
 
     minDepthUsd1pBull: 30_000,
