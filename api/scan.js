@@ -2,6 +2,7 @@ import { kv } from "@vercel/kv";
 import {
   RUNTIME_CONFIG,
   SETTINGS,
+  getCfg,
   requireSecret,
   keyLatest,
   keyState,
@@ -141,6 +142,7 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull or bear" }));
     }
 
+    const CFG = getCfg(mode);
     const now = Date.now();
 
     const btc = await fetchBTCGateCached();
@@ -169,27 +171,27 @@ export default async function handler(req, res) {
       btcBlocked,
       settings: {
         radar: {
-          mcapMin: SETTINGS.mcapMin,
-          mcapMax: SETTINGS.mcapMax,
-          volMinRadar: SETTINGS.volMinRadar,
-          vmMinRadar: SETTINGS.vmMinRadar,
-          maxAbsChg24: SETTINGS.maxAbsChg24,
-          maxRange24: SETTINGS.maxRange24,
+          mcapMin: CFG.mcapMin,
+          mcapMax: CFG.mcapMax,
+          volMinRadar: CFG.volMinRadar,
+          vmMinRadar: CFG.vmMinRadar,
+          maxAbsChg24: CFG.maxAbsChg24,
+          maxRange24: CFG.maxRange24,
         },
         entry: {
-          obScoreMin: SETTINGS.entry.obScoreMin,
-          spreadMaxPct: SETTINGS.entry.spreadMaxPct,
-          largestOrderRatioMax: SETTINGS.entry.largestOrderRatioMax,
-          samplesNeed: SETTINGS.entry.samplesNeed,
-          samplesWindowSec: SETTINGS.entry.samplesWindowSec,
-          minAgree: SETTINGS.entry.minAgree,
-          minDepthBull: SETTINGS.entry.minDepthUsd1pBull,
-          minDepthBear: SETTINGS.entry.minDepthUsd1pBear,
-          minConfidence: SETTINGS.entry.minConfidence,
-          entryConsistencyMin: SETTINGS.entry.entryConsistencyMin,
-          allowValidatingForAlmost: !!SETTINGS.entry.allowValidatingForAlmost,
-          minConfidenceAlmost: SETTINGS.entry.minConfidenceAlmost,
-          minConsistencyAlmost: SETTINGS.entry.minConsistencyAlmost,
+          obScoreMin: CFG.entry.obScoreMin,
+          spreadMaxPct: CFG.entry.spreadMaxPct,
+          largestOrderRatioMax: CFG.entry.largestOrderRatioMax,
+          samplesNeed: CFG.entry.samplesNeed,
+          samplesWindowSec: CFG.entry.samplesWindowSec,
+          minAgree: CFG.entry.minAgree,
+          minDepthBull: CFG.entry.minDepthUsd1pBull,
+          minDepthBear: CFG.entry.minDepthUsd1pBear,
+          minConfidence: CFG.entry.minConfidence,
+          entryConsistencyMin: CFG.entry.entryConsistencyMin,
+          allowValidatingForAlmost: !!CFG.entry.allowValidatingForAlmost,
+          minConfidenceAlmost: CFG.entry.minConfidenceAlmost,
+          minConsistencyAlmost: CFG.entry.minConsistencyAlmost,
         },
       },
       universe: {
@@ -318,9 +320,9 @@ export default async function handler(req, res) {
       // ✅ SOFT DOORSTROOM: als coin eigenlijk ALMOST/BUIDLUP waard is,
       // maar OB nog "validating" is: laat hem wél door naar ALMOST/BUILDUP.
       if (!btcBlocked && !strictEntryOk) {
-        const minConfAlmost = Number(SETTINGS.entry.minConfidenceAlmost ?? 35);
-        const minConsAlmost = Number(SETTINGS.entry.minConsistencyAlmost ?? 0.45);
-        const allowValidating = !!SETTINGS.entry.allowValidatingForAlmost;
+        const minConfAlmost = Number(CFG.entry.minConfidenceAlmost ?? 35);
+        const minConsAlmost = Number(CFG.entry.minConsistencyAlmost ?? 0.45);
+        const allowValidating = !!CFG.entry.allowValidatingForAlmost;
 
         const obIsValidating =
           !obView || obView.valid !== true || String(obView.reason || "").includes("Not enough");
@@ -363,7 +365,7 @@ export default async function handler(req, res) {
         let nextStage = stage;
 
         if (desiredRank > prevRank) {
-          if (stageScans >= SETTINGS.minScansPerStage) {
+          if (stageScans >= CFG.minScansPerStage) {
             if (desiredRank === prevRank + 1) nextStage = desired;
             else nextStage = prevRank === 1 ? "BUILDUP" : prevRank === 2 ? "ALMOST" : "ENTRY";
           }
@@ -550,7 +552,7 @@ export default async function handler(req, res) {
     buildup.sort(sortKey);
     radar.sort((a, b) => b.vm - a.vm);
 
-    const radarLimited = radar.slice(0, SETTINGS.RADAR_LIMIT);
+    const radarLimited = radar.slice(0, CFG.RADAR_LIMIT);
 
     diag.counts = {
       entry: entry.length,
