@@ -40,6 +40,61 @@ function extractMetaFromItem(item) {
   };
 }
 
+// ----- NIEUWE FUNCTIE updatePerf VOOR MFE/MAE/GIVEBACK -----
+function updatePerf(trade, price, now) {
+  const p = Number(price || 0);
+  if (!(p > 0)) return trade;
+
+  trade.lastPrice = p;
+  trade.lastPriceTs = now;
+
+  // bereken pnl%
+  const pnl = (() => {
+    if (trade.mode === "bear") {
+      return ((trade.entryPrice - p) / trade.entryPrice) * 100;
+    } else {
+      return ((p - trade.entryPrice) / trade.entryPrice) * 100;
+    }
+  })();
+  trade.pnlPct = Number(pnl.toFixed(4));
+
+  // update MFE/MAE
+  trade.mfePct = Math.max(Number(trade.mfePct || 0), trade.pnlPct);
+  trade.maePct = Math.min(Number(trade.maePct || 0), trade.pnlPct);
+
+  // giveback
+  if (trade.mfePct > 0) {
+    const giveback = trade.mfePct - trade.pnlPct;
+    trade.maxGivebackPct = Math.max(Number(trade.maxGivebackPct || 0), Number(giveback.toFixed(4)));
+
+    // giveback trail
+    const trig = Number(trade.givebackTrailTriggerPct || 0);
+    if (trade.givebackTrailEnabled && trig > 0 && giveback >= trig && trade.pnlPct > 0 && trade.sl !== undefined && trade.sl !== null) {
+      const be = Number(trade.entryPrice || 0);
+
+      if (trade.mode === "bull") {
+        // SL omhoog naar entry (nooit lager maken)
+        if (trade.sl < be) {
+          trade.sl = be;
+          trade.trailingActive = true;
+          trade.trailingStop = be;
+          trade.trailingActivatedAt = now;
+        }
+      } else {
+        // short: SL omlaag naar entry (nooit hoger maken)
+        if (trade.sl > be) {
+          trade.sl = be;
+          trade.trailingActive = true;
+          trade.trailingStop = be;
+          trade.trailingActivatedAt = now;
+        }
+      }
+    }
+  }
+
+  return trade;
+}
+
 function updatePeaks(trade, curPrice) {
   const p = Number(curPrice || 0);
   if (!(p > 0)) return trade;
@@ -81,8 +136,9 @@ export default async function handler(req, res) {
 
         const k = tradeKey({ funnel, mode, symbol });
         if (state.openByKey[k]) {
-          // update live stats (peak/trough)
+          // update live stats (peak/trough + perf)
           state.openByKey[k] = updatePeaks(state.openByKey[k], item?.price);
+          state.openByKey[k] = updatePerf(state.openByKey[k], item?.price, now);
           state.openByKey[k].liveMeta = extractMetaFromItem(item);
           continue;
         }
@@ -104,6 +160,23 @@ export default async function handler(req, res) {
           peakPrice: Number(entryPrice.toFixed(8)),
           troughPrice: Number(entryPrice.toFixed(8)),
 
+          // nieuwe velden voor MFE/MAE/giveback/fees
+          sl: null,
+          tp: null,
+          mfePct: 0,
+          maePct: 0,
+          maxGivebackPct: 0,
+          givebackTrailEnabled: true,
+          givebackTrailTriggerPct: 6,
+          trailingActive: false,
+          trailingStop: null,
+          feeModel: "estimate",
+          feePctPerSide: 0.10,
+          feesPaidPct: null,
+          netPnlPct: null,
+          desiredExitPrice: null,
+          slippagePct: null,
+
           entryMeta: extractMetaFromItem(item),
           liveMeta: extractMetaFromItem(item),
 
@@ -116,6 +189,9 @@ export default async function handler(req, res) {
         };
 
         state.openByKey[k] = trade;
+
+        // initiële perf update (met entry prijs)
+        state.openByKey[k] = updatePerf(state.openByKey[k], entryPrice, now);
 
         // Discord OPEN
         await sendDiscordPortfolio(discordOpenMsg(trade));
@@ -139,26 +215,38 @@ export default async function handler(req, res) {
 
         if (stillTop) {
           // live update
-          if (curItem?.price) state.openByKey[k] = updatePeaks(t, curItem.price);
+          if (curItem?.price) {
+            state.openByKey[k] = updatePeaks(t, curItem.price);
+            state.openByKey[k] = updatePerf(state.openByKey[k], curItem.price, now);
+          }
           state.openByKey[k].liveMeta = extractMetaFromItem(curItem || {});
           continue;
         }
 
         // CLOSE
         const exitPrice = Number(curItem?.price || t.lastPrice || t.entryPrice || 0);
-        const pnl = pct(t.entryPrice, exitPrice);
+        // update perf met exitPrice
+        const updatedTrade = updatePerf(t, exitPrice, now);
+        state.openByKey[k] = updatedTrade; // overschrijven
 
         const exitMeta = extractMetaFromItem(curItem || {});
         const reason = curItem
           ? `left ${funnel === "moon" ? "ELITE" : "ENTRY"} → now ${String(curItem.stage || "lower stage")}`
           : `left ${funnel === "moon" ? "ELITE" : "ENTRY"} (no current data)`;
 
+        // bereken fees en netPnl
+        const feePctPerSide = updatedTrade.feePctPerSide || 0.10;
+        const feesPaidPct = feePctPerSide * 2;
+        const netPnlPct = updatedTrade.pnlPct - feesPaidPct;
+
         const closed = {
-          ...t,
+          ...updatedTrade,
           status: "CLOSED",
           tsClose: now,
           exitPrice: Number(exitPrice.toFixed(8)),
-          pnlPct: Number(pnl.toFixed(4)),
+          pnlPct: Number(updatedTrade.pnlPct.toFixed(4)),
+          feesPaidPct: Number(feesPaidPct.toFixed(4)),
+          netPnlPct: Number(netPnlPct.toFixed(4)),
           exitReason: reason,
           exitMeta,
         };
