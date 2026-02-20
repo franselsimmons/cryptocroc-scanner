@@ -648,3 +648,101 @@ function short(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
   return n.toFixed(0);
 }
+
+// ================== SPIKE GUARD ==================
+// Doel: rare “uitschieters” (foute data of extreme spikes) dempen,
+// zodat je filters niet kapot gaan door 1 slechte datapunt.
+//
+// Gebruik in scan.js:
+// const { patched: c, nextMetrics } = applySpikeGuard(prev.metricsHist, raw);
+
+export function applySpikeGuard(prevMetricsHist, rawCoin) {
+  const prev = prevMetricsHist && typeof prevMetricsHist === "object"
+    ? prevMetricsHist
+    : { vol: [], range: [], vm: [], chg: [] };
+
+  // vorige arrays (max 12 bewaren)
+  const volHist = Array.isArray(prev.vol) ? prev.vol.slice(-12) : [];
+  const rngHist = Array.isArray(prev.range) ? prev.range.slice(-12) : [];
+  const vmHist  = Array.isArray(prev.vm) ? prev.vm.slice(-12) : [];
+  const chgHist = Array.isArray(prev.chg) ? prev.chg.slice(-12) : [];
+
+  // huidige waarden
+  const vol = Number(rawCoin?.volume || 0);
+  const rng = Number(rawCoin?.range24 || 0);
+  const vm  = Number(rawCoin?.vm || 0);
+  const chg = Number(rawCoin?.change24 || 0);
+
+  // helpers
+  const median = (arr) => {
+    const a = (arr || []).map((x) => Number(x)).filter((x) => Number.isFinite(x));
+    if (!a.length) return null;
+    a.sort((x, y) => x - y);
+    const m = Math.floor(a.length / 2);
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  };
+
+  // “normaal” niveau op basis van geschiedenis
+  const mVol = median(volHist);
+  const mRng = median(rngHist);
+  const mVm  = median(vmHist);
+  const mChg = median(chgHist);
+
+  // Regels (bewust simpel + veilig):
+  // - als iets extreem afwijkt van median → clamp naar median
+  // - alleen als we genoeg historie hebben (min 6 samples)
+  const haveHist = volHist.length >= 6;
+
+  const clampToMedianIfCrazy = (val, med, factorUp, factorDown) => {
+    if (!haveHist) return val;
+    if (!Number.isFinite(val) || val <= 0) return val;
+    if (!Number.isFinite(med) || med <= 0) return val;
+
+    // te hoog?
+    if (val > med * factorUp) return med * factorUp;
+    // te laag? (alleen relevant bij volume / vm)
+    if (val < med * factorDown) return med * factorDown;
+
+    return val;
+  };
+
+  // volume: soms CG glitch of dunne spikes → dempen
+  const volPatched = clampToMedianIfCrazy(vol, mVol, 8.0, 0.20);
+
+  // range24: 1 rare candle kan range absurd maken → dempen
+  const rngPatched = haveHist && Number.isFinite(mRng) && mRng > 0
+    ? Math.min(rng, Math.max(SETTINGS.maxRange24, mRng * 2.5))
+    : rng;
+
+  // vm: hangt samen met volume, ook dempen
+  const vmPatched = clampToMedianIfCrazy(vm, mVm, 8.0, 0.20);
+
+  // change24: kan soms “flippen” door data issues → dempen
+  const chgPatched = haveHist && Number.isFinite(mChg)
+    ? clamp(chg, mChg - 35, mChg + 35)
+    : chg;
+
+  // nieuwe hist opslaan
+  volHist.push(volPatched);
+  rngHist.push(rngPatched);
+  vmHist.push(vmPatched);
+  chgHist.push(chgPatched);
+
+  const nextMetrics = {
+    vol: volHist.slice(-12),
+    range: rngHist.slice(-12),
+    vm: vmHist.slice(-12),
+    chg: chgHist.slice(-12),
+  };
+
+  // patched coin teruggeven (zelfde shape als normalizeCG output)
+  const patched = {
+    ...rawCoin,
+    volume: volPatched,
+    range24: rngPatched,
+    vm: vmPatched,
+    change24: chgPatched,
+  };
+
+  return { patched, nextMetrics };
+}
