@@ -322,6 +322,74 @@ function renderCopyChangesBlock(id, sug) {
   `;
 }
 
+// ===== buildCopyBlockMoon =====
+function buildCopyBlockMoon({ mode, summary, suggestions, trades }) {
+  const top = (arr, k = 5) => (Array.isArray(arr) ? arr.slice(0, k) : []);
+  const blocks = suggestions?.topBlocks || {};
+
+  return {
+    funnel: "moon",
+    mode,
+    ts: Date.now(),
+    avgPerScan: summary?.avg || null,
+    topBlocks: {
+      eliteWhy: top(blocks.eliteWhy, 6),
+      eliteExtraFail: top(blocks.eliteExtraFail, 6),
+      obReason: top(blocks.obReason, 6),
+      radarOut: top(blocks.radarOut, 6),
+    },
+    trades: {
+      counts: trades?.counts || null,
+      outcomesTop: trades?.outcomesTop || [],
+    },
+
+    // huidige settings (uit MOON)
+    filtersNow: {
+      universe: {
+        CG_PER_PAGE: MOON.CG_PER_PAGE,
+        CG_START_PAGE: MOON.CG_START_PAGE,
+        CG_PAGES: MOON.CG_PAGES,
+        RADAR_LIMIT: MOON.RADAR_LIMIT,
+      },
+      btcGate: {
+        btcChgGate: MOON.btcChgGate,
+        btcRangeMin: MOON.btcRangeMin,
+        btcRangeMaxBull: MOON.btcRangeMaxBull,
+        btcRangeMaxBear: MOON.btcRangeMaxBear,
+      },
+      caps: {
+        mcapMin: MOON.mcapMin,
+        mcapMax: MOON.mcapMax,
+      },
+      radar: MOON.radar,
+      buildup: MOON.buildup,
+      almost: MOON.almost,
+      elite: {
+        minConfidence: MOON.elite.minConfidence,
+        consistencyMin: MOON.elite.consistencyMin,
+        obScoreMin: MOON.elite.obScoreMin,
+        spreadMaxPct: MOON.elite.spreadMaxPct,
+        largestOrderRatioMax: MOON.elite.largestOrderRatioMax,
+        samplesNeed: MOON.elite.samplesNeed,
+        samplesWindowSec: MOON.elite.samplesWindowSec,
+        minAgree: MOON.elite.minAgree,
+        obSlopeEnabled: MOON.elite.obSlopeEnabled,
+        obSlopeMinBull: MOON.elite.obSlopeMinBull,
+        obSlopeMaxBear: MOON.elite.obSlopeMaxBear,
+        depthFloorEnabled: MOON.elite.depthFloorEnabled,
+        depthK: MOON.elite.depthK,
+        depthMinUsd: MOON.elite.depthMinUsd,
+        depthMaxUsd: MOON.elite.depthMaxUsd,
+        range24Max: MOON.elite.range24Max,
+        roll: MOON.elite.roll,
+      },
+    },
+
+    // aanbevolen changes (rechtstreeks uit filterSuggestions)
+    recommendedChanges: suggestions?.changes || {},
+  };
+}
+
 function htmlPage(data) {
   const { long, short } = data;
 
@@ -357,6 +425,16 @@ function htmlPage(data) {
       null,
       2
     );
+
+    // Nieuw copy-blok met alle filters + top blokkades + recommended changes
+    const copyBlock = buildCopyBlockMoon({ mode, summary: s, suggestions: sug, trades: tradeSum });
+    const copyHtml = `
+      <div class="box" style="margin-top:12px;grid-column:1/-1">
+        <h3>📋 Copy/paste (MOON) — filters + blokkades + advies</h3>
+        <div class="muted">Kopieer dit en plak het hier in de chat, dan kan ik exact zeggen wat je moet veranderen.</div>
+        <textarea style="width:100%;height:260px;margin-top:8px;background:#0a1b2b;color:#e6edf3;border:1px solid #15334e;border-radius:10px;padding:10px;font-family:ui-monospace,Menlo,monospace;font-size:12px;">${escapeHtml(JSON.stringify(copyBlock, null, 2))}</textarea>
+      </div>
+    `;
 
     return `
       <div class="card">
@@ -440,6 +518,7 @@ function htmlPage(data) {
 
         ${renderCopyChangesBlock(`copy_changes_${mode}`, sug)}
         ${renderCopyBlock(copyId, copyPayload)}
+        ${copyHtml}  <!-- nieuw uitgebreid copy-blok -->
       </div>
     `;
   };
