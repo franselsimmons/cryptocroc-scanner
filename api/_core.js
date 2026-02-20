@@ -746,3 +746,32 @@ export function applySpikeGuard(prevMetricsHist, rawCoin) {
 
   return { patched, nextMetrics };
 }
+
+// ================== MODE OVERRIDES ==================
+// Alleen invullen wat anders moet per mode.
+SETTINGS.modes = {
+  bull: {
+    entry: {
+      samplesWindowSec: 3600,
+    },
+  },
+  bear: {
+    entry: {
+      samplesWindowSec: 900, // BEAR: 15 min window (sneller "valid")
+    },
+  },
+};
+
+// ================== MODE MERGE HELPER ==================
+export function getCfg(mode) {
+  const m = String(mode || "bull").toLowerCase();
+  const o = SETTINGS.modes?.[m] || {};
+
+  return {
+    ...SETTINGS,
+    buildup: { ...SETTINGS.buildup, ...(o.buildup || {}) },
+    almost: { ...SETTINGS.almost, ...(o.almost || {}) },
+    entry: { ...SETTINGS.entry, ...(o.entry || {}) },
+    risk: { ...SETTINGS.risk, ...(o.risk || {}) },
+  };
+}
