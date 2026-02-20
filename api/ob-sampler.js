@@ -1,16 +1,6 @@
 // /api/ob-sampler.js
 import { kv } from "@vercel/kv";
-import {
-  RUNTIME_CONFIG,
-  requireSecret,
-  SETTINGS,
-  keyLatest,
-  keyObSamples,
-  keyObResult,
-  keyObQueue,
-  keyObCursor,
-  keyObQueueTs,
-} from "./_core.js";
+import { RUNTIME_CONFIG } from "./_core_bull.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -120,9 +110,9 @@ function computeObSample(depth) {
   return { ts: Date.now(), score, spreadPct, lor, bidUsd, askUsd, mid, depthMinUsd1p };
 }
 
-function pruneSamples(samples) {
+function pruneSamples(samples, SETTINGS) {
   const now = Date.now();
-  const winMs = Number(SETTINGS.entry.samplesWindowSec || 3600) * 1000;
+  const winMs = Number(SETTINGS?.entry?.samplesWindowSec || 3600) * 1000;
 
   const arr = Array.isArray(samples) ? samples : [];
   return arr
@@ -142,11 +132,11 @@ function pruneSamples(samples) {
     .slice(-60); // PRO: meer geschiedenis bewaren
 }
 
-function validateSamples(mode, samplesFresh) {
-  const fresh = pruneSamples(samplesFresh);
+function validateSamples(mode, samplesFresh, SETTINGS) {
+  const fresh = pruneSamples(samplesFresh, SETTINGS);
 
-  const need = Number(SETTINGS.entry.samplesNeed || 3);
-  const minAgree = Number(SETTINGS.entry.minAgree || 2);
+  const need = Number(SETTINGS?.entry?.samplesNeed || 3);
+  const minAgree = Number(SETTINGS?.entry?.minAgree || 2);
 
   if (fresh.length < need) {
     return { valid: false, reason: "Not enough samples", fresh };
@@ -184,7 +174,17 @@ function uniqueUpper(list) {
  * 2) Sticky: coins met weinig samples eerst (0,1,2) totdat ze valid kunnen worden
  * 3) Rotatie: cursor over de rest zodat je door je radar heen “loopt”
  */
-async function pickCandidatesSmart(mode, latest, maxPerRun = 12, radarFallback = 25) {
+async function pickCandidatesSmart(
+  mode,
+  latest,
+  maxPerRun,
+  radarFallback,
+  SETTINGS,
+  keyObSamples,
+  keyObQueue,
+  keyObCursor,
+  keyObQueueTs
+) {
   const almost = (latest?.funnel?.almost || []).slice(0, SETTINGS.obPickAlmost);
   const buildup = (latest?.funnel?.buildup || []).slice(0, SETTINGS.obPickBuildup);
   let picked = [...almost, ...buildup];
@@ -195,12 +195,12 @@ async function pickCandidatesSmart(mode, latest, maxPerRun = 12, radarFallback =
   if (!pool.length) return [];
 
   // 1) Sticky low-sample first
-  const need = Number(SETTINGS.entry.samplesNeed || 3);
+  const need = Number(SETTINGS?.entry?.samplesNeed || 3);
   const sampleCounts = [];
 
   for (const sym of pool) {
     const s = await kv.get(keyObSamples(mode, sym));
-    const pruned = pruneSamples(s);
+    const pruned = pruneSamples(s, SETTINGS);
     sampleCounts.push({ sym, n: pruned.length });
   }
 
@@ -250,7 +250,7 @@ async function pickCandidatesSmart(mode, latest, maxPerRun = 12, radarFallback =
   return out;
 }
 
-async function processCandidate(mode, symbol) {
+async function processCandidate(mode, symbol, SETTINGS, keyObSamples, keyObResult) {
   const live = await fetchBitgetOrderbookRaw(symbol, 100);
   if (!live.ok) {
     return { ok: false, symbol, ...live };
@@ -265,10 +265,10 @@ async function processCandidate(mode, symbol) {
   const prev = (await kv.get(kS)) || [];
   const merged = Array.isArray(prev) ? prev.concat([sample]) : [sample];
 
-  const pruned = pruneSamples(merged);
+  const pruned = pruneSamples(merged, SETTINGS);
   await kv.set(kS, pruned);
 
-  const v = validateSamples(mode, pruned);
+  const v = validateSamples(mode, pruned, SETTINGS);
 
   const result = {
     symbol,
@@ -303,8 +303,6 @@ async function processCandidate(mode, symbol) {
 
 export default async function handler(req, res) {
   try {
-    if (!requireSecret(req, res)) return;
-
     const mode = String(req.query?.mode || "bull").toLowerCase();
     if (mode !== "bull" && mode !== "bear") {
       res.statusCode = 400;
@@ -312,12 +310,36 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
+    const core = await import(`./_core_${mode}.js`);
+    const {
+      requireSecret,
+      SETTINGS,
+      keyLatest,
+      keyObSamples,
+      keyObResult,
+      keyObQueue,
+      keyObCursor,
+      keyObQueueTs,
+    } = core;
+
+    if (!requireSecret(req, res)) return;
+
     // /api/ob-sampler?mode=bear&max=30&radar=40&token=...
     const maxPerRun = Math.max(1, Math.min(80, Number(req.query?.max || 12) || 12));
     const radarFallback = Math.max(5, Math.min(120, Number(req.query?.radar || 25) || 25));
 
     const latest = await kv.get(keyLatest(mode));
-    const candidates = await pickCandidatesSmart(mode, latest, maxPerRun, radarFallback);
+    const candidates = await pickCandidatesSmart(
+      mode,
+      latest,
+      maxPerRun,
+      radarFallback,
+      SETTINGS,
+      keyObSamples,
+      keyObQueue,
+      keyObCursor,
+      keyObQueueTs
+    );
 
     let totalTried = 0;
     let totalProcessed = 0;
@@ -328,7 +350,7 @@ export default async function handler(req, res) {
 
     for (const sym of candidates) {
       totalTried++;
-      const r = await processCandidate(mode, sym);
+      const r = await processCandidate(mode, sym, SETTINGS, keyObSamples, keyObResult);
       if (r.ok) {
         totalProcessed++;
         if (r.valid) totalValid++;
