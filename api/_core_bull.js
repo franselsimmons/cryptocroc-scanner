@@ -101,6 +101,27 @@ export const SETTINGS = {
   },
 };
 
+// ================== SYMBOL BLACKLIST ==================
+const SYMBOL_BLACKLIST = new Set([
+  "USDT","USDC","DAI","TUSD","FDUSD","USDE","FRAX","LUSD","PYUSD",
+  "WBTC","WETH"
+]);
+
+// ================== UNIVERSUM FILTER (ALLEEN BLACKLIST + SANITY) ==================
+export function isAllowedUniverseCoin(c) {
+  const sym = String(c?.symbol || "").toUpperCase();
+  if (!sym) return false;
+  if (SYMBOL_BLACKLIST.has(sym)) return false;
+
+  // basis sanity (prijs, marketcap, volume moeten positief zijn)
+  if (!(Number(c.price) > 0)) return false;
+  if (!(Number(c.marketCap) > 0)) return false;
+  if (!(Number(c.volume) > 0)) return false;
+
+  // NIET meer RADAR checks – die doen we in passRadar
+  return true;
+}
+
 // ================== AUTH ==================
 export function requireSecret(req, res) {
   const cronHeader = String(req.headers?.["x-vercel-cron"] || "").toLowerCase();
