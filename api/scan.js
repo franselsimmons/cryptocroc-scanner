@@ -15,12 +15,10 @@ import {
   fetchBTCGateCached,
   getBitgetSpotUsdtSymbols,
   fetchBitgetAtr1hPctCached,
-  applySpikeGuard,
   updateSideHistory,
   calcConsistency,
   updatePriceHist,
   calcChange1hPct,
-  calcObSlope,
   nextDesiredStage,
   stageRank,
   webhookForStage,
@@ -236,7 +234,9 @@ export default async function handler(req, res) {
         prev.volHist = [];
       }
 
-      const { patched: c, nextMetrics } = applySpikeGuard(prev.metricsHist, raw);
+      // Vervangen: geen spike guard, gewoon de ruwe data gebruiken
+      const c = raw;
+      const nextMetrics = prev.metricsHist;
 
       // RADAR
       if (!passRadar(c, btc.range24)) {
@@ -288,11 +288,8 @@ export default async function handler(req, res) {
 
       if (obView?.reason) inc(diag.reasons.obReason, obView.reason);
 
+      // obSlope niet meer berekend
       let obSlope = null;
-      if (SETTINGS.entry.obSlopeEnabled) {
-        const samples = await kv.get(keyObSamples(mode, sym));
-        obSlope = calcObSlope(samples);
-      }
 
       const conf = computeConfidence({
         obScore: obView?.score ?? 0,
