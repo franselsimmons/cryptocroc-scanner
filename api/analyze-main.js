@@ -1,8 +1,26 @@
 // /api/analyze-main.js
 import { kv } from "@vercel/kv";
-import { SETTINGS, getCfg } from "./_core.js";
+import { RUNTIME_CONFIG } from "./_core_bull.js";
 
-export const config = { runtime: "nodejs" };
+export const config = RUNTIME_CONFIG;
+
+// ✅ cores cache (1x laden, daarna hergebruiken)
+let __bull = null;
+let __bear = null;
+
+async function loadCores() {
+  if (!__bull) __bull = await import("./_core_bull.js");
+  if (!__bear) __bear = await import("./_core_bear.js");
+  return { bull: __bull, bear: __bear };
+}
+
+// ✅ getCfg zoals vroeger: geeft config-object terug (liefst core.getCfg, anders core.SETTINGS)
+function getCfg(mode) {
+  const m = String(mode || "bull").toLowerCase();
+  const core = m === "bear" ? __bear : __bull;
+  if (!core) return null; // handler laadt eerst loadCores()
+  return typeof core.getCfg === "function" ? core.getCfg(m) : core.SETTINGS;
+}
 
 // ======================================================
 // SECRET CHECK
@@ -301,7 +319,7 @@ function buildCopyBlockMain({ mode, latest, derived, tradeSum }) {
       ob: CFG.entry,
       risk: CFG.risk,
       riskWhere: {
-        file: "/api/_core.js",
+        file: "/api/_core_bull.js + /api/_core_bear.js",
         sltpFunc: "computeSLTP",
         atrFunc: "computeAtrPctFromPriceHist",
       },
@@ -494,6 +512,10 @@ export default async function handler(req, res) {
 
     const format = String(req.query?.format || "html").toLowerCase();
 
+    // ✅ cores laden met cache
+    const { bull, bear } = await loadCores();
+    const SETTINGS = { bull: bull.SETTINGS, bear: bear.SETTINGS };
+
     const longLatest = await kv.get(keyLatest("bull"));
     const shortLatest = await kv.get(keyLatest("bear"));
 
@@ -511,7 +533,7 @@ export default async function handler(req, res) {
         ok: true,
         ts: Date.now(),
         view: "analyze-main",
-        settings: SETTINGS,
+        settings: SETTINGS, // nu { bull: ..., bear: ... }
         latest: { bull: longLatest, bear: shortLatest },
         derived: { bull: longSum, bear: shortSum, trades: tradeSum },
         eventsCount: safeArr(events).length,
