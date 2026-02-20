@@ -246,7 +246,7 @@ function renderCopyBlock(id, payload) {
   `;
 }
 
-// ===== NIEUW: buildCopyBlockMain & recommendMainChanges =====
+// ===== NIEUW: recommendMainChanges & buildCopyBlockMain =====
 function recommendMainChanges(derived) {
   const gates = derived?.topGate || [];
   const ob = derived?.topObReason || [];
@@ -265,7 +265,7 @@ function recommendMainChanges(derived) {
   return changes;
 }
 
-function buildCopyBlockMain({ mode, latest, derived, tradesSummary }) {
+function buildCopyBlockMain({ mode, latest, derived, tradeSum }) {
   return {
     funnel: "main",
     mode,
@@ -275,9 +275,9 @@ function buildCopyBlockMain({ mode, latest, derived, tradesSummary }) {
     topEntryGates: derived?.topGate || [],
     topObReasons: derived?.topObReason || [],
     topObStatus: derived?.topObStatus || [],
-    trades: tradesSummary || null,
+    trades: tradeSum || null,
 
-    // huidige settings (uit SETTINGS)
+    // ✅ HUIDIGE instellingen (de waarheid)
     filtersNow: {
       universe: { CG_TOP: SETTINGS.CG_TOP, RADAR_LIMIT: SETTINGS.RADAR_LIMIT },
       radar: {
@@ -297,9 +297,15 @@ function buildCopyBlockMain({ mode, latest, derived, tradesSummary }) {
       buildup: SETTINGS.buildup,
       almost: SETTINGS.almost,
       ob: SETTINGS.entry,
+      risk: SETTINGS.risk,
+      riskWhere: {
+        file: "/api/_core.js",
+        sltpFunc: "computeSLTP",
+        atrFunc: "computeAtrPctFromPriceHist",
+      },
     },
 
-    // aanbevolen changes (op basis van top gate/ob)
+    // ✅ Analyzer advies
     recommendedChanges: recommendMainChanges(derived),
   };
 }
@@ -326,7 +332,7 @@ function htmlPage({ longLatest, shortLatest, trades, events }) {
     const payload = buildCopyPayload({ mode, latestSummary: sum, tradeSum });
 
     // Nieuw copy-blok voor MAIN
-    const copyBlock = buildCopyBlockMain({ mode, latest: latestRaw, derived: sum, tradesSummary: tradeSum });
+    const copyBlock = buildCopyBlockMain({ mode, latest: latestRaw, derived: sum, tradeSum });
     const copyHtml = `
       <div class="box" style="margin-top:12px;grid-column:1/-1">
         <h3>📋 Copy/paste (MAIN) — filters + top blokkades + advies</h3>
