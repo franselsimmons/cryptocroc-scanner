@@ -1,9 +1,9 @@
 // /api/scan.js
 import { kv } from "@vercel/kv";
-import { RUNTIME_CONFIG } from "./_core_bull.js"; // alleen voor export config (zelfde in bull/bear)
-import { uid, pushEvent, readTrades, writeTrades } from "./_analytics.js";
+import { config } from "./_runtime.js";
+import { uid, pushEvent } from "./_analytics.js";
 
-export const config = RUNTIME_CONFIG;
+export { config };
 
 // Helper voor atomische NX-set (betrouwbaar in Vercel KV)
 async function setNx(key, value, exSec) {
@@ -19,9 +19,9 @@ async function setNx(key, value, exSec) {
   return true;
 }
 
-function coinSideFromMode(mode, change24) {
-  if (mode === "bull") return change24 >= 0 ? "BULL" : "BEAR";
-  return change24 <= 0 ? "BEAR" : "BULL";
+// Simpelere kantbepaling op basis van change24
+function sideFromChange(change24) {
+  return Number(change24) >= 0 ? "BULL" : "BEAR";
 }
 
 function inc(map, k) {
@@ -105,6 +105,8 @@ export default async function handler(req, res) {
       passRadar,
       passBuildup,
       passAlmost,
+
+      isAllowedUniverseCoin,
     } = core;
 
     if (!requireSecret(req, res)) return;
@@ -133,7 +135,7 @@ export default async function handler(req, res) {
       } catch {}
     }
 
-    // ----- NIEUWE VERSIE: trade openen in KV (i.p.v. array) -----
+    // ----- trade openen in KV -----
     async function openTradeKV({ funnel, mode, c, sltp, conf, obView, sizing, entryMetaExtra = {}, btc, atrPct }) {
       const symbol = String(c.symbol || "").toUpperCase();
       const idxKey = openIndexKey({ funnel, mode, symbol });
@@ -246,7 +248,10 @@ export default async function handler(req, res) {
 
     const symbolsSet = await getBitgetSpotUsdtSymbols();
     const all = await fetchCoinGeckoTopCached();
-    const rawCoins = all.filter((c) => symbolsSet.has(c.symbol));
+    // ✅ Universum filter (alleen blacklist + sanity)
+    const rawCoins = all
+      .filter((c) => symbolsSet.has(c.symbol))
+      .filter(isAllowedUniverseCoin);
 
     const resetAt = (await kv.get(keyReset(mode))) || 0;
     const state = (await kv.get(keyState(mode))) || {};
@@ -315,37 +320,50 @@ export default async function handler(req, res) {
       const volHist = Array.isArray(prev.volHist) ? prev.volHist.slice(-5) : [];
       volHist.push(c.volume);
 
+      // ✅ VolAcc met baseline (voorkomt extreme uitschieters)
       const sum = (a) => a.reduce((x, y) => x + (Number(y) || 0), 0);
       const last3 = volHist.slice(-3);
       const prev3 = volHist.slice(-6, -3);
-      const volAcc = prev3.length ? sum(last3) / Math.max(1, sum(prev3)) : 1.0;
+      const last3Sum = sum(last3);
+      const prev3Sum = sum(prev3);
+      const VOL_BASELINE = 150_000; // aanpasbaar
+      const volAcc = (prev3Sum >= VOL_BASELINE) ? (last3Sum / prev3Sum) : 1.0;
 
       const wantedSide = mode === "bull" ? "BULL" : "BEAR";
-      const sideNow = coinSideFromMode(mode, c.change24);
+      // ✅ Gebruik sideFromChange
+      const sideNow = sideFromChange(c.change24);
       const sideHist = updateSideHistory(prev.sideHist, sideNow);
       const cons = calcConsistency(sideHist, wantedSide);
 
-      const ob = await kv.get(keyObResult(mode, sym));
-      const obView = ob
-        ? {
-            valid: !!ob.valid,
-            stale: !!ob.stale,
-            score: Number(ob?.ob?.score ?? ob?.avgScore ?? 0),
-            spreadPct: Number(ob?.ob?.spreadPct ?? 999),
-            lor: Number(ob?.ob?.lor ?? 1),
-            agree: Number(ob?.agree ?? 0),
-            depthMinUsd1p: Number(ob?.ob?.depthMinUsd1p ?? 0),
-            reason: ob?.reason || "",
-          }
-        : null;
+      // ✅ Orderbook alleen ophalen als coin bijna interessant is
+      let obView = null;
+      let obSlope = null;
+
+      // Eerst bepalen of coin "bijna interessant" is zonder OB
+      const basicAlmostOk = passAlmost(c, mode, priceHist, cons.ok);
+
+      if (basicAlmostOk || prev.stage === "ALMOST" || prev.stage === "ENTRY") {
+        const ob = await kv.get(keyObResult(mode, sym));
+        obView = ob
+          ? {
+              valid: !!ob.valid,
+              stale: !!ob.stale,
+              score: Number(ob?.ob?.score ?? ob?.avgScore ?? 0),
+              spreadPct: Number(ob?.ob?.spreadPct ?? 999),
+              lor: Number(ob?.ob?.lor ?? 1),
+              agree: Number(ob?.agree ?? 0),
+              depthMinUsd1p: Number(ob?.ob?.depthMinUsd1p ?? 0),
+              reason: ob?.reason || "",
+            }
+          : null;
+
+        if (SETTINGS.entry.obSlopeEnabled) {
+          const samples = await kv.get(keyObSamples(mode, sym));
+          obSlope = calcObSlope(samples);
+        }
+      }
 
       if (obView?.reason) inc(diag.reasons.obReason, obView.reason);
-
-      let obSlope = null;
-      if (SETTINGS.entry.obSlopeEnabled) {
-        const samples = await kv.get(keyObSamples(mode, sym));
-        obSlope = calcObSlope(samples);
-      }
 
       const conf = computeConfidence({
         obScore: obView?.score ?? 0,
@@ -355,14 +373,18 @@ export default async function handler(req, res) {
         btc,
       });
 
-      const entryGate = passEntryFromObPlus({
-        obView,
-        mode,
-        consistencyRatio: cons.ratio,
-        confidence: conf,
-        obSlope,
-      });
-      inc(diag.reasons.entryGate, entryGate.why);
+      // ✅ Alleen entryGate berekenen als OB bekeken is
+      let entryGate = { ok: false, why: "OB skipped" };
+      if (obView) {
+        entryGate = passEntryFromObPlus({
+          obView,
+          mode,
+          consistencyRatio: cons.ratio,
+          confidence: conf,
+          obSlope,
+        });
+        inc(diag.reasons.entryGate, entryGate.why);
+      }
       const strictEntryOk = entryGate.ok;
 
       let desired = btcBlocked
@@ -409,8 +431,12 @@ export default async function handler(req, res) {
         }
       }
 
+      // ✅ ATR alleen ophalen als coin in ALMOST/ENTRY is (of daarvoor kandidaat)
       const atrFromScan = computeAtrPctFromPriceHist(priceHist);
-      const atrObj = await fetchBitgetAtr1hPctCached(sym);
+      let atrObj = null;
+      if (basicAlmostOk || prev.stage === "ALMOST" || prev.stage === "ENTRY" || stage === "ALMOST" || stage === "ENTRY") {
+        atrObj = await fetchBitgetAtr1hPctCached(sym);
+      }
       const atrPct = atrObj?.atrPct && Number.isFinite(atrObj.atrPct) ? atrObj.atrPct : atrFromScan;
 
       // confidence meegeven
@@ -443,7 +469,7 @@ export default async function handler(req, res) {
       };
 
       if (!btcBlocked && stageChanged && stage === "ENTRY") {
-        // Gebruik de nieuwe KV-opener
+        // Gebruik de KV-opener
         const opened = await openTradeKV({
           funnel: "main",
           mode,
