@@ -752,7 +752,7 @@ export function applySpikeGuard(prevMetricsHist, rawCoin) {
 SETTINGS.modes = {
   bull: {
     entry: {
-      samplesWindowSec: 3600,
+      samplesWindowSec: 900,
     },
   },
   bear: {
