@@ -13,6 +13,12 @@ import {
 export const config = RUNTIME_CONFIG;
 
 // ===== helpers =====
+function escapeHtml(s) {
+  return String(s || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
 function normalizeMode(v) {
   const m = String(v || "all").toLowerCase();
   if (m === "long" || m === "bull") return "bull";
@@ -290,15 +296,6 @@ function fmtDateMin(ts) {
 }
 
 // ===== nieuwe helpers voor copy-blok filteraanpassingen =====
-function escapeHtml(unsafe) {
-  return unsafe
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
 function suggestedChangesText(sug) {
   const changes = sug?.changes || {};
   const keys = Object.keys(changes);
@@ -324,26 +321,24 @@ function renderCopyChangesBlock(id, sug) {
 
 // ===== buildCopyBlockMoon =====
 function buildCopyBlockMoon({ mode, summary, suggestions, trades }) {
-  const top = (arr, k = 5) => (Array.isArray(arr) ? arr.slice(0, k) : []);
   const blocks = suggestions?.topBlocks || {};
-
   return {
     funnel: "moon",
     mode,
     ts: Date.now(),
     avgPerScan: summary?.avg || null,
     topBlocks: {
-      eliteWhy: top(blocks.eliteWhy, 6),
-      eliteExtraFail: top(blocks.eliteExtraFail, 6),
-      obReason: top(blocks.obReason, 6),
-      radarOut: top(blocks.radarOut, 6),
+      eliteWhy: blocks.eliteWhy || [],
+      eliteExtraFail: blocks.eliteExtraFail || [],
+      obReason: blocks.obReason || [],
+      radarOut: blocks.radarOut || [],
     },
     trades: {
       counts: trades?.counts || null,
       outcomesTop: trades?.outcomesTop || [],
     },
 
-    // huidige settings (uit MOON)
+    // ✅ HUIDIGE instellingen (de waarheid)
     filtersNow: {
       universe: {
         CG_PER_PAGE: MOON.CG_PER_PAGE,
@@ -357,35 +352,19 @@ function buildCopyBlockMoon({ mode, summary, suggestions, trades }) {
         btcRangeMaxBull: MOON.btcRangeMaxBull,
         btcRangeMaxBear: MOON.btcRangeMaxBear,
       },
-      caps: {
-        mcapMin: MOON.mcapMin,
-        mcapMax: MOON.mcapMax,
-      },
+      caps: { mcapMin: MOON.mcapMin, mcapMax: MOON.mcapMax },
       radar: MOON.radar,
       buildup: MOON.buildup,
       almost: MOON.almost,
-      elite: {
-        minConfidence: MOON.elite.minConfidence,
-        consistencyMin: MOON.elite.consistencyMin,
-        obScoreMin: MOON.elite.obScoreMin,
-        spreadMaxPct: MOON.elite.spreadMaxPct,
-        largestOrderRatioMax: MOON.elite.largestOrderRatioMax,
-        samplesNeed: MOON.elite.samplesNeed,
-        samplesWindowSec: MOON.elite.samplesWindowSec,
-        minAgree: MOON.elite.minAgree,
-        obSlopeEnabled: MOON.elite.obSlopeEnabled,
-        obSlopeMinBull: MOON.elite.obSlopeMinBull,
-        obSlopeMaxBear: MOON.elite.obSlopeMaxBear,
-        depthFloorEnabled: MOON.elite.depthFloorEnabled,
-        depthK: MOON.elite.depthK,
-        depthMinUsd: MOON.elite.depthMinUsd,
-        depthMaxUsd: MOON.elite.depthMaxUsd,
-        range24Max: MOON.elite.range24Max,
-        roll: MOON.elite.roll,
+      elite: MOON.elite,
+      riskWhere: {
+        file: "/api/_moon_core.js",
+        sltpFunc: "computeMoonRisk",
+        hitFunc: "hitStopOrTp",
       },
     },
 
-    // aanbevolen changes (rechtstreeks uit filterSuggestions)
+    // ✅ AANBEVOLEN changes (door analyzer bedacht)
     recommendedChanges: suggestions?.changes || {},
   };
 }
