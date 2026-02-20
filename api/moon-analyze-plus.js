@@ -319,6 +319,21 @@ function renderCopyChangesBlock(id, sug) {
   `;
 }
 
+// ===== TOEGEVOEGD: renderCopyBlock voor algemeen copy-blok =====
+function renderCopyBlock(id, payload) {
+  const txt = escapeHtml(String(payload || ""));
+  return `
+    <div class="box" style="grid-column: 1 / -1">
+      <h3>Kopieer & plak — debug payload (ruw)</h3>
+      <div class="muted">Handig als je wil dat ik exact mee kijk naar je data.</div>
+      <textarea id="${id}" style="width:100%;min-height:220px;margin-top:8px;background:#071421;color:#e6edf3;border:1px solid #15334e;border-radius:10px;padding:10px;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;font-size:12px;">${txt}</textarea>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick="copyText('${id}')" style="background:#111826;color:#e6edf3;border:1px solid #1f2a3a;border-radius:10px;padding:8px 10px;cursor:pointer">Copy</button>
+      </div>
+    </div>
+  `;
+}
+
 // ===== buildCopyBlockMoon =====
 function buildCopyBlockMoon({ mode, summary, suggestions, trades }) {
   const blocks = suggestions?.topBlocks || {};
@@ -390,12 +405,25 @@ function htmlPage(data) {
       .join("") || `<div class="muted">n/a</div>`;
 
     const copyId = `copy_${mode}`;
+    // FIX: MOON.ob bestaat niet, vervangen door expliciete OB-velden uit MOON.elite
     const copyPayload = JSON.stringify(
       {
         filters: {
           elite: MOON.elite,
           eliteRoll: MOON.elite.roll,
-          ob: MOON.ob,
+          ob: {
+            obScoreMin: MOON.elite.obScoreMin,
+            spreadMaxPct: MOON.elite.spreadMaxPct,
+            largestOrderRatioMax: MOON.elite.largestOrderRatioMax,
+            samplesNeed: MOON.elite.samplesNeed,
+            samplesWindowSec: MOON.elite.samplesWindowSec,
+            minAgree: MOON.elite.minAgree,
+            depthMinUsd: MOON.elite.depthMinUsd,
+            depthMaxUsd: MOON.elite.depthMaxUsd,
+            obSlopeEnabled: MOON.elite.obSlopeEnabled,
+            obSlopeMinBull: MOON.elite.obSlopeMinBull,
+            obSlopeMaxBear: MOON.elite.obSlopeMaxBear,
+          },
         },
         summary: s,
         suggestions: sug,
@@ -523,6 +551,22 @@ function htmlPage(data) {
     code{background:#0a1b2b;border:1px solid #15334e;padding:2px 6px;border-radius:8px}
     .tune{margin-top:8px;padding:8px;border:1px solid #15334e;border-radius:10px;background:#0a1b2b}
   </style>
+  <!-- TOEGEVOEGD: copyText functie -->
+  <script>
+    function copyText(id){
+      const el = document.getElementById(id);
+      if(!el) return alert("Copy blok niet gevonden");
+      el.select();
+      el.setSelectionRange(0, 999999);
+      try {
+        document.execCommand("copy");
+        alert("Gekopieerd ✅");
+      } catch(e){
+        navigator.clipboard?.writeText(el.value || el.textContent || "");
+        alert("Gekopieerd ✅");
+      }
+    }
+  </script>
 </head>
 <body>
   <div class="wrap">
