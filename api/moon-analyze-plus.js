@@ -289,6 +289,39 @@ function fmtDateMin(ts) {
   return `${y}-${m}-${da} ${h}:${mi}`;
 }
 
+// ===== nieuwe helpers voor copy-blok filteraanpassingen =====
+function escapeHtml(unsafe) {
+  return unsafe
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function suggestedChangesText(sug) {
+  const changes = sug?.changes || {};
+  const keys = Object.keys(changes);
+  if (!keys.length) return "// Geen changes voorgesteld (ELITE zit al goed).";
+
+  // net formaat: 1 regel per wijziging
+  return keys.map((k) => `${k} = ${changes[k]}`).join("\n");
+}
+
+function renderCopyChangesBlock(id, sug) {
+  const txt = escapeHtml(suggestedChangesText(sug));
+  return `
+    <div class="box" style="grid-column: 1 / -1">
+      <h3>Kopieer & plak — aanbevolen filter aanpassingen</h3>
+      <div class="muted">Dit zijn de “suggested changes” uit de analyzer (kort en direct).</div>
+      <textarea id="${id}" style="width:100%;min-height:120px;margin-top:8px;background:#071421;color:#e6edf3;border:1px solid #15334e;border-radius:10px;padding:10px;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;font-size:12px;">${txt}</textarea>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick="copyText('${id}')" style="background:#111826;color:#e6edf3;border:1px solid #1f2a3a;border-radius:10px;padding:8px 10px;cursor:pointer">Copy</button>
+      </div>
+    </div>
+  `;
+}
+
 function htmlPage(data) {
   const { long, short } = data;
 
@@ -308,6 +341,22 @@ function htmlPage(data) {
     const tune = (tradeSum?.tuning || [])
       .map((t) => `<div class="tune"><b>${t.title}</b><div class="muted">${t.now}</div><ul>${(t.fix || []).map((x) => `<li>${x}</li>`).join("")}</ul></div>`)
       .join("") || `<div class="muted">n/a</div>`;
+
+    const copyId = `copy_${mode}`;
+    const copyPayload = JSON.stringify(
+      {
+        filters: {
+          elite: MOON.elite,
+          eliteRoll: MOON.elite.roll,
+          ob: MOON.ob,
+        },
+        summary: s,
+        suggestions: sug,
+        trades: tradeSum,
+      },
+      null,
+      2
+    );
 
     return `
       <div class="card">
@@ -388,6 +437,9 @@ function htmlPage(data) {
             </ul>
           </div>
         </div>
+
+        ${renderCopyChangesBlock(`copy_changes_${mode}`, sug)}
+        ${renderCopyBlock(copyId, copyPayload)}
       </div>
     `;
   };
