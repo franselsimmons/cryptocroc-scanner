@@ -98,12 +98,16 @@ export default async function handler(req, res) {
       } catch {}
     }
 
-    async function openMainTradeIfNeeded({ c, sltp, conf, obView, sizing }) {
+    // ----- NIEUWE VERSIE VAN openMainTradeIfNeeded MET EXTRA VELDEN -----
+    async function openMainTradeIfNeeded({ c, sltp, conf, obView, sizing, btc, atrPct }) {
       const trades = await readTrades("main");
       const exists = trades.find(
         (t) => String(t.status) === "OPEN" && String(t.symbol) === String(c.symbol) && String(t.mode) === String(mode)
       );
       if (exists) return;
+
+      // tel open trades (exclusief de nieuwe)
+      const openTradesCountAtEntry = trades.filter(t => t.status === "OPEN").length;
 
       const t = {
         id: uid("main"),
@@ -117,8 +121,32 @@ export default async function handler(req, res) {
         sl: sltp.sl,
         tp: sltp.tp,
 
+        // context
+        stageAtEntry: "ENTRY",
+        btcStateAtEntry: String(btc?.state || "NEUTRAL"),
+        btcChg24AtEntry: Number(btc?.chg24 || 0),
+        btcRange24AtEntry: Number(btc?.range24 || 0),
+        atrPctAtEntry: Number(atrPct || 0),
+
+        // portfolio overlap
+        openTradesCountAtEntry,
+
+        // fees (schatting)
+        feeModel: "estimate",
+        feePctPerSide: 0.10,
+        feesPaidPctAssumed: 0.20, // 2 * feePctPerSide
+
+        // giveback trail
+        givebackTrailEnabled: true,
+        givebackTrailTriggerPct: 6,
+        trailingActive: false,
+        trailingStop: null,
+
         lastPrice: c.price,
         pnlPct: 0,
+        mfePct: 0,
+        maePct: 0,
+        maxGivebackPct: 0,
 
         snap: {
           vm: c.vm,
@@ -127,8 +155,6 @@ export default async function handler(req, res) {
           depthMinUsd1p: obView?.depthMinUsd1p ?? 0,
         },
 
-        mfePct: 0,
-        maePct: 0,
         postBestPct: null,
         postWorstPct: null,
 
@@ -149,6 +175,8 @@ export default async function handler(req, res) {
         tp: sltp.tp,
         confidence: conf,
         vm: c.vm,
+        btcState: t.btcStateAtEntry,
+        atrPct: t.atrPctAtEntry,
       });
     }
 
@@ -357,7 +385,8 @@ export default async function handler(req, res) {
       };
 
       if (!btcBlocked && stageChanged && stage === "ENTRY") {
-        await openMainTradeIfNeeded({ c, sltp, conf, obView, sizing });
+        // AANGEPASTE AANROEP: btc en atrPct toegevoegd
+        await openMainTradeIfNeeded({ c, sltp, conf, obView, sizing, btc, atrPct });
         await bestEffortLogEntry({
           ts: now,
           symbol: sym,
