@@ -246,6 +246,64 @@ function renderCopyBlock(id, payload) {
   `;
 }
 
+// ===== NIEUW: buildCopyBlockMain & recommendMainChanges =====
+function recommendMainChanges(derived) {
+  const gates = derived?.topGate || [];
+  const ob = derived?.topObReason || [];
+  const topGate = String(gates[0]?.key || "");
+  const topOb = String(ob[0]?.key || "");
+
+  const changes = {};
+
+  // voorbeeld: als validating / not enough samples dominant zijn, stel samplesWindowSec voor
+  if (topGate.toLowerCase().includes("validating") || topOb.toLowerCase().includes("not enough samples")) {
+    changes["SETTINGS.entry.samplesWindowSec"] = `${SETTINGS.entry.samplesWindowSec} -> 900`;
+    // eventueel ook samplesNeed verlagen:
+    // changes["SETTINGS.entry.samplesNeed"] = `${SETTINGS.entry.samplesNeed} -> 1`;
+  }
+
+  return changes;
+}
+
+function buildCopyBlockMain({ mode, latest, derived, tradesSummary }) {
+  return {
+    funnel: "main",
+    mode,
+    ts: Date.now(),
+    btc: latest?.btc || null,
+    stageCounts: derived?.stageMap || null,
+    topEntryGates: derived?.topGate || [],
+    topObReasons: derived?.topObReason || [],
+    topObStatus: derived?.topObStatus || [],
+    trades: tradesSummary || null,
+
+    // huidige settings (uit SETTINGS)
+    filtersNow: {
+      universe: { CG_TOP: SETTINGS.CG_TOP, RADAR_LIMIT: SETTINGS.RADAR_LIMIT },
+      radar: {
+        mcapMin: SETTINGS.mcapMin,
+        mcapMax: SETTINGS.mcapMax,
+        volMinRadar: SETTINGS.volMinRadar,
+        vmMinRadar: SETTINGS.vmMinRadar,
+        maxAbsChg24: SETTINGS.maxAbsChg24,
+        maxRange24: SETTINGS.maxRange24,
+      },
+      btcGate: {
+        btcChgGate: SETTINGS.btcChgGate,
+        btcRangeMin: SETTINGS.btcRangeMin,
+        btcRangeMaxBull: SETTINGS.btcRangeMaxBull,
+        btcRangeMaxBear: SETTINGS.btcRangeMaxBear,
+      },
+      buildup: SETTINGS.buildup,
+      almost: SETTINGS.almost,
+      ob: SETTINGS.entry,
+    },
+
+    // aanbevolen changes (op basis van top gate/ob)
+    recommendedChanges: recommendMainChanges(derived),
+  };
+}
+
 function htmlPage({ longLatest, shortLatest, trades, events }) {
   const longSum = summarizeLatest(longLatest || {});
   const shortSum = summarizeLatest(shortLatest || {});
@@ -263,9 +321,19 @@ function htmlPage({ longLatest, shortLatest, trades, events }) {
   const list = (arr) =>
     (arr || []).map((x) => `<li><b>${x.key}</b> — ${x.count}</li>`).join("") || "<li>n/a</li>";
 
-  const card = (title, sum, mode) => {
+  const card = (title, sum, mode, latestRaw) => {
     const copyId = `copy_main_${mode}`;
     const payload = buildCopyPayload({ mode, latestSummary: sum, tradeSum });
+
+    // Nieuw copy-blok voor MAIN
+    const copyBlock = buildCopyBlockMain({ mode, latest: latestRaw, derived: sum, tradesSummary: tradeSum });
+    const copyHtml = `
+      <div class="box" style="margin-top:12px;grid-column:1/-1">
+        <h3>📋 Copy/paste (MAIN) — filters + top blokkades + advies</h3>
+        <div class="muted">Kopieer dit en plak het hier in de chat, dan kan ik exact zeggen wat je moet veranderen.</div>
+        <textarea style="width:100%;height:260px;margin-top:8px;background:#0a1b2b;color:#e6edf3;border:1px solid #15334e;border-radius:10px;padding:10px;font-family:ui-monospace,Menlo,monospace;font-size:12px;">${escapeHtml(JSON.stringify(copyBlock, null, 2))}</textarea>
+      </div>
+    `;
 
     return `
       <div class="card">
@@ -356,6 +424,7 @@ function htmlPage({ longLatest, shortLatest, trades, events }) {
           </div>
         </div>
 
+        ${copyHtml} <!-- nieuw uitgebreid copy-blok -->
       </div>
     `;
   };
@@ -400,8 +469,8 @@ function htmlPage({ longLatest, shortLatest, trades, events }) {
   <div class="wrap">
     <h1>MAIN Analyze (zelfde stijl als MOON) + Copy/Paste</h1>
     <div class="row">
-      ${card("LONG (bull)", longSum, "bull")}
-      ${card("SHORT (bear)", shortSum, "bear")}
+      ${card("LONG (bull)", longSum, "bull", longLatest)}
+      ${card("SHORT (bear)", shortSum, "bear", shortLatest)}
     </div>
     <div class="muted" style="margin-top:10px">
       Tip: voeg <code>?format=json</code> toe als je de ruwe data wil zien.
