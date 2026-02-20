@@ -416,6 +416,23 @@ export function calcChange1hPct(priceHist) {
   return ((last.price - base) / base) * 100;
 }
 
+export function calcObSlope(samples) {
+  const arr = Array.isArray(samples) ? samples : [];
+  if (arr.length < 3) return null;
+
+  // neem de laatste 6 (of minder)
+  const last = arr.slice(-6).map(s => ({
+    ts: Number(s?.ts || 0),
+    score: Number(s?.score ?? 0),
+  })).filter(x => x.ts > 0 && Number.isFinite(x.score));
+
+  if (last.length < 3) return null;
+
+  const a = last[0].score;
+  const b = last[last.length - 1].score;
+  return (b - a) / Math.max(1, last.length - 1); // slope per sample
+}
+
 // ================== FILTERS ==================
 export function passRadar(c, btcRange24) {
   const dynRangeCap = coinRangeCapFromBTC(btcRange24);
