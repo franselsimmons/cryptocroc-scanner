@@ -5,6 +5,20 @@ import { uid, pushEvent, readTrades, writeTrades } from "./_analytics.js";
 
 export const config = RUNTIME_CONFIG;
 
+// Helper voor atomische NX-set (betrouwbaar in Vercel KV)
+async function setNx(key, value, exSec) {
+  if (typeof kv.setnx === "function") {
+    const ok = await kv.setnx(key, value);
+    if (ok) await kv.expire(key, exSec);
+    return !!ok;
+  }
+  // fallback: check-then-set (niet perfect atomisch, maar beter dan niets)
+  const exists = await kv.get(key);
+  if (exists) return false;
+  await kv.set(key, value, { ex: exSec });
+  return true;
+}
+
 function coinSideFromMode(mode, change24) {
   if (mode === "bull") return change24 >= 0 ? "BULL" : "BEAR";
   return change24 <= 0 ? "BEAR" : "BULL";
@@ -13,6 +27,27 @@ function coinSideFromMode(mode, change24) {
 function inc(map, k) {
   const key = String(k || "unknown");
   map[key] = (map[key] || 0) + 1;
+}
+
+function extractMetaFromItem(item) {
+  const consRatio = Number(item?.consistency?.ratio || 0);
+  const obScore = Number(item?.ob?.score ?? 0);
+  const obValid = !!(item?.ob?.valid ?? item?.obValid);
+  const spread = Number(item?.ob?.spreadPct ?? 999);
+
+  return {
+    confidence: Number(item?.confidence || 0),
+    consistencyRatio: consRatio,
+    obScore,
+    obValid,
+    spreadPct: spread,
+    vm: Number(item?.vm || 0),
+    volAcc: Number(item?.volAcc || 0),
+  };
+}
+
+function openIndexKey({ funnel, mode, symbol }) {
+  return `open:${funnel}:${mode}:${String(symbol || "").toUpperCase()}`;
 }
 
 export default async function handler(req, res) {
@@ -98,92 +133,115 @@ export default async function handler(req, res) {
       } catch {}
     }
 
-    // ----- NIEUWE VERSIE VAN openMainTradeIfNeeded MET EXTRA VELDEN -----
-    async function openMainTradeIfNeeded({ c, sltp, conf, obView, sizing, btc, atrPct }) {
-      const trades = await readTrades("main");
-      const exists = trades.find(
-        (t) => String(t.status) === "OPEN" && String(t.symbol) === String(c.symbol) && String(t.mode) === String(mode)
-      );
-      if (exists) return;
+    // ----- NIEUWE VERSIE: trade openen in KV (i.p.v. array) -----
+    async function openTradeKV({ funnel, mode, c, sltp, conf, obView, sizing, entryMetaExtra = {}, btc, atrPct }) {
+      const symbol = String(c.symbol || "").toUpperCase();
+      const idxKey = openIndexKey({ funnel, mode, symbol });
 
-      // tel open trades (exclusief de nieuwe)
-      const openTradesCountAtEntry = trades.filter(t => t.status === "OPEN").length;
+      // ✅ race-safe: gebruik setNx helper
+      const ok = await setNx(idxKey, "1", 60 * 60 * 24 * 14); // 14 dagen
+      if (!ok) return null;
 
-      const t = {
-        id: uid("main"),
-        funnel: "main",
-        status: "OPEN",
+      const id = uid(funnel);
+      const now = Date.now();
+
+      // ✅ portfolio overlap (uit trades:open set)
+      const openIds = await kv.smembers("trades:open");
+      const openTradesCountAtEntry = Array.isArray(openIds) ? openIds.length : 0;
+
+      // ✅ fee model (schatting)
+      const feeModel = "estimate";
+      const feePctPerSide = 0.10; // 0.10% per side
+      const feesPaidPctAssumed = feePctPerSide * 2;
+
+      const trade = {
+        id,
+        funnel,
         mode,
-        symbol: c.symbol,
+        symbol,
         cgId: c.id,
-        entryAt: Date.now(),
-        entryPrice: c.price,
-        sl: sltp.sl,
-        tp: sltp.tp,
 
-        // context
+        status: "OPEN",
+        openedAt: now,
+        closedAt: null,
+        closeReason: null,
+
         stageAtEntry: "ENTRY",
+
+        entryPrice: Number(c.price),
+        lastPrice: Number(c.price),
+        lastPriceTs: now,
+        lastValidPrice: Number(c.price),
+
+        // TP/SL uit core
+        sl: Number(sltp.sl),
+        tp: Number(sltp.tp),
+
+        // ✅ context bij entry
         btcStateAtEntry: String(btc?.state || "NEUTRAL"),
         btcChg24AtEntry: Number(btc?.chg24 || 0),
         btcRange24AtEntry: Number(btc?.range24 || 0),
         atrPctAtEntry: Number(atrPct || 0),
 
-        // portfolio overlap
+        // ✅ portfolio overlap
         openTradesCountAtEntry,
 
-        // fees (schatting)
-        feeModel: "estimate",
-        feePctPerSide: 0.10,
-        feesPaidPctAssumed: 0.20, // 2 * feePctPerSide
+        // ✅ fees (schatting)
+        feeModel,
+        feePctPerSide,
+        feesPaidPctAssumed,
 
-        // giveback trail
+        // live perf
+        pnlPct: 0,
+        netPnlPct: 0,
+        mfePct: 0,
+        maePct: 0,
+        maxGivebackPct: 0,
+
+        // giveback auto policy (trail naar BE)
         givebackTrailEnabled: true,
         givebackTrailTriggerPct: 6,
         trailingActive: false,
         trailingStop: null,
 
-        lastPrice: c.price,
-        pnlPct: 0,
-        mfePct: 0,
-        maePct: 0,
-        maxGivebackPct: 0,
-
-        snap: {
-          vm: c.vm,
-          confidence: conf,
-          spreadPct: obView?.spreadPct ?? 0,
-          depthMinUsd1p: obView?.depthMinUsd1p ?? 0,
+        entryMeta: {
+          ...extractMetaFromItem(entryMetaExtra),
+          confidence: Number(conf || 0),
+          spreadPct: Number(obView?.spreadPct ?? 999),
+          depthMinUsd1p: Number(obView?.depthMinUsd1p ?? 0),
+          obScore: Number(obView?.score ?? 0),
+          obAgree: Number(obView?.agree ?? 0),
+          vm: Number(c.vm || 0),
         },
-
-        postBestPct: null,
-        postWorstPct: null,
 
         sizing,
       };
 
-      trades.push(t);
-      await writeTrades("main", trades);
+      await kv.set(`trade:${id}`, trade, { ex: 60 * 60 * 24 * 60 }); // 60 dagen bewaren
+      await kv.sadd("trades:open", id);
 
-      await pushEvent("main", {
-        ts: Date.now(),
-        funnel: "main",
+      await pushEvent(funnel, {
+        ts: now,
+        funnel,
         mode,
-        symbol: c.symbol,
+        symbol,
         type: "TRADE_OPEN",
-        entryPrice: c.price,
-        sl: sltp.sl,
-        tp: sltp.tp,
-        confidence: conf,
-        vm: c.vm,
-        btcState: t.btcStateAtEntry,
-        atrPct: t.atrPctAtEntry,
+        entryPrice: trade.entryPrice,
+        sl: trade.sl,
+        tp: trade.tp,
+        confidence: trade.entryMeta.confidence,
+        vm: trade.entryMeta.vm,
+        btcState: trade.btcStateAtEntry,
+        atrPct: trade.atrPctAtEntry,
       });
+
+      return trade;
     }
 
     const now = Date.now();
     const btc = await fetchBTCGateCached();
 
-    // bear blokkeren als BTC bull is (zoals jij wil)
+    // bear blokkeren als BTC bull is
     const btcBlocked = mode === "bear" && btc.state === "BULL";
 
     const symbolsSet = await getBitgetSpotUsdtSymbols();
@@ -355,7 +413,7 @@ export default async function handler(req, res) {
       const atrObj = await fetchBitgetAtr1hPctCached(sym);
       const atrPct = atrObj?.atrPct && Number.isFinite(atrObj.atrPct) ? atrObj.atrPct : atrFromScan;
 
-      // ✅ BELANGRIJK: confidence meegeven, anders is het altijd “50”
+      // confidence meegeven
       const sltp = computeSLTP({ mode, price: c.price, atrPct, confidence: conf });
 
       const sizing = allocPctRecommended({ stage, confidence: conf, btc });
@@ -385,33 +443,53 @@ export default async function handler(req, res) {
       };
 
       if (!btcBlocked && stageChanged && stage === "ENTRY") {
-        // AANGEPASTE AANROEP: btc en atrPct toegevoegd
-        await openMainTradeIfNeeded({ c, sltp, conf, obView, sizing, btc, atrPct });
-        await bestEffortLogEntry({
-          ts: now,
-          symbol: sym,
-          cgId: c.id,
+        // Gebruik de nieuwe KV-opener
+        const opened = await openTradeKV({
+          funnel: "main",
           mode,
-          price: c.price,
-          change24: c.change24,
-          change1h,
-          range24: c.range24,
-          volume: c.volume,
-          marketCap: c.marketCap,
-          vm: c.vm,
-          obScore: obView?.score ?? null,
-          obAgree: obView?.agree ?? null,
-          depthMinUsd1p: obView?.depthMinUsd1p ?? null,
-          consistency: cons,
-          volAcc,
-          btc,
-          confidence: conf,
+          c,
+          sltp,
+          conf,
+          obView,
           sizing,
-          sl: sltp.sl,
-          tp: sltp.tp,
+          btc,
           atrPct,
-          atrSource: atrObj?.source || "scan",
+          entryMetaExtra: {
+            confidence: conf,
+            vm: c.vm,
+            volAcc,
+            consistency: cons,
+          },
         });
+
+        if (opened) {
+          await bestEffortLogEntry({
+            ts: now,
+            symbol: sym,
+            cgId: c.id,
+            mode,
+            price: c.price,
+            change24: c.change24,
+            change1h,
+            range24: c.range24,
+            volume: c.volume,
+            marketCap: c.marketCap,
+            vm: c.vm,
+            obScore: obView?.score ?? null,
+            obAgree: obView?.agree ?? null,
+            depthMinUsd1p: obView?.depthMinUsd1p ?? null,
+            consistency: cons,
+            volAcc,
+            btc,
+            confidence: conf,
+            sizing,
+            sl: sltp.sl,
+            tp: sltp.tp,
+            atrPct,
+            atrSource: atrObj?.source || "scan",
+            tradeId: opened.id,
+          });
+        }
       }
 
       const item = {
