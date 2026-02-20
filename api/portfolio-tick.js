@@ -3,77 +3,83 @@ import { kv } from "@vercel/kv";
 import {
   RUNTIME_CONFIG,
   requireSecret,
-  loadPortfolioState,
-  savePortfolioState,
-  tradeKey,
   nowTs,
-  pct,
-  fmt2,
   findCoinInLatest,
-  listTop,
-  buildImproveNotes,
   sendDiscordPortfolio,
-  discordOpenMsg,
   discordCloseMsg,
 } from "./_portfolio_core.js";
 
 export const config = RUNTIME_CONFIG;
 
-// Jullie bestaande KV latest keys:
-const keyMainLatest = (mode) => `latest:${mode}`;      // main funnel
-const keyMoonLatest = (mode) => `moon:latest:${mode}`; // moon funnel
+// KV keys
+const keyMainLatest = (mode) => `latest:${mode}`;
+const keyMoonLatest = (mode) => `moon:latest:${mode}`;
+const OPEN_SET = "trades:open";
+const CLOSED_SET = "trades:closed";
+const LOCK_KEY = "lock:portfolio-tick";
 
-function extractMetaFromItem(item) {
-  const consRatio = Number(item?.consistency?.ratio || 0);
-  const obScore = Number(item?.ob?.score ?? 0);
-  const obValid = !!item?.ob?.valid;
-  const spread = Number(item?.ob?.spreadPct ?? 999);
-
-  return {
-    confidence: Number(item?.confidence || 0),
-    consistencyRatio: consRatio,
-    obScore: obScore,
-    obValid: obValid,
-    spreadPct: spread,
-    vm: Number(item?.vm || 0),
-    volAcc: Number(item?.volAcc || 0),
-  };
+// Betrouwbare NX-set helper (zelfde als in scan.js)
+async function setNx(key, value, exSec) {
+  if (typeof kv.setnx === "function") {
+    const ok = await kv.setnx(key, value);
+    if (ok) await kv.expire(key, exSec);
+    return !!ok;
+  }
+  const exists = await kv.get(key);
+  if (exists) return false;
+  await kv.set(key, value, { ex: exSec });
+  return true;
 }
 
-// ----- NIEUWE FUNCTIE updatePerf VOOR MFE/MAE/GIVEBACK -----
+function openIndexKey({ funnel, mode, symbol }) {
+  return `open:${funnel}:${mode}:${String(symbol || "").toUpperCase()}`;
+}
+
+function pnlPctFor(mode, entry, price) {
+  const e = Number(entry || 0);
+  const p = Number(price || 0);
+  if (!(e > 0) || !(p > 0)) return 0;
+  if (mode === "bear") return ((e - p) / e) * 100;
+  return ((p - e) / e) * 100;
+}
+
+function isTpHit(trade, price) {
+  const p = Number(price || 0);
+  if (!(p > 0)) return false;
+  if (trade.mode === "bear") return p <= Number(trade.tp || 0);
+  return p >= Number(trade.tp || 0);
+}
+
+function isSlHit(trade, price) {
+  const p = Number(price || 0);
+  if (!(p > 0)) return false;
+  if (trade.mode === "bear") return p >= Number(trade.sl || 0);
+  return p <= Number(trade.sl || 0);
+}
+
 function updatePerf(trade, price, now) {
   const p = Number(price || 0);
   if (!(p > 0)) return trade;
 
   trade.lastPrice = p;
   trade.lastPriceTs = now;
+  trade.lastValidPrice = p;
 
-  // bereken pnl%
-  const pnl = (() => {
-    if (trade.mode === "bear") {
-      return ((trade.entryPrice - p) / trade.entryPrice) * 100;
-    } else {
-      return ((p - trade.entryPrice) / trade.entryPrice) * 100;
-    }
-  })();
+  const pnl = pnlPctFor(trade.mode, trade.entryPrice, p);
   trade.pnlPct = Number(pnl.toFixed(4));
 
-  // update MFE/MAE
   trade.mfePct = Math.max(Number(trade.mfePct || 0), trade.pnlPct);
   trade.maePct = Math.min(Number(trade.maePct || 0), trade.pnlPct);
 
-  // giveback
   if (trade.mfePct > 0) {
     const giveback = trade.mfePct - trade.pnlPct;
     trade.maxGivebackPct = Math.max(Number(trade.maxGivebackPct || 0), Number(giveback.toFixed(4)));
 
     // giveback trail
     const trig = Number(trade.givebackTrailTriggerPct || 0);
-    if (trade.givebackTrailEnabled && trig > 0 && giveback >= trig && trade.pnlPct > 0 && trade.sl !== undefined && trade.sl !== null) {
+    if (trade.givebackTrailEnabled && trig > 0 && giveback >= trig && trade.pnlPct > 0) {
       const be = Number(trade.entryPrice || 0);
-
       if (trade.mode === "bull") {
-        // SL omhoog naar entry (nooit lager maken)
         if (trade.sl < be) {
           trade.sl = be;
           trade.trailingActive = true;
@@ -81,7 +87,6 @@ function updatePerf(trade, price, now) {
           trade.trailingActivatedAt = now;
         }
       } else {
-        // short: SL omlaag naar entry (nooit hoger maken)
         if (trade.sl > be) {
           trade.sl = be;
           trade.trailingActive = true;
@@ -95,21 +100,11 @@ function updatePerf(trade, price, now) {
   return trade;
 }
 
-function updatePeaks(trade, curPrice) {
-  const p = Number(curPrice || 0);
-  if (!(p > 0)) return trade;
-
-  trade.lastPrice = p;
-
-  if (!(trade.peakPrice > 0)) trade.peakPrice = p;
-  if (!(trade.troughPrice > 0)) trade.troughPrice = p;
-
-  // bull: peak = hoogste, trough = laagste
-  // bear: peak/trough houden we ook bij (voor drawdown + best move)
-  trade.peakPrice = Math.max(Number(trade.peakPrice || p), p);
-  trade.troughPrice = Math.min(Number(trade.troughPrice || p), p);
-
-  return trade;
+// Helper voor JSON response (Vercel Node handler)
+function json(res, code, obj) {
+  res.statusCode = code;
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify(obj));
 }
 
 export default async function handler(req, res) {
@@ -118,175 +113,158 @@ export default async function handler(req, res) {
 
     const now = nowTs();
 
-    // lees latest snapshots
+    // Lock met setNx (betrouwbaar)
+    const gotLock = await setNx(LOCK_KEY, "1", 50);
+    if (!gotLock) {
+      json(res, 200, { ok: true, ts: now, skipped: true, reason: "locked" });
+      return;
+    }
+
+    // Latest snapshots ophalen
     const mainBull = await kv.get(keyMainLatest("bull"));
     const mainBear = await kv.get(keyMainLatest("bear"));
     const moonBull = await kv.get(keyMoonLatest("bull"));
     const moonBear = await kv.get(keyMoonLatest("bear"));
 
-    const state = await loadPortfolioState();
-
-    // helper: open trades uit top list
-    async function processOpen({ funnel, mode, latest }) {
-      const top = listTop(latest, funnel);
-
-      for (const item of top) {
-        const symbol = String(item?.symbol || "").toUpperCase();
-        if (!symbol) continue;
-
-        const k = tradeKey({ funnel, mode, symbol });
-        if (state.openByKey[k]) {
-          // update live stats (peak/trough + perf)
-          state.openByKey[k] = updatePeaks(state.openByKey[k], item?.price);
-          state.openByKey[k] = updatePerf(state.openByKey[k], item?.price, now);
-          state.openByKey[k].liveMeta = extractMetaFromItem(item);
-          continue;
-        }
-
-        // OPEN nieuwe trade
-        const entryPrice = Number(item?.price || 0);
-        if (!(entryPrice > 0)) continue;
-
-        const trade = {
-          id: `${now}:${k}`,
-          tsOpen: now,
-          funnel,
-          mode,           // bull/bear
-          symbol,
-
-          status: "OPEN",
-          entryPrice: Number(entryPrice.toFixed(8)),
-          lastPrice: Number(entryPrice.toFixed(8)),
-          peakPrice: Number(entryPrice.toFixed(8)),
-          troughPrice: Number(entryPrice.toFixed(8)),
-
-          // nieuwe velden voor MFE/MAE/giveback/fees
-          sl: null,
-          tp: null,
-          mfePct: 0,
-          maePct: 0,
-          maxGivebackPct: 0,
-          givebackTrailEnabled: true,
-          givebackTrailTriggerPct: 6,
-          trailingActive: false,
-          trailingStop: null,
-          feeModel: "estimate",
-          feePctPerSide: 0.10,
-          feesPaidPct: null,
-          netPnlPct: null,
-          desiredExitPrice: null,
-          slippagePct: null,
-
-          entryMeta: extractMetaFromItem(item),
-          liveMeta: extractMetaFromItem(item),
-
-          exitReason: null,
-          exitPrice: null,
-          tsClose: null,
-          pnlPct: null,
-
-          improveNotes: null, // pas vullen bij close
-        };
-
-        state.openByKey[k] = trade;
-
-        // initiële perf update (met entry prijs)
-        state.openByKey[k] = updatePerf(state.openByKey[k], entryPrice, now);
-
-        // Discord OPEN
-        await sendDiscordPortfolio(discordOpenMsg(trade));
-      }
+    function latestForTrade(trade) {
+      if (trade.funnel === "moon" && trade.mode === "bull") return moonBull;
+      if (trade.funnel === "moon" && trade.mode === "bear") return moonBear;
+      if (trade.mode === "bear") return mainBear;
+      return mainBull;
     }
 
-    // helper: close trades die niet meer in top zitten
-    async function processClose({ funnel, mode, latest }) {
-      const openKeys = Object.keys(state.openByKey);
-      for (const k of openKeys) {
-        const t = state.openByKey[k];
-        if (!t || t.status !== "OPEN") continue;
-        if (t.funnel !== funnel || t.mode !== mode) continue;
+    const openIds = await kv.smembers(OPEN_SET);
+    let updated = 0;
+    let closed = 0;
+    let stalled = 0;
 
-        // kijk of coin nog in top stage staat
-        const topList = listTop(latest, funnel);
-        const stillTop = topList.some((x) => String(x?.symbol || "").toUpperCase() === t.symbol);
-
-        // bepaal “current item” (prijs/metrics) ook als hij is teruggevallen naar ALMOST/BUILDUP
-        const curItem = findCoinInLatest(latest, t.symbol);
-
-        if (stillTop) {
-          // live update
-          if (curItem?.price) {
-            state.openByKey[k] = updatePeaks(t, curItem.price);
-            state.openByKey[k] = updatePerf(state.openByKey[k], curItem.price, now);
-          }
-          state.openByKey[k].liveMeta = extractMetaFromItem(curItem || {});
-          continue;
-        }
-
-        // CLOSE
-        const exitPrice = Number(curItem?.price || t.lastPrice || t.entryPrice || 0);
-        // update perf met exitPrice
-        const updatedTrade = updatePerf(t, exitPrice, now);
-        state.openByKey[k] = updatedTrade; // overschrijven
-
-        const exitMeta = extractMetaFromItem(curItem || {});
-        const reason = curItem
-          ? `left ${funnel === "moon" ? "ELITE" : "ENTRY"} → now ${String(curItem.stage || "lower stage")}`
-          : `left ${funnel === "moon" ? "ELITE" : "ENTRY"} (no current data)`;
-
-        // bereken fees en netPnl
-        const feePctPerSide = updatedTrade.feePctPerSide || 0.10;
-        const feesPaidPct = feePctPerSide * 2;
-        const netPnlPct = updatedTrade.pnlPct - feesPaidPct;
-
-        const closed = {
-          ...updatedTrade,
-          status: "CLOSED",
-          tsClose: now,
-          exitPrice: Number(exitPrice.toFixed(8)),
-          pnlPct: Number(updatedTrade.pnlPct.toFixed(4)),
-          feesPaidPct: Number(feesPaidPct.toFixed(4)),
-          netPnlPct: Number(netPnlPct.toFixed(4)),
-          exitReason: reason,
-          exitMeta,
-        };
-
-        closed.improveNotes = buildImproveNotes(closed);
-
-        // opslaan
-        delete state.openByKey[k];
-        state.closed.unshift(closed);
-        state.closed = state.closed.slice(0, 400); // max 400 trades bewaren
-
-        // Discord CLOSE
-        await sendDiscordPortfolio(discordCloseMsg(closed));
+    for (const id of openIds) {
+      const tradeKey = `trade:${id}`;
+      let trade = await kv.get(tradeKey);
+      
+      // Als trade niet bestaat, uit set verwijderen
+      if (!trade) {
+        await kv.srem(OPEN_SET, id);
+        continue;
       }
+
+      // Alleen OPEN en STALLED mogen in de set blijven; andere statussen verwijderen
+      if (trade.status !== "OPEN" && trade.status !== "STALLED") {
+        await kv.srem(OPEN_SET, id);
+        continue;
+      }
+
+      const latest = latestForTrade(trade);
+      // ✅ Juiste check: latest moet een geldige snapshot zijn met funnel.entry array
+      if (!latest || !latest.funnel || !latest.funnel.entry) {
+        // Geen bruikbare data, gewoon overslaan (geen STALLED)
+        continue;
+      }
+
+      const curItem = findCoinInLatest(latest, trade.symbol);
+      const price = Number(curItem?.price || 0);
+
+      // Geen geldige prijs -> STALLED
+      if (!(price > 0)) {
+        trade.status = "STALLED";
+        trade.lastPriceErrorAt = now;
+        await kv.set(tradeKey, trade, { ex: 60 * 60 * 24 * 60 });
+        stalled++;
+        continue;
+      }
+
+      // Als hij stalled was, terug naar OPEN
+      if (trade.status === "STALLED") trade.status = "OPEN";
+
+      // Extra check: TP/SL moeten bestaan, anders STALLED
+      if (!(Number(trade.tp) > 0) || !(Number(trade.sl) > 0)) {
+        trade.status = "STALLED";
+        trade.lastPriceErrorAt = now;
+        trade.error = "Missing TP/SL";
+        await kv.set(tradeKey, trade, { ex: 60 * 60 * 24 * 60 });
+        stalled++;
+        continue;
+      }
+
+      // Prestatie-update
+      trade = updatePerf(trade, price, now);
+
+      // Live meta (optioneel)
+      trade.liveMeta = {
+        confidence: Number(curItem?.confidence || trade.entryMeta?.confidence || 0),
+        vm: Number(curItem?.vm || 0),
+        spreadPct: Number(curItem?.ob?.spreadPct ?? 999),
+        obScore: Number(curItem?.ob?.score ?? 0),
+      };
+
+      // TP/SL check
+      let hit = null;
+      if (isTpHit(trade, price)) hit = "TP";
+      else if (isSlHit(trade, price)) hit = "SL";
+
+      if (!hit) {
+        // Geen hit, gewoon opslaan
+        await kv.set(tradeKey, trade, { ex: 60 * 60 * 24 * 60 });
+        updated++;
+        continue;
+      }
+
+      // CLOSE trade
+      trade.status = "CLOSED";
+      trade.closedAt = now;
+      trade.closeReason = hit;
+      trade.exitPrice = Number(price);
+
+      // desiredExitPrice (TP/SL level)
+      trade.desiredExitPrice = hit === "TP" ? Number(trade.tp) : Number(trade.sl);
+
+      // slippage berekenen
+      if (trade.desiredExitPrice > 0 && trade.entryPrice > 0) {
+        const rawSlip =
+          trade.mode === "bear"
+            ? ((trade.desiredExitPrice - trade.exitPrice) / trade.entryPrice) * 100
+            : ((trade.exitPrice - trade.desiredExitPrice) / trade.entryPrice) * 100;
+        trade.slippagePct = Number(rawSlip.toFixed(4));
+      } else {
+        trade.slippagePct = null;
+      }
+
+      // fees en netPnl
+      const feePctPerSide = Number(trade.feePctPerSide || 0.10);
+      trade.feesPaidPct = Number((feePctPerSide * 2).toFixed(4));
+      trade.netPnlPct = Number((trade.pnlPct - trade.feesPaidPct).toFixed(4));
+
+      // holding time
+      trade.holdingTimeSec = Math.floor((now - trade.openedAt) / 1000);
+      trade.timeToExitSec = trade.holdingTimeSec;
+
+      // opslaan gesloten trade (lange TTL)
+      await kv.set(tradeKey, trade, { ex: 60 * 60 * 24 * 365 }); // 1 jaar
+
+      // verwijder uit open set, voeg toe aan closed set
+      await kv.srem(OPEN_SET, id);
+      await kv.sadd(CLOSED_SET, id);
+
+      // verwijder open index key (zodat scan nieuwe kan openen)
+      await kv.del(openIndexKey({ funnel: trade.funnel, mode: trade.mode, symbol: trade.symbol }));
+
+      // Discord notificatie
+      await sendDiscordPortfolio(discordCloseMsg(trade));
+
+      closed++;
     }
 
-    // === run order ===
-    await processOpen({ funnel: "main", mode: "bull", latest: mainBull });
-    await processOpen({ funnel: "main", mode: "bear", latest: mainBear });
-    await processOpen({ funnel: "moon", mode: "bull", latest: moonBull });
-    await processOpen({ funnel: "moon", mode: "bear", latest: moonBear });
-
-    await processClose({ funnel: "main", mode: "bull", latest: mainBull });
-    await processClose({ funnel: "main", mode: "bear", latest: mainBear });
-    await processClose({ funnel: "moon", mode: "bull", latest: moonBull });
-    await processClose({ funnel: "moon", mode: "bear", latest: moonBear });
-
-    await savePortfolioState(state);
-
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({
+    json(res, 200, {
       ok: true,
       ts: now,
-      open: Object.keys(state.openByKey).length,
-      closed: state.closed.length
-    }));
+      openChecked: openIds.length,
+      updated,
+      closed,
+      stalled,
+    });
   } catch (e) {
-    res.statusCode = 500;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: false, error: String(e) }));
+    json(res, 500, { ok: false, error: String(e) });
+  } finally {
+    try { await kv.del(LOCK_KEY); } catch {}
   }
 }
