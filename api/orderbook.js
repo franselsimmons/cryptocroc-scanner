@@ -1,6 +1,5 @@
 // /api/orderbook.js
 import { kv } from "@vercel/kv";
-import { keyObResult, SETTINGS, requireSecret } from "./_core_bull.js";
 
 export const config = { runtime: "nodejs20.x" };
 
@@ -63,8 +62,6 @@ async function fetchBinanceDepthRaw(baseSymbol, limit = 100) {
 
 export default async function handler(req, res) {
   try {
-    if (!requireSecret(req, res)) return;
-
     const u = new URL(req.url, "http://localhost");
 
     const symbolRaw = u.searchParams.get("symbol") ?? req.query?.symbol;
@@ -78,6 +75,12 @@ export default async function handler(req, res) {
       res.setHeader("content-type", "application/json");
       return res.end(JSON.stringify({ ok: false, error: "side must be bull/bear" }));
     }
+
+    // ✅ Dynamische import op basis van side
+    const core = await import(`./_core_${side}.js`);
+    const { keyObResult, SETTINGS, requireSecret } = core;
+
+    if (!requireSecret(req, res)) return;
 
     const base = normalizeBaseSymbol(symbolRaw);
     if (!base) {
