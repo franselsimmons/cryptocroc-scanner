@@ -8,8 +8,9 @@ import {
   discordCloseMsg,
 } from "./_portfolio_core.js";
 
-export const config = { runtime: "nodejs20.x" };
+export const config = { runtime: "nodejs" };
 
+/* rest EXACT hetzelfde als jij stuurde */
 // KV keys
 const keyMainLatest = (mode) => `latest:${mode}`;
 const keyMoonLatest = (mode) => `moon:latest:${mode}`;
