@@ -1,7 +1,7 @@
 // /api/portfolio-latest.js
-import { RUNTIME_CONFIG, loadPortfolioState } from "./_portfolio_core.js";
+import { loadPortfolioState } from "./_portfolio_core.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs20.x" };
 
 export default async function handler(req, res) {
   try {
