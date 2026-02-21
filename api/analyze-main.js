@@ -2,8 +2,9 @@
 import { kv } from "@vercel/kv";
 import { readAllTrades } from "./_trades_kv.js";
 
-export const config = { runtime: "nodejs20.x" };
+export const config = { runtime: "nodejs" };
 
+/* rest EXACT hetzelfde als jij stuurde */
 // ✅ cores cache (1x laden, daarna hergebruiken) — imports uit /lib
 let __bull = null;
 let __bear = null;
