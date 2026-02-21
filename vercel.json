@@ -8,9 +8,8 @@
 
     { "path": "/api/track", "schedule": "*/10 * * * *" }
   ],
-  "functions": {
-    "api/**/*.js": {
-      "runtime": "nodejs20.x"
-    }
-  }
+  "rewrites": [
+    { "source": "/api/ob/sampler", "destination": "/api/ob-sampler" },
+    { "source": "/api/ob/map_refresh", "destination": "/api/ob-map_refresh" }
+  ]
 }
