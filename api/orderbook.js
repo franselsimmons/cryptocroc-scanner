@@ -1,8 +1,8 @@
 // /api/orderbook.js
 import { kv } from "@vercel/kv";
-import { RUNTIME_CONFIG, keyObResult, SETTINGS, requireSecret } from "./_core.js";
+import { keyObResult, SETTINGS, requireSecret } from "./_core_bull.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs20.x" };
 
 function normalizeBaseSymbol(input) {
   const s = String(input || "").trim().toUpperCase();
