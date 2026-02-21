@@ -5,10 +5,10 @@ export const config = { runtime: "nodejs" };
 
 // MAIN
 import { requireSecret, keyDiagList, keyDiagSnap } from "../lib/_core_bull.js";
+
 // MOON
 import { keyMoonDiagList, keyMoonDiagSnap } from "./_moon_core.js";
 
-/* rest EXACT hetzelfde als jij stuurde */
 function mergeCountMaps(target, src) {
   const out = target || {};
   const s = src || {};
@@ -41,7 +41,6 @@ async function loadDiags({ funnel, mode, limit }) {
 
   let diags = [];
 
-  // Prefer list history
   if (typeof kv.lrange === "function") {
     const raw = await kv.lrange(listKey, 0, limit - 1);
     diags = (raw || []).map(parseMaybeJson).filter(Boolean);
@@ -57,7 +56,6 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    // ✅ default blijft MAIN
     const funnelRaw = String(req.query?.funnel || "main").toLowerCase();
     const funnel = funnelRaw === "moon" ? "moon" : "main";
 
@@ -85,7 +83,7 @@ export default async function handler(req, res) {
     const last = diags[0];
 
     // =========================
-    // MAIN AGGREGATION (zoals je nu hebt)
+    // MAIN
     // =========================
     if (funnel === "main") {
       let total = 0;
@@ -143,7 +141,7 @@ export default async function handler(req, res) {
     }
 
     // =========================
-    // MOON AGGREGATION (nieuw)
+    // MOON
     // =========================
     let total = 0;
     let eliteSum = 0;
