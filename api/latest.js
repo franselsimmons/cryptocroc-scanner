@@ -12,7 +12,8 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull or bear" }));
     }
 
-    const core = await import(`./_core_${mode}.js`);
+    // ✅ dynamische import uit /lib
+    const core = await import(`../lib/_core_${mode}.js`);
     const data = await kv.get(core.keyLatest(mode));
 
     if (!data) {
