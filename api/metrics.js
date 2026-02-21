@@ -1,6 +1,7 @@
 // /api/metrics.js
 import { requireSecret } from "./_core_bull.js";
-import { keyTrades, readEvents, safeArr } from "./_analytics.js";
+import { readAllTrades } from "./_trades_kv.js";
+import { readEvents, safeArr } from "./_analytics.js";
 import { kv } from "@vercel/kv";
 
 export const config = { runtime: "nodejs20.x" };
@@ -8,8 +9,8 @@ export const config = { runtime: "nodejs20.x" };
 function n(x) { const v = Number(x); return Number.isFinite(v) ? v : 0; }
 function pct(x) { return +n(x).toFixed(2); }
 
-function summarizeTrades(trades, mode) {
-  const list = trades.filter(t => String(t.mode) === mode && String(t.status) === "CLOSED");
+function summarizeTrades(trades, mode, funnel) {
+  const list = trades.filter(t => String(t.mode) === mode && String(t.status) === "CLOSED" && t.funnel === funnel);
 
   const total = list.length;
   const wins = list.filter(t => String(t.exitReason) === "TP").length;
@@ -119,9 +120,9 @@ function stageLeakReport(events, mode, wantStages) {
   };
 }
 
-function multiFilterOptimizer(trades, mode, cfg) {
+function multiFilterOptimizer(trades, mode, funnel, cfg) {
   const list = trades
-    .filter(t => String(t.mode) === mode && String(t.status) === "CLOSED")
+    .filter(t => String(t.mode) === mode && String(t.status) === "CLOSED" && t.funnel === funnel)
     .filter(t => t && t.snap);
 
   if (list.length < (cfg.minTrades || 30)) {
@@ -215,8 +216,8 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const tradesMain = safeArr(await kv.get(keyTrades("main")));
-    const tradesMoon = safeArr(await kv.get(keyTrades("moon")));
+    const tradesAll = await readAllTrades(500, 500);
+    const trades = tradesAll.all;
 
     const evMain = await readEvents("main", 40000);
     const evMoon = await readEvents("moon", 40000);
@@ -239,26 +240,26 @@ export default async function handler(req, res) {
       ts: Date.now(),
       main: {
         bull: {
-          trades: summarizeTrades(tradesMain, "bull"),
+          trades: summarizeTrades(trades, "bull", "main"),
           leaks: stageLeakReport(evMain, "bull", mainStages),
-          optimizer: { multi: multiFilterOptimizer(tradesMain, "bull", optCfg) },
+          optimizer: { multi: multiFilterOptimizer(trades, "bull", "main", optCfg) },
         },
         bear: {
-          trades: summarizeTrades(tradesMain, "bear"),
+          trades: summarizeTrades(trades, "bear", "main"),
           leaks: stageLeakReport(evMain, "bear", mainStages),
-          optimizer: { multi: multiFilterOptimizer(tradesMain, "bear", optCfg) },
+          optimizer: { multi: multiFilterOptimizer(trades, "bear", "main", optCfg) },
         },
       },
       moon: {
         bull: {
-          trades: summarizeTrades(tradesMoon, "bull"),
+          trades: summarizeTrades(trades, "bull", "moon"),
           leaks: stageLeakReport(evMoon, "bull", moonStages),
-          optimizer: { multi: multiFilterOptimizer(tradesMoon, "bull", optCfg) },
+          optimizer: { multi: multiFilterOptimizer(trades, "bull", "moon", optCfg) },
         },
         bear: {
-          trades: summarizeTrades(tradesMoon, "bear"),
+          trades: summarizeTrades(trades, "bear", "moon"),
           leaks: stageLeakReport(evMoon, "bear", moonStages),
-          optimizer: { multi: multiFilterOptimizer(tradesMoon, "bear", optCfg) },
+          optimizer: { multi: multiFilterOptimizer(trades, "bear", "moon", optCfg) },
         },
       },
       notes: {
