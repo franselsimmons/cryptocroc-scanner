@@ -8,7 +8,8 @@ export default async function handler(req, res) {
     const status = { ok: true, ts: now, modes: {} };
 
     for (const mode of modes) {
-      const core = await import(`./_core_${mode}.js`);
+      // ✅ dynamische import uit /lib
+      const core = await import(`../lib/_core_${mode}.js`);
       const { keyLatest, keyObResultMapTs, keyState } = core;
 
       const latest = await kv.get(keyLatest(mode));
