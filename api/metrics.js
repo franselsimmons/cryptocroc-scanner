@@ -1,9 +1,9 @@
 // /api/metrics.js
-import { requireSecret, RUNTIME_CONFIG } from "./_core.js";
+import { requireSecret } from "./_core_bull.js";
 import { keyTrades, readEvents, safeArr } from "./_analytics.js";
 import { kv } from "@vercel/kv";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs20.x" };
 
 function n(x) { const v = Number(x); return Number.isFinite(v) ? v : 0; }
 function pct(x) { return +n(x).toFixed(2); }
