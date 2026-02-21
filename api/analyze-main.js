@@ -1,5 +1,6 @@
 // /api/analyze-main.js
 import { kv } from "@vercel/kv";
+import { readAllTrades } from "./_trades_kv.js";
 
 export const config = { runtime: "nodejs20.x" };
 
@@ -22,39 +23,9 @@ function getCfg(mode) {
 }
 
 // ======================================================
-// SECRET CHECK
-// ======================================================
-function requireSecret(req, res) {
-  const got = String(req.query?.token || req.headers?.["x-token"] || "");
-  const want = String(
-    process.env.CRON_SECRET ||
-      process.env.CC_TOKEN ||
-      process.env.SECRET_TOKEN ||
-      process.env.ADMIN_TOKEN ||
-      ""
-  );
-
-  if (!want) {
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: false, error: "Missing CRON_SECRET/CC_TOKEN env" }));
-    return false;
-  }
-
-  if (!got || got !== want) {
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
-    return false;
-  }
-  return true;
-}
-
-// ======================================================
 // KV KEYS
 // ======================================================
 const keyLatest = (mode) => `latest:${String(mode || "bull")}`;
-const keyTrades = `trades:main`;
 const keyEvents = `events:main`;
 
 // ======================================================
@@ -92,9 +63,6 @@ function pct(x, digits = 2) {
 // ======================================================
 // READ
 // ======================================================
-async function readTrades() {
-  try { return safeArr(await kv.get(keyTrades)); } catch { return []; }
-}
 async function readEvents(max = 500) {
   // ✅ events = LIST
   try {
@@ -174,16 +142,16 @@ function tradeOutcome(t) {
   return "FLAT";
 }
 
-function summarizeTrades(trades) {
-  const all = safeArr(trades);
-  const open = all.filter((t) => String(t?.status || "").toUpperCase() === "OPEN");
-  const closed = all.filter((t) => String(t?.status || "").toUpperCase() === "CLOSED");
+function summarizeTrades(trades, funnel) {
+  const filtered = trades.filter(t => t.funnel === funnel);
+  const open = filtered.filter((t) => String(t?.status || "").toUpperCase() === "OPEN");
+  const closed = filtered.filter((t) => String(t?.status || "").toUpperCase() === "CLOSED");
 
   const outMap = {};
   for (const t of closed) inc(outMap, tradeOutcome(t));
 
   return {
-    counts: { open: open.length, closed: closed.length, total: all.length },
+    counts: { open: open.length, closed: closed.length, total: filtered.length },
     outcomesTop: topN(outMap, 8),
     sampleClosed: closed.slice(-10),
   };
@@ -332,7 +300,7 @@ function buildCopyBlockMain({ mode, latest, derived, tradeSum }) {
 function htmlPage({ longLatest, shortLatest, trades, events }) {
   const longSum = summarizeLatest(longLatest || {});
   const shortSum = summarizeLatest(shortLatest || {});
-  const tradeSum = summarizeTrades(trades);
+  const tradeSumMain = summarizeTrades(trades, "main");
 
   const lastEv = safeArr(events).slice(-1)[0] || null;
 
@@ -348,10 +316,10 @@ function htmlPage({ longLatest, shortLatest, trades, events }) {
 
   const card = (title, sum, mode, latestRaw) => {
     const copyId = `copy_main_${mode}`;
-    const payload = buildCopyPayload({ mode, latestSummary: sum, tradeSum });
+    const payload = buildCopyPayload({ mode, latestSummary: sum, tradeSum: tradeSumMain });
 
     // Nieuw copy-blok voor MAIN
-    const copyBlock = buildCopyBlockMain({ mode, latest: latestRaw, derived: sum, tradeSum });
+    const copyBlock = buildCopyBlockMain({ mode, latest: latestRaw, derived: sum, tradeSum: tradeSumMain });
     const copyHtml = `
       <div class="box" style="margin-top:12px;grid-column:1/-1">
         <h3>📋 Copy/paste (MAIN) — filters + top blokkades + advies</h3>
@@ -383,8 +351,8 @@ function htmlPage({ longLatest, shortLatest, trades, events }) {
 
           <div class="box">
             <h3>Trades (MAIN) — quick</h3>
-            <div class="muted">Open: <b>${tradeSum.counts.open}</b> • Closed: <b>${tradeSum.counts.closed}</b></div>
-            <ul>${list(tradeSum.outcomesTop)}</ul>
+            <div class="muted">Open: <b>${tradeSumMain.counts.open}</b> • Closed: <b>${tradeSumMain.counts.closed}</b></div>
+            <ul>${list(tradeSumMain.outcomesTop)}</ul>
           </div>
         </div>
 
@@ -507,24 +475,26 @@ function htmlPage({ longLatest, shortLatest, trades, events }) {
 
 export default async function handler(req, res) {
   try {
-    if (!requireSecret(req, res)) return;
+    const { bull } = await loadCores();
+    if (!bull.requireSecret(req, res)) return;
 
     const format = String(req.query?.format || "html").toLowerCase();
 
-    // ✅ cores laden met cache
-    const { bull, bear } = await loadCores();
+    const { bear } = await loadCores(); // hergebruik cache
     const SETTINGS = { bull: bull.SETTINGS, bear: bear.SETTINGS };
 
     const longLatest = await kv.get(keyLatest("bull"));
     const shortLatest = await kv.get(keyLatest("bear"));
 
-    const trades = await readTrades();
+    const tradesAll = await readAllTrades(500, 500);
+    const trades = tradesAll.all; // alle trades (main + moon), we filteren later
+
     const events = await readEvents(500);
 
     if (format === "json") {
       const longSum = summarizeLatest(longLatest || {});
       const shortSum = summarizeLatest(shortLatest || {});
-      const tradeSum = summarizeTrades(trades);
+      const tradeSumMain = summarizeTrades(trades, "main");
 
       res.statusCode = 200;
       res.setHeader("content-type", "application/json; charset=utf-8");
@@ -532,9 +502,9 @@ export default async function handler(req, res) {
         ok: true,
         ts: Date.now(),
         view: "analyze-main",
-        settings: SETTINGS, // nu { bull: ..., bear: ... }
+        settings: SETTINGS,
         latest: { bull: longLatest, bear: shortLatest },
-        derived: { bull: longSum, bear: shortSum, trades: tradeSum },
+        derived: { bull: longSum, bear: shortSum, trades: tradeSumMain },
         eventsCount: safeArr(events).length,
       }));
     }
