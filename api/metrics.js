@@ -1,5 +1,5 @@
 // /api/metrics.js
-import { requireSecret } from "./_core_bull.js";
+import { requireSecret } from "../lib/_core_bull.js";
 import { readAllTrades } from "./_trades_kv.js";
 import { readEvents, safeArr } from "./_analytics.js";
 import { kv } from "@vercel/kv";
