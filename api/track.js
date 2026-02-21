@@ -1,17 +1,18 @@
-// /api/track.js
 import { kv } from "@vercel/kv";
 import { requireSecret } from "../lib/_core_bull.js";
-import { readAllTrades } from "./_trades_kv.js";
+
+// ✅ JOUW files staan in /lib, niet in /api
+import { readAllTrades } from "../lib/_trades_kv.js";
 import {
   readPostWatch, writePostWatch, addPostWatch,
   fetchCgPriceUsdByIds, pnlPctFromPrices, hitSlTp, pushEvent, nowMs
-} from "./_analytics.js";
+} from "../lib/_analytics.js";
 
-export const config = { runtime: "nodejs20.x" };
+export const config = { runtime: "nodejs" };
 
-const TTL_MAIN_HOURS = 72;     // MAIN: max 3 dagen
-const TTL_MOON_HOURS = 48;     // MOON: sneller
-const POST_WATCH_HOURS = 24;   // na close nog 24u volgen
+const TTL_MAIN_HOURS = 72;
+const TTL_MOON_HOURS = 48;
+const POST_WATCH_HOURS = 24;
 const BATCH_IDS = 200;
 
 const OPEN_SET = "trades:open";
@@ -22,7 +23,6 @@ function n(x){ const v=Number(x); return Number.isFinite(v)?v:0; }
 function mfeMaeUpdate(trade, priceNow) {
   const pnl = pnlPctFromPrices({ mode: trade.mode, entryPrice: trade.entryPrice, priceNow });
   trade.pnlPct = +n(pnl).toFixed(2);
-
   trade.mfePct = trade.mfePct == null ? trade.pnlPct : Math.max(n(trade.mfePct), trade.pnlPct);
   trade.maePct = trade.maePct == null ? trade.pnlPct : Math.min(n(trade.maePct), trade.pnlPct);
 }
@@ -37,7 +37,6 @@ function postUpdate(trade, priceNow) {
     : ((base - priceNow) / base) * 100;
 
   const p = +n(movePct).toFixed(2);
-
   trade.postBestPct = trade.postBestPct == null ? p : Math.max(n(trade.postBestPct), p);
   trade.postWorstPct = trade.postWorstPct == null ? p : Math.min(n(trade.postWorstPct), p);
 }
@@ -47,18 +46,16 @@ function openIndexKey({ funnel, mode, symbol }) {
 }
 
 async function saveTrade(trade) {
-  await kv.set(`trade:${trade.id}`, trade, { ex: 60 * 60 * 24 * 365 }); // 1 jaar
+  await kv.set(`trade:${trade.id}`, trade, { ex: 60 * 60 * 24 * 365 });
 }
 
 async function trackFunnel(funnel) {
   const now = nowMs();
   const ttlMs = (funnel === "main" ? TTL_MAIN_HOURS : TTL_MOON_HOURS) * 60 * 60 * 1000;
 
-  // Lees alle trades (open + closed) voor deze funnel
   const { open, closed } = await readAllTrades(500, 500, funnel);
   const trades = [...open, ...closed];
 
-  // Alleen open trades tracken
   const openTrades = open.filter(t => String(t.status) === "OPEN");
   const openIds = openTrades.map(t => t.cgId);
 
@@ -81,18 +78,12 @@ async function trackFunnel(funnel) {
         t.status = "CLOSED";
         t.closedAt = now;
         t.exitPrice = +px;
+        t.exitReason = hit.hit ? hit.kind : "TTL";
 
-        if (hit.hit) t.exitReason = hit.kind;  // TP/SL
-        else t.exitReason = "TTL";             // time-out
-
-        // Verwijder uit open set, voeg toe aan closed set
         await kv.srem(OPEN_SET, t.id);
         await kv.sadd(CLOSED_SET, t.id);
-
-        // Verwijder open index key
         await kv.del(openIndexKey({ funnel: t.funnel, mode: t.mode, symbol: t.symbol }));
 
-        // Voeg toe aan post-watch
         const until = now + POST_WATCH_HOURS * 60 * 60 * 1000;
         await addPostWatch(funnel, t.id, until);
 
@@ -107,12 +98,10 @@ async function trackFunnel(funnel) {
         });
       }
 
-      // Sla trade op (of geüpdatet)
       await saveTrade(t);
     }
   }
 
-  // POST WATCH (blijft list-based, apart)
   let post = await readPostWatch(funnel);
   post = post.filter(x => n(x?.untilTs) > now);
 
@@ -139,21 +128,14 @@ async function trackFunnel(funnel) {
   post = post.filter(x => n(x?.untilTs) > now);
   await writePostWatch(funnel, post);
 
-  return {
-    funnel,
-    open: openTrades.length,
-    closedTotal: closed.length,
-    postWatching: post.length,
-  };
+  return { funnel, open: openTrades.length, closedTotal: closed.length, postWatching: post.length };
 }
 
 export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
-
     const r1 = await trackFunnel("main");
     const r2 = await trackFunnel("moon");
-
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ ok:true, ts: Date.now(), main: r1, moon: r2 }));
