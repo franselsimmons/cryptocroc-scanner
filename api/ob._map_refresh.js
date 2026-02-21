@@ -1,8 +1,7 @@
 // /api/ob_map_refresh.js
 import { kv } from "@vercel/kv";
-import { RUNTIME_CONFIG } from "./_core_bull.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs20.x" };
 
 // simpele concurrency helper (niet te veel tegelijk)
 async function mapLimit(list, limit, fn) {
