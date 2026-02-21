@@ -1,7 +1,9 @@
 // /api/track.js
+import { kv } from "@vercel/kv";
 import { requireSecret } from "./_core_bull.js";
+import { readAllTrades } from "./_trades_kv.js";
 import {
-  readTrades, writeTrades, readPostWatch, writePostWatch, addPostWatch,
+  readPostWatch, writePostWatch, addPostWatch,
   fetchCgPriceUsdByIds, pnlPctFromPrices, hitSlTp, pushEvent, nowMs
 } from "./_analytics.js";
 
@@ -11,6 +13,9 @@ const TTL_MAIN_HOURS = 72;     // MAIN: max 3 dagen
 const TTL_MOON_HOURS = 48;     // MOON: sneller
 const POST_WATCH_HOURS = 24;   // na close nog 24u volgen
 const BATCH_IDS = 200;
+
+const OPEN_SET = "trades:open";
+const CLOSED_SET = "trades:closed";
 
 function n(x){ const v=Number(x); return Number.isFinite(v)?v:0; }
 
@@ -37,21 +42,31 @@ function postUpdate(trade, priceNow) {
   trade.postWorstPct = trade.postWorstPct == null ? p : Math.min(n(trade.postWorstPct), p);
 }
 
+function openIndexKey({ funnel, mode, symbol }) {
+  return `open:${funnel}:${mode}:${String(symbol || "").toUpperCase()}`;
+}
+
+async function saveTrade(trade) {
+  await kv.set(`trade:${trade.id}`, trade, { ex: 60 * 60 * 24 * 365 }); // 1 jaar
+}
+
 async function trackFunnel(funnel) {
   const now = nowMs();
   const ttlMs = (funnel === "main" ? TTL_MAIN_HOURS : TTL_MOON_HOURS) * 60 * 60 * 1000;
 
-  let trades = await readTrades(funnel);
-  trades = trades.filter(t => t && t.id && t.cgId);
+  // Lees alle trades (open + closed) voor deze funnel
+  const { open, closed } = await readAllTrades(500, 500, funnel);
+  const trades = [...open, ...closed];
 
-  const open = trades.filter(t => String(t.status) === "OPEN");
-  const openIds = open.map(t => t.cgId);
+  // Alleen open trades tracken
+  const openTrades = open.filter(t => String(t.status) === "OPEN");
+  const openIds = openTrades.map(t => t.cgId);
 
   for (let i=0;i<openIds.length;i+=BATCH_IDS) {
     const slice = openIds.slice(i, i+BATCH_IDS);
     const pxMap = await fetchCgPriceUsdByIds(slice);
 
-    for (const t of open) {
+    for (const t of openTrades) {
       if (!slice.includes(t.cgId)) continue;
       const px = pxMap.get(t.cgId);
       if (!(px > 0)) continue;
@@ -60,16 +75,24 @@ async function trackFunnel(funnel) {
       mfeMaeUpdate(t, px);
 
       const hit = hitSlTp({ mode: t.mode, priceNow: px, sl: t.sl, tp: t.tp });
-      const tooOld = (now - n(t.entryAt)) > ttlMs;
+      const tooOld = (now - n(t.openedAt)) > ttlMs;
 
       if (hit.hit || tooOld) {
         t.status = "CLOSED";
-        t.exitAt = now;
+        t.closedAt = now;
         t.exitPrice = +px;
 
         if (hit.hit) t.exitReason = hit.kind;  // TP/SL
         else t.exitReason = "TTL";             // time-out
 
+        // Verwijder uit open set, voeg toe aan closed set
+        await kv.srem(OPEN_SET, t.id);
+        await kv.sadd(CLOSED_SET, t.id);
+
+        // Verwijder open index key
+        await kv.del(openIndexKey({ funnel: t.funnel, mode: t.mode, symbol: t.symbol }));
+
+        // Voeg toe aan post-watch
         const until = now + POST_WATCH_HOURS * 60 * 60 * 1000;
         await addPostWatch(funnel, t.id, until);
 
@@ -83,10 +106,13 @@ async function trackFunnel(funnel) {
           pnlPct: t.pnlPct,
         });
       }
+
+      // Sla trade op (of geüpdatet)
+      await saveTrade(t);
     }
   }
 
-  // POST WATCH
+  // POST WATCH (blijft list-based, apart)
   let post = await readPostWatch(funnel);
   post = post.filter(x => n(x?.untilTs) > now);
 
@@ -106,17 +132,17 @@ async function trackFunnel(funnel) {
       if (!(px > 0)) continue;
 
       postUpdate(t, px);
+      await saveTrade(t);
     }
   }
 
   post = post.filter(x => n(x?.untilTs) > now);
   await writePostWatch(funnel, post);
-  await writeTrades(funnel, trades);
 
   return {
     funnel,
-    open: open.length,
-    closedTotal: trades.filter(t => String(t.status) === "CLOSED").length,
+    open: openTrades.length,
+    closedTotal: closed.length,
     postWatching: post.length,
   };
 }
