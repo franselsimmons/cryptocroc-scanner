@@ -3,8 +3,8 @@ import { kv } from "@vercel/kv";
 
 export const config = { runtime: "nodejs20.x" };
 
-// MAIN (bestaand)
-import { requireSecret, keyDiagList, keyDiagSnap } from "./_core_bull.js";
+// MAIN (bestaand) — imports uit /lib
+import { requireSecret, keyDiagList, keyDiagSnap } from "../lib/_core_bull.js";
 
 // MOON (nieuw, alleen gebruikt als ?funnel=moon)
 import { keyMoonDiagList, keyMoonDiagSnap } from "./_moon_core.js";
