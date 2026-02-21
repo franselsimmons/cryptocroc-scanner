@@ -1,6 +1,6 @@
 // /api/reset.js
 import { kv } from "@vercel/kv";
-import { RUNTIME_CONFIG, requireSecret, keyLatest, keyState, keyReset } from "./_core.js";
+import { RUNTIME_CONFIG, requireSecret, keyLatest, keyState, keyReset } from "../lib/_core.js";
 
 export const config = RUNTIME_CONFIG;
 
