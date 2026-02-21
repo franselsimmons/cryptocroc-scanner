@@ -153,6 +153,8 @@ export const keyBitgetSymbols = "bitget:symbols:spotusdt";
 
 export const keyObSamples = (side, symbol) => `ob:samples:${side}:${symbol}`;
 export const keyObResult  = (side, symbol) => `ob:result:${side}:${symbol}`;
+export const keyObResultMap   = (mode) => `ob:resultmap:${mode}`;
+export const keyObResultMapTs = (mode) => `ob:resultmapts:${mode}`;
 
 export const keyObQueue = (mode) => `ob:queue:${mode}`;
 export const keyObCursor = (mode) => `ob:cursor:${mode}`;
