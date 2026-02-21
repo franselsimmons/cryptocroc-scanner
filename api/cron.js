@@ -30,27 +30,41 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull or bear" }));
     }
 
-    // token doorgeven als Bearer zodat child handlers ook requireSecret halen
     const secret = process.env.CRON_SECRET || "";
     const authHeader = secret ? { authorization: `Bearer ${secret}` } : {};
 
-    const reqMode = {
+    // BELANGRIJK: interne handlers verwachten soms req.url (new URL(req.url,...))
+    const base = "http://localhost";
+
+    const reqOb = {
       method: "GET",
+      url: `${base}/api/ob/sampler?mode=${mode}&max=20&radar=40`,
       query: { mode, max: "20", radar: "40" },
       headers: authHeader,
     };
 
-    // 1) OB samples
+    const reqMap = {
+      method: "GET",
+      url: `${base}/api/ob/map_refresh?mode=${mode}`,
+      query: { mode },
+      headers: authHeader,
+    };
+
+    const reqScan = {
+      method: "GET",
+      url: `${base}/api/scan?mode=${mode}&max=20&radar=40`,
+      query: { mode, max: "20", radar: "40" },
+      headers: authHeader,
+    };
+
     const resOb = makeRes();
-    await obSampler(reqMode, resOb);
+    await obSampler(reqOb, resOb);
 
-    // 2) OB map refresh
     const resMap = makeRes();
-    await obMapRefresh(reqMode, resMap);
+    await obMapRefresh(reqMap, resMap);
 
-    // 3) Scan
     const resScan = makeRes();
-    await scan(reqMode, resScan);
+    await scan(reqScan, resScan);
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
@@ -60,7 +74,7 @@ export default async function handler(req, res) {
       mode,
       ob: safeJson(resOb.body),
       obMap: safeJson(resMap.body),
-      scan: safeJson(resScan.body)
+      scan: safeJson(resScan.body),
     }));
   } catch (e) {
     res.statusCode = 500;
