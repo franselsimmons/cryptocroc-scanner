@@ -1,5 +1,5 @@
-// /api/moon-cron.js
-import { requireSecret, RUNTIME_CONFIG } from "./_moon_core.js";
+// /api/moon/cron.js
+import { requireSecret, RUNTIME_CONFIG } from "../../lib/_moon_core.js";
 export const config = RUNTIME_CONFIG;
 
 async function hit(path) {
