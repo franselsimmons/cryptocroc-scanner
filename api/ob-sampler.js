@@ -1,8 +1,7 @@
 // /api/ob-sampler.js
 import { kv } from "@vercel/kv";
-import { RUNTIME_CONFIG } from "./_core_bull.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs20.x" };
 
 // ================== BITGET V2 ORDERBOOK (SPOT) ==================
 async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
