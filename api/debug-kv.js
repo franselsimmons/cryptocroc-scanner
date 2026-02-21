@@ -1,26 +1,8 @@
 // /api/debug-kv.js
 import { kv } from "@vercel/kv";
+import { requireSecret } from "./_core_bull.js";
 
 export const config = { runtime: "nodejs" };
-
-function requireSecret(req, res) {
-  const got = String(req.query?.token || req.headers?.["x-token"] || "");
-  const want = String(process.env.CRON_SECRET || process.env.CC_TOKEN || "");
-
-  if (!want) {
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: false, error: "Missing CRON_SECRET (or CC_TOKEN)" }));
-    return false;
-  }
-  if (!got || got !== want) {
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
-    return false;
-  }
-  return true;
-}
 
 async function peek(key) {
   try {
