@@ -1,4 +1,10 @@
 {
+  "version": 2,
+  "functions": {
+    "api/**/*.js": {
+      "runtime": "nodejs"
+    }
+  },
   "crons": [
     { "path": "/api/cron?mode=bull", "schedule": "*/10 * * * *" },
     { "path": "/api/cron?mode=bear", "schedule": "*/10 * * * *" },
