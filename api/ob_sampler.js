@@ -1,3 +1,3 @@
+import handler from "./ob/sampler.js";
 export const config = { runtime: "nodejs" };
-
-export { default } from "./ob/sampler.js";
+export default handler;
