@@ -1,4 +1,4 @@
-// /api/moon-run-all.js
+// /api/moon/run-all.js
 export const config = { runtime: "nodejs" };
 
 const fetchFn = globalThis.fetch;
@@ -15,7 +15,7 @@ export default async function handler(req, res) {
 
     const base = process.env.BASE_URL || `https://${req.headers.host}`;
 
-    // cache-bust zodat je nooit “oude” responses krijgt
+    // cache-bust zodat je nooit "oude" responses krijgt
     const t = Date.now();
 
     const scanRes = await fetchFn(`${base}/api/moon-scan?mode=${mode}&token=${token}&_t=${t}`);
