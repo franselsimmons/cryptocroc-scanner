@@ -76,8 +76,8 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "side must be bull/bear" }));
     }
 
-    // ✅ Dynamische import op basis van side
-    const core = await import(`./_core_${side}.js`);
+    // ✅ dynamische import uit /lib
+    const core = await import(`../lib/_core_${side}.js`);
     const { keyObResult, SETTINGS, requireSecret } = core;
 
     if (!requireSecret(req, res)) return;
