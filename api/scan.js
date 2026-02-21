@@ -1,9 +1,8 @@
 // /api/scan.js
 import { kv } from "@vercel/kv";
-import { config } from "./_runtime.js";
 import { uid, pushEvent } from "./_analytics.js";
 
-export { config };
+export const config = { runtime: "nodejs20.x" };
 
 // Helper voor atomische NX-set (betrouwbaar in Vercel KV)
 async function setNx(key, value, exSec) {
@@ -251,7 +250,7 @@ export default async function handler(req, res) {
     const btc = await fetchBTCGateCached();
 
     // bear blokkeren als BTC bull is
-    const btcBlocked = mode === "bear" && btc.state === "BULL";
+    const btcBlocked = (mode === "bear" && btc.state === "BULL") || (mode === "bull" && btc.state === "BEAR");
 
     const symbolsSet = await getBitgetSpotUsdtSymbols();
     const all = await fetchCoinGeckoTopCached();
