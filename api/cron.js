@@ -1,9 +1,9 @@
 import scan from "./scan.js";
 import obSampler from "./ob/sampler.js";
 import obMapRefresh from "./ob/map_refresh.js";
-import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
+import { requireSecret } from "../lib/_core_bull.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs" };
 
 function makeRes() {
   return {
@@ -11,52 +11,60 @@ function makeRes() {
     headers: {},
     body: "",
     setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; },
-    end(txt) { this.body = txt || ""; }
+    end(txt) { this.body = txt || ""; },
   };
 }
-function safeJson(txt) { try { return JSON.parse(txt); } catch { return { raw: String(txt || "") }; } }
+
+function safeJson(txt) {
+  try { return JSON.parse(txt); } catch { return { raw: String(txt || "") }; }
+}
 
 export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const mode = getMode(req);
+    const mode = String(req.query?.mode || "bull").toLowerCase();
+    if (mode !== "bull" && mode !== "bear") {
+      res.statusCode = 400;
+      res.setHeader("content-type", "application/json");
+      return res.end(JSON.stringify({ ok: false, error: "mode must be bull or bear" }));
+    }
 
-    // We geven internal calls ook Bearer mee zodat dezelfde requireSecret werkt
-    const secret = String(process.env.CRON_SECRET || "");
+    // token doorgeven als Bearer zodat child handlers ook requireSecret halen
+    const secret = process.env.CRON_SECRET || "";
     const authHeader = secret ? { authorization: `Bearer ${secret}` } : {};
 
     const reqMode = {
       method: "GET",
       query: { mode, max: "20", radar: "40" },
-      headers: authHeader
+      headers: authHeader,
     };
 
     // 1) OB samples
-    const rOb = makeRes();
-    await obSampler(reqMode, rOb);
+    const resOb = makeRes();
+    await obSampler(reqMode, resOb);
 
-    // 2) OB map refresh (timestamp)
-    const rMap = makeRes();
-    await obMapRefresh(reqMode, rMap);
+    // 2) OB map refresh
+    const resMap = makeRes();
+    await obMapRefresh(reqMode, resMap);
 
-    // 3) MAIN scan
-    const rScan = makeRes();
-    await scan(reqMode, rScan);
+    // 3) Scan
+    const resScan = makeRes();
+    await scan(reqMode, resScan);
 
     res.statusCode = 200;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({
+    res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify({
       ok: true,
       ts: Date.now(),
       mode,
-      ob: safeJson(rOb.body),
-      obMap: safeJson(rMap.body),
-      scan: safeJson(rScan.body)
+      ob: safeJson(resOb.body),
+      obMap: safeJson(resMap.body),
+      scan: safeJson(resScan.body)
     }));
   } catch (e) {
     res.statusCode = 500;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+    res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
