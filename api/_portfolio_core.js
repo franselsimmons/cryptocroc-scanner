@@ -6,6 +6,10 @@ export const RUNTIME_CONFIG = { runtime: "nodejs20.x" };
 
 // ====== auth (zelfde idee als jullie funnels) ======
 export function requireSecret(req, res) {
+  const cronHeader = String(req.headers?.["x-vercel-cron"] || "").toLowerCase();
+  const isVercelCron = cronHeader === "1" || cronHeader === "true";
+  if (isVercelCron) return true;
+
   const secret = process.env.CRON_SECRET;
   if (!secret) return true;
 
