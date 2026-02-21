@@ -1,8 +1,8 @@
 // /api/logs.js
 import { kv } from "@vercel/kv";
-import { RUNTIME_CONFIG, requireSecret, keyEntryLog } from "./_core.js";
+import { requireSecret, keyEntryLog } from "./_core_bull.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs20.x" };
 
 export default async function handler(req, res) {
   try {
