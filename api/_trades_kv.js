@@ -10,34 +10,43 @@ async function readTradeById(id) {
   return await kv.get(`trade:${id}`);
 }
 
-export async function readOpenTrades(limit = 500) {
+/**
+ * Haalt alle open trades op, optioneel gefilterd op funnel.
+ */
+export async function readOpenTrades(limit = 500, funnel = null) {
   const ids = (await kv.smembers(OPEN_SET)) || [];
   const slice = ids.slice(0, Math.max(0, limit));
   const out = [];
   for (const id of slice) {
     const t = await readTradeById(id);
-    if (t) out.push(t);
+    if (t && (!funnel || t.funnel === funnel)) out.push(t);
   }
   return out;
 }
 
-export async function readClosedTrades(limit = 500) {
+/**
+ * Haalt alle closed trades op, optioneel gefilterd op funnel.
+ */
+export async function readClosedTrades(limit = 500, funnel = null) {
   const ids = (await kv.smembers(CLOSED_SET)) || [];
   const slice = ids.slice(0, Math.max(0, limit));
   const out = [];
   for (const id of slice) {
     const t = await readTradeById(id);
-    if (t) out.push(t);
+    if (t && (!funnel || t.funnel === funnel)) out.push(t);
   }
-  // newest first
+  // nieuwste eerst
   out.sort((a, b) => Number(b.closedAt || 0) - Number(a.closedAt || 0));
   return out;
 }
 
-export async function readAllTrades(limitOpen = 500, limitClosed = 500) {
+/**
+ * Haalt zowel open als closed trades op, optioneel gefilterd op funnel.
+ */
+export async function readAllTrades(limitOpen = 500, limitClosed = 500, funnel = null) {
   const [open, closed] = await Promise.all([
-    readOpenTrades(limitOpen),
-    readClosedTrades(limitClosed),
+    readOpenTrades(limitOpen, funnel),
+    readClosedTrades(limitClosed, funnel),
   ]);
   return { open, closed, all: [...open, ...closed] };
 }
