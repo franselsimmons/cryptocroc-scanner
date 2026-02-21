@@ -33,7 +33,7 @@ export default async function handler(req, res) {
     const secret = process.env.CRON_SECRET || "";
     const authHeader = secret ? { authorization: `Bearer ${secret}` } : {};
 
-    // BELANGRIJK: interne handlers verwachten soms req.url (new URL(req.url,...))
+    // Zorg dat sub-handlers niet crashen als ze new URL(req.url) doen:
     const base = "http://localhost";
 
     const reqOb = {
