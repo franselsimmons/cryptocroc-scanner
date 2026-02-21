@@ -1,10 +1,8 @@
 // /api/cron.js
 import scan from "./scan.js";
-import obSampler from "./ob-sampler.js";
-import obMapRefresh from "./ob_map_refresh.js";
-
-// Gebruik bull core voor requireSecret (werkt voor beide modes)
-import { requireSecret } from "./_core_bull.js";
+import obSampler from "./ob/sampler.js";
+import obMapRefresh from "./ob/map_refresh.js";
+import { requireSecret } from "../lib/_core_bull.js";
 
 export const config = { runtime: "nodejs20.x" };
 
