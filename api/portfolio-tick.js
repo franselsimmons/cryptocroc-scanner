@@ -1,7 +1,6 @@
 // /api/portfolio-tick.js
 import { kv } from "@vercel/kv";
 import {
-  RUNTIME_CONFIG,
   requireSecret,
   nowTs,
   findCoinInLatest,
@@ -9,7 +8,7 @@ import {
   discordCloseMsg,
 } from "./_portfolio_core.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs20.x" };
 
 // KV keys
 const keyMainLatest = (mode) => `latest:${mode}`;
