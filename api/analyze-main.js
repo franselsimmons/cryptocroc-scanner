@@ -1,8 +1,7 @@
 // /api/analyze-main.js
 import { kv } from "@vercel/kv";
-import { RUNTIME_CONFIG } from "./_core_bull.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs20.x" };
 
 // ✅ cores cache (1x laden, daarna hergebruiken)
 let __bull = null;
