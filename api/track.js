@@ -1,11 +1,11 @@
 // /api/track.js
-import { RUNTIME_CONFIG, requireSecret } from "./_core.js";
+import { requireSecret } from "./_core_bull.js";
 import {
   readTrades, writeTrades, readPostWatch, writePostWatch, addPostWatch,
   fetchCgPriceUsdByIds, pnlPctFromPrices, hitSlTp, pushEvent, nowMs
 } from "./_analytics.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs20.x" };
 
 const TTL_MAIN_HOURS = 72;     // MAIN: max 3 dagen
 const TTL_MOON_HOURS = 48;     // MOON: sneller
