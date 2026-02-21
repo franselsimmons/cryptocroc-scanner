@@ -4,9 +4,9 @@ import obSampler from "./ob-sampler.js";
 import obMapRefresh from "./ob_map_refresh.js";
 
 // Gebruik bull core voor requireSecret (werkt voor beide modes)
-import { RUNTIME_CONFIG, requireSecret } from "./_core_bull.js";
+import { requireSecret } from "./_core_bull.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs20.x" };
 
 function makeRes() {
   return {
