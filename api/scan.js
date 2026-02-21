@@ -29,11 +29,16 @@ function inc(map, k) {
   map[key] = (map[key] || 0) + 1;
 }
 
+// ✅ Robuuste extractMetaFromItem: ondersteunt zowel platte als geneste OB-shapes
 function extractMetaFromItem(item) {
-  const consRatio = Number(item?.consistency?.ratio || 0);
-  const obScore = Number(item?.ob?.score ?? 0);
-  const obValid = !!(item?.ob?.valid ?? item?.obValid);
-  const spread = Number(item?.ob?.spreadPct ?? 999);
+  const consRatio = Number(item?.consistency?.ratio || item?.consistencyRatio || 0);
+
+  // OB-score uit verschillende mogelijke paden
+  const obScore = Number(item?.ob?.score ?? item?.obScore ?? 0);
+
+  const obValid = !!(item?.ob?.valid ?? item?.obValid ?? item?.obView?.valid ?? false);
+
+  const spread = Number(item?.ob?.spreadPct ?? item?.spreadPct ?? 999);
 
   return {
     confidence: Number(item?.confidence || 0),
@@ -70,7 +75,7 @@ export default async function handler(req, res) {
       keyLatest,
       keyState,
       keyReset,
-      keyObResult,
+      // keyObResult verwijderd (niet gebruikt)
       keyObSamples,
       keyObResultMap,
       keyObResultMapTs,
@@ -351,18 +356,24 @@ export default async function handler(req, res) {
 
       if (basicAlmostOk || prev.stage === "ALMOST" || prev.stage === "ENTRY") {
         const ob = obMap?.[String(sym).toUpperCase()] || null;
-        obView = ob
-          ? {
-              valid: !!ob.valid,
-              stale: !!ob.stale || obMapStale, // map te oud = behandelen als stale
-              score: Number(ob?.ob?.score ?? ob?.avgScore ?? 0),
-              spreadPct: Number(ob?.ob?.spreadPct ?? 999),
-              lor: Number(ob?.ob?.lor ?? 1),
-              agree: Number(ob?.agree ?? 0),
-              depthMinUsd1p: Number(ob?.ob?.depthMinUsd1p ?? 0),
-              reason: ob?.reason || "",
-            }
-          : null;
+        if (ob) {
+          // Bereken hoe oud dit OB-resultaat is (op basis van ob.ts)
+          const obAgeMs = Date.now() - Number(ob?.ts || 0);
+          const obTooOld = obAgeMs > 20 * 60 * 1000; // ouder dan 20 min
+
+          obView = {
+            valid: !!ob.valid,
+            stale: !!ob.stale || obMapStale || obTooOld,
+            score: Number(ob?.ob?.score ?? ob?.avgScore ?? 0),
+            spreadPct: Number(ob?.ob?.spreadPct ?? 999),
+            lor: Number(ob?.ob?.lor ?? 1),
+            agree: Number(ob?.agree ?? 0),
+            depthMinUsd1p: Number(ob?.ob?.depthMinUsd1p ?? 0),
+            reason: ob?.reason || "",
+          };
+        } else {
+          obView = null;
+        }
 
         if (SETTINGS.entry.obSlopeEnabled) {
           const samples = await kv.get(keyObSamples(mode, sym));
