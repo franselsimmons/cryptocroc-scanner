@@ -1,4 +1,4 @@
-// /api/moon-scan.js
+// /api/moon/scan.js
 import { kv } from "@vercel/kv";
 import {
   RUNTIME_CONFIG,
@@ -46,7 +46,7 @@ import {
   fmtTs,
   durMinutes,
   fmtModeLabel,
-} from "./_moon_core.js";
+} from "../../lib/_moon_core.js";
 
 import {
   uid,
@@ -55,7 +55,7 @@ import {
   writeTrades,
   addPostWatch,
   pnlPctFromPrices,
-} from "./_analytics.js";
+} from "../../lib/_analytics.js";
 
 export const config = RUNTIME_CONFIG;
 
