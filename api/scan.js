@@ -1,601 +1,226 @@
-// /api/scan.js
 import { kv } from "@vercel/kv";
-import { uid, pushEvent } from "./_analytics.js";
+import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
 
-export const config = { runtime: "nodejs20.x" };
+export const config = RUNTIME_CONFIG;
 
-// Helper voor atomische NX-set (betrouwbaar in Vercel KV)
-async function setNx(key, value, exSec) {
-  if (typeof kv.setnx === "function") {
-    const ok = await kv.setnx(key, value);
-    if (ok) await kv.expire(key, exSec);
-    return !!ok;
-  }
-  // fallback: check-then-set (niet perfect atomisch, maar beter dan niets)
-  const exists = await kv.get(key);
-  if (exists) return false;
-  await kv.set(key, value, { ex: exSec });
-  return true;
+async function fetchJson(url) {
+  const r = await fetch(url, { headers: { accept: "application/json" } });
+  const t = await r.text();
+  let j = null;
+  try { j = JSON.parse(t); } catch {}
+  if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 160)}`);
+  return j;
 }
 
-// Simpelere kantbepaling op basis van change24
-function sideFromChange(change24) {
-  return Number(change24) >= 0 ? "BULL" : "BEAR";
+// 1) BTC gate (simpel)
+async function fetchBtcGate() {
+  const url =
+    "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1&sparkline=false&price_change_percentage=24h";
+  const arr = await fetchJson(url);
+  const b = arr?.[0];
+  const chg24 = Number(b?.price_change_percentage_24h || 0);
+  const high = Number(b?.high_24h || 0);
+  const low = Number(b?.low_24h || 0);
+  const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
+
+  let state = "NEUTRAL";
+  if (chg24 >= 0.6) state = "BULL";
+  if (chg24 <= -0.6) state = "BEAR";
+
+  return { state, chg24: +chg24.toFixed(3), range24: +range24.toFixed(3) };
 }
 
-function inc(map, k) {
-  const key = String(k || "unknown");
-  map[key] = (map[key] || 0) + 1;
+// 2) Universe top coins
+async function fetchCgTop(limit) {
+  const per = Math.min(250, Math.max(50, Number(limit || 250)));
+  const url =
+    `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=${per}&page=1&sparkline=false&price_change_percentage=1h,24h`;
+  const arr = await fetchJson(url);
+
+  return (arr || []).map((c) => {
+    const price = Number(c?.current_price || 0);
+    const high = Number(c?.high_24h || 0);
+    const low = Number(c?.low_24h || 0);
+    const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
+
+    return {
+      id: c?.id,
+      symbol: String(c?.symbol || "").toUpperCase(),
+      name: c?.name,
+      price,
+      volume: Number(c?.total_volume || 0),
+      marketCap: Number(c?.market_cap || 0),
+      change24: Number(c?.price_change_percentage_24h || 0),
+      change1h: Number(c?.price_change_percentage_1h_in_currency || 0),
+      range24
+    };
+  });
 }
 
-// ✅ Robuuste extractMetaFromItem: ondersteunt zowel platte als geneste OB-shapes
-function extractMetaFromItem(item) {
-  const consRatio = Number(item?.consistency?.ratio || item?.consistencyRatio || 0);
+function passRadar(core, c) {
+  const R = core.SETTINGS.radar;
+  const vm = core.computeVm(c.volume, c.marketCap);
 
-  // OB-score uit verschillende mogelijke paden
-  const obScore = Number(item?.ob?.score ?? item?.obScore ?? 0);
+  if (c.marketCap < R.mcapMin) return { ok: false, why: "mcap too low" };
+  if (c.marketCap > R.mcapMax) return { ok: false, why: "mcap too high" };
+  if (c.volume < R.volMin) return { ok: false, why: "volume too low" };
+  if (vm < R.vmMin) return { ok: false, why: "vm too low" };
+  if (Math.abs(c.change24) > R.maxAbsChg24) return { ok: false, why: "chg24 too high" };
+  if (c.range24 > R.maxRange24) return { ok: false, why: "range24 too high" };
 
-  const obValid = !!(item?.ob?.valid ?? item?.obValid ?? item?.obView?.valid ?? false);
-
-  const spread = Number(item?.ob?.spreadPct ?? item?.spreadPct ?? 999);
-
-  return {
-    confidence: Number(item?.confidence || 0),
-    consistencyRatio: consRatio,
-    obScore,
-    obValid,
-    spreadPct: spread,
-    vm: Number(item?.vm || 0),
-    volAcc: Number(item?.volAcc || 0),
-  };
+  return { ok: true, vm };
 }
 
-function openIndexKey({ funnel, mode, symbol }) {
-  return `open:${funnel}:${mode}:${String(symbol || "").toUpperCase()}`;
+function stageFromSimple(mode, c) {
+  // simpel funnel gedrag:
+  // - BUILDUP: vm hoog + range redelijk
+  // - ALMOST: change24 in jouw richting + vm hoog
+  // - ENTRY: ALMOST + OB valid + confidence
+  // OB gate gebeurt later (ENTRY check)
+
+  const vm = c.vm;
+  const range = c.range24;
+  const chg24 = c.change24;
+
+  const wantUp = mode === "bull";
+  const inDir = wantUp ? chg24 >= 0.6 : chg24 <= -0.6;
+
+  if (vm >= 0.22 && range <= 18 && inDir) return "ALMOST";
+  if (vm >= 0.16 && range <= 22) return "BUILDUP";
+  return "RADAR";
 }
 
 export default async function handler(req, res) {
   try {
-    const mode = String(req.query?.mode || "bull").toLowerCase();
-    if (mode !== "bull" && mode !== "bear") {
-      res.statusCode = 400;
-      res.setHeader("content-type", "application/json");
-      return res.end(JSON.stringify({ ok: false, error: "mode must be bull or bear" }));
-    }
-
-    // ✅ eerst core laden, dan pas requireSecret gebruiken
-    const core = await import(`./_core_${mode}.js`);
-
-    const {
-      SETTINGS,
-
-      requireSecret,
-
-      keyLatest,
-      keyState,
-      keyReset,
-      // keyObResult verwijderd (niet gebruikt)
-      keyObSamples,
-      keyObResultMap,
-      keyObResultMapTs,
-      keyEntryLog,
-      keyDiagList,
-      keyDiagSnap,
-
-      fetchCoinGeckoTopCached,
-      fetchBTCGateCached,
-      getBitgetSpotUsdtSymbols,
-      fetchBitgetAtr1hPctCached,
-
-      applySpikeGuard,
-
-      updateSideHistory,
-      calcConsistency,
-      updatePriceHist,
-      calcChange1hPct,
-      calcObSlope,
-
-      nextDesiredStage,
-      stageRank,
-
-      webhookForStage,
-      sendDiscord,
-      fmtCoinLine,
-
-      computeConfidence,
-      computeAtrPctFromPriceHist,
-      computeSLTP,
-
-      passEntryFromObPlus,
-      allocPctRecommended,
-      passRadar,
-      passBuildup,
-      passAlmost,
-
-      isAllowedUniverseCoin,
-    } = core;
-
     if (!requireSecret(req, res)) return;
 
-    // helpers die core keys nodig hebben -> binnen handler
-    async function saveDiag(diag) {
-      try {
-        if (typeof kv.lpush === "function" && typeof kv.ltrim === "function") {
-          await kv.lpush(keyDiagList(mode), JSON.stringify(diag));
-          await kv.ltrim(keyDiagList(mode), 0, 200);
-        } else {
-          await kv.set(keyDiagSnap(mode), diag, { ex: 60 * 60 * 24 * 7 });
-        }
-      } catch {}
-    }
-
-    async function bestEffortLogEntry(entryObj) {
-      try {
-        if (typeof kv.lpush === "function") {
-          await kv.lpush(keyEntryLog, JSON.stringify(entryObj));
-          if (typeof kv.ltrim === "function") await kv.ltrim(keyEntryLog, 0, 500);
-        } else {
-          const k = `log:entry:${entryObj.ts}:${entryObj.mode}:${entryObj.symbol}`;
-          await kv.set(k, entryObj, { ex: 60 * 60 * 24 * 30 });
-        }
-      } catch {}
-    }
-
-    // ----- trade openen in KV -----
-    async function openTradeKV({ funnel, mode, c, sltp, conf, obView, sizing, entryMetaExtra = {}, btc, atrPct }) {
-      const symbol = String(c.symbol || "").toUpperCase();
-      const idxKey = openIndexKey({ funnel, mode, symbol });
-
-      // ✅ race-safe: gebruik setNx helper
-      const ok = await setNx(idxKey, "1", 60 * 60 * 24 * 14); // 14 dagen
-      if (!ok) return null;
-
-      const id = uid(funnel);
-      const now = Date.now();
-
-      // ✅ portfolio overlap (uit trades:open set)
-      const openIds = await kv.smembers("trades:open");
-      const openTradesCountAtEntry = Array.isArray(openIds) ? openIds.length : 0;
-
-      // ✅ fee model (schatting)
-      const feeModel = "estimate";
-      const feePctPerSide = 0.10; // 0.10% per side
-      const feesPaidPctAssumed = feePctPerSide * 2;
-
-      const trade = {
-        id,
-        funnel,
-        mode,
-        symbol,
-        cgId: c.id,
-
-        status: "OPEN",
-        openedAt: now,
-        closedAt: null,
-        closeReason: null,
-
-        stageAtEntry: "ENTRY",
-
-        entryPrice: Number(c.price),
-        lastPrice: Number(c.price),
-        lastPriceTs: now,
-        lastValidPrice: Number(c.price),
-
-        // TP/SL uit core
-        sl: Number(sltp.sl),
-        tp: Number(sltp.tp),
-
-        // ✅ context bij entry
-        btcStateAtEntry: String(btc?.state || "NEUTRAL"),
-        btcChg24AtEntry: Number(btc?.chg24 || 0),
-        btcRange24AtEntry: Number(btc?.range24 || 0),
-        atrPctAtEntry: Number(atrPct || 0),
-
-        // ✅ portfolio overlap
-        openTradesCountAtEntry,
-
-        // ✅ fees (schatting)
-        feeModel,
-        feePctPerSide,
-        feesPaidPctAssumed,
-
-        // live perf
-        pnlPct: 0,
-        netPnlPct: 0,
-        mfePct: 0,
-        maePct: 0,
-        maxGivebackPct: 0,
-
-        // giveback auto policy (trail naar BE)
-        givebackTrailEnabled: true,
-        givebackTrailTriggerPct: 6,
-        trailingActive: false,
-        trailingStop: null,
-
-        entryMeta: {
-          ...extractMetaFromItem(entryMetaExtra),
-          confidence: Number(conf || 0),
-          spreadPct: Number(obView?.spreadPct ?? 999),
-          depthMinUsd1p: Number(obView?.depthMinUsd1p ?? 0),
-          obScore: Number(obView?.score ?? 0),
-          obAgree: Number(obView?.agree ?? 0),
-          vm: Number(c.vm || 0),
-        },
-
-        sizing,
-      };
-
-      await kv.set(`trade:${id}`, trade, { ex: 60 * 60 * 24 * 60 }); // 60 dagen bewaren
-      await kv.sadd("trades:open", id);
-
-      await pushEvent(funnel, {
-        ts: now,
-        funnel,
-        mode,
-        symbol,
-        type: "TRADE_OPEN",
-        entryPrice: trade.entryPrice,
-        sl: trade.sl,
-        tp: trade.tp,
-        confidence: trade.entryMeta.confidence,
-        vm: trade.entryMeta.vm,
-        btcState: trade.btcStateAtEntry,
-        atrPct: trade.atrPctAtEntry,
-      });
-
-      return trade;
-    }
+    const mode = getMode(req);
+    const core = await import(`../lib/_core_${mode}.js`);
 
     const now = Date.now();
-    const btc = await fetchBTCGateCached();
+    const btc = await fetchBtcGate();
 
-    // bear blokkeren als BTC bull is
-    const btcBlocked = (mode === "bear" && btc.state === "BULL") || (mode === "bull" && btc.state === "BEAR");
+    // BTC soft gate
+    if (btc.state !== "NEUTRAL") {
+      if (mode === "bull" && btc.state === "BEAR") {
+        const out = { ok: true, ts: now, mode, btc, counts: { entry:0, almost:0, buildup:0, radar:0 }, funnel: { entry:[], almost:[], buildup:[], radar:[] }, note: "Blocked by BTC gate" };
+        await kv.set(core.keyLatest(mode), out);
+        res.statusCode = 200; res.setHeader("content-type", "application/json; charset=utf-8");
+        return res.end(JSON.stringify(out));
+      }
+      if (mode === "bear" && btc.state === "BULL") {
+        const out = { ok: true, ts: now, mode, btc, counts: { entry:0, almost:0, buildup:0, radar:0 }, funnel: { entry:[], almost:[], buildup:[], radar:[] }, note: "Blocked by BTC gate" };
+        await kv.set(core.keyLatest(mode), out);
+        res.statusCode = 200; res.setHeader("content-type", "application/json; charset=utf-8");
+        return res.end(JSON.stringify(out));
+      }
+    }
 
-    const symbolsSet = await getBitgetSpotUsdtSymbols();
-    const all = await fetchCoinGeckoTopCached();
-    // ✅ Universum filter (alleen blacklist + sanity)
-    const rawCoins = all
-      .filter((c) => symbolsSet.has(c.symbol))
-      .filter(isAllowedUniverseCoin);
-
-    const resetAt = (await kv.get(keyReset(mode))) || 0;
-    const state = (await kv.get(keyState(mode))) || {};
-
-    // --- Lees OB map 1x voor de hele loop ---
-    const obMap = (await kv.get(keyObResultMap(mode))) || {};
-    const obMapTs = (await kv.get(keyObResultMapTs(mode))) || 0;
-    const obMapStale = Date.now() - Number(obMapTs || 0) > 20 * 60 * 1000; // 20 min
+    const cg = await fetchCgTop(core.SETTINGS.CG_TOP);
 
     const radar = [];
     const buildup = [];
     const almost = [];
     const entry = [];
 
-    const diag = {
-      ts: now,
-      mode,
-      btc,
-      btcBlocked,
-      settings: {
-        entry: {
-          samplesWindowSec: SETTINGS.entry.samplesWindowSec,
-          samplesNeed: SETTINGS.entry.samplesNeed,
-          minAgree: SETTINGS.entry.minAgree,
-          minDepthBull: SETTINGS.entry.minDepthUsd1pBull,
-          minDepthBear: SETTINGS.entry.minDepthUsd1pBear,
-          minConfidence: SETTINGS.entry.minConfidence,
-          entryConsistencyMin: SETTINGS.entry.entryConsistencyMin,
-          obScoreMin: SETTINGS.entry.obScoreMin,
-        },
-        risk: SETTINGS.risk,
-      },
-      counts: { radar: 0, buildup: 0, almost: 0, entry: 0 },
-      reasons: { entryGate: {}, obReason: {} },
-    };
+    // state (optioneel; voor health count)
+    const state = (await kv.get(core.keyState(mode))) || {};
 
-    for (const raw of rawCoins) {
-      const sym = raw.symbol;
+    for (const c of cg) {
+      const radarGate = passRadar(core, c);
+      if (!radarGate.ok) continue;
 
-      const prev = state[sym] || {
-        stage: "RADAR",
-        stageScans: 0,
-        enteredAt: now,
-        priceHist: [],
-        sideHist: [],
-        metricsHist: { vol: [], range: [], vm: [], chg: [] },
-        volHist: [],
-      };
+      const vm = radarGate.vm;
+      const stageBase = stageFromSimple(mode, { ...c, vm });
 
-      const wasReset = Number(prev.enteredAt || 0) < resetAt;
-      if (wasReset) {
-        prev.stage = "RADAR";
-        prev.stageScans = 0;
-        prev.enteredAt = now;
-        prev.priceHist = [];
-        prev.sideHist = [];
-        prev.metricsHist = { vol: [], range: [], vm: [], chg: [] };
-        prev.volHist = [];
-      }
+      // OB result (als aanwezig)
+      const ob = await kv.get(core.keyObResult(mode, c.symbol));
+      const obValid = !!ob?.valid;
+      const spreadPct = Number(ob?.ob?.spreadPct ?? ob?.spreadPct ?? 999);
+      const depthMinUsd1p = Number(ob?.ob?.depthMinUsd1p ?? ob?.depthMinUsd1p ?? 0);
+      const obScore = Number(ob?.ob?.score ?? ob?.score ?? 0);
 
-      const { patched: c, nextMetrics } = applySpikeGuard(prev.metricsHist, raw);
-
-      if (!passRadar(c, btc.range24)) {
-        delete state[sym];
-        continue;
-      }
-
-      const priceHist = updatePriceHist(prev.priceHist, c.price);
-      const change1h = calcChange1hPct(priceHist);
-
-      const volHist = Array.isArray(prev.volHist) ? prev.volHist.slice(-5) : [];
-      volHist.push(c.volume);
-
-      // ✅ VolAcc met baseline (voorkomt extreme uitschieters)
-      const sum = (a) => a.reduce((x, y) => x + (Number(y) || 0), 0);
-      const last3 = volHist.slice(-3);
-      const prev3 = volHist.slice(-6, -3);
-      const last3Sum = sum(last3);
-      const prev3Sum = sum(prev3);
-      const VOL_BASELINE = 150_000; // aanpasbaar
-      const volAcc = (prev3Sum >= VOL_BASELINE) ? (last3Sum / prev3Sum) : 1.0;
-
-      const wantedSide = mode === "bull" ? "BULL" : "BEAR";
-      // ✅ Gebruik sideFromChange
-      const sideNow = sideFromChange(c.change24);
-      const sideHist = updateSideHistory(prev.sideHist, sideNow);
-      const cons = calcConsistency(sideHist, wantedSide);
-
-      // ✅ Orderbook uit de map halen in plaats van per coin KV-get
-      let obView = null;
-      let obSlope = null;
-
-      // Eerst bepalen of coin "bijna interessant" is zonder OB
-      const basicAlmostOk = passAlmost(c, mode, priceHist, cons.ok);
-
-      if (basicAlmostOk || prev.stage === "ALMOST" || prev.stage === "ENTRY") {
-        const ob = obMap?.[String(sym).toUpperCase()] || null;
-        if (ob) {
-          // Bereken hoe oud dit OB-resultaat is (op basis van ob.ts)
-          const obAgeMs = Date.now() - Number(ob?.ts || 0);
-          const obTooOld = obAgeMs > 20 * 60 * 1000; // ouder dan 20 min
-
-          obView = {
-            valid: !!ob.valid,
-            stale: !!ob.stale || obMapStale || obTooOld,
-            score: Number(ob?.ob?.score ?? ob?.avgScore ?? 0),
-            spreadPct: Number(ob?.ob?.spreadPct ?? 999),
-            lor: Number(ob?.ob?.lor ?? 1),
-            agree: Number(ob?.agree ?? 0),
-            depthMinUsd1p: Number(ob?.ob?.depthMinUsd1p ?? 0),
-            reason: ob?.reason || "",
-          };
-        } else {
-          obView = null;
-        }
-
-        if (SETTINGS.entry.obSlopeEnabled) {
-          const samples = await kv.get(keyObSamples(mode, sym));
-          obSlope = calcObSlope(samples);
-        }
-      }
-
-      if (obView?.reason) inc(diag.reasons.obReason, obView.reason);
-
-      const conf = computeConfidence({
-        obScore: obView?.score ?? 0,
-        obAgree: obView?.agree ?? 0,
-        vm: c.vm,
-        volAcc,
-        btc,
+      const confidence = core.computeConfidence({
+        vm,
+        change24: c.change24,
+        range24: c.range24,
+        obValid
       });
 
-      // ✅ Alleen entryGate berekenen als OB bekeken is
-      let entryGate = { ok: false, why: "OB skipped" };
-      if (obView) {
-        entryGate = passEntryFromObPlus({
-          obView,
-          mode,
-          consistencyRatio: cons.ratio,
-          confidence: conf,
-          obSlope,
-        });
-        inc(diag.reasons.entryGate, entryGate.why);
-      }
-      const strictEntryOk = entryGate.ok;
+      // ENTRY gate (strict)
+      let stage = stageBase;
+      let entryGate = "n/a";
 
-      let desired = btcBlocked
-        ? "RADAR"
-        : nextDesiredStage(c, mode, priceHist, cons.ok, btc.range24, strictEntryOk);
-
-      // stage machine
-      let stage = prev.stage || "RADAR";
-      let stageScans = Number(prev.stageScans || 0);
-      let enteredAt = Number(prev.enteredAt || now);
-
-      let stageChanged = false;
-      const fromStage = stage;
-
-      if (btcBlocked) {
-        if (stage === "RADAR") stageScans += 1;
+      if (stageBase === "ALMOST") {
+        // Als OB valid is en thresholds ok -> ENTRY
+        const E = core.SETTINGS.entry;
+        if (!ob) entryGate = "OB missing";
+        else if (!obValid) entryGate = "OB validating";
+        else if (confidence < E.minConfidence) entryGate = "Confidence < min";
+        else if (spreadPct > E.spreadMaxPct) entryGate = "Spread too wide";
+        else if (depthMinUsd1p < E.depthMinUsd1p) entryGate = "Depth too thin (<$)";
+        else if (Math.abs(obScore) < E.obScoreMin) entryGate = "OB score too low";
         else {
-          stage = "RADAR";
-          stageScans = 1;
-          enteredAt = now;
-          stageChanged = true;
-        }
-      } else {
-        const prevRank = stageRank(stage);
-        const desiredRank = stageRank(desired);
-
-        let nextStage = stage;
-
-        if (desiredRank > prevRank) {
-          if (stageScans >= SETTINGS.minScansPerStage) {
-            if (desiredRank === prevRank + 1) nextStage = desired;
-            else nextStage = prevRank === 1 ? "BUILDUP" : prevRank === 2 ? "ALMOST" : "ENTRY";
-          }
-        } else if (desiredRank < prevRank) {
-          nextStage = desired;
-        }
-
-        if (nextStage === stage) stageScans += 1;
-        else {
-          stage = nextStage;
-          stageScans = 1;
-          enteredAt = now;
-          stageChanged = true;
-        }
-      }
-
-      // ✅ ATR alleen ophalen als coin in ALMOST/ENTRY is (of daarvoor kandidaat)
-      const atrFromScan = computeAtrPctFromPriceHist(priceHist);
-      let atrObj = null;
-      if (basicAlmostOk || prev.stage === "ALMOST" || prev.stage === "ENTRY" || stage === "ALMOST" || stage === "ENTRY") {
-        atrObj = await fetchBitgetAtr1hPctCached(sym);
-      }
-      const atrPct = atrObj?.atrPct && Number.isFinite(atrObj.atrPct) ? atrObj.atrPct : atrFromScan;
-
-      // confidence meegeven
-      const sltp = computeSLTP({ mode, price: c.price, atrPct, confidence: conf });
-
-      const sizing = allocPctRecommended({ stage, confidence: conf, btc });
-
-      if (!btcBlocked && stageChanged) {
-        let hook = webhookForStage(stage);
-        if (hook) {
-          const msg = fmtCoinLine(
-            c,
-            mode,
-            stage,
-            `Confidence: ${conf}/100 • EntryGate: ${entryGate.why}\nSL: $${sltp.sl.toFixed(6)} | TP: $${sltp.tp.toFixed(6)}`,
-            now
-          );
-          await sendDiscord(hook, msg);
-        }
-      }
-
-      state[sym] = {
-        stage,
-        stageScans,
-        enteredAt,
-        priceHist,
-        sideHist,
-        metricsHist: nextMetrics,
-        volHist,
-      };
-
-      if (!btcBlocked && stageChanged && stage === "ENTRY") {
-        // Gebruik de KV-opener
-        const opened = await openTradeKV({
-          funnel: "main",
-          mode,
-          c,
-          sltp,
-          conf,
-          obView,
-          sizing,
-          btc,
-          atrPct,
-          entryMetaExtra: {
-            confidence: conf,
-            vm: c.vm,
-            volAcc,
-            consistency: cons,
-          },
-        });
-
-        if (opened) {
-          await bestEffortLogEntry({
-            ts: now,
-            symbol: sym,
-            cgId: c.id,
-            mode,
-            price: c.price,
-            change24: c.change24,
-            change1h,
-            range24: c.range24,
-            volume: c.volume,
-            marketCap: c.marketCap,
-            vm: c.vm,
-            obScore: obView?.score ?? null,
-            obAgree: obView?.agree ?? null,
-            depthMinUsd1p: obView?.depthMinUsd1p ?? null,
-            consistency: cons,
-            volAcc,
-            btc,
-            confidence: conf,
-            sizing,
-            sl: sltp.sl,
-            tp: sltp.tp,
-            atrPct,
-            atrSource: atrObj?.source || "scan",
-            tradeId: opened.id,
-          });
+          stage = "ENTRY";
+          entryGate = "OK";
         }
       }
 
       const item = {
         id: c.id,
-        symbol: sym,
+        symbol: c.symbol,
         name: c.name,
         price: c.price,
         volume: c.volume,
         marketCap: c.marketCap,
-        change24: c.change24,
-        change1h,
-        range24: c.range24,
-        vm: c.vm,
+        change24: +c.change24.toFixed(4),
+        change1h: +c.change1h.toFixed(4),
+        range24: +c.range24.toFixed(4),
+        vm: +vm.toFixed(6),
+        confidence,
         stage,
-        stageScans,
-        confidence: conf,
-        atrPct,
-        sl: sltp.sl,
-        tp: sltp.tp,
-        why: { desired, entryGate: entryGate.why },
+        ob: ob ? {
+          valid: !!ob.valid,
+          reason: String(ob.reason || ""),
+          score: Number(obScore),
+          spreadPct: Number(spreadPct),
+          depthMinUsd1p: Number(depthMinUsd1p)
+        } : { status: "none" },
+        why: { entryGate }
       };
 
       if (stage === "ENTRY") entry.push(item);
       else if (stage === "ALMOST") almost.push(item);
       else if (stage === "BUILDUP") buildup.push(item);
       else radar.push(item);
+
+      state[item.symbol] = { lastSeenAt: now, stage };
     }
 
-    entry.sort((a, b) => b.confidence - a.confidence);
-    almost.sort((a, b) => b.confidence - a.confidence);
-    buildup.sort((a, b) => b.confidence - a.confidence);
-    radar.sort((a, b) => b.vm - a.vm);
-
-    const radarLimited = radar.slice(0, SETTINGS.RADAR_LIMIT);
-
-    diag.counts = {
-      entry: entry.length,
-      almost: almost.length,
-      buildup: buildup.length,
-      radar: radarLimited.length,
-    };
+    // sort
+    entry.sort((a,b)=>b.confidence-a.confidence || b.vm-a.vm);
+    almost.sort((a,b)=>b.confidence-a.confidence || b.vm-a.vm);
+    buildup.sort((a,b)=>b.vm-a.vm);
+    radar.sort((a,b)=>b.vm-a.vm);
 
     const result = {
       ok: true,
       ts: now,
-      epoch: Math.floor(now / 1000),
       mode,
       btc,
-      counts: diag.counts,
-      funnel: { entry, almost, buildup, radar: radarLimited },
-      note: btcBlocked ? `BTC gate BLOCKED: ${btc.state} (mode ${mode}) -> RADAR only` : undefined,
+      counts: { entry: entry.length, almost: almost.length, buildup: buildup.length, radar: radar.length },
+      funnel: { entry, almost, buildup, radar }
     };
 
-    await kv.set(keyLatest(mode), result);
-    await kv.set(keyState(mode), state);
-    await saveDiag(diag);
+    await kv.set(core.keyLatest(mode), result);
+    await kv.set(core.keyState(mode), state);
 
     res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
+    res.setHeader("content-type", "application/json; charset=utf-8");
     res.end(JSON.stringify(result));
   } catch (e) {
-    res.statusCode = 500;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: false, error: String(e) }));
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
