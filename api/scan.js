@@ -72,6 +72,8 @@ export default async function handler(req, res) {
       keyReset,
       keyObResult,
       keyObSamples,
+      keyObResultMap,
+      keyObResultMapTs,
       keyEntryLog,
       keyDiagList,
       keyDiagSnap,
@@ -256,6 +258,11 @@ export default async function handler(req, res) {
     const resetAt = (await kv.get(keyReset(mode))) || 0;
     const state = (await kv.get(keyState(mode))) || {};
 
+    // --- Lees OB map 1x voor de hele loop ---
+    const obMap = (await kv.get(keyObResultMap(mode))) || {};
+    const obMapTs = (await kv.get(keyObResultMapTs(mode))) || 0;
+    const obMapStale = Date.now() - Number(obMapTs || 0) > 20 * 60 * 1000; // 20 min
+
     const radar = [];
     const buildup = [];
     const almost = [];
@@ -335,7 +342,7 @@ export default async function handler(req, res) {
       const sideHist = updateSideHistory(prev.sideHist, sideNow);
       const cons = calcConsistency(sideHist, wantedSide);
 
-      // ✅ Orderbook alleen ophalen als coin bijna interessant is
+      // ✅ Orderbook uit de map halen in plaats van per coin KV-get
       let obView = null;
       let obSlope = null;
 
@@ -343,11 +350,11 @@ export default async function handler(req, res) {
       const basicAlmostOk = passAlmost(c, mode, priceHist, cons.ok);
 
       if (basicAlmostOk || prev.stage === "ALMOST" || prev.stage === "ENTRY") {
-        const ob = await kv.get(keyObResult(mode, sym));
+        const ob = obMap?.[String(sym).toUpperCase()] || null;
         obView = ob
           ? {
               valid: !!ob.valid,
-              stale: !!ob.stale,
+              stale: !!ob.stale || obMapStale, // map te oud = behandelen als stale
               score: Number(ob?.ob?.score ?? ob?.avgScore ?? 0),
               spreadPct: Number(ob?.ob?.spreadPct ?? 999),
               lor: Number(ob?.ob?.lor ?? 1),
