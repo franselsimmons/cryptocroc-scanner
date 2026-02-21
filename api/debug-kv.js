@@ -1,6 +1,6 @@
 // /api/debug-kv.js
 import { kv } from "@vercel/kv";
-import { requireSecret } from "./_core_bull.js";
+import { requireSecret } from "../lib/_core_bull.js";
 
 export const config = { runtime: "nodejs" };
 
