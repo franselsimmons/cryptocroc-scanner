@@ -1,13 +1,13 @@
 // /api/analyze.js
 import { kv } from "@vercel/kv";
 
+export const config = { runtime: "nodejs20.x" };
+
 // MAIN (bestaand)
-import { RUNTIME_CONFIG, requireSecret, keyDiagList, keyDiagSnap } from "./_core.js";
+import { requireSecret, keyDiagList, keyDiagSnap } from "./_core_bull.js";
 
 // MOON (nieuw, alleen gebruikt als ?funnel=moon)
 import { keyMoonDiagList, keyMoonDiagSnap } from "./_moon_core.js";
-
-export const config = RUNTIME_CONFIG;
 
 function mergeCountMaps(target, src) {
   const out = target || {};
