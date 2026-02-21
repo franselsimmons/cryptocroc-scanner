@@ -4,13 +4,13 @@ import { readAllTrades } from "./_trades_kv.js";
 
 export const config = { runtime: "nodejs20.x" };
 
-// ✅ cores cache (1x laden, daarna hergebruiken)
+// ✅ cores cache (1x laden, daarna hergebruiken) — imports uit /lib
 let __bull = null;
 let __bear = null;
 
 async function loadCores() {
-  if (!__bull) __bull = await import("./_core_bull.js");
-  if (!__bear) __bear = await import("./_core_bear.js");
+  if (!__bull) __bull = await import("../lib/_core_bull.js");
+  if (!__bear) __bear = await import("../lib/_core_bear.js");
   return { bull: __bull, bear: __bear };
 }
 
