@@ -1,6 +1,6 @@
 // /api/logs.js
 import { kv } from "@vercel/kv";
-import { requireSecret, keyEntryLog } from "./_core_bull.js";
+import { requireSecret, keyEntryLog } from "../lib/_core_bull.js";
 
 export const config = { runtime: "nodejs20.x" };
 
