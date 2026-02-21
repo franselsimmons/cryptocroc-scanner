@@ -1,8 +1,7 @@
 // /api/latest.js
 import { kv } from "@vercel/kv";
-import { RUNTIME_CONFIG } from "./_core_bull.js"; // runtime config is hetzelfde
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs20.x" };
 
 export default async function handler(req, res) {
   try {
