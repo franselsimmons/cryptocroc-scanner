@@ -1,11 +1,10 @@
 import { kv } from "@vercel/kv";
-import { RUNTIME_CONFIG, requireSecret, getMode } from "../../lib/_runtime.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs" };
 
-// Bitget v2 orderbook spot
+// ================== BITGET V2 ORDERBOOK (SPOT) ==================
 async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
-  const base = String(baseSymbol || "").toUpperCase().trim();
+  const base = String(baseSymbol || "").toUpperCase();
   if (!base) return { ok: false, status: 400, msg: "Missing symbol" };
 
   const pair = `${base}USDT`;
@@ -18,16 +17,42 @@ async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
 
   const r = await fetch(url, { headers: { accept: "application/json" } });
   const text = await r.text();
+
   let j = null;
   try { j = JSON.parse(text); } catch {}
 
-  if (!r.ok) return { ok: false, status: r.status, msg: "Bitget failed", url, preview: text.slice(0, 200) };
-  if (String(j?.code || "") !== "00000") return { ok: false, status: 400, msg: j?.msg || "Bitget non-success", url, preview: text.slice(0,200) };
+  if (!r.ok) {
+    return {
+      ok: false,
+      status: r.status,
+      msg: j?.msg || "Bitget orderbook failed",
+      url,
+      preview: text.slice(0, 200),
+    };
+  }
+
+  if (String(j?.code || "") !== "00000") {
+    return {
+      ok: false,
+      status: 400,
+      msg: j?.msg || "Bitget returned non-success code",
+      url,
+      preview: text.slice(0, 200),
+    };
+  }
 
   const depth = j?.data;
-  if (!depth?.bids?.length || !depth?.asks?.length) return { ok: false, status: 200, msg: "Empty orderbook", url };
+  if (!depth?.bids?.length || !depth?.asks?.length) {
+    return {
+      ok: false,
+      status: 200,
+      msg: "Empty orderbook",
+      url,
+      preview: text.slice(0, 200),
+    };
+  }
 
-  return { ok: true, depth, url };
+  return { ok: true, url, depth };
 }
 
 function sumDepth(levels, mid, pct, isBid) {
@@ -83,9 +108,10 @@ function computeObSample(depth) {
   return { ts: Date.now(), score, spreadPct, lor, bidUsd, askUsd, mid, depthMinUsd1p };
 }
 
-function prune(samples, windowSec) {
+function pruneSamples(samples, SETTINGS) {
   const now = Date.now();
-  const winMs = Number(windowSec || 900) * 1000;
+  const winMs = Number(SETTINGS?.entry?.samplesWindowSec || 3600) * 1000;
+
   const arr = Array.isArray(samples) ? samples : [];
   return arr
     .map((s) => ({
@@ -96,31 +122,40 @@ function prune(samples, windowSec) {
       bidUsd: Number(s?.bidUsd ?? 0),
       askUsd: Number(s?.askUsd ?? 0),
       mid: Number(s?.mid ?? 0),
-      depthMinUsd1p: Number(s?.depthMinUsd1p ?? 0)
+      depthMinUsd1p: Number(s?.depthMinUsd1p ?? 0),
     }))
     .filter((s) => s.ts > 0 && Number.isFinite(s.score))
     .filter((s) => now - s.ts <= winMs)
-    .sort((a,b)=>a.ts-b.ts)
+    .sort((a, b) => a.ts - b.ts)
     .slice(-60);
 }
 
-function validate(mode, fresh, need, minAgree) {
-  if (fresh.length < need) return { valid: false, reason: "Not enough samples", agree: 0, avgScore: 0 };
+function validateSamples(mode, samplesFresh, SETTINGS) {
+  const fresh = pruneSamples(samplesFresh, SETTINGS);
+
+  const need = Number(SETTINGS?.entry?.samplesNeed || 3);
+  const minAgree = Number(SETTINGS?.entry?.minAgree || 2);
+
+  if (fresh.length < need) {
+    return { valid: false, reason: "Not enough samples", fresh };
+  }
 
   const lastN = fresh.slice(-need);
   const agree = lastN.filter((s) => (mode === "bull" ? s.score > 0 : s.score < 0)).length;
-  const avgScore = lastN.reduce((a,s)=>a+s.score,0) / lastN.length;
+  const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
 
   const avgOk = mode === "bull" ? avgScore > 0 : avgScore < 0;
-  if (!avgOk || agree < minAgree) return { valid:false, reason:"Direction not consistent", agree, avgScore };
+  if (!avgOk || agree < minAgree) {
+    return { valid: false, reason: "Direction not consistent", fresh: lastN, avgScore, agree };
+  }
 
-  return { valid:true, reason:"OK", agree, avgScore };
+  return { valid: true, reason: "OK", fresh: lastN, avgScore, agree };
 }
 
 function uniqueUpper(list) {
   const out = [];
   const seen = new Set();
-  for (const x of list || []) {
+  for (const x of list) {
     const s = String(x || "").toUpperCase().trim();
     if (!s) continue;
     if (seen.has(s)) continue;
@@ -130,82 +165,116 @@ function uniqueUpper(list) {
   return out;
 }
 
+async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS) {
+  const almost = (latest?.funnel?.almost || []).slice(0, Number(SETTINGS?.obPickAlmost || 25));
+  const buildup = (latest?.funnel?.buildup || []).slice(0, Number(SETTINGS?.obPickBuildup || 25));
+
+  let picked = [...almost, ...buildup];
+  if (!picked.length) picked = (latest?.funnel?.radar || []).slice(0, radarFallback);
+
+  const pool = uniqueUpper(picked.map((x) => x?.symbol));
+  return pool.slice(0, maxPerRun);
+}
+
+async function processCandidate(mode, symbol, SETTINGS, keyObSamples, keyObResult) {
+  const live = await fetchBitgetOrderbookRaw(symbol, 100);
+  if (!live.ok) return { ok: false, symbol, ...live };
+
+  const sample = computeObSample(live.depth);
+  if (!sample) {
+    return { ok: false, symbol, status: 200, msg: "Could not compute sample", url: live.url };
+  }
+
+  const kS = keyObSamples(mode, symbol);
+  const prev = (await kv.get(kS)) || [];
+  const merged = Array.isArray(prev) ? prev.concat([sample]) : [sample];
+
+  const pruned = pruneSamples(merged, SETTINGS);
+  await kv.set(kS, pruned);
+
+  const v = validateSamples(mode, pruned, SETTINGS);
+
+  const result = {
+    symbol,
+    side: mode,
+    valid: v.valid,
+    reason: v.reason,
+    stale: false,
+
+    score: sample.score,
+    spreadPct: sample.spreadPct,
+    lor: sample.lor,
+    depthMinUsd1p: sample.depthMinUsd1p,
+    avgScore: v.avgScore ?? null,
+    agree: v.agree ?? null,
+
+    ob: {
+      ts: sample.ts,
+      mid: sample.mid,
+      spreadPct: sample.spreadPct,
+      bidUsd: sample.bidUsd,
+      askUsd: sample.askUsd,
+      score: sample.score,
+      lor: sample.lor,
+      depthMinUsd1p: sample.depthMinUsd1p,
+    },
+    ts: Date.now(),
+  };
+
+  await kv.set(keyObResult(mode, symbol), result);
+  return { ok: true, symbol, valid: v.valid, reason: v.reason };
+}
+
 export default async function handler(req, res) {
   try {
-    if (!requireSecret(req, res)) return;
+    const mode = String(req.query?.mode || "bull").toLowerCase();
+    if (mode !== "bull" && mode !== "bear") {
+      res.statusCode = 400;
+      res.setHeader("content-type", "application/json");
+      return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
+    }
 
-    const mode = getMode(req);
     const core = await import(`../../lib/_core_${mode}.js`);
-    const E = core.SETTINGS.entry;
+    const { requireSecret, SETTINGS, keyLatest, keyObSamples, keyObResult } = core;
+
+    if (!requireSecret(req, res)) return;
 
     const maxPerRun = Math.max(1, Math.min(80, Number(req.query?.max || 12) || 12));
     const radarFallback = Math.max(5, Math.min(120, Number(req.query?.radar || 25) || 25));
 
-    const latest = await kv.get(core.keyLatest(mode));
-    const pool =
-      uniqueUpper([
-        ...(latest?.funnel?.almost || []).map((x) => x.symbol),
-        ...(latest?.funnel?.buildup || []).map((x) => x.symbol),
-        ...(latest?.funnel?.radar || []).slice(0, radarFallback).map((x) => x.symbol)
-      ]);
+    const latest = await kv.get(keyLatest(mode));
+    const candidates = await pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS);
 
-    const candidates = pool.slice(0, maxPerRun);
+    let totalTried = 0;
+    let totalProcessed = 0;
+    let totalValid = 0;
+    let failed = 0;
 
-    let totalTried = 0, totalProcessed = 0, totalValid = 0, failed = 0;
     const processed = [];
     const failedDetails = [];
 
     for (const sym of candidates) {
       totalTried++;
-
-      const live = await fetchBitgetOrderbookRaw(sym, 100);
-      if (!live.ok) {
+      const r = await processCandidate(mode, sym, SETTINGS, keyObSamples, keyObResult);
+      if (r.ok) {
+        totalProcessed++;
+        if (r.valid) totalValid++;
+        processed.push({ symbol: sym, valid: r.valid, reason: r.reason });
+      } else {
         failed++;
-        failedDetails.push({ symbol: sym, status: live.status, msg: live.msg, url: live.url, preview: live.preview });
-        continue;
+        failedDetails.push({
+          symbol: r.symbol,
+          status: r.status,
+          msg: r.msg || r.error || "failed",
+          url: r.url,
+          preview: r.preview,
+        });
       }
-
-      const sample = computeObSample(live.depth);
-      if (!sample) {
-        failed++;
-        failedDetails.push({ symbol: sym, status: 200, msg: "Could not compute sample", url: live.url });
-        continue;
-      }
-
-      const kS = core.keyObSamples(mode, sym);
-      const prev = (await kv.get(kS)) || [];
-      const merged = Array.isArray(prev) ? prev.concat([sample]) : [sample];
-      const fresh = prune(merged, E.samplesWindowSec);
-      await kv.set(kS, fresh);
-
-      const v = validate(mode, fresh, E.samplesNeed, E.minAgree);
-
-      const result = {
-        symbol: sym,
-        side: mode,
-        valid: v.valid,
-        reason: v.reason,
-        stale: false,
-        score: sample.score,
-        spreadPct: sample.spreadPct,
-        lor: sample.lor,
-        depthMinUsd1p: sample.depthMinUsd1p,
-        avgScore: v.avgScore,
-        agree: v.agree,
-        ob: sample,
-        ts: Date.now()
-      };
-
-      await kv.set(core.keyObResult(mode, sym), result);
-
-      totalProcessed++;
-      if (v.valid) totalValid++;
-      processed.push({ symbol: sym, valid: v.valid, reason: v.reason });
     }
 
     res.statusCode = 200;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({
+    res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify({
       ok: true,
       mode,
       ts: Date.now(),
@@ -217,11 +286,11 @@ export default async function handler(req, res) {
       totalProcessed,
       totalValid,
       failed,
-      failedDetails: failedDetails.slice(0, 20)
+      failedDetails: failedDetails.slice(0, 20),
     }));
   } catch (e) {
     res.statusCode = 500;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+    res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
