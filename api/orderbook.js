@@ -1,7 +1,7 @@
 // /api/orderbook.js
 import { kv } from "@vercel/kv";
 
-export const config = { runtime: "nodejs20.x" };
+export const config = { runtime: "nodejs" };
 
 function normalizeBaseSymbol(input) {
   const s = String(input || "").trim().toUpperCase();
