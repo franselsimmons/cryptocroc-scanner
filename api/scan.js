@@ -94,7 +94,7 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const mode = getMode(req);
+    const mode = getMode(req); // "bull" of "bear"
     const core = await import(`../lib/_core_${mode}.js`);
 
     const now = Date.now();
@@ -131,7 +131,7 @@ export default async function handler(req, res) {
       if (!radarGate.ok) continue;
 
       const vm = radarGate.vm;
-      const stageBase = stageFromSimple(mode, { ...c, vm });
+      let stageBase = stageFromSimple(mode, { ...c, vm });
 
       // OB result (als aanwezig)
       const ob = await kv.get(core.keyObResult(mode, c.symbol));
@@ -147,13 +147,35 @@ export default async function handler(req, res) {
         obValid
       });
 
+      // ✅ OB samples (alleen nodig zodra coin richting ALMOST/ENTRY gaat)
+      let obSamples = null;
+
+      // ✅ ALMOST slope gate (verplicht om überhaupt ALMOST te zijn)
+      let almostGate = "n/a";
+      if (stageBase === "ALMOST") {
+        obSamples = await kv.get(core.keyObSamples(mode, c.symbol));
+
+        // core.checkObSlopeGate is in jouw core files toegevoegd
+        const slopeCheck = typeof core.checkObSlopeGate === "function"
+          ? core.checkObSlopeGate({ stage: "almost", mode, obSamples, settings: core.SETTINGS })
+          : { ok: true };
+
+        if (!slopeCheck.ok) {
+          // geen ALMOST als slope faalt -> terug naar BUILDUP (dus hij kan later wél bijna-entry worden)
+          stageBase = "BUILDUP";
+          almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
+        } else {
+          almostGate = "OK";
+        }
+      }
+
       // ENTRY gate (strict)
       let stage = stageBase;
       let entryGate = "n/a";
 
       if (stageBase === "ALMOST") {
-        // Als OB valid is en thresholds ok -> ENTRY
         const E = core.SETTINGS.entry;
+
         if (!ob) entryGate = "OB missing";
         else if (!obValid) entryGate = "OB validating";
         else if (confidence < E.minConfidence) entryGate = "Confidence < min";
@@ -161,8 +183,19 @@ export default async function handler(req, res) {
         else if (depthMinUsd1p < E.depthMinUsd1p) entryGate = "Depth too thin (<$)";
         else if (Math.abs(obScore) < E.obScoreMin) entryGate = "OB score too low";
         else {
-          stage = "ENTRY";
-          entryGate = "OK";
+          // ✅ ENTRY slope gate (opnieuw verplicht)
+          if (!obSamples) obSamples = await kv.get(core.keyObSamples(mode, c.symbol));
+
+          const slopeCheck2 = typeof core.checkObSlopeGate === "function"
+            ? core.checkObSlopeGate({ stage: "entry", mode, obSamples, settings: core.SETTINGS })
+            : { ok: true };
+
+          if (!slopeCheck2.ok) {
+            entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
+          } else {
+            stage = "ENTRY";
+            entryGate = "OK";
+          }
         }
       }
 
@@ -186,7 +219,10 @@ export default async function handler(req, res) {
           spreadPct: Number(spreadPct),
           depthMinUsd1p: Number(depthMinUsd1p)
         } : { status: "none" },
-        why: { entryGate }
+        why: {
+          almostGate,
+          entryGate
+        }
       };
 
       if (stage === "ENTRY") entry.push(item);
