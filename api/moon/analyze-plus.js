@@ -8,7 +8,7 @@ import {
   keyMoonDiagSnap,
   keyMoonPositions,
   keyMoonPortfolio,
-} from "./_moon_core.js";
+} from "../lib/_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -25,9 +25,6 @@ function normalizeMode(v) {
   if (m === "short" || m === "bear") return "bear";
   return "all";
 }
-function label(mode) {
-  return mode === "bull" ? "LONG" : "SHORT";
-}
 function n(x, d = 0) {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
@@ -42,9 +39,6 @@ function addCounts(to, from) {
   const src = from || {};
   for (const k of Object.keys(src)) out[k] = (out[k] || 0) + n(src[k], 0);
   return out;
-}
-function clamp(x, a, b) {
-  return Math.max(a, Math.min(b, x));
 }
 
 async function readDiags(mode, limit) {
@@ -71,7 +65,6 @@ async function readDiags(mode, limit) {
 async function readPositions(mode) {
   try {
     const p = await kv.get(keyMoonPositions(mode));
-    // verwacht { open:[], closed:[] } maar we blijven safe
     return {
       open: Array.isArray(p?.open) ? p.open : [],
       closed: Array.isArray(p?.closed) ? p.closed : [],
@@ -136,7 +129,6 @@ function summarizeDiags(diags) {
 
 // ===== Trade tuning (Moon) =====
 function inferHitKind(pos, mode) {
-  // we proberen netjes:
   const kind = String(pos?.exitKind || pos?.closeKind || pos?.kind || "").toUpperCase();
   if (kind === "SL" || kind === "TP" || kind === "TP1" || kind === "TP2" || kind === "TP3") return kind;
 
@@ -170,7 +162,6 @@ function summarizeMoonTrades(positions, mode) {
     const k = inferHitKind(p, mode);
     outMap[k] = (outMap[k] || 0) + 1;
 
-    // tuning met mfe/mae als die bestaat
     const mfe = Number.isFinite(Number(p?.mfePct)) ? n(p.mfePct, 0) : null;
     const mae = Number.isFinite(Number(p?.maePct)) ? n(p.maePct, 0) : null;
     if (mfe === null || mae === null) continue;
@@ -201,7 +192,7 @@ function summarizeMoonTrades(positions, mode) {
         now: "SL wordt vaak aangetikt en daarna loopt de coin alsnog door.",
         fix: [
           "Maak SL 25% wijder.",
-          "In code: in /api/_moon_core.js → zoek computeMoonRisk → verhoog slMul basis (0.30 → 0.34) of maak clamp-min hoger.",
+          "In code: in /lib/_moon_core.js → zoek computeMoonRisk → verhoog slMul basis (0.30 → 0.34) of maak clamp-min hoger.",
         ],
       });
     }
@@ -210,7 +201,7 @@ function summarizeMoonTrades(positions, mode) {
         title: "TP te ver (MOON)",
         now: "Coins komen vaak dicht bij TP maar pakken hem net niet.",
         fix: [
-          "Maak TP’s iets dichterbij (bijv. tp3 multiplier omlaag).",
+          "Maak TP’s iets dichterbij (bijv. tpMul omlaag in computeMoonRisk).",
           "Of: neem TP2 vaker als ‘main TP’ en TP3 als runner.",
         ],
       });
@@ -220,8 +211,8 @@ function summarizeMoonTrades(positions, mode) {
       title: "Nog te weinig moon trade-data voor harde tuning",
       now: "Je hebt te weinig CLOSED met mfePct/maePct.",
       fix: [
-        "Laat je portfolio-engine mfePct/maePct vullen tijdens open pos.",
-        "Pas daarna knoppen (slMul/tp multipliers) aan.",
+        "Laat je portfolio-engine mfePct/maePct vullen tijdens open pos (dat doet scan.js al).",
+        "Pas daarna knoppen (computeMoonRisk) aan.",
       ],
     });
   }
@@ -234,7 +225,6 @@ function summarizeMoonTrades(positions, mode) {
   };
 }
 
-// “perfecte” suggesties = gebaseerd op grootste blokkade in diags (filters)
 function filterSuggestions(sum) {
   const avgElite = n(sum?.avg?.elite, 0);
   const desiredMin = 3;
@@ -261,11 +251,11 @@ function filterSuggestions(sum) {
     if (mainBlock.toLowerCase().includes("confidence")) {
       out.changes["MOON.elite.minConfidence"] = `${elite.minConfidence} -> ${Math.max(0, elite.minConfidence - 3)}`;
     } else if (mainBlock.toLowerCase().includes("depth")) {
-      out.changes["MOON.elite.depthMinUsd"] = `${elite.depthMinUsd} -> ${Math.max(0, Math.round(elite.depthMinUsd * 0.9))}`;
+      out.changes["MOON.elite.depthK"] = `${elite.depthK} -> ${(elite.depthK * 0.9).toFixed(6)}`;
     } else if (extraBlock.toLowerCase().includes("vol") || extraBlock.toLowerCase().includes("dv")) {
-      out.changes["MOON.elite.roll.minDeltaVol15m"] = `${roll.minDeltaVol15m} -> ${(roll.minDeltaVol15m * 0.8).toFixed(4)}`;
+      out.changes["MOON.elite.roll.minDeltaVol15m"] = `${roll.minDeltaVol15m} -> ${(roll.minDeltaVol15m * 0.85).toFixed(4)}`;
     } else {
-      out.changes["MOON.elite.spreadMaxPct"] = `${elite.spreadMaxPct} -> ${(elite.spreadMaxPct + 0.1).toFixed(2)}`;
+      out.changes["MOON.elite.spreadMaxPct"] = `${elite.spreadMaxPct} -> ${(elite.spreadMaxPct + 0.05).toFixed(2)}`;
     }
   } else if (avgElite > desiredMax) {
     out.reason.push("Te veel ELITE → iets strenger zodat kwaliteit omhoog gaat.");
@@ -295,13 +285,10 @@ function fmtDateMin(ts) {
   return `${y}-${m}-${da} ${h}:${mi}`;
 }
 
-// ===== nieuwe helpers voor copy-blok filteraanpassingen =====
 function suggestedChangesText(sug) {
   const changes = sug?.changes || {};
   const keys = Object.keys(changes);
   if (!keys.length) return "// Geen changes voorgesteld (ELITE zit al goed).";
-
-  // net formaat: 1 regel per wijziging
   return keys.map((k) => `${k} = ${changes[k]}`).join("\n");
 }
 
@@ -319,7 +306,6 @@ function renderCopyChangesBlock(id, sug) {
   `;
 }
 
-// ===== TOEGEVOEGD: renderCopyBlock voor algemeen copy-blok =====
 function renderCopyBlock(id, payload) {
   const txt = escapeHtml(String(payload || ""));
   return `
@@ -334,7 +320,6 @@ function renderCopyBlock(id, payload) {
   `;
 }
 
-// ===== buildCopyBlockMoon =====
 function buildCopyBlockMoon({ mode, summary, suggestions, trades }) {
   const blocks = suggestions?.topBlocks || {};
   return {
@@ -352,8 +337,6 @@ function buildCopyBlockMoon({ mode, summary, suggestions, trades }) {
       counts: trades?.counts || null,
       outcomesTop: trades?.outcomesTop || [],
     },
-
-    // ✅ HUIDIGE instellingen (de waarheid)
     filtersNow: {
       universe: {
         CG_PER_PAGE: MOON.CG_PER_PAGE,
@@ -373,13 +356,11 @@ function buildCopyBlockMoon({ mode, summary, suggestions, trades }) {
       almost: MOON.almost,
       elite: MOON.elite,
       riskWhere: {
-        file: "/api/_moon_core.js",
+        file: "/lib/_moon_core.js",
         sltpFunc: "computeMoonRisk",
         hitFunc: "hitStopOrTp",
       },
     },
-
-    // ✅ AANBEVOLEN changes (door analyzer bedacht)
     recommendedChanges: suggestions?.changes || {},
   };
 }
@@ -405,7 +386,6 @@ function htmlPage(data) {
       .join("") || `<div class="muted">n/a</div>`;
 
     const copyId = `copy_${mode}`;
-    // FIX: MOON.ob bestaat niet, vervangen door expliciete OB-velden uit MOON.elite
     const copyPayload = JSON.stringify(
       {
         filters: {
@@ -433,7 +413,6 @@ function htmlPage(data) {
       2
     );
 
-    // Nieuw copy-blok met alle filters + top blokkades + recommended changes
     const copyBlock = buildCopyBlockMoon({ mode, summary: s, suggestions: sug, trades: tradeSum });
     const copyHtml = `
       <div class="box" style="margin-top:12px;grid-column:1/-1">
@@ -517,15 +496,15 @@ function htmlPage(data) {
           <div class="box">
             <h3>Waar SL/TP in code</h3>
             <ul>
-              <li><code>/api/_moon_core.js</code> — zoek: <code>computeMoonRisk</code></li>
-              <li><code>/api/_moon_core.js</code> — zoek: <code>hitStopOrTp</code></li>
+              <li><code>/lib/_moon_core.js</code> — zoek: <code>computeMoonRisk</code></li>
+              <li><code>/lib/_moon_core.js</code> — zoek: <code>hitStopOrTp</code></li>
             </ul>
           </div>
         </div>
 
         ${renderCopyChangesBlock(`copy_changes_${mode}`, sug)}
         ${renderCopyBlock(copyId, copyPayload)}
-        ${copyHtml}  <!-- nieuw uitgebreid copy-blok -->
+        ${copyHtml}
       </div>
     `;
   };
@@ -551,7 +530,6 @@ function htmlPage(data) {
     code{background:#0a1b2b;border:1px solid #15334e;padding:2px 6px;border-radius:8px}
     .tune{margin-top:8px;padding:8px;border:1px solid #15334e;border-radius:10px;background:#0a1b2b}
   </style>
-  <!-- TOEGEVOEGD: copyText functie -->
   <script>
     function copyText(id){
       const el = document.getElementById(id);
