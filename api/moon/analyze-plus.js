@@ -1,4 +1,4 @@
-// /api/moon-analyze-plus.js
+// /api/moon/analyze-plus.js
 import { kv } from "@vercel/kv";
 import {
   RUNTIME_CONFIG,
@@ -8,7 +8,7 @@ import {
   keyMoonDiagSnap,
   keyMoonPositions,
   keyMoonPortfolio,
-} from "../lib/_moon_core.js";
+} from "../../lib/_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
 
