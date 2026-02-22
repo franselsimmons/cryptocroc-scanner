@@ -26,7 +26,7 @@ function safeObj(x) {
 }
 
 // ✅ OB max age (stale gate)
-const OB_MAX_AGE_MS = 180000; // 3 min
+const OB_MAX_AGE_MS = 15 * 60 * 1000; // 15 min
 
 // --------------------
 // 1) BTC gate (simpel)
