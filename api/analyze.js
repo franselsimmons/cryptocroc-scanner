@@ -6,8 +6,8 @@ export const config = { runtime: "nodejs" };
 // MAIN
 import { requireSecret, keyDiagList, keyDiagSnap } from "../lib/_core_bull.js";
 
-// MOON
-import { keyMoonDiagList, keyMoonDiagSnap } from "./_moon_core.js";
+// MOON  ✅ FIX: staat in /lib, niet in /api
+import { keyMoonDiagList, keyMoonDiagSnap } from "../lib/_moon_core.js";
 
 function mergeCountMaps(target, src) {
   const out = target || {};
