@@ -5,7 +5,7 @@ import {
   keyMoonLatest,
   keyMoonPortfolio,
   keyMoonPositions,
-} from "./_moon_core.js";
+} from "../lib/_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -17,7 +17,7 @@ function safeBase(mode) {
     btc: null,
     counts: { radar: 0, buildup: 0, almost: 0, elite: 0 },
     funnel: { radar: [], buildup: [], almost: [], elite: [] },
-    note: "No data yet. Run /api/moon-scan?mode=bull (or bear) first.",
+    note: "No data yet. Run /api/moon/scan?mode=bull (or bear) first.",
   };
 }
 
