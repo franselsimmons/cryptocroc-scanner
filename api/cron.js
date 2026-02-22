@@ -1,7 +1,7 @@
 import scan from "./scan.js";
 import obSampler from "./ob/sampler.js";
 import obMapRefresh from "./ob/map_refresh.js";
-import { requireSecret } from "../lib/_core_bull.js";
+import { requireSecret } from "../lib/_runtime.js";
 
 export const config = { runtime: "nodejs" };
 
@@ -19,8 +19,15 @@ function safeJson(txt) {
   try { return JSON.parse(txt); } catch { return { raw: String(txt || "") }; }
 }
 
+function q(req, key, def) {
+  const v = req?.query?.[key];
+  if (v === undefined || v === null || v === "") return def;
+  return String(v);
+}
+
 export default async function handler(req, res) {
   try {
+    // ✅ Secret check op 1 plek (runtime)
     if (!requireSecret(req, res)) return;
 
     const mode = String(req.query?.mode || "bull").toLowerCase();
@@ -30,16 +37,22 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull or bear" }));
     }
 
+    // ✅ parameters overridebaar
+    const max = q(req, "max", "20");
+    const radar = q(req, "radar", "40");
+
     const secret = process.env.CRON_SECRET || "";
-    const authHeader = secret ? { authorization: `Bearer ${secret}` } : {};
+    const authHeader = secret
+      ? { authorization: `Bearer ${secret}`, Authorization: `Bearer ${secret}` }
+      : {};
 
     // Zorg dat sub-handlers niet crashen als ze new URL(req.url) doen:
     const base = "http://localhost";
 
-    const reqOb = {
+    const reqScan = {
       method: "GET",
-      url: `${base}/api/ob/sampler?mode=${mode}&max=20&radar=40`,
-      query: { mode, max: "20", radar: "40" },
+      url: `${base}/api/scan?mode=${mode}&max=${encodeURIComponent(max)}&radar=${encodeURIComponent(radar)}`,
+      query: { mode, max, radar },
       headers: authHeader,
     };
 
@@ -50,21 +63,32 @@ export default async function handler(req, res) {
       headers: authHeader,
     };
 
-    const reqScan = {
+    const reqOb = {
       method: "GET",
-      url: `${base}/api/scan?mode=${mode}&max=20&radar=40`,
-      query: { mode, max: "20", radar: "40" },
+      url: `${base}/api/ob/sampler?mode=${mode}&max=${encodeURIComponent(max)}&radar=${encodeURIComponent(radar)}`,
+      query: { mode, max, radar },
       headers: authHeader,
     };
 
-    const resOb = makeRes();
-    await obSampler(reqOb, resOb);
+    // =========================================================
+    // 🔥 Kritische volgorde:
+    // 1) scan -> maakt latest/funnel shortlist actueel
+    // 2) map_refresh -> houdt symbol mapping up-to-date
+    // 3) ob sampler -> vult KV met verse OB samples/results
+    // 4) scan opnieuw -> ENTRY profiteert direct van verse OB
+    // =========================================================
+
+    const resScan1 = makeRes();
+    await scan(reqScan, resScan1);
 
     const resMap = makeRes();
     await obMapRefresh(reqMap, resMap);
 
-    const resScan = makeRes();
-    await scan(reqScan, resScan);
+    const resOb = makeRes();
+    await obSampler(reqOb, resOb);
+
+    const resScan2 = makeRes();
+    await scan(reqScan, resScan2);
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
@@ -72,9 +96,11 @@ export default async function handler(req, res) {
       ok: true,
       ts: Date.now(),
       mode,
-      ob: safeJson(resOb.body),
+      params: { max, radar },
+      scan1: safeJson(resScan1.body),
       obMap: safeJson(resMap.body),
-      scan: safeJson(resScan.body),
+      ob: safeJson(resOb.body),
+      scan2: safeJson(resScan2.body),
     }));
   } catch (e) {
     res.statusCode = 500;
