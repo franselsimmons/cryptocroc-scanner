@@ -2,6 +2,19 @@ import { kv } from "@vercel/kv";
 
 export const config = { runtime: "nodejs" };
 
+// ================== TUNING (veilig voor Vercel) ==================
+const HARD_MAX_PER_RUN = 30;          // nooit meer dan dit
+const REQUEST_DELAY_MS = 120;         // kleine pauze voorkomt bans
+const OB_STALE_MS = 180000;           // 3 min: alles ouder is “stale”
+const DEFAULT_SAMPLES_WINDOW_SEC = 5400; // 90 min
+const DEFAULT_SAMPLES_MAX = 18;       // klein houden
+const DEFAULT_SAMPLES_TTL_SEC = 60 * 60 * 48; // 48 uur
+const DEFAULT_RESULT_TTL_SEC = 60 * 20;       // 20 min
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 // ================== BITGET V2 ORDERBOOK (SPOT) ==================
 async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
   const base = String(baseSymbol || "").toUpperCase();
@@ -120,8 +133,14 @@ function computeObSample(depth) {
 
 function pruneSamples(samples, SETTINGS) {
   const now = Date.now();
-  const winMs = Number(SETTINGS?.entry?.samplesWindowSec || 5400) * 1000; // default 90 min
-  const maxKeep = Math.max(6, Math.min(60, Number(SETTINGS?.entry?.samplesMax || 18)));
+
+  const winSec = Number(SETTINGS?.entry?.samplesWindowSec || DEFAULT_SAMPLES_WINDOW_SEC);
+  const winMs = winSec * 1000;
+
+  const maxKeep = Math.max(
+    6,
+    Math.min(60, Number(SETTINGS?.entry?.samplesMax || DEFAULT_SAMPLES_MAX))
+  );
 
   const arr = Array.isArray(samples) ? samples : [];
   return arr
@@ -188,6 +207,8 @@ async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTI
 }
 
 async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyObResult) {
+  const startedAt = Date.now();
+
   const live = await fetchBitgetOrderbookRaw(symbol, 100);
   if (!live.ok) return { ok: false, symbol, ...live };
 
@@ -203,28 +224,35 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
   const pruned = pruneSamples(merged, SETTINGS);
 
   // ✅ TTL zodat KV niet vol blijft hangen
-  const samplesEx = Math.max(3600, Number(SETTINGS?.entry?.samplesTtlSec || 60 * 60 * 48));
+  const samplesEx = Math.max(3600, Number(SETTINGS?.entry?.samplesTtlSec || DEFAULT_SAMPLES_TTL_SEC));
   await kv.set(kS, pruned, { ex: samplesEx });
 
-  // basis valid (direction)
+  // 1) basis valid (direction)
   const v = validateSamples(mode, pruned, SETTINGS);
 
-  // ✅ slope gate ook al in sampler meenemen (zodat ob.valid echt klopt)
+  // 2) slope gate (in core)
   const slopeCheck = typeof core.checkObSlopeGate === "function"
     ? core.checkObSlopeGate({ stage: "sampler", mode, obSamples: pruned, settings: SETTINGS })
-    : { ok: true, slope: 0, points: [] };
+    : { ok: true, slope: 0 };
 
   const finalValid = !!v.valid && !!slopeCheck.ok;
   const finalReason = finalValid
     ? "OK"
     : (v.valid ? (slopeCheck.reason || "OB slope failed") : (v.reason || "OB invalid"));
 
+  // ✅ age/stale info (voor UI en scan stale gate)
+  const ageMs = Date.now() - sample.ts;
+  const stale = ageMs > OB_STALE_MS;
+
   const result = {
     symbol,
     side: mode,
     valid: finalValid,
     reason: finalReason,
-    stale: false,
+
+    // stale info
+    stale,
+    ageSec: Math.round(ageMs / 1000),
 
     // laatste sample (voor snelle UI)
     score: sample.score,
@@ -248,11 +276,12 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
       depthMinUsd1p: sample.depthMinUsd1p,
     },
 
+    tookMs: Date.now() - startedAt,
     ts: Date.now(),
   };
 
   // ✅ TTL zodat oude results zichzelf opruimen
-  const resultEx = Math.max(900, Number(SETTINGS?.entry?.resultTtlSec || 60 * 20)); // default 20 min
+  const resultEx = Math.max(900, Number(SETTINGS?.entry?.resultTtlSec || DEFAULT_RESULT_TTL_SEC));
   await kv.set(keyObResult(mode, symbol), result, { ex: resultEx });
 
   return { ok: true, symbol, valid: finalValid, reason: finalReason };
@@ -268,14 +297,16 @@ export default async function handler(req, res) {
     }
 
     // ✅ correct pad: api -> lib
-    const core = await import(`../lib/_core_${mode}.js`);
+    const core = await import(`../../lib/_core_${mode}.js`);
     const { SETTINGS, keyLatest, keyObSamples, keyObResult } = core;
 
     // ✅ requireSecret komt uit _runtime (niet uit core)
-    const rt = await import("../lib/_runtime.js");
+    const rt = await import("../../lib/_runtime.js");
     if (!rt.requireSecret(req, res)) return;
 
-    const maxPerRun = Math.max(1, Math.min(80, Number(req.query?.max || 12) || 12));
+    const maxPerRunRaw = Number(req.query?.max || 12) || 12;
+    const maxPerRun = Math.max(1, Math.min(HARD_MAX_PER_RUN, Math.min(80, maxPerRunRaw)));
+
     const radarFallback = Math.max(5, Math.min(120, Number(req.query?.radar || 25) || 25));
 
     const latest = await kv.get(keyLatest(mode));
@@ -291,6 +322,10 @@ export default async function handler(req, res) {
 
     for (const sym of candidates) {
       totalTried++;
+
+      // ✅ kleine pauze voorkomt rate-limit spikes
+      if (totalTried > 1) await sleep(REQUEST_DELAY_MS);
+
       const r = await processCandidate(core, mode, sym, SETTINGS, keyObSamples, keyObResult);
       if (r.ok) {
         totalProcessed++;
