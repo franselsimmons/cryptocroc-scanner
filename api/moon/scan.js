@@ -57,6 +57,12 @@ import {
   pnlPctFromPrices,
 } from "../../lib/_analytics.js";
 
+// NIEUW: logger import
+import {
+  logMoonSignal,
+  computeInstability
+} from "../../lib/_moon_logger.js";
+
 export const config = RUNTIME_CONFIG;
 
 const MAX_SNAPSHOTS = 3;
@@ -272,6 +278,13 @@ async function updateMoonTradeMfeMae({ mode, symbol, priceNow }) {
 
   trades[idx] = t;
   await writeTrades("moon", trades);
+}
+
+// NIEUW: functie om regime te bepalen op basis van BTC range24
+function computeRegime(btcRange24) {
+  if (btcRange24 < 3) return "low";
+  if (btcRange24 < 6) return "mid";
+  return "high";
 }
 
 export default async function handler(req, res) {
@@ -741,7 +754,45 @@ export default async function handler(req, res) {
       };
 
       // ✅ EXCLUSIVE push: coin gaat naar precies 1 lijst
-      if (stage === "ELITE") elite.push(item);
+      if (stage === "ELITE") {
+        elite.push(item);
+
+        // NIEUW: logging van ELITE signal
+        const regime = computeRegime(btc.range24);
+
+        const instability = computeInstability({
+          direction: mode,
+          volumeRoc5m: rolling.deltaVol15m,
+          obSlope: rolling.obSlope,
+          obStability: rolling.obStability,
+          depthBidUsd: obView?.bidUsd || 0,
+          depthAskUsd: obView?.askUsd || 0,
+        });
+
+        await logMoonSignal({
+          symbol: sym,
+          direction: mode,
+          price: c.price,
+
+          btc_state: btc.state,
+          btc_atr_pct: btc.range24,
+          market_regime: regime,
+
+          market_cap: c.marketCap,
+          range_24h_pct: c.range24,
+
+          volume_roc_5m: rolling.deltaVol15m,
+          ob_score: obScore,
+          ob_slope: rolling.obSlope,
+          ob_stability: rolling.obStability,
+
+          depth_bid_usd: obView?.bidUsd || 0,
+          depth_ask_usd: obView?.askUsd || 0,
+
+          instability_score_raw: instability,
+          confidence,
+        });
+      }
       else if (stage === "ALMOST") almost.push(item);
       else if (stage === "BUILDUP") buildup.push(item);
       else radar.push(item);
