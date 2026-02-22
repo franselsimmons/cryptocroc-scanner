@@ -76,10 +76,12 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "side must be bull/bear" }));
     }
 
-    // ✅ dynamische import uit /lib
+    // ✅ dynamische import uit /lib (correct pad)
     const core = await import(`../lib/_core_${side}.js`);
-    const { keyObResult, SETTINGS, requireSecret } = core;
+    const { keyObResult, SETTINGS } = core;
 
+    // ✅ requireSecret komt uit _runtime via core export
+    const { requireSecret } = await import("../lib/_runtime.js");
     if (!requireSecret(req, res)) return;
 
     const base = normalizeBaseSymbol(symbolRaw);
@@ -95,17 +97,17 @@ export default async function handler(req, res) {
     res.setHeader("content-type", "application/json");
     res.setHeader("cache-control", "no-store");
 
-    // =========================
-    // RAW mode: live Binance depth debug
-    // =========================
+    // ====================================================
+    // RAW mode → direct Binance depth ophalen (debug)
+    // ====================================================
     if (String(rawFlag) === "1") {
       const live = await fetchBinanceDepthRaw(base, limitRaw);
       return res.end(JSON.stringify({ symbol: base, pair, side, ...live }));
     }
 
-    // =========================
-    // NORMAL mode: KV lookup (sampler vult dit)
-    // =========================
+    // ====================================================
+    // NORMAL mode → KV lookup (sampler vult dit)
+    // ====================================================
     const r = await kv.get(keyObResult(side, base));
 
     if (!r) {
@@ -119,7 +121,7 @@ export default async function handler(req, res) {
           need: SETTINGS.entry.samplesNeed,
           windowSec: SETTINGS.entry.samplesWindowSec,
           tip:
-            "Nog geen geldige OB in KV. Run eerst /api/ob-sampler (liefst nadat /api/scan coins heeft) zodat er samples worden verzameld (bv. 3 samples/90s).",
+            "Nog geen geldige OB in KV. Run eerst /api/ob-sampler zodat samples worden verzameld.",
         })
       );
     }
