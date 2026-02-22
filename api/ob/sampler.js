@@ -87,7 +87,8 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  const pct = 0.002; // 0.2%
+  // 0.2% band voor imbalance score
+  const pct = 0.002;
   const bidRes = sumDepth(bids, mid, pct, true);
   const askRes = sumDepth(asks, mid, pct, false);
 
@@ -100,17 +101,27 @@ function computeObSample(depth) {
   const biggest = Math.max(bidRes.biggest, askRes.biggest);
   const lor = denom > 0 ? biggest / denom : 1;
 
-  // depth within 1%
+  // depth within 1% (min van beide kanten)
   const bid1 = sumDepth(bids, mid, 0.01, true);
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
 
-  return { ts: Date.now(), score, spreadPct, lor, bidUsd, askUsd, mid, depthMinUsd1p };
+  return {
+    ts: Date.now(),
+    score,
+    spreadPct,
+    lor,
+    bidUsd,
+    askUsd,
+    mid,
+    depthMinUsd1p
+  };
 }
 
 function pruneSamples(samples, SETTINGS) {
   const now = Date.now();
-  const winMs = Number(SETTINGS?.entry?.samplesWindowSec || 3600) * 1000;
+  const winMs = Number(SETTINGS?.entry?.samplesWindowSec || 5400) * 1000; // default 90 min
+  const maxKeep = Math.max(6, Math.min(60, Number(SETTINGS?.entry?.samplesMax || 18)));
 
   const arr = Array.isArray(samples) ? samples : [];
   return arr
@@ -127,14 +138,14 @@ function pruneSamples(samples, SETTINGS) {
     .filter((s) => s.ts > 0 && Number.isFinite(s.score))
     .filter((s) => now - s.ts <= winMs)
     .sort((a, b) => a.ts - b.ts)
-    .slice(-60);
+    .slice(-maxKeep);
 }
 
 function validateSamples(mode, samplesFresh, SETTINGS) {
   const fresh = pruneSamples(samplesFresh, SETTINGS);
 
-  const need = Number(SETTINGS?.entry?.samplesNeed || 3);
-  const minAgree = Number(SETTINGS?.entry?.minAgree || 2);
+  const need = Number(SETTINGS?.entry?.samplesNeed || 8);
+  const minAgree = Number(SETTINGS?.entry?.minAgree || 6);
 
   if (fresh.length < need) {
     return { valid: false, reason: "Not enough samples", fresh };
@@ -176,7 +187,7 @@ async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTI
   return pool.slice(0, maxPerRun);
 }
 
-async function processCandidate(mode, symbol, SETTINGS, keyObSamples, keyObResult) {
+async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyObResult) {
   const live = await fetchBitgetOrderbookRaw(symbol, 100);
   if (!live.ok) return { ok: false, symbol, ...live };
 
@@ -190,23 +201,41 @@ async function processCandidate(mode, symbol, SETTINGS, keyObSamples, keyObResul
   const merged = Array.isArray(prev) ? prev.concat([sample]) : [sample];
 
   const pruned = pruneSamples(merged, SETTINGS);
-  await kv.set(kS, pruned);
 
+  // ✅ TTL zodat KV niet vol blijft hangen
+  const samplesEx = Math.max(3600, Number(SETTINGS?.entry?.samplesTtlSec || 60 * 60 * 48));
+  await kv.set(kS, pruned, { ex: samplesEx });
+
+  // basis valid (direction)
   const v = validateSamples(mode, pruned, SETTINGS);
+
+  // ✅ slope gate ook al in sampler meenemen (zodat ob.valid echt klopt)
+  const slopeCheck = typeof core.checkObSlopeGate === "function"
+    ? core.checkObSlopeGate({ stage: "sampler", mode, obSamples: pruned, settings: SETTINGS })
+    : { ok: true, slope: 0, points: [] };
+
+  const finalValid = !!v.valid && !!slopeCheck.ok;
+  const finalReason = finalValid
+    ? "OK"
+    : (v.valid ? (slopeCheck.reason || "OB slope failed") : (v.reason || "OB invalid"));
 
   const result = {
     symbol,
     side: mode,
-    valid: v.valid,
-    reason: v.reason,
+    valid: finalValid,
+    reason: finalReason,
     stale: false,
 
+    // laatste sample (voor snelle UI)
     score: sample.score,
     spreadPct: sample.spreadPct,
     lor: sample.lor,
     depthMinUsd1p: sample.depthMinUsd1p,
+
+    // sampler checks
     avgScore: v.avgScore ?? null,
     agree: v.agree ?? null,
+    slope: slopeCheck.slope ?? null,
 
     ob: {
       ts: sample.ts,
@@ -218,11 +247,15 @@ async function processCandidate(mode, symbol, SETTINGS, keyObSamples, keyObResul
       lor: sample.lor,
       depthMinUsd1p: sample.depthMinUsd1p,
     },
+
     ts: Date.now(),
   };
 
-  await kv.set(keyObResult(mode, symbol), result);
-  return { ok: true, symbol, valid: v.valid, reason: v.reason };
+  // ✅ TTL zodat oude results zichzelf opruimen
+  const resultEx = Math.max(900, Number(SETTINGS?.entry?.resultTtlSec || 60 * 20)); // default 20 min
+  await kv.set(keyObResult(mode, symbol), result, { ex: resultEx });
+
+  return { ok: true, symbol, valid: finalValid, reason: finalReason };
 }
 
 export default async function handler(req, res) {
@@ -234,10 +267,13 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
-    const core = await import(`../../lib/_core_${mode}.js`);
-    const { requireSecret, SETTINGS, keyLatest, keyObSamples, keyObResult } = core;
+    // ✅ correct pad: api -> lib
+    const core = await import(`../lib/_core_${mode}.js`);
+    const { SETTINGS, keyLatest, keyObSamples, keyObResult } = core;
 
-    if (!requireSecret(req, res)) return;
+    // ✅ requireSecret komt uit _runtime (niet uit core)
+    const rt = await import("../lib/_runtime.js");
+    if (!rt.requireSecret(req, res)) return;
 
     const maxPerRun = Math.max(1, Math.min(80, Number(req.query?.max || 12) || 12));
     const radarFallback = Math.max(5, Math.min(120, Number(req.query?.radar || 25) || 25));
@@ -255,7 +291,7 @@ export default async function handler(req, res) {
 
     for (const sym of candidates) {
       totalTried++;
-      const r = await processCandidate(mode, sym, SETTINGS, keyObSamples, keyObResult);
+      const r = await processCandidate(core, mode, sym, SETTINGS, keyObSamples, keyObResult);
       if (r.ok) {
         totalProcessed++;
         if (r.valid) totalValid++;
