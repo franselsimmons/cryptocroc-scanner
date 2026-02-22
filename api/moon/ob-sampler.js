@@ -12,7 +12,6 @@ import {
 export const config = RUNTIME_CONFIG;
 
 // ================== BITGET V2 ORDERBOOK (SPOT) ==================
-// Official: GET /api/v2/spot/market/orderbook  [oai_citation:3‡Bitget](https://www.bitget.com/api-doc/spot/market/Get-Orderbook)
 async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
   const base = String(baseSymbol || "").toUpperCase();
   if (!base) return { ok: false, status: 400, msg: "Missing symbol" };
