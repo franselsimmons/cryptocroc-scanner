@@ -21,6 +21,10 @@ function n(x, d = 0) {
   return Number.isFinite(v) ? v : d;
 }
 
+function safeObj(x) {
+  return x && typeof x === "object" ? x : null;
+}
+
 // ✅ OB max age (stale gate)
 const OB_MAX_AGE_MS = 180000; // 3 min
 
@@ -109,6 +113,28 @@ function stageFromSimple(mode, c) {
   return "RADAR";
 }
 
+// --------------------
+// OB map loader (sneller/goedkoper)
+// --------------------
+async function loadObMap(mode) {
+  // map_refresh schrijft: `ob:map:${mode}` -> { ts, size, map }
+  const blob = await kv.get(`ob:map:${mode}`);
+  const m = safeObj(blob)?.map;
+  return safeObj(m) || null;
+}
+
+// --------------------
+// OB lookup: eerst map, anders KV
+// --------------------
+async function getObForSymbol({ core, mode, symbol, obMap }) {
+  // 1) map lookup
+  if (obMap && obMap[symbol]) {
+    return obMap[symbol];
+  }
+  // 2) fallback naar individuele key (blijft werken als map niet draait)
+  return await kv.get(core.keyObResult(mode, symbol));
+}
+
 // ======================================================
 // MAIN HANDLER
 // ======================================================
@@ -166,6 +192,9 @@ export default async function handler(req, res) {
 
     const state = (await kv.get(core.keyState(mode))) || {};
 
+    // ✅ 1x load ob map (als die er is)
+    const obMap = await loadObMap(mode);
+
     for (const c of cg) {
       const radarGate = passRadar(core, c);
       if (!radarGate.ok) continue;
@@ -173,8 +202,8 @@ export default async function handler(req, res) {
       const vm = radarGate.vm;
       let stageBase = stageFromSimple(mode, { ...c, vm });
 
-      // OB result
-      const ob = await kv.get(core.keyObResult(mode, c.symbol));
+      // ✅ OB lookup (map eerst, anders KV)
+      const ob = await getObForSymbol({ core, mode, symbol: c.symbol, obMap });
 
       // ✅ stale gate
       const obTs = n(ob?.ob?.ts ?? ob?.ts, 0);
@@ -260,7 +289,7 @@ export default async function handler(req, res) {
         ob: ob ? {
           valid: !!ob.valid,
           fresh: !!obFresh,
-          ageSec: obFresh ? Math.round(obAge / 1000) : null,
+          ageSec: obTs > 0 ? Math.round(obAge / 1000) : null,
           reason: String(ob.reason || ""),
           score: Number(obScore),
           spreadPct: Number(spreadPct),
@@ -295,6 +324,7 @@ export default async function handler(req, res) {
         radar: radar.length,
       },
       funnel: { entry, almost, buildup, radar },
+      obMap: obMap ? { ok: true, size: Object.keys(obMap).length } : { ok: false },
     };
 
     await kv.set(core.keyLatest(mode), result);
