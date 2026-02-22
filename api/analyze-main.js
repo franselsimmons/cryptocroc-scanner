@@ -1,6 +1,6 @@
 // /api/analyze-main.js
 import { kv } from "@vercel/kv";
-import { readAllTrades } from "./_trades_kv.js";
+import { readAllTrades } from "../lib/_trades_kv.js";
 
 export const config = { runtime: "nodejs" };
 
