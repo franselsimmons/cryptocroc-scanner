@@ -6,7 +6,6 @@ export const config = { runtime: "nodejs" };
 function normalizeBaseSymbol(input) {
   const s = String(input || "").trim().toUpperCase();
   if (!s) return "";
-  // accepteer BTC, BTCUSDT, BTC/USDT, BTC-USDT
   const cleaned = s.replaceAll("/", "").replaceAll("-", "");
   return cleaned.endsWith("USDT") ? cleaned.slice(0, -4) : cleaned;
 }
@@ -33,9 +32,7 @@ async function fetchBinanceDepthRaw(baseSymbol, limit = 100) {
   const text = await r.text();
 
   let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {}
+  try { json = JSON.parse(text); } catch {}
 
   if (!r.ok) {
     return {
@@ -76,11 +73,9 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "side must be bull/bear" }));
     }
 
-    // ✅ dynamische import uit /lib (correct pad)
     const core = await import(`../lib/_core_${side}.js`);
     const { keyObResult, SETTINGS } = core;
 
-    // ✅ requireSecret komt uit _runtime via core export
     const { requireSecret } = await import("../lib/_runtime.js");
     if (!requireSecret(req, res)) return;
 
@@ -120,8 +115,7 @@ export default async function handler(req, res) {
           status: "validating",
           need: SETTINGS.entry.samplesNeed,
           windowSec: SETTINGS.entry.samplesWindowSec,
-          tip:
-            "Nog geen geldige OB in KV. Run eerst /api/ob-sampler zodat samples worden verzameld.",
+          tip: "Nog geen geldige OB in KV. Laat de OB sampler even draaien zodat samples verzameld worden.",
         })
       );
     }
