@@ -2,8 +2,7 @@
 import { requireSecret, RUNTIME_CONFIG } from "../../lib/_moon_core.js";
 export const config = RUNTIME_CONFIG;
 
-async function hit(path) {
-  const base = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000";
+async function hit(base, path) {
   const secret = process.env.CRON_SECRET || "";
 
   const url = new URL(path, base);
@@ -22,9 +21,11 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const scanBull = await hit("/api/moon/scan?mode=bull");
-    const scanBear = await hit("/api/moon/scan?mode=bear");
-    const ob = await hit("/api/moon/ob-sampler");
+    const base = `https://${req.headers.host}`; // altijd https, ook op local? lokaal is http, maar fetch accepteert http
+
+    const scanBull = await hit(base, "/api/moon/scan?mode=bull");
+    const scanBear = await hit(base, "/api/moon/scan?mode=bear");
+    const ob = await hit(base, "/api/moon/ob-sampler");
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
