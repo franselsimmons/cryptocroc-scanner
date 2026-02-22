@@ -160,6 +160,7 @@ function buildSymbolPriceMap(cgList) {
   return map;
 }
 
+// ===== Mirror trades store (analytics) =====
 async function openMoonTradeMirror({ mode, c, risk, confidence, obView, depthUsd }) {
   const trades = await readTrades("moon");
 
