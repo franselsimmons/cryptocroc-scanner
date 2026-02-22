@@ -22,9 +22,9 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const scanBull = await hit("/api/moon-scan?mode=bull");
-    const scanBear = await hit("/api/moon-scan?mode=bear");
-    const ob = await hit("/api/moon-ob-sampler");
+    const scanBull = await hit("/api/moon/scan?mode=bull");
+    const scanBear = await hit("/api/moon/scan?mode=bear");
+    const ob = await hit("/api/moon/ob-sampler");
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
