@@ -15,16 +15,15 @@ export default async function handler(req, res) {
 
     const base = process.env.BASE_URL || `https://${req.headers.host}`;
 
-    // cache-bust zodat je nooit "oude" responses krijgt
     const t = Date.now();
 
-    const scanRes = await fetchFn(`${base}/api/moon-scan?mode=${mode}&token=${token}&_t=${t}`);
+    const scanRes = await fetchFn(`${base}/api/moon/scan?mode=${mode}&token=${token}&_t=${t}`);
     const scanText = await scanRes.text();
     const scanData = safeJson(scanText);
 
     await sleep(1200);
 
-    const obRes = await fetchFn(`${base}/api/moon-ob-sampler?token=${token}&_t=${t}`);
+    const obRes = await fetchFn(`${base}/api/moon/ob-sampler?token=${token}&_t=${t}`);
     const obText = await obRes.text();
     const obData = safeJson(obText);
 
