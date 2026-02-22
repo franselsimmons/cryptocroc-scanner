@@ -1,8 +1,12 @@
+// /api/scan.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
 
 export const config = RUNTIME_CONFIG;
 
+// --------------------
+// Helpers
+// --------------------
 async function fetchJson(url) {
   const r = await fetch(url, { headers: { accept: "application/json" } });
   const t = await r.text();
@@ -12,15 +16,24 @@ async function fetchJson(url) {
   return j;
 }
 
+function n(x, d = 0) {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : d;
+}
+
+// --------------------
 // 1) BTC gate (simpel)
+// --------------------
 async function fetchBtcGate() {
   const url =
     "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1&sparkline=false&price_change_percentage=24h";
+
   const arr = await fetchJson(url);
   const b = arr?.[0];
-  const chg24 = Number(b?.price_change_percentage_24h || 0);
-  const high = Number(b?.high_24h || 0);
-  const low = Number(b?.low_24h || 0);
+
+  const chg24 = n(b?.price_change_percentage_24h, 0);
+  const high = n(b?.high_24h, 0);
+  const low = n(b?.low_24h, 0);
   const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
   let state = "NEUTRAL";
@@ -30,17 +43,20 @@ async function fetchBtcGate() {
   return { state, chg24: +chg24.toFixed(3), range24: +range24.toFixed(3) };
 }
 
+// --------------------
 // 2) Universe top coins
+// --------------------
 async function fetchCgTop(limit) {
   const per = Math.min(250, Math.max(50, Number(limit || 250)));
   const url =
     `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=${per}&page=1&sparkline=false&price_change_percentage=1h,24h`;
+
   const arr = await fetchJson(url);
 
   return (arr || []).map((c) => {
-    const price = Number(c?.current_price || 0);
-    const high = Number(c?.high_24h || 0);
-    const low = Number(c?.low_24h || 0);
+    const price = n(c?.current_price, 0);
+    const high = n(c?.high_24h, 0);
+    const low = n(c?.low_24h, 0);
     const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
     return {
@@ -48,36 +64,36 @@ async function fetchCgTop(limit) {
       symbol: String(c?.symbol || "").toUpperCase(),
       name: c?.name,
       price,
-      volume: Number(c?.total_volume || 0),
-      marketCap: Number(c?.market_cap || 0),
-      change24: Number(c?.price_change_percentage_24h || 0),
-      change1h: Number(c?.price_change_percentage_1h_in_currency || 0),
-      range24
+      volume: n(c?.total_volume, 0),
+      marketCap: n(c?.market_cap, 0),
+      change24: n(c?.price_change_percentage_24h, 0),
+      change1h: n(c?.price_change_percentage_1h_in_currency, 0),
+      range24,
     };
   });
 }
 
+// --------------------
+// Radar gate
+// --------------------
 function passRadar(core, c) {
-  const R = core.SETTINGS.radar;
+  const R = core?.SETTINGS?.radar || {};
   const vm = core.computeVm(c.volume, c.marketCap);
 
-  if (c.marketCap < R.mcapMin) return { ok: false, why: "mcap too low" };
-  if (c.marketCap > R.mcapMax) return { ok: false, why: "mcap too high" };
-  if (c.volume < R.volMin) return { ok: false, why: "volume too low" };
-  if (vm < R.vmMin) return { ok: false, why: "vm too low" };
-  if (Math.abs(c.change24) > R.maxAbsChg24) return { ok: false, why: "chg24 too high" };
-  if (c.range24 > R.maxRange24) return { ok: false, why: "range24 too high" };
+  if (c.marketCap < n(R.mcapMin, 0)) return { ok: false, why: "mcap too low" };
+  if (c.marketCap > n(R.mcapMax, Number.MAX_SAFE_INTEGER)) return { ok: false, why: "mcap too high" };
+  if (c.volume < n(R.volMin, 0)) return { ok: false, why: "volume too low" };
+  if (vm < n(R.vmMin, 0)) return { ok: false, why: "vm too low" };
+  if (Math.abs(c.change24) > n(R.maxAbsChg24, 999)) return { ok: false, why: "chg24 too high" };
+  if (c.range24 > n(R.maxRange24, 999)) return { ok: false, why: "range24 too high" };
 
   return { ok: true, vm };
 }
 
+// --------------------
+// Stage logic (simpel)
+// --------------------
 function stageFromSimple(mode, c) {
-  // simpel funnel gedrag:
-  // - BUILDUP: vm hoog + range redelijk
-  // - ALMOST: change24 in jouw richting + vm hoog
-  // - ENTRY: ALMOST + OB valid + confidence
-  // OB gate gebeurt later (ENTRY check)
-
   const vm = c.vm;
   const range = c.range24;
   const chg24 = c.change24;
@@ -90,8 +106,12 @@ function stageFromSimple(mode, c) {
   return "RADAR";
 }
 
+// ======================================================
+// MAIN HANDLER
+// ======================================================
 export default async function handler(req, res) {
   try {
+    // ✅ secret check komt uit /lib/_runtime.js (dus NIET uit core files)
     if (!requireSecret(req, res)) return;
 
     const mode = getMode(req); // "bull" of "bear"
@@ -100,22 +120,41 @@ export default async function handler(req, res) {
     const now = Date.now();
     const btc = await fetchBtcGate();
 
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.setHeader("cache-control", "no-store");
+
+    // --------------------
     // BTC soft gate
+    // --------------------
     if (btc.state !== "NEUTRAL") {
       if (mode === "bull" && btc.state === "BEAR") {
-        const out = { ok: true, ts: now, mode, btc, counts: { entry:0, almost:0, buildup:0, radar:0 }, funnel: { entry:[], almost:[], buildup:[], radar:[] }, note: "Blocked by BTC gate" };
+        const out = {
+          ok: true, ts: now, mode, btc,
+          counts: { entry: 0, almost: 0, buildup: 0, radar: 0 },
+          funnel: { entry: [], almost: [], buildup: [], radar: [] },
+          note: "Blocked by BTC gate",
+        };
         await kv.set(core.keyLatest(mode), out);
-        res.statusCode = 200; res.setHeader("content-type", "application/json; charset=utf-8");
+        res.statusCode = 200;
         return res.end(JSON.stringify(out));
       }
+
       if (mode === "bear" && btc.state === "BULL") {
-        const out = { ok: true, ts: now, mode, btc, counts: { entry:0, almost:0, buildup:0, radar:0 }, funnel: { entry:[], almost:[], buildup:[], radar:[] }, note: "Blocked by BTC gate" };
+        const out = {
+          ok: true, ts: now, mode, btc,
+          counts: { entry: 0, almost: 0, buildup: 0, radar: 0 },
+          funnel: { entry: [], almost: [], buildup: [], radar: [] },
+          note: "Blocked by BTC gate",
+        };
         await kv.set(core.keyLatest(mode), out);
-        res.statusCode = 200; res.setHeader("content-type", "application/json; charset=utf-8");
+        res.statusCode = 200;
         return res.end(JSON.stringify(out));
       }
     }
 
+    // --------------------
+    // Fetch universe
+    // --------------------
     const cg = await fetchCgTop(core.SETTINGS.CG_TOP);
 
     const radar = [];
@@ -123,7 +162,7 @@ export default async function handler(req, res) {
     const almost = [];
     const entry = [];
 
-    // state (optioneel; voor health count)
+    // state (optioneel)
     const state = (await kv.get(core.keyState(mode))) || {};
 
     for (const c of cg) {
@@ -133,35 +172,33 @@ export default async function handler(req, res) {
       const vm = radarGate.vm;
       let stageBase = stageFromSimple(mode, { ...c, vm });
 
-      // OB result (als aanwezig)
+      // OB result
       const ob = await kv.get(core.keyObResult(mode, c.symbol));
       const obValid = !!ob?.valid;
-      const spreadPct = Number(ob?.ob?.spreadPct ?? ob?.spreadPct ?? 999);
-      const depthMinUsd1p = Number(ob?.ob?.depthMinUsd1p ?? ob?.depthMinUsd1p ?? 0);
-      const obScore = Number(ob?.ob?.score ?? ob?.score ?? 0);
+      const spreadPct = n(ob?.ob?.spreadPct ?? ob?.spreadPct, 999);
+      const depthMinUsd1p = n(ob?.ob?.depthMinUsd1p ?? ob?.depthMinUsd1p, 0);
+      const obScore = n(ob?.ob?.score ?? ob?.score, 0);
 
       const confidence = core.computeConfidence({
         vm,
         change24: c.change24,
         range24: c.range24,
-        obValid
+        obValid,
       });
 
-      // ✅ OB samples (alleen nodig zodra coin richting ALMOST/ENTRY gaat)
+      // ✅ OB samples alleen ophalen als nodig
       let obSamples = null;
 
-      // ✅ ALMOST slope gate (verplicht om überhaupt ALMOST te zijn)
+      // ✅ ALMOST slope gate (verplicht)
       let almostGate = "n/a";
       if (stageBase === "ALMOST") {
         obSamples = await kv.get(core.keyObSamples(mode, c.symbol));
 
-        // core.checkObSlopeGate is in jouw core files toegevoegd
         const slopeCheck = typeof core.checkObSlopeGate === "function"
           ? core.checkObSlopeGate({ stage: "almost", mode, obSamples, settings: core.SETTINGS })
           : { ok: true };
 
         if (!slopeCheck.ok) {
-          // geen ALMOST als slope faalt -> terug naar BUILDUP (dus hij kan later wél bijna-entry worden)
           stageBase = "BUILDUP";
           almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
         } else {
@@ -169,7 +206,7 @@ export default async function handler(req, res) {
         }
       }
 
-      // ENTRY gate (strict)
+      // ✅ ENTRY gate (strict + slope opnieuw verplicht)
       let stage = stageBase;
       let entryGate = "n/a";
 
@@ -178,12 +215,11 @@ export default async function handler(req, res) {
 
         if (!ob) entryGate = "OB missing";
         else if (!obValid) entryGate = "OB validating";
-        else if (confidence < E.minConfidence) entryGate = "Confidence < min";
-        else if (spreadPct > E.spreadMaxPct) entryGate = "Spread too wide";
-        else if (depthMinUsd1p < E.depthMinUsd1p) entryGate = "Depth too thin (<$)";
-        else if (Math.abs(obScore) < E.obScoreMin) entryGate = "OB score too low";
+        else if (confidence < n(E.minConfidence, 0)) entryGate = "Confidence < min";
+        else if (spreadPct > n(E.spreadMaxPct, 999)) entryGate = "Spread too wide";
+        else if (depthMinUsd1p < n(E.depthMinUsd1p, 0)) entryGate = "Depth too thin (<$)";
+        else if (Math.abs(obScore) < n(E.obScoreMin, 0)) entryGate = "OB score too low";
         else {
-          // ✅ ENTRY slope gate (opnieuw verplicht)
           if (!obSamples) obSamples = await kv.get(core.keyObSamples(mode, c.symbol));
 
           const slopeCheck2 = typeof core.checkObSlopeGate === "function"
@@ -217,12 +253,9 @@ export default async function handler(req, res) {
           reason: String(ob.reason || ""),
           score: Number(obScore),
           spreadPct: Number(spreadPct),
-          depthMinUsd1p: Number(depthMinUsd1p)
+          depthMinUsd1p: Number(depthMinUsd1p),
         } : { status: "none" },
-        why: {
-          almostGate,
-          entryGate
-        }
+        why: { almostGate, entryGate },
       };
 
       if (stage === "ENTRY") entry.push(item);
@@ -234,29 +267,34 @@ export default async function handler(req, res) {
     }
 
     // sort
-    entry.sort((a,b)=>b.confidence-a.confidence || b.vm-a.vm);
-    almost.sort((a,b)=>b.confidence-a.confidence || b.vm-a.vm);
-    buildup.sort((a,b)=>b.vm-a.vm);
-    radar.sort((a,b)=>b.vm-a.vm);
+    entry.sort((a, b) => b.confidence - a.confidence || b.vm - a.vm);
+    almost.sort((a, b) => b.confidence - a.confidence || b.vm - a.vm);
+    buildup.sort((a, b) => b.vm - a.vm);
+    radar.sort((a, b) => b.vm - a.vm);
 
     const result = {
       ok: true,
       ts: now,
       mode,
       btc,
-      counts: { entry: entry.length, almost: almost.length, buildup: buildup.length, radar: radar.length },
-      funnel: { entry, almost, buildup, radar }
+      counts: {
+        entry: entry.length,
+        almost: almost.length,
+        buildup: buildup.length,
+        radar: radar.length,
+      },
+      funnel: { entry, almost, buildup, radar },
     };
 
     await kv.set(core.keyLatest(mode), result);
     await kv.set(core.keyState(mode), state);
 
     res.statusCode = 200;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify(result));
+    return res.end(JSON.stringify(result));
   } catch (e) {
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+    res.setHeader("cache-control", "no-store");
+    return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
