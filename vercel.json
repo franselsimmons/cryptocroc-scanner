@@ -7,9 +7,5 @@
     { "path": "/api/moon/cron?mode=bear", "schedule": "*/5 * * * *" },
 
     { "path": "/api/track", "schedule": "*/10 * * * *" }
-  ],
-  "rewrites": [
-    { "source": "/api/ob/sampler", "destination": "/api/ob-sampler" },
-    { "source": "/api/ob/map_refresh", "destination": "/api/ob-map_refresh" }
   ]
 }
