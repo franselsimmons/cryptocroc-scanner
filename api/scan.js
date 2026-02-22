@@ -21,6 +21,9 @@ function n(x, d = 0) {
   return Number.isFinite(v) ? v : d;
 }
 
+// ✅ OB max age (stale gate)
+const OB_MAX_AGE_MS = 180000; // 3 min
+
 // --------------------
 // 1) BTC gate (simpel)
 // --------------------
@@ -111,7 +114,6 @@ function stageFromSimple(mode, c) {
 // ======================================================
 export default async function handler(req, res) {
   try {
-    // ✅ secret check komt uit /lib/_runtime.js (dus NIET uit core files)
     if (!requireSecret(req, res)) return;
 
     const mode = getMode(req); // "bull" of "bear"
@@ -162,7 +164,6 @@ export default async function handler(req, res) {
     const almost = [];
     const entry = [];
 
-    // state (optioneel)
     const state = (await kv.get(core.keyState(mode))) || {};
 
     for (const c of cg) {
@@ -174,7 +175,14 @@ export default async function handler(req, res) {
 
       // OB result
       const ob = await kv.get(core.keyObResult(mode, c.symbol));
-      const obValid = !!ob?.valid;
+
+      // ✅ stale gate
+      const obTs = n(ob?.ob?.ts ?? ob?.ts, 0);
+      const obAge = obTs > 0 ? (now - obTs) : Number.POSITIVE_INFINITY;
+      const obFresh = obTs > 0 && obAge <= OB_MAX_AGE_MS;
+
+      const obValid = !!ob?.valid && obFresh;
+
       const spreadPct = n(ob?.ob?.spreadPct ?? ob?.spreadPct, 999);
       const depthMinUsd1p = n(ob?.ob?.depthMinUsd1p ?? ob?.depthMinUsd1p, 0);
       const obScore = n(ob?.ob?.score ?? ob?.score, 0);
@@ -206,7 +214,7 @@ export default async function handler(req, res) {
         }
       }
 
-      // ✅ ENTRY gate (strict + slope opnieuw verplicht)
+      // ✅ ENTRY gate (strict)
       let stage = stageBase;
       let entryGate = "n/a";
 
@@ -214,6 +222,7 @@ export default async function handler(req, res) {
         const E = core.SETTINGS.entry;
 
         if (!ob) entryGate = "OB missing";
+        else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
         else if (!obValid) entryGate = "OB validating";
         else if (confidence < n(E.minConfidence, 0)) entryGate = "Confidence < min";
         else if (spreadPct > n(E.spreadMaxPct, 999)) entryGate = "Spread too wide";
@@ -250,10 +259,13 @@ export default async function handler(req, res) {
         stage,
         ob: ob ? {
           valid: !!ob.valid,
+          fresh: !!obFresh,
+          ageSec: obFresh ? Math.round(obAge / 1000) : null,
           reason: String(ob.reason || ""),
           score: Number(obScore),
           spreadPct: Number(spreadPct),
           depthMinUsd1p: Number(depthMinUsd1p),
+          slope: ob?.slope ?? null,
         } : { status: "none" },
         why: { almostGate, entryGate },
       };
@@ -266,7 +278,6 @@ export default async function handler(req, res) {
       state[item.symbol] = { lastSeenAt: now, stage };
     }
 
-    // sort
     entry.sort((a, b) => b.confidence - a.confidence || b.vm - a.vm);
     almost.sort((a, b) => b.confidence - a.confidence || b.vm - a.vm);
     buildup.sort((a, b) => b.vm - a.vm);
