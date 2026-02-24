@@ -1,6 +1,6 @@
-// /api/debug-kv.js
+// api/debug-kv.js
 import { kv } from "@vercel/kv";
-import { requireSecret } from "../lib/_core_bull.js";
+import { requireSecret } from "../lib/_runtime.js";
 
 export const config = { runtime: "nodejs" };
 
@@ -27,13 +27,10 @@ export default async function handler(req, res) {
   if (!requireSecret(req, res)) return;
 
   const keys = [
-    // MAIN
     "trades:main",
     "events:main",
     "latest:bull",
     "latest:bear",
-
-    // MOON (jouw core keys)
     "moon:portfolio:bull",
     "moon:portfolio:bear",
     "moon:positions:bull",
