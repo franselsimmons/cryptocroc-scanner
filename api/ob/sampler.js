@@ -2,14 +2,14 @@ import { kv } from "@vercel/kv";
 
 export const config = { runtime: "nodejs" };
 
-// ================== TUNING (veilig voor Vercel) ==================
-const HARD_MAX_PER_RUN = 30;          // nooit meer dan dit
-const REQUEST_DELAY_MS = 120;         // kleine pauze voorkomt bans
-const OB_STALE_MS = 180000;           // 3 min: alles ouder is “stale”
-const DEFAULT_SAMPLES_WINDOW_SEC = 5400; // 90 min
-const DEFAULT_SAMPLES_MAX = 18;       // klein houden
+// ================== TUNING (swing 30m, veilig voor Vercel) ==================
+const HARD_MAX_PER_RUN = 30;               // nooit meer dan dit
+const REQUEST_DELAY_MS = 150;              // kleine pauze voorkomt spikes
+const OB_STALE_MS = 75 * 60 * 1000;        // 75 min: past bij 30 min scan
+const DEFAULT_SAMPLES_WINDOW_SEC = 3 * 3600; // 180 min (swing window)
+const DEFAULT_SAMPLES_MAX = 24;            // genoeg om slope te meten, niet te groot
 const DEFAULT_SAMPLES_TTL_SEC = 60 * 60 * 48; // 48 uur
-const DEFAULT_RESULT_TTL_SEC = 60 * 20;       // 20 min
+const DEFAULT_RESULT_TTL_SEC = 60 * 45;       // 45 min (past bij 30m scan)
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -17,7 +17,7 @@ function sleep(ms) {
 
 // ================== BITGET V2 ORDERBOOK (SPOT) ==================
 async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
-  const base = String(baseSymbol || "").toUpperCase();
+  const base = String(baseSymbol || "").toUpperCase().trim();
   if (!base) return { ok: false, status: 400, msg: "Missing symbol" };
 
   const pair = `${base}USDT`;
@@ -127,7 +127,7 @@ function computeObSample(depth) {
     bidUsd,
     askUsd,
     mid,
-    depthMinUsd1p
+    depthMinUsd1p,
   };
 }
 
@@ -135,7 +135,7 @@ function pruneSamples(samples, SETTINGS) {
   const now = Date.now();
 
   const winSec = Number(SETTINGS?.entry?.samplesWindowSec || DEFAULT_SAMPLES_WINDOW_SEC);
-  const winMs = winSec * 1000;
+  const winMs = Math.max(60, winSec) * 1000;
 
   const maxKeep = Math.max(
     6,
@@ -160,17 +160,15 @@ function pruneSamples(samples, SETTINGS) {
     .slice(-maxKeep);
 }
 
-function validateSamples(mode, samplesFresh, SETTINGS) {
-  const fresh = pruneSamples(samplesFresh, SETTINGS);
+function validateSamples(mode, pruned, SETTINGS) {
+  const need = Number(SETTINGS?.entry?.samplesNeed || 6);
+  const minAgree = Number(SETTINGS?.entry?.minAgree || 4);
 
-  const need = Number(SETTINGS?.entry?.samplesNeed || 8);
-  const minAgree = Number(SETTINGS?.entry?.minAgree || 6);
-
-  if (fresh.length < need) {
-    return { valid: false, reason: "Not enough samples", fresh };
+  if (!Array.isArray(pruned) || pruned.length < need) {
+    return { valid: false, reason: "Not enough samples", fresh: pruned || [] };
   }
 
-  const lastN = fresh.slice(-need);
+  const lastN = pruned.slice(-need);
   const agree = lastN.filter((s) => (mode === "bull" ? s.score > 0 : s.score < 0)).length;
   const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
 
@@ -196,8 +194,11 @@ function uniqueUpper(list) {
 }
 
 async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS) {
-  const almost = (latest?.funnel?.almost || []).slice(0, Number(SETTINGS?.obPickAlmost || 25));
-  const buildup = (latest?.funnel?.buildup || []).slice(0, Number(SETTINGS?.obPickBuildup || 25));
+  const almostPick = Number(SETTINGS?.obPickAlmost || 25);
+  const buildupPick = Number(SETTINGS?.obPickBuildup || 25);
+
+  const almost = (latest?.funnel?.almost || []).slice(0, almostPick);
+  const buildup = (latest?.funnel?.buildup || []).slice(0, buildupPick);
 
   let picked = [...almost, ...buildup];
   if (!picked.length) picked = (latest?.funnel?.radar || []).slice(0, radarFallback);
@@ -233,7 +234,7 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
   // 2) slope gate (in core)
   const slopeCheck = typeof core.checkObSlopeGate === "function"
     ? core.checkObSlopeGate({ stage: "sampler", mode, obSamples: pruned, settings: SETTINGS })
-    : { ok: true, slope: 0 };
+    : { ok: true, slope: 0, reason: "disabled" };
 
   const finalValid = !!v.valid && !!slopeCheck.ok;
   const finalReason = finalValid
@@ -250,17 +251,14 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
     valid: finalValid,
     reason: finalReason,
 
-    // stale info
     stale,
     ageSec: Math.round(ageMs / 1000),
 
-    // laatste sample (voor snelle UI)
     score: sample.score,
     spreadPct: sample.spreadPct,
     lor: sample.lor,
     depthMinUsd1p: sample.depthMinUsd1p,
 
-    // sampler checks
     avgScore: v.avgScore ?? null,
     agree: v.agree ?? null,
     slope: slopeCheck.slope ?? null,
@@ -292,16 +290,17 @@ export default async function handler(req, res) {
     const mode = String(req.query?.mode || "bull").toLowerCase();
     if (mode !== "bull" && mode !== "bear") {
       res.statusCode = 400;
-      res.setHeader("content-type", "application/json");
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      res.setHeader("cache-control", "no-store");
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
-    // ✅ correct pad: api -> lib
-    const core = await import(`../../lib/_core_${mode}.js`);
+    // ✅ Voor een bestand in /api/* is dit pad correct:
+    const core = await import(`../lib/_core_${mode}.js`);
     const { SETTINGS, keyLatest, keyObSamples, keyObResult } = core;
 
-    // ✅ requireSecret komt uit _runtime (niet uit core)
-    const rt = await import("../../lib/_runtime.js");
+    // ✅ requireSecret komt uit _runtime
+    const rt = await import("../lib/_runtime.js");
     if (!rt.requireSecret(req, res)) return;
 
     const maxPerRunRaw = Number(req.query?.max || 12) || 12;
@@ -323,7 +322,6 @@ export default async function handler(req, res) {
     for (const sym of candidates) {
       totalTried++;
 
-      // ✅ kleine pauze voorkomt rate-limit spikes
       if (totalTried > 1) await sleep(REQUEST_DELAY_MS);
 
       const r = await processCandidate(core, mode, sym, SETTINGS, keyObSamples, keyObResult);
@@ -344,7 +342,8 @@ export default async function handler(req, res) {
     }
 
     res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.setHeader("cache-control", "no-store");
     return res.end(JSON.stringify({
       ok: true,
       mode,
@@ -358,10 +357,12 @@ export default async function handler(req, res) {
       totalValid,
       failed,
       failedDetails: failedDetails.slice(0, 20),
+      note: "Swing 30m tuned: OB stale=75m, samples window default=180m, result TTL=45m.",
     }));
   } catch (e) {
     res.statusCode = 500;
-    res.setHeader("content-type", "application/json");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.setHeader("cache-control", "no-store");
     return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
