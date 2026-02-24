@@ -1,48 +1,54 @@
+// api/ob/map_refresh.js
 import { kv } from "@vercel/kv";
 
 export const config = { runtime: "nodejs" };
 
-function safeArr(x) { return Array.isArray(x) ? x : []; }
-function n(x, d = 0) {
-  const v = Number(x);
-  return Number.isFinite(v) ? v : d;
+// We bewaren 1 map per mode (bull/bear), maar de inhoud is hetzelfde (Bitget spot symbols)
+const MAP_TTL_SEC = 60 * 60 * 6; // 6 uur
+
+async function fetchJson(url) {
+  const r = await fetch(url, { headers: { accept: "application/json" } });
+  const t = await r.text();
+  let j = null;
+  try { j = JSON.parse(t); } catch {}
+  if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 200)}`);
+  return j;
 }
 
-const OB_MAX_AGE_MS = 180000;      // 3 min
-const MAP_TTL_SEC = 60 * 10;       // 10 min (genoeg voor dashboard/debug)
+function extractUsdtBasesFromBitget(payload) {
+  // Bitget v2 spot symbols zit meestal in payload.data (array)
+  const data = Array.isArray(payload?.data) ? payload.data : [];
 
-function slimOb(r) {
-  // Maak het object klein en voorspelbaar voor KV
-  const obTs = n(r?.ob?.ts ?? r?.ts, 0);
-  return {
-    symbol: String(r?.symbol || "").toUpperCase(),
-    valid: !!r?.valid,
-    reason: String(r?.reason || ""),
-    ts: n(r?.ts, 0),
-    slope: r?.slope ?? null,
+  const bases = new Set();
 
-    // kern metrics
-    score: n(r?.score, 0),
-    spreadPct: n(r?.spreadPct, 999),
-    lor: n(r?.lor, 1),
-    depthMinUsd1p: n(r?.depthMinUsd1p, 0),
+  for (const row of data) {
+    // We proberen meerdere mogelijke velden (Bitget wijzigt dit soms)
+    const sym =
+      row?.symbol ||
+      row?.symbolName ||
+      row?.symbolId ||
+      row?.symbolCode ||
+      row?.name;
 
-    // ob snapshot kern
-    ob: {
-      ts: obTs,
-      mid: n(r?.ob?.mid, 0),
-      spreadPct: n(r?.ob?.spreadPct, 999),
-      bidUsd: n(r?.ob?.bidUsd, 0),
-      askUsd: n(r?.ob?.askUsd, 0),
-      score: n(r?.ob?.score, 0),
-      lor: n(r?.ob?.lor, 1),
-      depthMinUsd1p: n(r?.ob?.depthMinUsd1p, 0),
-    },
-  };
+    const s = String(sym || "").toUpperCase().trim();
+    if (!s) continue;
+
+    // We willen spot USDT paren, dus iets als "PEPEUSDT"
+    if (s.endsWith("USDT") && s.length > 4) {
+      const base = s.slice(0, -4);
+      if (base) bases.add(base);
+    }
+  }
+
+  return Array.from(bases);
 }
 
 export default async function handler(req, res) {
   try {
+    // secret check
+    const rt = await import("../../lib/_runtime.js");
+    if (!rt.requireSecret(req, res)) return;
+
     const mode = String(req.query?.mode || "bull").toLowerCase();
     if (mode !== "bull" && mode !== "bear") {
       res.statusCode = 400;
@@ -50,79 +56,47 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
-    // ✅ correct pad + runtime secret (niet core)
-    const core = await import(`../../lib/_core_${mode}.js`);
-    const { keyLatest, keyObResult, keyObResultMapTs } = core;
+    // Bitget spot symbols (v2)
+    const url = "https://api.bitget.com/api/v2/spot/public/symbols";
+    const j = await fetchJson(url);
 
-    const rt = await import("../../lib/_runtime.js");
-    if (!rt.requireSecret(req, res)) return;
+    // Bitget succes code is vaak "00000"
+    const code = String(j?.code || "");
+    if (code && code !== "00000") {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      return res.end(JSON.stringify({
+        ok: false,
+        error: "Bitget returned non-success code",
+        code,
+        msg: j?.msg,
+      }));
+    }
 
-    const latest = await kv.get(keyLatest(mode));
-    const f = latest?.funnel || {};
+    const bases = extractUsdtBasesFromBitget(j);
 
-    // pak funnel coins (in volgorde van belang)
-    const coins = [
-      ...safeArr(f.entry),
-      ...safeArr(f.almost),
-      ...safeArr(f.buildup),
-      ...safeArr(f.radar),
-    ];
-
-    const symbols = Array.from(new Set(
-      coins.map(c => String(c?.symbol || "").toUpperCase()).filter(Boolean)
-    ));
-
-    const now = Date.now();
+    // map: { "PEPE": true, "BTC": true, ... }
     const map = {};
-    let fetched = 0;
-    let stored = 0;
-    let staleSkipped = 0;
-    let invalidSkipped = 0;
+    for (const b of bases) map[b] = true;
 
-    for (const sym of symbols) {
-      fetched++;
-      const r = await kv.get(keyObResult(mode, sym));
-      if (!r) continue;
+    const blob = {
+      ts: Date.now(),
+      size: bases.length,
+      map,
+    };
 
-      // ✅ stale filter (alleen verse OB)
-      const obTs = n(r?.ob?.ts ?? r?.ts, 0);
-      const age = obTs > 0 ? (now - obTs) : Number.POSITIVE_INFINITY;
-      const fresh = obTs > 0 && age <= OB_MAX_AGE_MS;
-
-      if (!fresh) { staleSkipped++; continue; }
-      if (!r?.valid) { invalidSkipped++; continue; }
-
-      map[sym] = slimOb(r);
-      stored++;
-    }
-
-    const ts = Date.now();
-
-    // timestamp key
-    if (typeof keyObResultMapTs === "function") {
-      await kv.set(keyObResultMapTs(mode), ts, { ex: MAP_TTL_SEC });
-    } else {
-      await kv.set(`ob:map:ts:${mode}`, ts, { ex: MAP_TTL_SEC });
-    }
-
-    // ✅ slanke map met TTL (veilig voor KV size)
-    await kv.set(
-      `ob:map:${mode}`,
-      { ts, size: stored, map },
-      { ex: MAP_TTL_SEC }
-    );
+    // zelfde key als jouw scan.js verwacht: ob:map:${mode}
+    await kv.set(`ob:map:${mode}`, blob, { ex: MAP_TTL_SEC });
+    // extra handig (optioneel)
+    await kv.set(`ob:mapts:${mode}`, blob.ts, { ex: MAP_TTL_SEC });
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
     return res.end(JSON.stringify({
       ok: true,
       mode,
-      ts,
-      symbols: symbols.length,
-      fetched,
-      stored,
-      staleSkipped,
-      invalidSkipped,
+      ts: blob.ts,
+      size: blob.size,
       ttlSec: MAP_TTL_SEC,
     }));
   } catch (e) {
