@@ -1,7 +1,7 @@
 {
   "crons": [
-    { "path": "/api/cron?mode=bull", "schedule": "*/10 * * * *" },
-    { "path": "/api/cron?mode=bear", "schedule": "*/10 * * * *" },
+    { "path": "/api/cron?mode=bull", "schedule": "*/30 * * * *" },
+    { "path": "/api/cron?mode=bear", "schedule": "*/30 * * * *" },
 
     { "path": "/api/moon/cron?mode=bull", "schedule": "*/5 * * * *" },
     { "path": "/api/moon/cron?mode=bear", "schedule": "*/5 * * * *" },
