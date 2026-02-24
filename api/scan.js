@@ -25,8 +25,9 @@ function safeObj(x) {
   return x && typeof x === "object" ? x : null;
 }
 
-// ✅ OB max age (stale gate)
-const OB_MAX_AGE_MS = 15 * 60 * 1000; // 15 min
+// ✅ OB max age (stale gate) — 30 min scan => OB mag ouder zijn dan 15 min
+// Neem ruim boven 30 min zodat je scan niet steeds alles afkeurt.
+const OB_MAX_AGE_MS = 75 * 60 * 1000; // 75 min
 
 // --------------------
 // 1) BTC gate (simpel)
@@ -43,6 +44,7 @@ async function fetchBtcGate() {
   const low = n(b?.low_24h, 0);
   const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
+  // Swing: iets milder dan heel strak, maar nog steeds duidelijk
   let state = "NEUTRAL";
   if (chg24 >= 0.6) state = "BULL";
   if (chg24 <= -0.6) state = "BEAR";
@@ -98,18 +100,26 @@ function passRadar(core, c) {
 }
 
 // --------------------
-// Stage logic (simpel)
+// Stage logic (SWING, 30m scan)
+// - Gebruik change1h voor richting (sneller signaal voor swing-entry)
+// - Iets hogere VM drempels voor kwaliteit
 // --------------------
-function stageFromSimple(mode, c) {
+function stageFromSwing(mode, c) {
   const vm = c.vm;
   const range = c.range24;
-  const chg24 = c.change24;
+  const ch1h = c.change1h;
 
   const wantUp = mode === "bull";
-  const inDir = wantUp ? chg24 >= 0.6 : chg24 <= -0.6;
 
-  if (vm >= 0.22 && range <= 18 && inDir) return "ALMOST";
-  if (vm >= 0.16 && range <= 22) return "BUILDUP";
+  // richting (swing): 1h moet in de goede richting zitten
+  const inDir = wantUp ? ch1h >= 0.20 : ch1h <= -0.20;
+
+  // swing ALMOST: betere kwaliteit, minder ruis
+  if (vm >= 0.24 && range <= 20 && inDir) return "ALMOST";
+
+  // swing BUILDUP: iets losser
+  if (vm >= 0.18 && range <= 28) return "BUILDUP";
+
   return "RADAR";
 }
 
@@ -127,11 +137,7 @@ async function loadObMap(mode) {
 // OB lookup: eerst map, anders KV
 // --------------------
 async function getObForSymbol({ core, mode, symbol, obMap }) {
-  // 1) map lookup
-  if (obMap && obMap[symbol]) {
-    return obMap[symbol];
-  }
-  // 2) fallback naar individuele key (blijft werken als map niet draait)
+  if (obMap && obMap[symbol]) return obMap[symbol];
   return await kv.get(core.keyObResult(mode, symbol));
 }
 
@@ -200,7 +206,9 @@ export default async function handler(req, res) {
       if (!radarGate.ok) continue;
 
       const vm = radarGate.vm;
-      let stageBase = stageFromSimple(mode, { ...c, vm });
+
+      // ✅ SWING stage
+      let stageBase = stageFromSwing(mode, { ...c, vm });
 
       // ✅ OB lookup (map eerst, anders KV)
       const ob = await getObForSymbol({ core, mode, symbol: c.symbol, obMap });
@@ -325,6 +333,7 @@ export default async function handler(req, res) {
       },
       funnel: { entry, almost, buildup, radar },
       obMap: obMap ? { ok: true, size: Object.keys(obMap).length } : { ok: false },
+      note: "Swing mode tuned for 30m scan (OB stale 75m, stage uses 1h direction).",
     };
 
     await kv.set(core.keyLatest(mode), result);
