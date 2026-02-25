@@ -232,13 +232,14 @@ function addToWatch(watch, symbols) {
   return merged.slice(0, WATCH_MAX);
 }
 
-// ================== CANDIDATES SELECTIE (FIX) ==================
+// ================== CANDIDATES SELECTIE (RADAR FIRST) ==================
 async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS, obMap) {
+  // ✅ vanaf nu: RADAR eerst, zodat samples vroeg beginnen
+  const radar = (latest?.funnel?.radar || []).slice(0, Number(SETTINGS?.obPickRadar || radarFallback || 25));
   const almost = (latest?.funnel?.almost || []).slice(0, Number(SETTINGS?.obPickAlmost || 25));
   const buildup = (latest?.funnel?.buildup || []).slice(0, Number(SETTINGS?.obPickBuildup || 25));
 
-  let picked = [...almost, ...buildup];
-  if (!picked.length) picked = (latest?.funnel?.radar || []).slice(0, radarFallback);
+  const picked = [...radar, ...almost, ...buildup];
 
   const poolNow = uniqueUpper(picked.map((x) => x?.symbol)).filter((s) => !isBadSymbol(s));
 
@@ -365,7 +366,7 @@ export default async function handler(req, res) {
     const obMapBlob = await kv.get(`ob:map:${mode}`);
     const obMap = safeObj(obMapBlob)?.map && typeof obMapBlob.map === "object" ? obMapBlob.map : null;
 
-    // --- candidates kiezen uit latest funnel + watchlist (FIX) ---
+    // --- candidates kiezen uit latest funnel + watchlist (RADAR FIRST) ---
     const latest = await kv.get(keyLatest(mode));
     const candidatesRaw = await pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS, obMap);
 
