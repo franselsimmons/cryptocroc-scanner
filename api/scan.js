@@ -30,26 +30,52 @@ function safeObj(x) {
 const OB_MAX_AGE_MS = 75 * 60 * 1000; // 75 min
 
 // --------------------
-// 1) BTC gate (simpel)
+// 1) BTC gate (swing-proof + juiste CG velden)
 // --------------------
 async function fetchBtcGate() {
   const url =
-    "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1&sparkline=false&price_change_percentage=24h";
+    "https://api.coingecko.com/api/v3/coins/markets" +
+    "?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1" +
+    "&sparkline=false&price_change_percentage=1h,24h";
 
   const arr = await fetchJson(url);
-  const b = arr?.[0];
+  const b = arr?.[0] || {};
 
-  const chg24 = n(b?.price_change_percentage_24h, 0);
+  // ✅ CoinGecko levert soms *_in_currency velden. Pak beide als fallback.
+  const chg1h = n(
+    b?.price_change_percentage_1h_in_currency ??
+    b?.price_change_percentage_1h ??
+    0,
+    0
+  );
+
+  const chg24 = n(
+    b?.price_change_percentage_24h_in_currency ??
+    b?.price_change_percentage_24h ??
+    0,
+    0
+  );
+
   const high = n(b?.high_24h, 0);
   const low = n(b?.low_24h, 0);
   const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-  // Swing: iets milder dan heel strak, maar nog steeds duidelijk
+  // ✅ Swing gate: 1h leidend (past bij jouw 30m scan), 24h als backup
   let state = "NEUTRAL";
-  if (chg24 >= 0.6) state = "BULL";
-  if (chg24 <= -0.6) state = "BEAR";
 
-  return { state, chg24: +chg24.toFixed(3), range24: +range24.toFixed(3) };
+  if (chg1h >= 0.15) state = "BULL";
+  else if (chg1h <= -0.15) state = "BEAR";
+  else {
+    if (chg24 >= 0.35) state = "BULL";
+    if (chg24 <= -0.35) state = "BEAR";
+  }
+
+  return {
+    state,
+    chg1h: +chg1h.toFixed(3),
+    chg24: +chg24.toFixed(3),
+    range24: +range24.toFixed(3),
+  };
 }
 
 // --------------------
@@ -68,6 +94,22 @@ async function fetchCgTop(limit) {
     const low = n(c?.low_24h, 0);
     const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
+    // ✅ Ook hier: 24h kan *_in_currency zijn (afhankelijk van CG/params)
+    const change24 = n(
+      c?.price_change_percentage_24h_in_currency ??
+      c?.price_change_percentage_24h ??
+      0,
+      0
+    );
+
+    // ✅ 1h is vrijwel altijd *_in_currency bij deze endpoint
+    const change1h = n(
+      c?.price_change_percentage_1h_in_currency ??
+      c?.price_change_percentage_1h ??
+      0,
+      0
+    );
+
     return {
       id: c?.id,
       symbol: String(c?.symbol || "").toUpperCase(),
@@ -75,8 +117,8 @@ async function fetchCgTop(limit) {
       price,
       volume: n(c?.total_volume, 0),
       marketCap: n(c?.market_cap, 0),
-      change24: n(c?.price_change_percentage_24h, 0),
-      change1h: n(c?.price_change_percentage_1h_in_currency, 0),
+      change24,
+      change1h,
       range24,
     };
   });
