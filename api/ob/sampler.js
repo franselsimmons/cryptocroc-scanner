@@ -4,13 +4,18 @@ import { kv } from "@vercel/kv";
 export const config = { runtime: "nodejs" };
 
 // ================== TUNING (veilig voor Vercel) ==================
-const HARD_MAX_PER_RUN = 30;                // nooit meer dan dit
-const REQUEST_DELAY_MS = 120;               // kleine pauze voorkomt rate-limits
-const OB_STALE_MS = 30 * 60 * 1000;         // 30 min (past bij 30m basis scan)
+const HARD_MAX_PER_RUN = 30;                 // nooit meer dan dit
+const REQUEST_DELAY_MS = 120;                // kleine pauze voorkomt rate-limits
+const OB_STALE_MS = 30 * 60 * 1000;          // 30 min (past bij 30m basis scan)
 const DEFAULT_SAMPLES_WINDOW_SEC = 6 * 3600; // 6 uur
-const DEFAULT_SAMPLES_MAX = 24;             // klein houden
+const DEFAULT_SAMPLES_MAX = 24;              // klein houden
 const DEFAULT_SAMPLES_TTL_SEC = 60 * 60 * 48; // 48 uur
 const DEFAULT_RESULT_TTL_SEC = 60 * 30;       // 30 min
+
+// ✅ WATCHLIST (belangrijkste fix voor 30m cadence)
+const WATCH_MAX = 120;                        // hoeveel symbols maximaal in watchlist
+const WATCH_TTL_SEC = 60 * 60 * 12;           // 12 uur
+const WATCH_PREFER = 18;                      // hoeveel we eerst uit watchlist pakken (per run)
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -181,8 +186,8 @@ function pruneSamples(samples, SETTINGS) {
 function validateSamples(mode, samplesFresh, SETTINGS) {
   const fresh = pruneSamples(samplesFresh, SETTINGS);
 
-  const need = Number(SETTINGS?.entry?.samplesNeed || 4);   // 👈 default swing: 4
-  const minAgree = Number(SETTINGS?.entry?.minAgree || 3); // 👈 default swing: 3
+  const need = Number(SETTINGS?.entry?.samplesNeed || 4);   // default swing: 4
+  const minAgree = Number(SETTINGS?.entry?.minAgree || 3);  // default swing: 3
 
   if (fresh.length < need) {
     return { valid: false, reason: "Not enough samples", fresh };
@@ -200,17 +205,63 @@ function validateSamples(mode, samplesFresh, SETTINGS) {
   return { valid: true, reason: "OK", fresh: lastN, avgScore, agree };
 }
 
-async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS) {
+// ================== WATCHLIST LOGIC ==================
+async function loadWatch(mode) {
+  const key = `ob:watch:${mode}`;
+  const w = await kv.get(key);
+  return Array.isArray(w) ? uniqueUpper(w) : [];
+}
+
+async function saveWatch(mode, list) {
+  const key = `ob:watch:${mode}`;
+  const pruned = uniqueUpper(list).slice(0, WATCH_MAX);
+  await kv.set(key, pruned, { ex: WATCH_TTL_SEC });
+  return pruned;
+}
+
+function isBadSymbol(sym) {
+  const s = String(sym || "").toUpperCase().trim();
+  if (!s) return true;
+  // simpele sanity: geen extreem lange strings / rare tekens
+  if (s.length > 18) return true;
+  return false;
+}
+
+function addToWatch(watch, symbols) {
+  const merged = uniqueUpper([...(watch || []), ...(symbols || [])]);
+  return merged.slice(0, WATCH_MAX);
+}
+
+// ================== CANDIDATES SELECTIE (FIX) ==================
+async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS, obMap) {
   const almost = (latest?.funnel?.almost || []).slice(0, Number(SETTINGS?.obPickAlmost || 25));
   const buildup = (latest?.funnel?.buildup || []).slice(0, Number(SETTINGS?.obPickBuildup || 25));
 
   let picked = [...almost, ...buildup];
   if (!picked.length) picked = (latest?.funnel?.radar || []).slice(0, radarFallback);
 
-  const pool = uniqueUpper(picked.map((x) => x?.symbol));
-  return pool.slice(0, maxPerRun);
+  const poolNow = uniqueUpper(picked.map((x) => x?.symbol)).filter((s) => !isBadSymbol(s));
+
+  // ✅ 1) haal oude watchlist
+  const watch = await loadWatch(mode);
+
+  // ✅ 2) update watchlist met nieuwe funnel symbols (blijft stabiel)
+  const updatedWatch = await saveWatch(mode, addToWatch(watch, poolNow));
+
+  // ✅ 3) pak eerst uit watchlist zodat samples kunnen stapelen
+  const prefer = Math.max(1, Math.min(maxPerRun, WATCH_PREFER));
+  let out = updatedWatch.slice(0, prefer);
+
+  // ✅ 4) vul aan met nieuwe pool (zodat je nieuwe coins blijft ontdekken)
+  out = uniqueUpper([...out, ...poolNow]).slice(0, maxPerRun);
+
+  // ✅ 5) als we obMap hebben: filter op Bitget spot existence
+  if (obMap) out = out.filter((sym) => !!obMap[String(sym).toUpperCase()]);
+
+  return out.slice(0, maxPerRun);
 }
 
+// ================== PER COIN PROCESS ==================
 async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyObResult) {
   const startedAt = Date.now();
 
@@ -225,7 +276,6 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
   const kS = keyObSamples(mode, symbol);
   const prev = (await kv.get(kS)) || [];
   const merged = Array.isArray(prev) ? prev.concat([sample]) : [sample];
-
   const pruned = pruneSamples(merged, SETTINGS);
 
   // ✅ TTL zodat KV niet vol blijft hangen
@@ -298,31 +348,29 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
-    // ✅ core import: vanuit api/ob -> lib zit 2 levels omhoog
-    const core = await import(`../../lib/_core_${mode}.js`);
-    const { SETTINGS, keyLatest, keyObSamples, keyObResult } = core;
-
     // ✅ secret check zit in _runtime
     const rt = await import("../../lib/_runtime.js");
     if (!rt.requireSecret(req, res)) return;
+
+    // ✅ core import: vanuit api/ob -> lib zit 2 levels omhoog
+    const core = await import(`../../lib/_core_${mode}.js`);
+    const { SETTINGS, keyLatest, keyObSamples, keyObResult } = core;
 
     const maxPerRunRaw = Number(req.query?.max || 12) || 12;
     const maxPerRun = Math.max(1, Math.min(HARD_MAX_PER_RUN, Math.min(80, maxPerRunRaw)));
 
     const radarFallback = Math.max(5, Math.min(120, Number(req.query?.radar || 25) || 25));
 
-    // --- candidates kiezen uit latest funnel ---
-    const latest = await kv.get(keyLatest(mode));
-    const candidatesRaw = await pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS);
-
     // ✅ Bitget map (gemaakt door api/ob/map_refresh.js)
     const obMapBlob = await kv.get(`ob:map:${mode}`);
     const obMap = safeObj(obMapBlob)?.map && typeof obMapBlob.map === "object" ? obMapBlob.map : null;
 
-    // ✅ Skip coins die niet op Bitget Spot bestaan (voorkomt 400 errors)
-    const candidates = obMap
-      ? candidatesRaw.filter((sym) => !!obMap[String(sym).toUpperCase()])
-      : candidatesRaw;
+    // --- candidates kiezen uit latest funnel + watchlist (FIX) ---
+    const latest = await kv.get(keyLatest(mode));
+    const candidatesRaw = await pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS, obMap);
+
+    // ✅ (optioneel) nog een extra filter
+    const candidates = uniqueUpper(candidatesRaw).filter((s) => !isBadSymbol(s));
 
     let totalTried = 0;
     let totalProcessed = 0;
@@ -354,6 +402,9 @@ export default async function handler(req, res) {
       }
     }
 
+    // ✅ laat ook zien wat er in watchlist zit (handig debug)
+    const watchNow = await loadWatch(mode);
+
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
     return res.end(JSON.stringify({
@@ -363,6 +414,8 @@ export default async function handler(req, res) {
       maxPerRun,
       radarFallback,
       obMapOk: !!obMap,
+      watchSize: watchNow.length,
+      watchHead: watchNow.slice(0, 20),
       candidatesRaw,
       candidates,
       processed,
