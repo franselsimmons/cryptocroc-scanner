@@ -1,28 +1,28 @@
-// api/ob/sampler.js
+// /api/ob/sampler.js
 import { kv } from "@vercel/kv";
 
 export const config = { runtime: "nodejs" };
 
 // ================== TUNING (veilig voor Vercel) ==================
-const HARD_MAX_PER_RUN = 30;                  // nooit meer dan dit
-const REQUEST_DELAY_MS = 120;                 // kleine pauze voorkomt rate-limits
+const HARD_MAX_PER_RUN = 30;
+const REQUEST_DELAY_MS = 120;
 
-// ✅ 30m scan: stale moet RUIMER zijn (anders worden samples te snel "oud")
-const OB_STALE_MS = 120 * 60 * 1000;          // 120 min
+// ✅ 30m scan: stale moet RUIMER zijn
+const OB_STALE_MS = 120 * 60 * 1000; // 120 min
 
 const DEFAULT_SAMPLES_WINDOW_SEC = 6 * 3600;  // 6 uur
-const DEFAULT_SAMPLES_MAX = 24;               // klein houden
-const DEFAULT_SAMPLES_TTL_SEC = 60 * 60 * 48; // 48 uur
-const DEFAULT_RESULT_TTL_SEC = 60 * 30;       // 30 min
+const DEFAULT_SAMPLES_MAX = 24;
+const DEFAULT_SAMPLES_TTL_SEC = 60 * 60 * 48;
+const DEFAULT_RESULT_TTL_SEC = 60 * 30;
 
-// ✅ 30m scan defaults (als _core settings ontbreken)
-const DEFAULT_SAMPLES_NEED_30M = 3;           // 3 samples = 90 min max
-const DEFAULT_MIN_AGREE_30M = 2;              // 2 van 3 moet matchen
+// ✅ 30m swing defaults als _core settings ontbreken
+const DEFAULT_SAMPLES_NEED_30M = 3;
+const DEFAULT_MIN_AGREE_30M = 2;
 
-// ✅ WATCHLIST (belangrijkste fix voor 30m cadence)
-const WATCH_MAX = 120;                        // hoeveel symbols maximaal in watchlist
-const WATCH_TTL_SEC = 60 * 60 * 12;           // 12 uur
-const WATCH_PREFER = 18;                      // hoeveel we eerst uit watchlist pakken (per run)
+// ✅ WATCHLIST
+const WATCH_MAX = 120;
+const WATCH_TTL_SEC = 60 * 60 * 12;
+const WATCH_PREFER = 18;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -130,8 +130,7 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  // 0.2% band voor imbalance score
-  const pct = 0.002;
+  const pct = 0.002; // 0.2% band
   const bidRes = sumDepth(bids, mid, pct, true);
   const askRes = sumDepth(asks, mid, pct, false);
 
@@ -144,7 +143,6 @@ function computeObSample(depth) {
   const biggest = Math.max(bidRes.biggest, askRes.biggest);
   const lor = denom > 0 ? biggest / denom : 1;
 
-  // depth within 1% (min van beide kanten)
   const bid1 = sumDepth(bids, mid, 0.01, true);
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
@@ -193,7 +191,6 @@ function pruneSamples(samples, SETTINGS) {
 function validateSamples(mode, samplesFresh, SETTINGS) {
   const fresh = pruneSamples(samplesFresh, SETTINGS);
 
-  // ✅ 30m swing defaults als settings ontbreken
   const need = Number(
     SETTINGS?.entry?.samplesNeed ??
     DEFAULT_SAMPLES_NEED_30M
@@ -248,7 +245,6 @@ function addToWatch(watch, symbols) {
 
 // ================== CANDIDATES SELECTIE (RADAR FIRST) ==================
 async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS, obMap) {
-  // ✅ RADAR eerst: samples vroeg beginnen
   const radar = (latest?.funnel?.radar || []).slice(
     0,
     Number(SETTINGS?.obPickRadar || radarFallback || 25)
@@ -267,6 +263,7 @@ async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTI
 
   out = uniqueUpper([...out, ...poolNow]).slice(0, maxPerRun);
 
+  // obMap hier is existence-map (Bitget listing)
   if (obMap) out = out.filter((sym) => !!obMap[String(sym).toUpperCase()]);
 
   return out.slice(0, maxPerRun);
@@ -365,6 +362,7 @@ export default async function handler(req, res) {
 
     const radarFallback = Math.max(5, Math.min(120, Number(req.query?.radar || 25) || 25));
 
+    // ob:map is existence-map
     const obMapBlob = await kv.get(`ob:map:${mode}`);
     const obMap = safeObj(obMapBlob)?.map && typeof obMapBlob.map === "object" ? obMapBlob.map : null;
 
