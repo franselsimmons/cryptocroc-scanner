@@ -259,7 +259,6 @@ function normBtcState(x) {
   return "NEUTRAL";
 }
 
-// ✅ STABIEL: 24h bepaalt regime (default ±1.0%)
 function computeBtcStateLocal(btcBase, SETTINGS) {
   const cfg = safeObj(SETTINGS?.btc) || {};
   const neutral24Pct = n(cfg.neutral24Pct, 1.0);
@@ -270,12 +269,6 @@ function computeBtcStateLocal(btcBase, SETTINGS) {
   return "NEUTRAL";
 }
 
-/**
- * ✅ BTC policy:
- * - BTC NEUTRAL  -> beide modes PREP (max BUILDUP)
- * - BTC BULL     -> bull FULL, bear PREP
- * - BTC BEAR     -> bear FULL, bull PREP
- */
 function computeStageCap(mode, btcState) {
   const st = normBtcState(btcState);
   const m = String(mode || "").toLowerCase();
@@ -297,7 +290,6 @@ function computeStageCap(mode, btcState) {
   return { cap: true, capStage, reason: `BTC ${st}: ${m} blijft prep-mode (max BUILDUP)` };
 }
 
-// ✅ 1h fine-tune: alleen confidence tweak (geen block)
 function btcConfidenceAdjust(mode, btcState, btcBase, SETTINGS) {
   const cfg = safeObj(SETTINGS?.btc) || {};
   const fine1hAbs = n(cfg.fine1hAbsPct, 0.25);
@@ -417,7 +409,7 @@ async function getObForSymbol({ core, mode, symbol, obMap }) {
 }
 
 // --------------------
-// ✅ Adaptive entry thresholds (ALTIJD uit core tiers)
+// Adaptive entry thresholds
 // --------------------
 function adaptiveEntryThresholds(core, c, vm) {
   const base = core?.SETTINGS?.entry || {};
@@ -458,7 +450,7 @@ function adaptiveEntryThresholds(core, c, vm) {
 }
 
 // --------------------
-// ✅ Consistency + scans + prevStage
+// Consistency + scans + prevStage
 // --------------------
 function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
   const S = stateObj || {};
@@ -522,16 +514,14 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    // BTC data
+    // BTC
     const btcBase = await fetchBtc();
     const btcState = computeBtcStateLocal(btcBase, core.SETTINGS);
     const btcTune = btcConfidenceAdjust(mode, btcState, btcBase, core.SETTINGS);
-
     const btc = { ...btcBase, state: btcState, tune: btcTune };
 
-    // stage cap policy (geen hard block)
     const cap = computeStageCap(mode, btc.state);
-    const allowEntry = cap.cap === false; // FULL mode alleen als cap=false
+    const allowEntry = cap.cap === false;
 
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
@@ -542,8 +532,6 @@ export default async function handler(req, res) {
     const buildup = [];
     const almost = [];
     const entry = [];
-
-    // ✅ nieuwe echte trading tabellen voor de pagina
     const openTrades = [];
 
     const state = (await kv.get(core.keyState(mode))) || {};
@@ -561,7 +549,7 @@ export default async function handler(req, res) {
 
       let stageBase = stageFromSwing(mode, { ...c, vm });
 
-      // OB lookup blijft altijd lopen
+      // OB
       const ob = await getObForSymbol({ core, mode, symbol: sym, obMap });
 
       const obTs = n(ob?.ob?.ts ?? ob?.ts, 0);
@@ -574,7 +562,6 @@ export default async function handler(req, res) {
       const depthMinUsd1p = n(ob?.ob?.depthMinUsd1p ?? ob?.depthMinUsd1p, 0);
       const obScore = n(ob?.ob?.score ?? ob?.score, 0);
 
-      // base confidence uit core + BTC 1h fine-tune
       const confidenceBase = core.computeConfidence({
         vm,
         change24: c.change24,
@@ -589,15 +576,12 @@ export default async function handler(req, res) {
 
       const thr = adaptiveEntryThresholds(core, c, vm);
 
-      // -------------------------
       // Funnel stage + gates
-      // -------------------------
       let almostGate = "n/a";
       let entryGate = "n/a";
 
       let stage = stageBase;
 
-      // cap: nooit voorbij BUILDUP in prep-mode
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
         stage = "BUILDUP";
         almostGate = `capped: ${cap.capStage}`;
@@ -670,7 +654,7 @@ export default async function handler(req, res) {
       }
 
       // ======================================================
-      // ✅ TRADE ENGINE (ENTRY instap -> HOLD -> SELL exit)
+      // TRADE ENGINE
       // ======================================================
       const tKey = kTrade(mode, sym);
       const cdKey = kCooldown(mode, sym);
@@ -680,7 +664,7 @@ export default async function handler(req, res) {
 
       let tradeInfo = null;
 
-      // 1) Als trade OPEN is: manage exits altijd (ook in BTC cap)
+      // OPEN trade: manage
       if (tradeExisting && tradeExisting?.status === "OPEN") {
         const entryPrice = n(tradeExisting.entryPrice, 0);
         const barsOpen = n(tradeExisting.barsOpen, 0) + 1;
@@ -709,7 +693,6 @@ export default async function handler(req, res) {
         else if (timeStopHit) exit = { reason: "TIME_STOP_NO_MOMENTUM", barsOpen, maxPnl, pnl };
 
         if (exit) {
-          // SELL: close trade + cooldown + log sell voor pagina
           await kv.del(tKey);
           await kv.set(cdKey, { ts: now, reason: exit.reason }, { ex: REENTRY_COOLDOWN_SEC });
 
@@ -733,7 +716,8 @@ export default async function handler(req, res) {
             `price ${fmtUsd(priceNow, 6)}`;
           pushNotice(noticesByHook, hook, line);
 
-          tradeInfo = { status: "CLOSED", exit, pnl, maxPnl };
+          // ✅ voor coin item (maar SELL paneel komt uit sells-log)
+          tradeInfo = { status: "CLOSED", exit, pnl, maxPnl, exitAt: now, barsOpen };
         } else {
           const updated = {
             ...tradeExisting,
@@ -744,7 +728,6 @@ export default async function handler(req, res) {
             obBadStreak,
           };
 
-          // 1x HOLD melding na 2 scans open
           if (!updated.holdNotified && barsOpen >= HOLD_AFTER_SCANS) {
             const hook = stageWebhook("HOLD");
             const line =
@@ -771,8 +754,7 @@ export default async function handler(req, res) {
         }
       }
 
-      // 2) Als trade NIET open is: open trade bij ENTRY (instap)
-      //    Alleen als allowEntry=true (BTC regime match) en geen cooldown.
+      // no OPEN trade: open on ENTRY
       if (!tradeInfo) {
         const inCooldown = !!cooldown;
         const isEntrySignal = stage === "ENTRY" && allowEntry;
@@ -809,9 +791,7 @@ export default async function handler(req, res) {
         }
       }
 
-      // -------------------------
-      // Funnel state (RADAR/BUILDUP/ALMOST)
-      // -------------------------
+      // Funnel state
       const prevEntry = safeObj(state[sym]) || {};
       const stFix = updateStateAndConsistency(state, sym, stage, core, now);
 
@@ -820,14 +800,11 @@ export default async function handler(req, res) {
       const prevStage = up(stFix.prevStage);
       const currStage = up(stage);
 
-      // Alleen funnel-stage meldingen als er GEEN open trade is
       const hasOpenTrade = tradeInfo?.status === "OPEN";
 
       if (!hasOpenTrade && prevStage) {
         const doNotify = canNotify(prevEntry, now);
-
-        const isFunnelStage =
-          currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
+        const isFunnelStage = currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
 
         if (doNotify && isFunnelStage && prevStage !== currStage) {
           const hook = stageWebhook(currStage);
@@ -842,12 +819,13 @@ export default async function handler(req, res) {
         }
       }
 
-      // ✅ voor pagina: openTrades tabel vullen
+      // ✅ open trades tabel
       if (tradeInfo?.status === "OPEN") {
         openTrades.push({
           symbol: sym,
           side: String(mode).toLowerCase(),
           entryPrice: n(tradeInfo.entryPrice, 0),
+          entryAt: n(tradeInfo.entryAt, 0),
           barsOpen: n(tradeInfo.barsOpen, 0),
           pnlPct: n(tradeInfo.pnl, 0),
           maxPnlPct: n(tradeInfo.maxPnl, 0),
@@ -856,6 +834,9 @@ export default async function handler(req, res) {
           vm,
         });
       }
+
+      // ✅ VolAcc bestaat nu echt (geen leeg veld)
+      const volAcc = vm;
 
       const item = {
         id: c.id,
@@ -868,14 +849,14 @@ export default async function handler(req, res) {
         change1h: +c.change1h.toFixed(4),
         range24: +c.range24.toFixed(4),
         vm: +vm.toFixed(6),
+        volAcc: +volAcc.toFixed(6),
 
         confidenceBase,
         confidence,
         confidenceBtcAdj: btcTune.adj,
 
-        stage: currStage, // funnel stage
+        stage: currStage,
 
-        // ✅ trading status zichtbaar op pagina
         trade: tradeInfo,
         tradeStatus: pageTradeStatus(tradeInfo),
 
@@ -932,9 +913,11 @@ export default async function handler(req, res) {
     const fine1hAbsPct = n(btcCfg.fine1hAbsPct, 0.25);
     const confBoost = n(btcCfg.confBoost, 4);
 
-    // ✅ recent sells voor pagina
+    // ✅ recent sells voor pagina (KV log)
     const recentSellsRaw = (await kv.get(kSells(mode))) || [];
-    const recentSells = Array.isArray(recentSellsRaw) ? recentSellsRaw.slice(-SELLS_KEEP).reverse() : [];
+    const recentSells = Array.isArray(recentSellsRaw)
+      ? recentSellsRaw.slice(-SELLS_KEEP).reverse()
+      : [];
 
     const result = {
       ok: true,
@@ -971,7 +954,7 @@ export default async function handler(req, res) {
       },
       funnel: { entry, almost, buildup, radar },
 
-      // ✅ echte trading tabellen voor jouw pagina
+      // ✅ trading tabellen voor pagina
       trading: {
         openTrades,
         recentSells,
@@ -985,7 +968,7 @@ export default async function handler(req, res) {
         errors: (discord.details || []).slice(0, 5),
       },
       note:
-        "ENTRY/HOLD/SELL zijn nu zichtbaar op de pagina: openTrades + recentSells + item.tradeStatus. ENTRY maakt trade, HOLD zolang open, SELL sluit + logt in KV.",
+        "HOLD komt uit trade OPEN. SELL komt uit KV sells-log (trade:sells:*), dus blijft zichtbaar op de pagina.",
     };
 
     await kv.set(core.keyLatest(mode), result);
