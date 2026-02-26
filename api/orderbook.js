@@ -4,7 +4,6 @@ import { RUNTIME_CONFIG, requireSecret } from "../lib/_runtime.js";
 
 export const config = RUNTIME_CONFIG;
 
-// ===== helpers =====
 function normalizeBaseSymbol(input) {
   const s = String(input || "").trim().toUpperCase();
   if (!s) return "";
@@ -17,23 +16,6 @@ function n(x, d = 0) {
   return Number.isFinite(v) ? v : d;
 }
 
-// ✅ publiek lezen (KV-result) mag zonder secret
-// ✅ RAW debug (live Bitget) blijft wél achter secret
-function wantsSecret(req) {
-  // raw=1 of debug=1 => secret vereist
-  try {
-    const u = new URL(req.url, "http://localhost");
-    const rawFlag = u.searchParams.get("raw") ?? req.query?.raw ?? "0";
-    const dbgFlag = u.searchParams.get("debug") ?? req.query?.debug ?? "0";
-    return String(rawFlag) === "1" || String(dbgFlag) === "1";
-  } catch {
-    const rawFlag = req.query?.raw ?? "0";
-    const dbgFlag = req.query?.debug ?? "0";
-    return String(rawFlag) === "1" || String(dbgFlag) === "1";
-  }
-}
-
-// (optioneel) raw debug: Bitget depth, want sampler gebruikt Bitget
 async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
   const base = String(baseSymbol || "").toUpperCase();
   if (!base) return { ok: false, status: 400, msg: "Missing symbol" };
@@ -88,11 +70,6 @@ async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
 
 export default async function handler(req, res) {
   try {
-    // ✅ Alleen secret eisen bij RAW/live calls (anders krijgt je frontend 401)
-    if (wantsSecret(req)) {
-      if (!requireSecret(req, res)) return;
-    }
-
     const u = new URL(req.url, "http://localhost");
 
     const symbolRaw = u.searchParams.get("symbol") ?? req.query?.symbol;
@@ -107,9 +84,6 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "side must be bull/bear" }));
     }
 
-    const core = await import(`../lib/_core_${side}.js`);
-    const { keyObResult, SETTINGS } = core;
-
     const base = normalizeBaseSymbol(symbolRaw);
     if (!base) {
       res.statusCode = 400;
@@ -120,21 +94,26 @@ export default async function handler(req, res) {
     const pair = `${base}USDT`;
 
     res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
+    res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
 
     // ====================================================
-    // RAW mode → direct Bitget depth ophalen (debug)
-    // (sampler gebruikt Bitget, dus dit klopt)
+    // RAW mode → live Bitget depth (DEBUG)
+    // ✅ dit moet secret-protected
     // ====================================================
     if (String(rawFlag) === "1") {
+      if (!requireSecret(req, res)) return;
       const live = await fetchBitgetOrderbookRaw(base, limitRaw);
       return res.end(JSON.stringify({ ok: true, symbol: base, pair, side, ...live }));
     }
 
     // ====================================================
-    // NORMAL mode → KV lookup (sampler vult dit)
+    // NORMAL mode → KV lookup (PUBLIC)
+    // ✅ dit is veilig, alleen read van KV
     // ====================================================
+    const core = await import(`../lib/_core_${side}.js`);
+    const { keyObResult, SETTINGS } = core;
+
     const r = await kv.get(keyObResult(side, base));
 
     if (!r) {
@@ -152,8 +131,6 @@ export default async function handler(req, res) {
       );
     }
 
-    // UI verwacht velden: valid, stale, reason, ob{spreadPct,lor,depthMinUsd1p,ts}
-    // r heeft dit al; we geven het door + wat extra top-level aliases voor gemak.
     const obTs = n(r?.ob?.ts ?? r?.ts, 0);
 
     return res.end(
@@ -163,7 +140,6 @@ export default async function handler(req, res) {
         pair,
         side,
         ...r,
-        // handige aliases (maakt frontend checks simpel)
         valid: !!r.valid,
         stale: !!r.stale,
         reason: String(r.reason || ""),
@@ -172,7 +148,7 @@ export default async function handler(req, res) {
     );
   } catch (e) {
     res.statusCode = 500;
-    res.setHeader("content-type", "application/json");
+    res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
     res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
