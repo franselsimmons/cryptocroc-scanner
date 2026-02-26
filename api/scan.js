@@ -67,6 +67,12 @@ const TIME_STOP_MAXPNL = 0.015; // 1.5%
 
 const HOLD_AFTER_SCANS = 2; // 1x HOLD melding na 2 scans open
 
+// ✅ TP / Trailing exit (upgrade #1)
+const TP1_PNL = 0.025;         // 2.5% winst gehaald = trailing actief
+const TP2_PNL = 0.05;          // 5.0% winst gehaald = strakker trailing
+const TRAIL_AFTER_TP1 = 0.022; // 2.2% terugval vanaf top => SELL
+const TRAIL_AFTER_TP2 = 0.016; // 1.6% terugval vanaf top => SELL
+
 // ✅ SELL LOG (zodat pagina SELL kan tonen)
 const SELLS_TTL_SEC = 60 * 60 * 48; // 48 uur
 const SELLS_KEEP = 50;
@@ -107,9 +113,9 @@ function calcPnlPct(mode, entryPrice, nowPrice) {
 // hybride stop op basis van range24 (simpel + passend bij smallcaps)
 function stopPctFromRange24(range24Pct) {
   const r = n(range24Pct, 0);
-  if (r <= 18) return 0.03; // 3.0%
+  if (r <= 18) return 0.03;  // 3.0%
   if (r <= 28) return 0.035; // 3.5%
-  return 0.045; // 4.5%
+  return 0.045;              // 4.5%
 }
 
 // “OB tegen” = pressure + score draaien tegen jouw kant
@@ -143,6 +149,53 @@ function pageTradeStatus(tradeInfo) {
   return "—";
 }
 
+// ✅ Stats (upgrade #2)
+function computeStatsFromSells(sells) {
+  const arr = Array.isArray(sells) ? sells : [];
+  const totalSells = arr.length;
+
+  // jij levert straks recentSells als newest-first, maar we doen het safe:
+  const newestFirst = arr.slice().reverse(); // oldest->newest => reverse = newest-first
+  const last50 = newestFirst.slice(0, 50);
+
+  if (!last50.length) {
+    return {
+      totalSells,
+      n50: 0,
+      winrate50: 0,
+      avgPnl50: 0,
+      avgBarsOpen50: 0,
+      wins50: 0,
+      losses50: 0,
+    };
+  }
+
+  let wins = 0;
+  let pnlSum = 0;
+  let barsSum = 0;
+
+  for (const s of last50) {
+    const pnl = Number(s?.pnlPct || 0); // ratio
+    const bars = Number(s?.barsOpen || 0);
+    if (pnl > 0) wins++;
+    pnlSum += pnl;
+    barsSum += bars;
+  }
+
+  const n50 = last50.length;
+  const losses = n50 - wins;
+
+  return {
+    totalSells,
+    n50,
+    winrate50: wins / n50,        // 0.62 = 62%
+    avgPnl50: pnlSum / n50,       // ratio
+    avgBarsOpen50: barsSum / n50,
+    wins50: wins,
+    losses50: losses,
+  };
+}
+
 // --------------------
 // Discord helpers
 // --------------------
@@ -158,9 +211,7 @@ async function sendDiscord(webhook, content) {
     });
 
     const txt = await r.text().catch(() => "");
-    if (!r.ok) {
-      return { ok: false, status: r.status, preview: txt.slice(0, 200) };
-    }
+    if (!r.ok) return { ok: false, status: r.status, preview: txt.slice(0, 200) };
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e?.message || e) };
@@ -365,14 +416,11 @@ function passRadar(core, c) {
   const vm = core.computeVm(c.volume, c.marketCap);
 
   if (c.marketCap < n(R.mcapMin, 0)) return { ok: false, why: "mcap too low" };
-  if (c.marketCap > n(R.mcapMax, Number.MAX_SAFE_INTEGER))
-    return { ok: false, why: "mcap too high" };
+  if (c.marketCap > n(R.mcapMax, Number.MAX_SAFE_INTEGER)) return { ok: false, why: "mcap too high" };
   if (c.volume < n(R.volMin, 0)) return { ok: false, why: "volume too low" };
   if (vm < n(R.vmMin, 0)) return { ok: false, why: "vm too low" };
-  if (Math.abs(c.change24) > n(R.maxAbsChg24, 999))
-    return { ok: false, why: "chg24 too high" };
-  if (c.range24 > n(R.maxRange24, 999))
-    return { ok: false, why: "range24 too high" };
+  if (Math.abs(c.change24) > n(R.maxAbsChg24, 999)) return { ok: false, why: "chg24 too high" };
+  if (c.range24 > n(R.maxRange24, 999)) return { ok: false, why: "range24 too high" };
 
   return { ok: true, vm };
 }
@@ -615,14 +663,10 @@ export default async function handler(req, res) {
           if (!ob) entryGate = "OB missing";
           else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
           else if (!obValid) entryGate = "OB validating";
-          else if (confidence < n(thr.minConfidence, 0))
-            entryGate = `Confidence < ${thr.minConfidence}`;
-          else if (spreadPct > n(thr.spreadMaxPct, 999))
-            entryGate = `Spread > ${thr.spreadMaxPct}%`;
-          else if (depthMinUsd1p < n(thr.depthMinUsd1p, 0))
-            entryGate = `Depth1% < $${thr.depthMinUsd1p}`;
-          else if (Math.abs(obScore) < n(thr.obScoreMin, 0))
-            entryGate = `OB score < ${thr.obScoreMin}`;
+          else if (confidence < n(thr.minConfidence, 0)) entryGate = `Confidence < ${thr.minConfidence}`;
+          else if (spreadPct > n(thr.spreadMaxPct, 999)) entryGate = `Spread > ${thr.spreadMaxPct}%`;
+          else if (depthMinUsd1p < n(thr.depthMinUsd1p, 0)) entryGate = `Depth1% < $${thr.depthMinUsd1p}`;
+          else if (Math.abs(obScore) < n(thr.obScoreMin, 0)) entryGate = `OB score < ${thr.obScoreMin}`;
           else {
             if (!obSamples) obSamples = await kv.get(core.keyObSamples(mode, sym));
 
@@ -687,8 +731,23 @@ export default async function handler(req, res) {
         const obBreakHit = obBadStreak >= 2;
         const timeStopHit = barsOpen >= TIME_STOP_SCANS && maxPnl < TIME_STOP_MAXPNL;
 
+        // ✅ Trailing (upgrade #1)
+        const drawdown = maxPnl - pnl;
+
+        let trailHit = false;
+        let trailCfg = null;
+
+        if (maxPnl >= TP2_PNL) {
+          trailHit = drawdown >= TRAIL_AFTER_TP2;
+          trailCfg = { level: "TP2", trail: TRAIL_AFTER_TP2, drawdown };
+        } else if (maxPnl >= TP1_PNL) {
+          trailHit = drawdown >= TRAIL_AFTER_TP1;
+          trailCfg = { level: "TP1", trail: TRAIL_AFTER_TP1, drawdown };
+        }
+
         let exit = null;
         if (hardStopHit) exit = { reason: "HARD_STOP", stopPct, pnl };
+        else if (trailHit) exit = { reason: "TRAILING_TP", pnl, maxPnl, trailCfg };
         else if (obBreakHit) exit = { reason: "OB_BREAK_2X", obBadStreak, obFresh, obValid, obAgainst, pnl };
         else if (timeStopHit) exit = { reason: "TIME_STOP_NO_MOMENTUM", barsOpen, maxPnl, pnl };
 
@@ -706,6 +765,7 @@ export default async function handler(req, res) {
             entryPrice,
             exitPrice: priceNow,
             barsOpen,
+            extra: exit?.trailCfg ? { trailCfg: exit.trailCfg } : undefined,
           });
 
           const hook = stageWebhook("SELL");
@@ -716,7 +776,6 @@ export default async function handler(req, res) {
             `price ${fmtUsd(priceNow, 6)}`;
           pushNotice(noticesByHook, hook, line);
 
-          // ✅ voor coin item (maar SELL paneel komt uit sells-log)
           tradeInfo = { status: "CLOSED", exit, pnl, maxPnl, exitAt: now, barsOpen };
         } else {
           const updated = {
@@ -750,6 +809,7 @@ export default async function handler(req, res) {
             maxPnl,
             stopPct,
             obBadStreak,
+            trail: { tp1: TP1_PNL, tp2: TP2_PNL, dd: maxPnl - pnl },
           };
         }
       }
@@ -804,7 +864,8 @@ export default async function handler(req, res) {
 
       if (!hasOpenTrade && prevStage) {
         const doNotify = canNotify(prevEntry, now);
-        const isFunnelStage = currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
+        const isFunnelStage =
+          currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
 
         if (doNotify && isFunnelStage && prevStage !== currStage) {
           const hook = stageWebhook(currStage);
@@ -835,7 +896,7 @@ export default async function handler(req, res) {
         });
       }
 
-      // ✅ VolAcc bestaat nu echt (geen leeg veld)
+      // ✅ VolAcc bestaat nu echt
       const volAcc = vm;
 
       const item = {
@@ -913,11 +974,13 @@ export default async function handler(req, res) {
     const fine1hAbsPct = n(btcCfg.fine1hAbsPct, 0.25);
     const confBoost = n(btcCfg.confBoost, 4);
 
-    // ✅ recent sells voor pagina (KV log)
-    const recentSellsRaw = (await kv.get(kSells(mode))) || [];
-    const recentSells = Array.isArray(recentSellsRaw)
-      ? recentSellsRaw.slice(-SELLS_KEEP).reverse()
-      : [];
+    // ✅ sells log
+    const sellsRaw = (await kv.get(kSells(mode))) || [];
+    const sellsArr = Array.isArray(sellsRaw) ? sellsRaw.slice(-SELLS_KEEP) : [];
+    const recentSells = sellsArr.slice().reverse(); // newest-first
+
+    // ✅ stats (upgrade #2)
+    const stats = computeStatsFromSells(sellsArr);
 
     const result = {
       ok: true,
@@ -941,7 +1004,18 @@ export default async function handler(req, res) {
           reentryCooldownSec: REENTRY_COOLDOWN_SEC,
           tradeTtlSec: TRADE_TTL_SEC,
           sellsLogKey: kSells(mode),
-          exits: ["HARD_STOP(range24)", "OB_BREAK_2X(fresh)", "TIME_STOP(no momentum)"],
+          exits: [
+            "HARD_STOP(range24)",
+            "TRAILING_TP(maxPnl + drawdown)",
+            "OB_BREAK_2X(fresh)",
+            "TIME_STOP(no momentum)",
+          ],
+          trailing: {
+            tp1Pct: TP1_PNL * 100,
+            tp2Pct: TP2_PNL * 100,
+            trailAfterTp1Pct: TRAIL_AFTER_TP1 * 100,
+            trailAfterTp2Pct: TRAIL_AFTER_TP2 * 100,
+          },
         },
       },
       counts: {
@@ -954,10 +1028,14 @@ export default async function handler(req, res) {
       },
       funnel: { entry, almost, buildup, radar },
 
-      // ✅ trading tabellen voor pagina
       trading: {
         openTrades,
         recentSells,
+        stats: {
+          ...stats,
+          winrate50Pct: stats.winrate50 * 100,
+          avgPnl50Pct: stats.avgPnl50 * 100,
+        },
       },
 
       obMap: obMap ? { ok: true, size: Object.keys(obMap).length } : { ok: false },
@@ -968,7 +1046,7 @@ export default async function handler(req, res) {
         errors: (discord.details || []).slice(0, 5),
       },
       note:
-        "HOLD komt uit trade OPEN. SELL komt uit KV sells-log (trade:sells:*), dus blijft zichtbaar op de pagina.",
+        "9/10 upgrades actief: TRAILING_TP exit + trading stats (winrate/avg pnl/bars). HOLD komt uit OPEN trades, SELL blijft zichtbaar via KV sells-log.",
     };
 
     await kv.set(core.keyLatest(mode), result);
