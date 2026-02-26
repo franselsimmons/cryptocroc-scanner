@@ -7,15 +7,17 @@ export const config = { runtime: "nodejs" };
 const HARD_MAX_PER_RUN = 30;
 const REQUEST_DELAY_MS = 120;
 
-const OB_STALE_MS = 120 * 60 * 1000; // 120 min
+const OB_STALE_MS = 120 * 60 * 1000; // 120 min (UI "stale" is los van scan-stale)
 
-const DEFAULT_SAMPLES_WINDOW_SEC = 6 * 3600;  // 6 uur
+const DEFAULT_SAMPLES_WINDOW_SEC = 6 * 3600;  // 6 uur fallback
 const DEFAULT_SAMPLES_MAX = 24;
 const DEFAULT_SAMPLES_TTL_SEC = 60 * 60 * 48; // 48 uur
 const DEFAULT_RESULT_TTL_SEC = 60 * 30;       // 30 min
 
-const DEFAULT_SAMPLES_NEED_30M = 3;
-const DEFAULT_MIN_AGREE_30M = 2;
+// ✅ 30m cadence: in 3 uur heb je max ~6 samples.
+// samplesNeed=4 is precies jouw design.
+const DEFAULT_SAMPLES_NEED_30M = 4;
+const DEFAULT_MIN_AGREE_30M = 3;
 
 // WATCHLIST
 const WATCH_MAX = 120;
@@ -216,17 +218,23 @@ function validateSamples(mode, samplesFresh, SETTINGS) {
 }
 
 // slope helper (per minuut)
-function calcSlopeMin(samples, field) {
+// ✅ was: min 6 punten (fout voor 30m cadence) → nu min 4 / samplesNeed
+function calcSlopeMin(samples, field, SETTINGS) {
+  const need = Number(SETTINGS?.entry?.samplesNeed ?? DEFAULT_SAMPLES_NEED_30M);
+  const minPts = Math.max(4, need);
+
   const pts = (samples || [])
     .map(s => ({ t: Number(s?.ts || 0), y: Number(s?.[field]) }))
     .filter(p => p.t > 0 && Number.isFinite(p.y))
     .sort((a, b) => a.t - b.t);
 
-  if (pts.length < 6) return 0;
+  if (pts.length < minPts) return 0;
 
-  const t0 = pts[0].t;
-  const xs = pts.map(p => (p.t - t0) / 60000);
-  const ys = pts.map(p => p.y);
+  const tail = pts.slice(-minPts);
+
+  const t0 = tail[0].t;
+  const xs = tail.map(p => (p.t - t0) / 60000);
+  const ys = tail.map(p => p.y);
 
   const n = xs.length;
   const meanX = xs.reduce((a, b) => a + b, 0) / n;
@@ -268,12 +276,25 @@ function addToWatch(watch, symbols) {
 }
 
 // ================== CANDIDATES SELECTIE ==================
+// ✅ nu: RADAR + BUILDUP + ALMOST + ENTRY
 async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS, obMap) {
-  const radar = (latest?.funnel?.radar || []).slice(0, Number(SETTINGS?.obPickRadar || radarFallback || 25));
-  const almost = (latest?.funnel?.almost || []).slice(0, Number(SETTINGS?.obPickAlmost || 25));
-  const buildup = (latest?.funnel?.buildup || []).slice(0, Number(SETTINGS?.obPickBuildup || 25));
+  const f = latest?.funnel || {};
 
-  const picked = [...radar, ...almost, ...buildup];
+  const take = (arr, n) => (Array.isArray(arr) ? arr.slice(0, Math.max(0, Number(n || 0))) : []);
+
+  const pickEntry  = Number(SETTINGS?.obPickEntry  ?? 20);
+  const pickAlmost = Number(SETTINGS?.obPickAlmost ?? 25);
+  const pickBuildup= Number(SETTINGS?.obPickBuildup?? 25);
+  const pickRadar  = Number(SETTINGS?.obPickRadar  ?? radarFallback ?? 25);
+
+  const entry  = take(f.entry,   pickEntry);
+  const almost = take(f.almost,  pickAlmost);
+  const buildup= take(f.buildup, pickBuildup);
+  const radar  = take(f.radar,   pickRadar);
+
+  // ✅ prioriteit: ENTRY/ALMOST eerst, maar RADAR blijft erin
+  const picked = [...entry, ...almost, ...buildup, ...radar];
+
   const poolNow = uniqueUpper(picked.map((x) => x?.symbol)).filter((s) => !isBadSymbol(s));
 
   const watch = await loadWatch(mode);
@@ -284,7 +305,9 @@ async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTI
 
   out = uniqueUpper([...out, ...poolNow]).slice(0, maxPerRun);
 
+  // ✅ als obMap bestaat: alleen symbols samplen die we echt op Bitget kennen
   if (obMap) out = out.filter((sym) => !!obMap[String(sym).toUpperCase()]);
+
   return out.slice(0, maxPerRun);
 }
 
@@ -308,22 +331,24 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
   const samplesEx = Math.max(3600, Number(SETTINGS?.entry?.samplesTtlSec || DEFAULT_SAMPLES_TTL_SEC));
   await kv.set(kS, pruned, { ex: samplesEx });
 
+  // ✅ validatie is “richting consistent + 1% check”
   const v = validateSamples(mode, pruned, SETTINGS);
 
-  // bestaande slope gate (score slope) uit core
+  // ✅ bestaande slope gate uit core (matcht jouw core minPts=4)
   const slopeCheck = typeof core.checkObSlopeGate === "function"
     ? core.checkObSlopeGate({ stage: "sampler", mode, obSamples: pruned, settings: SETTINGS })
     : { ok: true, slope: 0, reason: "no-slope" };
 
-  // extra pro: depth slope (geen gate, alleen info)
-  const slopeDepth1p = calcSlopeMin(pruned, "depthMinUsd1p");
-  const slopeScore = calcSlopeMin(pruned, "score");
+  // extra pro: slopes (geen harde gates, puur info)
+  const slopeDepth1p = calcSlopeMin(pruned, "depthMinUsd1p", SETTINGS);
+  const slopeScore = calcSlopeMin(pruned, "score", SETTINGS);
 
   const finalValid = !!v.valid && !!slopeCheck.ok;
   const finalReason = finalValid
     ? "OK"
     : (v.valid ? (slopeCheck.reason || "OB slope failed") : (v.reason || "OB invalid"));
 
+  // sample is altijd “vers”; stale is bedoeld voor UI als result oud blijft liggen
   const ageMs = Date.now() - sample.ts;
   const stale = ageMs > OB_STALE_MS;
 
@@ -351,7 +376,7 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
     avgScore1p: v.avgScore1p ?? null,
     agree: v.agree ?? null,
 
-    // pro slopes
+    // slopes
     slope: slopeCheck.slope ?? null, // legacy
     slopeScore,
     slopeDepth1p,
@@ -393,6 +418,7 @@ export default async function handler(req, res) {
     if (mode !== "bull" && mode !== "bear") {
       res.statusCode = 400;
       res.setHeader("content-type", "application/json");
+      res.setHeader("cache-control", "no-store");
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
@@ -448,10 +474,12 @@ export default async function handler(req, res) {
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
+    res.setHeader("cache-control", "no-store");
     return res.end(JSON.stringify({
       ok: true,
       mode,
       ts: Date.now(),
+      cadenceHint: "Designed for 30m cron (samplesNeed=4 within 3h window).",
       maxPerRun,
       radarFallback,
       obMapOk: !!obMap,
@@ -469,6 +497,7 @@ export default async function handler(req, res) {
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
+    res.setHeader("cache-control", "no-store");
     return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
