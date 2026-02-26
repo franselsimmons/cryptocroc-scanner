@@ -10,6 +10,7 @@
   </style>
 </head>
 <body>
+
   <header class="topbar">
     <div class="left">
       <div class="brand">CryptoCroc Scanner</div>
@@ -24,45 +25,70 @@
   </header>
 
   <main class="grid">
-    <section class="panel">
-      <div class="panelTitle">HOLD</div>
-      <div class="panelHint">Open trades (ENTRY is al gebeurd) — blijven open tot SELL-regel triggert.</div>
-      <div class="stageBody" id="stageHold"></div>
-    </section>
 
-    <section class="panel">
-      <div class="panelTitle">SELL</div>
-      <div class="panelHint">Laatste exits — gesloten trades + reden (hard stop / OB-break / time-stop).</div>
-      <div class="stageBody" id="stageSell"></div>
-    </section>
-
+    <!-- ENTRY -->
     <section class="panel">
       <div class="panelTitle">ENTRY</div>
-      <div class="panelHint">Entry-signaal (als FULL mode): dit is de “instap-trigger” voor de trade engine.</div>
+      <div class="panelHint">
+        Nieuwe instap-signalen. Als je FULL trading mode draait,
+        hier wordt de trade geopend.
+      </div>
       <div class="stageBody" id="stageEntry"></div>
     </section>
 
+    <!-- HOLD -->
+    <section class="panel">
+      <div class="panelTitle">HOLD</div>
+      <div class="panelHint">
+        Open trades. Deze coins zijn al ingestapt en blijven open
+        tot SELL-regel triggert.
+      </div>
+      <div class="stageBody" id="stageHold"></div>
+    </section>
+
+    <!-- SELL -->
+    <section class="panel">
+      <div class="panelTitle">SELL</div>
+      <div class="panelHint">
+        Recent gesloten trades inclusief reden
+        (hard stop / trailing / OB-break / time-stop).
+      </div>
+      <div class="stageBody" id="stageSell"></div>
+    </section>
+
+    <!-- ALMOST -->
     <section class="panel">
       <div class="panelTitle">ALMOST</div>
-      <div class="panelHint">Bijna klaar — moet nog net 1–2 gates halen.</div>
+      <div class="panelHint">
+        Bijna entry — mist nog 1–2 gates.
+      </div>
       <div class="stageBody" id="stageAlmost"></div>
     </section>
 
+    <!-- BUILDUP -->
     <section class="panel">
       <div class="panelTitle">BUILDUP</div>
-      <div class="panelHint">Opbouw — richting + volume + VM + consistency.</div>
+      <div class="panelHint">
+        Opbouwfase — richting + volume + VM + consistency.
+      </div>
       <div class="stageBody" id="stageBuildup"></div>
     </section>
 
+    <!-- RADAR -->
     <section class="panel">
       <div class="panelTitle">RADAR</div>
-      <div class="panelHint">Instroom — grof filter.</div>
+      <div class="panelHint">
+        Eerste instroom — grove filtering.
+      </div>
       <div class="stageBody" id="stageRadar"></div>
     </section>
+
   </main>
 
+  <!-- MODAL -->
   <div class="modal hidden" id="modal">
     <div class="modalCard">
+
       <div class="modalTop">
         <div>
           <div class="modalTitle" id="mTitle">—</div>
@@ -79,6 +105,7 @@
       </div>
 
       <div class="modalBody">
+
         <div class="modalBox" id="boxWhy">
           <div class="modalBoxTitle">Waarom staat hij hier</div>
           <div class="checkList" id="mWhyList"></div>
@@ -98,10 +125,12 @@
           <div class="modalBoxTitle">Debug (coin object)</div>
           <pre class="modalPre" id="mDebug">—</pre>
         </div>
+
       </div>
     </div>
   </div>
 
   <script src="/app.js"></script>
+
 </body>
 </html>
