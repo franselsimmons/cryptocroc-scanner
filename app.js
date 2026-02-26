@@ -304,18 +304,51 @@ async function openModalMain(c) {
 
     if (j.status === "validating") {
       addCheck(liqList, false, "Orderbook validating", j.tip || "Wacht even…", "warn");
+    } else if (j.ok === false) {
+      addCheck(liqList, false, "Orderbook error", j.error || "Unknown error", "warn");
     } else {
-      const obOk = !!j.valid && !j.stale;
+      // ✅ universele veilige uitlezing (root of j.ob)
+      const valid = !!j.valid;
+      const stale = !!j.stale;
+      const reason = j.reason || "-";
+
+      const spread = Number(j.spreadPct ?? j.ob?.spreadPct ?? 999);
+      const lor = Number(j.lor ?? j.ob?.lor ?? 1);
+      const depth = Number(j.depthMinUsd1p ?? j.ob?.depthMinUsd1p ?? 0);
+
+      const obOk = valid && !stale;
+
       addCheck(
         liqList,
         obOk,
         "OB status",
-        `valid: ${j.valid} • stale: ${j.stale} • reason: ${j.reason || "-"}`,
+        `valid: ${valid} • stale: ${stale} • reason: ${reason}`,
         obOk ? "ok" : "warn"
       );
-      addCheck(liqList, Number(j.ob?.spreadPct || 999) <= 0.55, "Spread", `spread: ${safe(j.ob?.spreadPct, 2)}%`, "warn");
-      addCheck(liqList, Number(j.ob?.lor || 1) <= 0.35, "Largest order ratio", `LOR: ${safe(j.ob?.lor, 2)}`, "warn");
-      addCheck(liqList, Number(j.ob?.depthMinUsd1p || 0) >= 200000, "Depth 1%", `depth1%: $${Math.round(Number(j.ob?.depthMinUsd1p || 0)).toLocaleString()}`, "warn");
+
+      addCheck(
+        liqList,
+        spread <= 0.55,
+        "Spread",
+        `spread: ${safe(spread, 2)}%`,
+        "warn"
+      );
+
+      addCheck(
+        liqList,
+        lor <= 0.35,
+        "Largest order ratio",
+        `LOR: ${safe(lor, 2)}`,
+        "warn"
+      );
+
+      addCheck(
+        liqList,
+        depth >= 200000,
+        "Depth 1%",
+        `depth1%: $${Math.round(depth).toLocaleString()}`,
+        "warn"
+      );
     }
   } catch {
     liqList.innerHTML = "";
