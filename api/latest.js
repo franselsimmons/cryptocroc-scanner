@@ -12,23 +12,31 @@ export default async function handler(req, res) {
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
-    res.setHeader("cache-control", "no-store");
+
+    // 🔥 anti-cache (browser + vercel edge + proxies)
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.setHeader("Surrogate-Control", "no-store");
 
     if (!data) {
-      return res.end(JSON.stringify({
-        ok: true,
-        ts: Date.now(),
-        mode,
-        btc: null,
-        counts: { entry: 0, almost: 0, buildup: 0, radar: 0 },
-        funnel: { entry: [], almost: [], buildup: [], radar: [] }
-      }));
+      return res.end(
+        JSON.stringify({
+          ok: true,
+          ts: Date.now(),
+          mode,
+          btc: null,
+          counts: { entry: 0, almost: 0, buildup: 0, radar: 0 },
+          funnel: { entry: [], almost: [], buildup: [], radar: [] },
+        })
+      );
     }
 
     return res.end(JSON.stringify(data));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
