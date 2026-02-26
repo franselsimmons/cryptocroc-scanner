@@ -4,13 +4,20 @@ import { kv } from "@vercel/kv";
 export const config = { runtime: "nodejs" };
 
 // ================== TUNING (veilig voor Vercel) ==================
-const HARD_MAX_PER_RUN = 30;                 // nooit meer dan dit
-const REQUEST_DELAY_MS = 120;                // kleine pauze voorkomt rate-limits
-const OB_STALE_MS = 30 * 60 * 1000;          // 30 min (past bij 30m basis scan)
-const DEFAULT_SAMPLES_WINDOW_SEC = 6 * 3600; // 6 uur
-const DEFAULT_SAMPLES_MAX = 24;              // klein houden
+const HARD_MAX_PER_RUN = 30;                  // nooit meer dan dit
+const REQUEST_DELAY_MS = 120;                 // kleine pauze voorkomt rate-limits
+
+// ✅ 30m scan: stale moet RUIMER zijn (anders worden samples te snel "oud")
+const OB_STALE_MS = 120 * 60 * 1000;          // 120 min
+
+const DEFAULT_SAMPLES_WINDOW_SEC = 6 * 3600;  // 6 uur
+const DEFAULT_SAMPLES_MAX = 24;               // klein houden
 const DEFAULT_SAMPLES_TTL_SEC = 60 * 60 * 48; // 48 uur
 const DEFAULT_RESULT_TTL_SEC = 60 * 30;       // 30 min
+
+// ✅ 30m scan defaults (als _core settings ontbreken)
+const DEFAULT_SAMPLES_NEED_30M = 3;           // 3 samples = 90 min max
+const DEFAULT_MIN_AGREE_30M = 2;              // 2 van 3 moet matchen
 
 // ✅ WATCHLIST (belangrijkste fix voor 30m cadence)
 const WATCH_MAX = 120;                        // hoeveel symbols maximaal in watchlist
@@ -186,8 +193,16 @@ function pruneSamples(samples, SETTINGS) {
 function validateSamples(mode, samplesFresh, SETTINGS) {
   const fresh = pruneSamples(samplesFresh, SETTINGS);
 
-  const need = Number(SETTINGS?.entry?.samplesNeed || 4);   // default swing: 4
-  const minAgree = Number(SETTINGS?.entry?.minAgree || 3);  // default swing: 3
+  // ✅ 30m swing defaults als settings ontbreken
+  const need = Number(
+    SETTINGS?.entry?.samplesNeed ??
+    DEFAULT_SAMPLES_NEED_30M
+  );
+
+  const minAgree = Number(
+    SETTINGS?.entry?.minAgree ??
+    DEFAULT_MIN_AGREE_30M
+  );
 
   if (fresh.length < need) {
     return { valid: false, reason: "Not enough samples", fresh };
@@ -222,7 +237,6 @@ async function saveWatch(mode, list) {
 function isBadSymbol(sym) {
   const s = String(sym || "").toUpperCase().trim();
   if (!s) return true;
-  // simpele sanity: geen extreem lange strings / rare tekens
   if (s.length > 18) return true;
   return false;
 }
@@ -234,29 +248,25 @@ function addToWatch(watch, symbols) {
 
 // ================== CANDIDATES SELECTIE (RADAR FIRST) ==================
 async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS, obMap) {
-  // ✅ vanaf nu: RADAR eerst, zodat samples vroeg beginnen
-  const radar = (latest?.funnel?.radar || []).slice(0, Number(SETTINGS?.obPickRadar || radarFallback || 25));
+  // ✅ RADAR eerst: samples vroeg beginnen
+  const radar = (latest?.funnel?.radar || []).slice(
+    0,
+    Number(SETTINGS?.obPickRadar || radarFallback || 25)
+  );
   const almost = (latest?.funnel?.almost || []).slice(0, Number(SETTINGS?.obPickAlmost || 25));
   const buildup = (latest?.funnel?.buildup || []).slice(0, Number(SETTINGS?.obPickBuildup || 25));
 
   const picked = [...radar, ...almost, ...buildup];
-
   const poolNow = uniqueUpper(picked.map((x) => x?.symbol)).filter((s) => !isBadSymbol(s));
 
-  // ✅ 1) haal oude watchlist
   const watch = await loadWatch(mode);
-
-  // ✅ 2) update watchlist met nieuwe funnel symbols (blijft stabiel)
   const updatedWatch = await saveWatch(mode, addToWatch(watch, poolNow));
 
-  // ✅ 3) pak eerst uit watchlist zodat samples kunnen stapelen
   const prefer = Math.max(1, Math.min(maxPerRun, WATCH_PREFER));
   let out = updatedWatch.slice(0, prefer);
 
-  // ✅ 4) vul aan met nieuwe pool (zodat je nieuwe coins blijft ontdekken)
   out = uniqueUpper([...out, ...poolNow]).slice(0, maxPerRun);
 
-  // ✅ 5) als we obMap hebben: filter op Bitget spot existence
   if (obMap) out = out.filter((sym) => !!obMap[String(sym).toUpperCase()]);
 
   return out.slice(0, maxPerRun);
@@ -279,14 +289,11 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
   const merged = Array.isArray(prev) ? prev.concat([sample]) : [sample];
   const pruned = pruneSamples(merged, SETTINGS);
 
-  // ✅ TTL zodat KV niet vol blijft hangen
   const samplesEx = Math.max(3600, Number(SETTINGS?.entry?.samplesTtlSec || DEFAULT_SAMPLES_TTL_SEC));
   await kv.set(kS, pruned, { ex: samplesEx });
 
-  // 1) basis valid (direction)
   const v = validateSamples(mode, pruned, SETTINGS);
 
-  // 2) slope gate (in core)
   const slopeCheck = typeof core.checkObSlopeGate === "function"
     ? core.checkObSlopeGate({ stage: "sampler", mode, obSamples: pruned, settings: SETTINGS })
     : { ok: true, slope: 0, reason: "no-slope" };
@@ -296,7 +303,6 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
     ? "OK"
     : (v.valid ? (slopeCheck.reason || "OB slope failed") : (v.reason || "OB invalid"));
 
-  // ✅ age/stale info
   const ageMs = Date.now() - sample.ts;
   const stale = ageMs > OB_STALE_MS;
 
@@ -333,7 +339,6 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
     ts: Date.now(),
   };
 
-  // ✅ TTL zodat oude results zichzelf opruimen
   const resultEx = Math.max(900, Number(SETTINGS?.entry?.resultTtlSec || DEFAULT_RESULT_TTL_SEC));
   await kv.set(keyObResult(mode, symbol), result, { ex: resultEx });
 
@@ -349,11 +354,9 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
-    // ✅ secret check zit in _runtime
     const rt = await import("../../lib/_runtime.js");
     if (!rt.requireSecret(req, res)) return;
 
-    // ✅ core import: vanuit api/ob -> lib zit 2 levels omhoog
     const core = await import(`../../lib/_core_${mode}.js`);
     const { SETTINGS, keyLatest, keyObSamples, keyObResult } = core;
 
@@ -362,15 +365,12 @@ export default async function handler(req, res) {
 
     const radarFallback = Math.max(5, Math.min(120, Number(req.query?.radar || 25) || 25));
 
-    // ✅ Bitget map (gemaakt door api/ob/map_refresh.js)
     const obMapBlob = await kv.get(`ob:map:${mode}`);
     const obMap = safeObj(obMapBlob)?.map && typeof obMapBlob.map === "object" ? obMapBlob.map : null;
 
-    // --- candidates kiezen uit latest funnel + watchlist (RADAR FIRST) ---
     const latest = await kv.get(keyLatest(mode));
     const candidatesRaw = await pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS, obMap);
 
-    // ✅ (optioneel) nog een extra filter
     const candidates = uniqueUpper(candidatesRaw).filter((s) => !isBadSymbol(s));
 
     let totalTried = 0;
@@ -383,7 +383,6 @@ export default async function handler(req, res) {
 
     for (const sym of candidates) {
       totalTried++;
-
       if (totalTried > 1) await sleep(REQUEST_DELAY_MS);
 
       const r = await processCandidate(core, mode, sym, SETTINGS, keyObSamples, keyObResult);
@@ -403,7 +402,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // ✅ laat ook zien wat er in watchlist zit (handig debug)
     const watchNow = await loadWatch(mode);
 
     res.statusCode = 200;
