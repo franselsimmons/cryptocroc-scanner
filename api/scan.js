@@ -55,7 +55,66 @@ const OB_MAX_AGE_MS = 75 * 60 * 1000; // 75 min
 
 // ✅ Discord anti-spam
 const NOTIFY_COOLDOWN_MS = 25 * 60 * 1000; // 25 min per coin
-const HOLD_AFTER_ENTRY_SCANS = 2; // 2x achter elkaar ENTRY => HOLD melding
+
+// ======================================================
+// ✅ TRADE ENGINE (ENTRY -> HOLD -> SELL)
+// ======================================================
+const TRADE_TTL_SEC = 60 * 60 * 48; // 48 uur
+const REENTRY_COOLDOWN_SEC = 60 * 60; // 1 uur rust na SELL
+
+const TIME_STOP_SCANS = 6; // 6 scans = 3 uur
+const TIME_STOP_MAXPNL = 0.015; // 1.5%
+
+const HOLD_AFTER_SCANS = 2; // 1x HOLD melding na 2 scans open
+
+function kTrade(mode, sym) {
+  return `trade:${String(mode).toLowerCase()}:${up(sym)}`;
+}
+function kCooldown(mode, sym) {
+  return `trade:cooldown:${String(mode).toLowerCase()}:${up(sym)}`;
+}
+
+function calcPnlPct(mode, entryPrice, nowPrice) {
+  const e = n(entryPrice, 0);
+  const p = n(nowPrice, 0);
+  if (!(e > 0) || !(p > 0)) return 0;
+
+  if (String(mode).toLowerCase() === "bear") {
+    // short: winst als prijs daalt
+    return (e - p) / e;
+  }
+  // long: winst als prijs stijgt
+  return (p - e) / e;
+}
+
+// hybride stop op basis van range24 (simpel + passend bij smallcaps)
+function stopPctFromRange24(range24Pct) {
+  const r = n(range24Pct, 0);
+  if (r <= 18) return 0.03; // 3.0%
+  if (r <= 28) return 0.035; // 3.5%
+  return 0.045; // 4.5%
+}
+
+// “OB tegen” = pressure + score draaien tegen jouw kant
+function isObAgainst(mode, ob) {
+  const pd = n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0);
+  const sc = n(ob?.ob?.score ?? ob?.score, 0);
+
+  if (String(mode).toLowerCase() === "bear") {
+    // bear wil neer: bullish pressure/score = tegen
+    return pd > 0 && sc > 0;
+  }
+  // bull wil omhoog: bearish pressure/score = tegen
+  return pd < 0 && sc < 0;
+}
+
+function isObInvalidFresh(obValid, obFresh, ob) {
+  if (!obFresh) return false; // stale = geen harde conclusie
+  if (!ob) return true; // geen ob terwijl we hem nodig hebben = “invalid”
+  if (ob.valid === false) return true;
+  if (!obValid) return true;
+  return false;
+}
 
 // --------------------
 // Discord helpers
@@ -194,7 +253,6 @@ function computeStageCap(mode, btcState) {
   const st = normBtcState(btcState);
   const m = String(mode || "").toLowerCase();
 
-  // default: PREP
   let capStage = "BUILDUP";
   let allowFull = false;
 
@@ -215,10 +273,9 @@ function computeStageCap(mode, btcState) {
 // ✅ 1h fine-tune: alleen confidence tweak (geen block)
 function btcConfidenceAdjust(mode, btcState, btcBase, SETTINGS) {
   const cfg = safeObj(SETTINGS?.btc) || {};
-  const fine1hAbs = n(cfg.fine1hAbsPct, 0.25); // vanaf welke 1h verandering we hem serieus nemen
-  const boost = n(cfg.confBoost, 4);          // +/- punten op confidence
+  const fine1hAbs = n(cfg.fine1hAbsPct, 0.25);
+  const boost = n(cfg.confBoost, 4);
 
-  // alleen finetune als er een “richting” is
   const st = normBtcState(btcState);
   if (st === "NEUTRAL") return { adj: 0, why: "BTC NEUTRAL: no 1h fine-tune" };
 
@@ -229,11 +286,9 @@ function btcConfidenceAdjust(mode, btcState, btcBase, SETTINGS) {
   const pos = chg1h >= fine1hAbs;
   const neg = chg1h <= -fine1hAbs;
 
-  // “meewerken” = 1h in dezelfde richting als jouw mode
   if (wantUp && pos) return { adj: +boost, why: `BTC 1h aligns (+${boost})` };
   if (!wantUp && neg) return { adj: +boost, why: `BTC 1h aligns (+${boost})` };
 
-  // “tegenwerken” = 1h in tegengestelde richting
   if (wantUp && neg) return { adj: -boost, why: `BTC 1h contra (-${boost})` };
   if (!wantUp && pos) return { adj: -boost, why: `BTC 1h contra (-${boost})` };
 
@@ -377,7 +432,6 @@ function adaptiveEntryThresholds(core, c, vm) {
 
 // --------------------
 // ✅ Consistency + scans + prevStage
-// + extra: entryStreak + lastNotifyAt + lastHoldAt
 // --------------------
 function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
   const S = stateObj || {};
@@ -402,23 +456,18 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
 
   const ok = total >= need && same >= minAgree;
 
-  const prevEntryStreak = n(prev.entryStreak, 0);
-  const entryStreak = st === "ENTRY" ? prevEntryStreak + 1 : 0;
-
   S[sym] = {
     ...prev,
     scans,
     hist,
     lastSeenAt: nowTs,
     stage: st,
-    entryStreak,
   };
 
   return {
     state: S,
     prevStage,
     stageScans: scans,
-    entryStreak,
     consistency: { ok, ratio, same, total, need, minAgree },
   };
 }
@@ -432,18 +481,6 @@ function canNotify(stateEntry, nowTs) {
 function markNotified(stateObj, sym, nowTs) {
   if (!stateObj?.[sym]) return;
   stateObj[sym].lastNotifyAt = nowTs;
-}
-
-function markHoldNotified(stateObj, sym, nowTs) {
-  if (!stateObj?.[sym]) return;
-  stateObj[sym].lastHoldAt = nowTs;
-  stateObj[sym].lastNotifyAt = nowTs;
-}
-
-function holdAlreadySentRecently(stateEntry, nowTs) {
-  const lastHoldAt = n(stateEntry?.lastHoldAt, 0);
-  if (lastHoldAt > 0 && nowTs - lastHoldAt < NOTIFY_COOLDOWN_MS) return true;
-  return false;
 }
 
 // ======================================================
@@ -461,16 +498,17 @@ export default async function handler(req, res) {
     // BTC data
     const btcBase = await fetchBtc();
 
-    // ✅ NIEUW: 24h regime = local, stabiel
+    // ✅ 24h regime = local, stabiel
     const btcState = computeBtcStateLocal(btcBase, core.SETTINGS);
 
-    // ✅ NIEUW: 1h fine tune (confidence +/-)
+    // ✅ 1h fine tune (confidence +/-)
     const btcTune = btcConfidenceAdjust(mode, btcState, btcBase, core.SETTINGS);
 
     const btc = { ...btcBase, state: btcState, tune: btcTune };
 
     // ✅ stage cap policy (geen hard block)
     const cap = computeStageCap(mode, btc.state);
+    const allowEntry = cap.cap === false; // FULL mode alleen als cap=false
 
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
@@ -492,11 +530,13 @@ export default async function handler(req, res) {
       if (!radarGate.ok) continue;
 
       const vm = radarGate.vm;
+      const sym = up(c.symbol);
+      const priceNow = n(c.price, 0);
 
       let stageBase = stageFromSwing(mode, { ...c, vm });
 
       // OB lookup blijft altijd lopen
-      const ob = await getObForSymbol({ core, mode, symbol: c.symbol, obMap });
+      const ob = await getObForSymbol({ core, mode, symbol: sym, obMap });
 
       const obTs = n(ob?.ob?.ts ?? ob?.ts, 0);
       const obAge = obTs > 0 ? now - obTs : Number.POSITIVE_INFINITY;
@@ -520,6 +560,9 @@ export default async function handler(req, res) {
 
       const thr = adaptiveEntryThresholds(core, c, vm);
 
+      // -------------------------
+      // Funnel stage + gates
+      // -------------------------
       let almostGate = "n/a";
       let entryGate = "n/a";
 
@@ -534,7 +577,7 @@ export default async function handler(req, res) {
         let obSamples = null;
 
         if (stageBase === "ALMOST") {
-          obSamples = await kv.get(core.keyObSamples(mode, c.symbol));
+          obSamples = await kv.get(core.keyObSamples(mode, sym));
 
           const slopeCheck =
             typeof core.checkObSlopeGate === "function"
@@ -568,7 +611,7 @@ export default async function handler(req, res) {
           else if (Math.abs(obScore) < n(thr.obScoreMin, 0))
             entryGate = `OB score < ${thr.obScoreMin}`;
           else {
-            if (!obSamples) obSamples = await kv.get(core.keyObSamples(mode, c.symbol));
+            if (!obSamples) obSamples = await kv.get(core.keyObSamples(mode, sym));
 
             const slopeCheck2 =
               typeof core.checkObSlopeGate === "function"
@@ -586,13 +629,10 @@ export default async function handler(req, res) {
             const pressureOk = mode === "bull" ? pressureDelta >= 0 : pressureDelta <= 0;
             const score1pOk = mode === "bull" ? score1p >= -0.1 : score1p <= 0.1;
 
-            if (!slopeCheck2.ok) {
-              entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
-            } else if (!pressureOk) {
-              entryGate = "Pressure delta contra";
-            } else if (!score1pOk) {
-              entryGate = "1% imbalance weird";
-            } else {
+            if (!slopeCheck2.ok) entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
+            else if (!pressureOk) entryGate = "Pressure delta contra";
+            else if (!score1pOk) entryGate = "1% imbalance weird";
+            else {
               stage = "ENTRY";
               entryGate = "passed";
             }
@@ -600,7 +640,138 @@ export default async function handler(req, res) {
         }
       }
 
-      const sym = up(c.symbol);
+      // ======================================================
+      // ✅ TRADE ENGINE (ENTRY instap -> HOLD -> SELL exit)
+      // ======================================================
+      const tKey = kTrade(mode, sym);
+      const cdKey = kCooldown(mode, sym);
+
+      const cooldown = await kv.get(cdKey);
+      const trade = await kv.get(tKey);
+
+      let tradeInfo = null;
+
+      // 1) Als trade OPEN is: manage exits altijd (ook in BTC cap)
+      if (trade && trade?.status === "OPEN") {
+        const entryPrice = n(trade.entryPrice, 0);
+        const barsOpen = n(trade.barsOpen, 0) + 1;
+
+        const pnl = calcPnlPct(mode, entryPrice, priceNow);
+        const maxPnl = Math.max(n(trade.maxPnl, 0), pnl);
+
+        const stopPct = stopPctFromRange24(c.range24);
+
+        const hardStopHit =
+          String(mode).toLowerCase() === "bear"
+            ? priceNow >= entryPrice * (1 + stopPct)
+            : priceNow <= entryPrice * (1 - stopPct);
+
+        const obAgainst = obFresh ? isObAgainst(mode, ob) : false;
+        const obInvalid = isObInvalidFresh(obValid, obFresh, ob);
+        const badNow = obFresh && (obAgainst || obInvalid);
+        const obBadStreak = badNow ? n(trade.obBadStreak, 0) + 1 : 0;
+
+        const obBreakHit = obBadStreak >= 2;
+        const timeStopHit = barsOpen >= TIME_STOP_SCANS && maxPnl < TIME_STOP_MAXPNL;
+
+        let exit = null;
+        if (hardStopHit) exit = { reason: "HARD_STOP", stopPct, pnl };
+        else if (obBreakHit) exit = { reason: "OB_BREAK_2X", obBadStreak, obFresh, obValid, obAgainst, pnl };
+        else if (timeStopHit) exit = { reason: "TIME_STOP_NO_MOMENTUM", barsOpen, maxPnl, pnl };
+
+        if (exit) {
+          // SELL: close trade + cooldown
+          await kv.del(tKey);
+          await kv.set(cdKey, { ts: now, reason: exit.reason }, { ex: REENTRY_COOLDOWN_SEC });
+
+          const hook = stageWebhook("SELL");
+          const line =
+            `**${sym}** (${mode.toUpperCase()})  ` +
+            `**SELL** • ${exit.reason}  ` +
+            `pnl ${fmtPct(pnl * 100, 2)} • max ${fmtPct(maxPnl * 100, 2)} • ` +
+            `price ${fmtUsd(priceNow, 6)}`;
+          pushNotice(noticesByHook, hook, line);
+
+          tradeInfo = { status: "CLOSED", exit, pnl, maxPnl };
+        } else {
+          const updated = {
+            ...trade,
+            barsOpen,
+            maxPnl,
+            lastPrice: priceNow,
+            lastSeenAt: now,
+            obBadStreak,
+          };
+
+          // 1x HOLD melding na 2 scans open
+          if (!updated.holdNotified && barsOpen >= HOLD_AFTER_SCANS) {
+            const hook = stageWebhook("HOLD");
+            const line =
+              `**${sym}** (${mode.toUpperCase()})  ` +
+              `**HOLD** • trade loopt  ` +
+              `pnl ${fmtPct(pnl * 100, 2)} • max ${fmtPct(maxPnl * 100, 2)} • ` +
+              `price ${fmtUsd(priceNow, 6)}`;
+            pushNotice(noticesByHook, hook, line);
+            updated.holdNotified = true;
+          }
+
+          await kv.set(tKey, updated, { ex: TRADE_TTL_SEC });
+
+          tradeInfo = {
+            status: "OPEN",
+            entryPrice,
+            barsOpen,
+            pnl,
+            maxPnl,
+            stopPct,
+            obBadStreak,
+          };
+        }
+      }
+
+      // 2) Als trade NIET open is: open trade bij ENTRY (instap)
+      //    Alleen als allowEntry=true (BTC regime match) en geen cooldown.
+      if (!tradeInfo) {
+        const inCooldown = !!cooldown;
+        const isEntrySignal = stage === "ENTRY" && allowEntry;
+
+        if (isEntrySignal && !inCooldown && priceNow > 0) {
+          const tradeObj = {
+            status: "OPEN",
+            mode,
+            symbol: sym,
+            entryPrice: priceNow,
+            entryAt: now,
+            barsOpen: 0,
+            maxPnl: 0,
+            obBadStreak: 0,
+            holdNotified: false,
+            lastSeenAt: now,
+            lastPrice: priceNow,
+            // context (handig voor debug/website)
+            entryConfidence: confidence,
+            entryVm: vm,
+            entryRange24: c.range24,
+          };
+
+          await kv.set(tKey, tradeObj, { ex: TRADE_TTL_SEC });
+
+          const hook = stageWebhook("ENTRY");
+          const line =
+            `**${sym}** (${mode.toUpperCase()})  ` +
+            `**ENTRY** • instap  ` +
+            `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
+            `price ${fmtUsd(priceNow, 6)}`;
+          pushNotice(noticesByHook, hook, line);
+
+          tradeInfo = { status: "OPEN", entryPrice: priceNow, barsOpen: 0, pnl: 0, maxPnl: 0 };
+        }
+      }
+
+      // -------------------------
+      // Funnel state (voor RADAR/BUILDUP/ALMOST updates)
+      // (ENTRY/HOLD/SELL doen we via trade engine, dus hier niet “faken”)
+      // -------------------------
       const prevEntry = safeObj(state[sym]) || {};
       const stFix = updateStateAndConsistency(state, sym, stage, core, now);
 
@@ -608,55 +779,25 @@ export default async function handler(req, res) {
       const consistency = stFix.consistency;
       const prevStage = up(stFix.prevStage);
       const currStage = up(stage);
-      const entryStreak = n(stFix.entryStreak, 0);
 
-      // Discord (zelfde logica, nu met confidence na BTC-tune)
-      if (prevStage) {
+      // Alleen funnel-stage meldingen voor RADAR/BUILDUP/ALMOST,
+      // en NIET als er een open trade is (anders spam/ruis).
+      const hasOpenTrade = tradeInfo?.status === "OPEN";
+
+      if (!hasOpenTrade && prevStage) {
         const doNotify = canNotify(prevEntry, now);
 
-        if (doNotify && prevStage === "ENTRY" && currStage !== "ENTRY") {
-          const hook = stageWebhook("SELL");
-          const line =
-            `**${sym}** (${mode.toUpperCase()})  ` +
-            `ENTRY → **SELL**  ` +
-            `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
-            `1h ${fmtPct(c.change1h, 2)} • 24h ${fmtPct(c.change24, 2)} • ` +
-            `price ${fmtUsd(c.price, 6)}`;
-          pushNotice(noticesByHook, hook, line);
-          markNotified(state, sym, now);
-        } else if (doNotify && prevStage !== "ENTRY" && currStage === "ENTRY") {
-          const hook = stageWebhook("ENTRY");
-          const line =
-            `**${sym}** (${mode.toUpperCase()})  ` +
-            `${prevStage} → **ENTRY**  ` +
-            `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
-            `1h ${fmtPct(c.change1h, 2)} • 24h ${fmtPct(c.change24, 2)} • ` +
-            `price ${fmtUsd(c.price, 6)}`;
-          pushNotice(noticesByHook, hook, line);
-          markNotified(state, sym, now);
-        } else if (
-          currStage === "ENTRY" &&
-          prevStage === "ENTRY" &&
-          entryStreak === HOLD_AFTER_ENTRY_SCANS &&
-          !holdAlreadySentRecently(prevEntry, now)
-        ) {
-          const hook = stageWebhook("HOLD");
-          const line =
-            `**${sym}** (${mode.toUpperCase()})  ` +
-            `ENTRY → **HOLD**  ` +
-            `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
-            `1h ${fmtPct(c.change1h, 2)} • 24h ${fmtPct(c.change24, 2)} • ` +
-            `price ${fmtUsd(c.price, 6)}`;
-          pushNotice(noticesByHook, hook, line);
-          markHoldNotified(state, sym, now);
-        } else if (doNotify && prevStage !== currStage) {
+        const isFunnelStage =
+          currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
+
+        if (doNotify && isFunnelStage && prevStage !== currStage) {
           const hook = stageWebhook(currStage);
           const line =
             `**${sym}** (${mode.toUpperCase()})  ` +
             `${prevStage} → **${currStage}**  ` +
             `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
             `1h ${fmtPct(c.change1h, 2)} • 24h ${fmtPct(c.change24, 2)} • ` +
-            `price ${fmtUsd(c.price, 6)}`;
+            `price ${fmtUsd(priceNow, 6)}`;
           pushNotice(noticesByHook, hook, line);
           markNotified(state, sym, now);
         }
@@ -666,7 +807,7 @@ export default async function handler(req, res) {
         id: c.id,
         symbol: sym,
         name: c.name,
-        price: c.price,
+        price: priceNow,
         volume: c.volume,
         marketCap: c.marketCap,
         change24: +c.change24.toFixed(4),
@@ -678,9 +819,12 @@ export default async function handler(req, res) {
         confidence,
         confidenceBtcAdj: btcTune.adj,
 
-        stage: currStage,
+        stage: currStage, // funnel stage
         stageScans,
         consistency,
+
+        // ✅ echte trading status (OPEN/CLOSED/null)
+        trade: tradeInfo,
 
         req: {
           minConfidence: thr.minConfidence,
@@ -737,12 +881,22 @@ export default async function handler(req, res) {
       btc,
       meta: {
         cadence: "30m",
-        btcPolicy: "24h regime + 1h confidence fine-tune; NEUTRAL/opposite => cap to BUILDUP, maar scan+OB blijven lopen",
+        btcPolicy:
+          "24h regime + 1h confidence fine-tune; NEUTRAL/opposite => cap to BUILDUP (prep), maar scan+OB blijven lopen",
         capActive: !!cap.cap,
         capStage: cap.capStage,
         capReason: cap.reason,
-        neutralZone: `BTC 24h between -${neutral24Pct}% and +${neutral24Pct}%`,
+        allowEntry,
+        neutralZone: `BTC 24h tussen -${neutral24Pct}% en +${neutral24Pct}%`,
         fineTune: `BTC 1h abs >= ${fine1hAbsPct}% => confidence +/-${confBoost}`,
+        tradeEngine: {
+          enabled: true,
+          timeStopScans: TIME_STOP_SCANS,
+          timeStopMaxPnlPct: TIME_STOP_MAXPNL * 100,
+          reentryCooldownSec: REENTRY_COOLDOWN_SEC,
+          tradeTtlSec: TRADE_TTL_SEC,
+          exits: ["HARD_STOP(range24)", "OB_BREAK_2X(fresh)", "TIME_STOP(no momentum)"],
+        },
       },
       counts: {
         entry: entry.length,
@@ -759,7 +913,7 @@ export default async function handler(req, res) {
         errors: (discord.details || []).slice(0, 5),
       },
       note:
-        "Update: BTC NEUTRAL stopt niet meer alles. Beide modes blijven ‘huiswerk’ doen (RADAR/BUILDUP) met OB-data. Alleen ALMOST/ENTRY is gecapt in prep-mode.",
+        "Belangrijk: ENTRY/HOLD/SELL zijn nu ‘echte trades’. ENTRY = trade-object maken (instap). HOLD zolang trade open blijft. SELL alleen als exit-regel triggert. Funnel (RADAR/BUILDUP/ALMOST) blijft huiswerk doen in prep-mode.",
     };
 
     await kv.set(core.keyLatest(mode), result);
