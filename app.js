@@ -1,5 +1,6 @@
 // /public/app.js
 
+// ===== topbar hoogte automatisch naar CSS var zetten =====
 function syncTopbarHeight() {
   const tb = document.querySelector(".topbar");
   const h = tb ? Math.ceil(tb.getBoundingClientRect().height) : 78;
@@ -9,6 +10,7 @@ window.addEventListener("resize", syncTopbarHeight);
 window.addEventListener("load", syncTopbarHeight);
 syncTopbarHeight();
 
+// ===== helpers =====
 const el = (id) => document.getElementById(id);
 
 function bust() {
@@ -40,6 +42,7 @@ function setMode(mode) {
   loadLatest();
 }
 
+// ===== formatters =====
 function fmtUSD(n) {
   n = Number(n) || 0;
   if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
@@ -75,12 +78,19 @@ function confBar(conf) {
   `;
 }
 
+// ===== SIZING (Advies) =====
+// ✅ BELANGRIJK: geen "Advies —" meer tonen.
+// Als er geen sizing is -> leeg (en dan laten we de pill ook weg).
 function sizingText(c) {
   const s = c?.sizing || null;
-  if (!s) return "Advies —";
-  return `Advies ${s.pct}% (BTC ${s.zone})`;
+  if (!s) return "";
+  const pct = Number.isFinite(Number(s.pct)) ? Number(s.pct) : null;
+  const zone = String(s.zone || "").trim();
+  if (pct === null) return "";
+  return `Advies ${pct}%${zone ? ` (BTC ${zone})` : ""}`;
 }
 
+// ===== TRADE pills =====
 function tradePillFromCoin(c) {
   const t = c?.trade || null;
   if (!t) return "";
@@ -101,20 +111,32 @@ function tradePillFromCoin(c) {
   return "";
 }
 
+// ✅ FIX: deze functie geeft al een complete pill terug.
+// In sellRow moet je hem NIET nog een keer in een pill wrappen.
 function tradePillFromSellRow(s) {
   const sym = s?.symbol || "—";
   const reason = s?.reason ? ` • ${s.reason}` : "";
-  const pnl = Number.isFinite(Number(s?.pnlPct)) ? ` • pnl ${fmtPct(Number(s.pnlPct) * 100)}` : "";
+  const pnl = Number.isFinite(Number(s?.pnlPct))
+    ? ` • pnl ${fmtPct(Number(s.pnlPct) * 100)}`
+    : "";
   return `<div class="pill pillSell">SELL ${sym}${reason}${pnl}</div>`;
 }
 
+// ===== rows =====
 function coinRow(c) {
   const div = document.createElement("div");
   div.className = "coinRow";
 
-  const adv = sizingText(c);
+  const adv = sizingText(c); // kan leeg zijn
   const scans = Number.isFinite(Number(c.stageScans)) ? Number(c.stageScans) : 0;
   const tPill = tradePillFromCoin(c);
+
+  // ✅ Als geen trade en geen sizing -> geen pill tonen (strakker)
+  const rightPill = tPill
+    ? tPill
+    : adv
+    ? `<div class="pill pillAdv">${adv}</div>`
+    : "";
 
   div.innerHTML = `
     <div class="coinTop">
@@ -125,7 +147,7 @@ function coinRow(c) {
 
       ${confBar(c.confidence)}
 
-      ${tPill || `<div class="pill pillAdv">${adv}</div>`}
+      ${rightPill}
     </div>
 
     <div class="coinMeta">
@@ -155,7 +177,7 @@ function sellRow(s) {
         <div class="sym">${s?.symbol || "—"}</div>
         <div class="tag">${stamp}</div>
       </div>
-      <div class="pill pillSell">${tradePillFromSellRow(s)}</div>
+      ${tradePillFromSellRow(s)}
     </div>
 
     <div class="coinMeta">
@@ -166,7 +188,6 @@ function sellRow(s) {
     </div>
   `;
 
-  // SELL rows hebben geen coin-object om modal mee te vullen
   return div;
 }
 
@@ -206,8 +227,7 @@ function pickHold(data) {
 function pickSellFromLog(data) {
   const arr = data?.trading?.recentSells || [];
   const sell = Array.isArray(arr) ? arr.slice(0, 50) : [];
-  // server geeft al reverse, maar voor zekerheid:
-  sell.sort((a, b) => (Number(b?.ts || 0) - Number(a?.ts || 0)));
+  sell.sort((a, b) => Number(b?.ts || 0) - Number(a?.ts || 0));
   return sell;
 }
 
@@ -238,11 +258,14 @@ function renderAll(data) {
 
 async function loadLatest() {
   try {
-    el("statusLine").textContent = "Status: laden…";
+    const sl = el("statusLine");
+    if (sl) sl.textContent = "Status: laden…";
+
     const r = await fetch(API.latest(MODE), {
       cache: "no-store",
       headers: { "cache-control": "no-cache" },
     });
+
     const j = await r.json();
     renderAll(j || {});
   } catch {
@@ -295,6 +318,7 @@ function addCheck(container, ok, title, sub = "", kind = "ok") {
 }
 
 function setKV(container, rows) {
+  if (!container) return;
   container.innerHTML = "";
   for (const [k, v] of rows) {
     const r = document.createElement("div");
@@ -326,7 +350,7 @@ async function openModalMain(c) {
     `Price $${safe(c.price, 6)} • Chg24 ${fmtPct(c.change24)} • Range24 ${fmtPct(c.range24)} • VM ${safe(c.vm, 2)} • Conf ${c.confidence}/100`;
 
   const whyList = el("mWhyList");
-  whyList.innerHTML = "";
+  if (whyList) whyList.innerHTML = "";
 
   const scans = Number.isFinite(Number(c.stageScans)) ? Number(c.stageScans) : 0;
 
@@ -377,15 +401,13 @@ async function openModalMain(c) {
 
   addCheck(whyList, true, "Volume acceleration", `VolAcc: ${safe(c.volAcc, 2)}`);
 
-  // ✅ Entry gate: groen als "passed"/"ok"
   const eg = String(c?.why?.entryGate || "");
   const egOk = /(passed|ok)/i.test(eg);
-
   addCheck(whyList, egOk, "Entry gate", eg || "—", egOk ? "ok" : "warn");
 
   // LIQ
   const liqList = el("mLiqList");
-  liqList.innerHTML = "";
+  if (liqList) liqList.innerHTML = "";
   addCheck(liqList, true, "Orderbook", "Laden…", "warn");
 
   try {
@@ -395,11 +417,11 @@ async function openModalMain(c) {
     });
 
     if (!r.ok) {
-      liqList.innerHTML = "";
+      if (liqList) liqList.innerHTML = "";
       addCheck(liqList, false, "Orderbook error", `${r.status} ${r.statusText}`, "warn");
     } else {
       const j = await r.json();
-      liqList.innerHTML = "";
+      if (liqList) liqList.innerHTML = "";
 
       if (j.status === "validating") {
         addCheck(liqList, false, "Orderbook validating", j.tip || "Wacht even…", "warn");
@@ -442,7 +464,7 @@ async function openModalMain(c) {
       }
     }
   } catch {
-    liqList.innerHTML = "";
+    if (liqList) liqList.innerHTML = "";
     addCheck(liqList, false, "Orderbook", "OB ERROR: fetch mislukt", "warn");
   }
 
@@ -450,14 +472,16 @@ async function openModalMain(c) {
     ["ATR% (proxy)", `${safe(Number(c.atrPct || 0) * 100, 2)}%`],
     ["SL", `$${safe(c.sl, 6)}`],
     ["TP", `$${safe(c.tp, 6)}`],
-    ["Sizing advies", sizingText(c)],
+    ["Sizing advies", sizingText(c) || "—"],
   ]);
 
   el("mDebug").textContent = JSON.stringify(c, null, 2);
 }
 
+// buttons
 el("modeBull")?.addEventListener("click", () => setMode("bull"));
 el("modeBear")?.addEventListener("click", () => setMode("bear"));
 
+// init
 setMode(MODE);
 setInterval(loadLatest, 20000);
