@@ -1,4 +1,5 @@
-// ===== topbar hoogte automatisch naar CSS var zetten =====
+// /public/app.js
+
 function syncTopbarHeight() {
   const tb = document.querySelector(".topbar");
   const h = tb ? Math.ceil(tb.getBoundingClientRect().height) : 78;
@@ -8,7 +9,6 @@ window.addEventListener("resize", syncTopbarHeight);
 window.addEventListener("load", syncTopbarHeight);
 syncTopbarHeight();
 
-// ===== helpers =====
 const el = (id) => document.getElementById(id);
 
 function bust() {
@@ -34,10 +34,8 @@ function setMode(mode) {
   url.searchParams.set("mode", mode);
   history.replaceState({}, "", url.toString());
 
-  const bullBtn = el("modeBull");
-  const bearBtn = el("modeBear");
-  if (bullBtn) bullBtn.classList.toggle("active", mode === "bull");
-  if (bearBtn) bearBtn.classList.toggle("active", mode === "bear");
+  el("modeBull")?.classList.toggle("active", mode === "bull");
+  el("modeBear")?.classList.toggle("active", mode === "bear");
 
   loadLatest();
 }
@@ -83,20 +81,18 @@ function sizingText(c) {
   return `Advies ${s.pct}% (BTC ${s.zone})`;
 }
 
-function tradePill(c) {
+function tradePillFromCoin(c) {
   const t = c?.trade || null;
   if (!t) return "";
 
-  // OPEN = HOLD
   if (t.status === "OPEN") {
-    const pnl = Number.isFinite(Number(t.pnl)) ? Number(t.pnl) : null; // in scan.js is dit ratio (0.012 = 1.2)
+    const pnl = Number.isFinite(Number(t.pnl)) ? Number(t.pnl) : null;
     const maxPnl = Number.isFinite(Number(t.maxPnl)) ? Number(t.maxPnl) : null;
     const pnlTxt = pnl === null ? "" : ` • pnl ${fmtPct(pnl * 100)}`;
     const maxTxt = maxPnl === null ? "" : ` • max ${fmtPct(maxPnl * 100)}`;
     return `<div class="pill pillHold">HOLD${pnlTxt}${maxTxt}</div>`;
   }
 
-  // CLOSED = SELL (komt alleen voor in de scan waarin hij sluit)
   if (t.status === "CLOSED") {
     const reason = t?.exit?.reason ? ` • ${t.exit.reason}` : "";
     return `<div class="pill pillSell">SELL${reason}</div>`;
@@ -105,13 +101,20 @@ function tradePill(c) {
   return "";
 }
 
+function tradePillFromSellRow(s) {
+  const sym = s?.symbol || "—";
+  const reason = s?.reason ? ` • ${s.reason}` : "";
+  const pnl = Number.isFinite(Number(s?.pnlPct)) ? ` • pnl ${fmtPct(Number(s.pnlPct) * 100)}` : "";
+  return `<div class="pill pillSell">SELL ${sym}${reason}${pnl}</div>`;
+}
+
 function coinRow(c) {
   const div = document.createElement("div");
   div.className = "coinRow";
 
   const adv = sizingText(c);
   const scans = Number.isFinite(Number(c.stageScans)) ? Number(c.stageScans) : 0;
-  const tPill = tradePill(c);
+  const tPill = tradePillFromCoin(c);
 
   div.innerHTML = `
     <div class="coinTop">
@@ -134,11 +137,40 @@ function coinRow(c) {
       <span>scans: ${scans}</span>
     </div>
   `;
+
   div.addEventListener("click", () => openModalMain(c));
   return div;
 }
 
-function renderStage(targetId, arr) {
+function sellRow(s) {
+  const div = document.createElement("div");
+  div.className = "coinRow";
+
+  const ts = Number(s?.ts || 0);
+  const stamp = ts ? new Date(ts).toLocaleString() : "—";
+
+  div.innerHTML = `
+    <div class="coinTop">
+      <div>
+        <div class="sym">${s?.symbol || "—"}</div>
+        <div class="tag">${stamp}</div>
+      </div>
+      <div class="pill pillSell">${tradePillFromSellRow(s)}</div>
+    </div>
+
+    <div class="coinMeta">
+      <span>side: ${String(s?.side || "—")}</span>
+      <span>entry: $${Number(s?.entryPrice || 0).toFixed(6)}</span>
+      <span>exit: $${Number(s?.exitPrice || 0).toFixed(6)}</span>
+      <span>bars: ${Number(s?.barsOpen || 0)}</span>
+    </div>
+  `;
+
+  // SELL rows hebben geen coin-object om modal mee te vullen
+  return div;
+}
+
+function renderStage(targetId, arr, renderer = coinRow) {
   const box = el(targetId);
   if (!box) return;
 
@@ -147,7 +179,7 @@ function renderStage(targetId, arr) {
     box.innerHTML = `<div class="empty">Geen coins.</div>`;
     return;
   }
-  for (const c of arr) box.appendChild(coinRow(c));
+  for (const x of arr) box.appendChild(renderer(x));
 }
 
 function btcLine(btc) {
@@ -157,32 +189,34 @@ function btcLine(btc) {
 
 function flattenFunnel(data) {
   const f = data?.funnel || {};
-  const all = []
+  return []
     .concat(f.entry || [])
     .concat(f.almost || [])
     .concat(f.buildup || [])
     .concat(f.radar || []);
-  return all;
 }
 
-function pickHoldAndSell(data) {
+function pickHold(data) {
   const all = flattenFunnel(data);
-
   const hold = all.filter((c) => c?.trade?.status === "OPEN");
-  const sell = all.filter((c) => c?.trade?.status === "CLOSED");
-
-  // netjes sorteren
   hold.sort((a, b) => (Number(b?.trade?.pnl) || 0) - (Number(a?.trade?.pnl) || 0));
-  sell.sort((a, b) => (Number(b?.trade?.exitAt || 0) || 0) - (Number(a?.trade?.exitAt || 0) || 0));
+  return hold;
+}
 
-  return { hold, sell };
+function pickSellFromLog(data) {
+  const arr = data?.trading?.recentSells || [];
+  const sell = Array.isArray(arr) ? arr.slice(0, 50) : [];
+  // server geeft al reverse, maar voor zekerheid:
+  sell.sort((a, b) => (Number(b?.ts || 0) - Number(a?.ts || 0)));
+  return sell;
 }
 
 function renderAll(data) {
   const ts = data?.ts ? new Date(data.ts) : null;
   const stamp = ts ? ts.toLocaleString() : "—";
 
-  const { hold, sell } = pickHoldAndSell(data);
+  const hold = pickHold(data);
+  const sell = pickSellFromLog(data);
 
   const statusLine = el("statusLine");
   if (statusLine) {
@@ -193,42 +227,36 @@ function renderAll(data) {
       `BUILDUP ${data?.counts?.buildup || 0} • RADAR ${data?.counts?.radar || 0}`;
   }
 
-  // ✅ nieuwe panelen
-  renderStage("stageHold", hold);
-  renderStage("stageSell", sell);
+  renderStage("stageHold", hold, coinRow);
+  renderStage("stageSell", sell, sellRow);
 
-  // bestaande funnel
-  renderStage("stageEntry", data?.funnel?.entry || []);
-  renderStage("stageAlmost", data?.funnel?.almost || []);
-  renderStage("stageBuildup", data?.funnel?.buildup || []);
-  renderStage("stageRadar", data?.funnel?.radar || []);
+  renderStage("stageEntry", data?.funnel?.entry || [], coinRow);
+  renderStage("stageAlmost", data?.funnel?.almost || [], coinRow);
+  renderStage("stageBuildup", data?.funnel?.buildup || [], coinRow);
+  renderStage("stageRadar", data?.funnel?.radar || [], coinRow);
 }
 
 async function loadLatest() {
   try {
-    const statusLine = el("statusLine");
-    if (statusLine) statusLine.textContent = "Status: laden…";
-
+    el("statusLine").textContent = "Status: laden…";
     const r = await fetch(API.latest(MODE), {
       cache: "no-store",
       headers: { "cache-control": "no-cache" },
     });
-
     const j = await r.json();
     renderAll(j || {});
-  } catch (e) {
+  } catch {
     const statusLine = el("statusLine");
     if (statusLine) statusLine.textContent = "Status: fout bij laden (check Vercel logs)";
   }
 }
 
-// ===== modal shared UI =====
+// ===== modal =====
 function showModal(on) {
   const modal = el("modal");
   if (!modal) return;
   modal.classList.toggle("hidden", !on);
 }
-
 function setTab(name) {
   const tabs = ["Why", "Liq", "Risk", "Debug"];
   for (const t of tabs) {
@@ -309,14 +337,8 @@ async function openModalMain(c) {
   const consNeed = Number(c?.consistency?.need || 0);
   const consMinAgree = Number(c?.consistency?.minAgree || 0);
 
-  addCheck(
-    whyList,
-    true,
-    `Stage: ${c.stage}`,
-    `scans: ${scans}`
-  );
+  addCheck(whyList, true, `Stage: ${c.stage}`, `scans: ${scans}`);
 
-  // ✅ Trade info bovenaan als hij open is
   if (t?.status === "OPEN") {
     const pnl = Number.isFinite(Number(t.pnl)) ? Number(t.pnl) : 0;
     const maxPnl = Number.isFinite(Number(t.maxPnl)) ? Number(t.maxPnl) : 0;
@@ -353,29 +375,17 @@ async function openModalMain(c) {
     Number(c.confidence || 0) >= 70 ? "ok" : "warn"
   );
 
-  addCheck(
-    whyList,
-    true,
-    "Volume acceleration",
-    `VolAcc: ${safe(c.volAcc, 2)}`
-  );
+  addCheck(whyList, true, "Volume acceleration", `VolAcc: ${safe(c.volAcc, 2)}`);
 
   // ✅ Entry gate: groen als "passed"/"ok"
   const eg = String(c?.why?.entryGate || "");
   const egOk = /(passed|ok)/i.test(eg);
 
-  addCheck(
-    whyList,
-    egOk,
-    "Entry gate",
-    eg || "—",
-    egOk ? "ok" : "warn"
-  );
+  addCheck(whyList, egOk, "Entry gate", eg || "—", egOk ? "ok" : "warn");
 
   // LIQ
   const liqList = el("mLiqList");
   liqList.innerHTML = "";
-
   addCheck(liqList, true, "Orderbook", "Laden…", "warn");
 
   try {
@@ -436,7 +446,6 @@ async function openModalMain(c) {
     addCheck(liqList, false, "Orderbook", "OB ERROR: fetch mislukt", "warn");
   }
 
-  // RISK (laat staan; jij vult dit later)
   setKV(el("mRiskKv"), [
     ["ATR% (proxy)", `${safe(Number(c.atrPct || 0) * 100, 2)}%`],
     ["SL", `$${safe(c.sl, 6)}`],
@@ -447,10 +456,8 @@ async function openModalMain(c) {
   el("mDebug").textContent = JSON.stringify(c, null, 2);
 }
 
-// buttons
 el("modeBull")?.addEventListener("click", () => setMode("bull"));
 el("modeBear")?.addEventListener("click", () => setMode("bear"));
 
-// init
 setMode(MODE);
 setInterval(loadLatest, 20000);
