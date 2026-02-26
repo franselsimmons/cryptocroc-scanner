@@ -1,4 +1,4 @@
-// /api/ob/sampler.js
+// api/ob/sampler.js
 import { kv } from "@vercel/kv";
 
 export const config = { runtime: "nodejs" };
@@ -7,30 +7,23 @@ export const config = { runtime: "nodejs" };
 const HARD_MAX_PER_RUN = 30;
 const REQUEST_DELAY_MS = 120;
 
-// ✅ 30m scan: stale moet RUIMER zijn
 const OB_STALE_MS = 120 * 60 * 1000; // 120 min
 
 const DEFAULT_SAMPLES_WINDOW_SEC = 6 * 3600;  // 6 uur
 const DEFAULT_SAMPLES_MAX = 24;
-const DEFAULT_SAMPLES_TTL_SEC = 60 * 60 * 48;
-const DEFAULT_RESULT_TTL_SEC = 60 * 30;
+const DEFAULT_SAMPLES_TTL_SEC = 60 * 60 * 48; // 48 uur
+const DEFAULT_RESULT_TTL_SEC = 60 * 30;       // 30 min
 
-// ✅ 30m swing defaults als _core settings ontbreken
 const DEFAULT_SAMPLES_NEED_30M = 3;
 const DEFAULT_MIN_AGREE_30M = 2;
 
-// ✅ WATCHLIST
+// WATCHLIST
 const WATCH_MAX = 120;
 const WATCH_TTL_SEC = 60 * 60 * 12;
 const WATCH_PREFER = 18;
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function safeObj(x) {
-  return x && typeof x === "object" ? x : null;
-}
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+function safeObj(x) { return x && typeof x === "object" ? x : null; }
 
 function uniqueUpper(list) {
   const out = [];
@@ -65,34 +58,15 @@ async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
   try { j = JSON.parse(text); } catch {}
 
   if (!r.ok) {
-    return {
-      ok: false,
-      status: r.status,
-      msg: j?.msg || "Bitget orderbook failed",
-      url,
-      preview: text.slice(0, 200),
-    };
+    return { ok: false, status: r.status, msg: j?.msg || "Bitget orderbook failed", url, preview: text.slice(0, 200) };
   }
-
   if (String(j?.code || "") !== "00000") {
-    return {
-      ok: false,
-      status: 400,
-      msg: j?.msg || "Bitget returned non-success code",
-      url,
-      preview: text.slice(0, 200),
-    };
+    return { ok: false, status: 400, msg: j?.msg || "Bitget returned non-success code", url, preview: text.slice(0, 200) };
   }
 
   const depth = j?.data;
   if (!depth?.bids?.length || !depth?.asks?.length) {
-    return {
-      ok: false,
-      status: 200,
-      msg: "Empty orderbook",
-      url,
-      preview: text.slice(0, 200),
-    };
+    return { ok: false, status: 200, msg: "Empty orderbook", url, preview: text.slice(0, 200) };
   }
 
   return { ok: true, url, depth };
@@ -118,6 +92,11 @@ function sumDepth(levels, mid, pct, isBid) {
   return { total, biggest };
 }
 
+function imbalanceScore(bidUsd, askUsd) {
+  const denom = bidUsd + askUsd;
+  return denom > 0 ? (bidUsd - askUsd) / denom : 0;
+}
+
 function computeObSample(depth) {
   const bids = depth?.bids || [];
   const asks = depth?.asks || [];
@@ -130,55 +109,73 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  const pct = 0.002; // 0.2% band
-  const bidRes = sumDepth(bids, mid, pct, true);
-  const askRes = sumDepth(asks, mid, pct, false);
+  // 0.2% band (score)
+  const pct02 = 0.002;
+  const bid02 = sumDepth(bids, mid, pct02, true);
+  const ask02 = sumDepth(asks, mid, pct02, false);
 
-  const bidUsd = bidRes.total;
-  const askUsd = askRes.total;
+  const bidUsd = bid02.total;
+  const askUsd = ask02.total;
 
-  const denom = bidUsd + askUsd;
-  const score = denom > 0 ? (bidUsd - askUsd) / denom : 0;
+  const score = imbalanceScore(bidUsd, askUsd);
+  const pressureDeltaUsd = bidUsd - askUsd;
 
-  const biggest = Math.max(bidRes.biggest, askRes.biggest);
-  const lor = denom > 0 ? biggest / denom : 1;
+  const denom02 = bidUsd + askUsd;
+  const biggest02 = Math.max(bid02.biggest, ask02.biggest);
+  const lor = denom02 > 0 ? biggest02 / denom02 : 1;
+
+  // extra PRO: 0.5% en 1% imbalance
+  const pct05 = 0.005;
+  const bid05 = sumDepth(bids, mid, pct05, true);
+  const ask05 = sumDepth(asks, mid, pct05, false);
+  const score05p = imbalanceScore(bid05.total, ask05.total);
 
   const bid1 = sumDepth(bids, mid, 0.01, true);
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
+  const score1p = imbalanceScore(bid1.total, ask1.total);
 
   return {
     ts: Date.now(),
-    score,
+    mid,
     spreadPct,
-    lor,
+
+    // core
     bidUsd,
     askUsd,
-    mid,
+    score,
+    pressureDeltaUsd,
+    lor,
     depthMinUsd1p,
+
+    // pro
+    score05p,
+    score1p,
   };
 }
 
 function pruneSamples(samples, SETTINGS) {
   const now = Date.now();
-
   const winSec = Number(SETTINGS?.entry?.samplesWindowSec || DEFAULT_SAMPLES_WINDOW_SEC);
   const winMs = winSec * 1000;
 
-  const maxKeep = Math.max(
-    6,
-    Math.min(60, Number(SETTINGS?.entry?.samplesMax || DEFAULT_SAMPLES_MAX))
-  );
+  const maxKeep = Math.max(6, Math.min(60, Number(SETTINGS?.entry?.samplesMax || DEFAULT_SAMPLES_MAX)));
 
   const arr = Array.isArray(samples) ? samples : [];
   return arr
     .map((s) => ({
       ts: Number(s?.ts || 0),
       score: Number(s?.score ?? 0),
+      score05p: Number(s?.score05p ?? 0),
+      score1p: Number(s?.score1p ?? 0),
+
       spreadPct: Number(s?.spreadPct ?? 999),
       lor: Number(s?.lor ?? 1),
+
       bidUsd: Number(s?.bidUsd ?? 0),
       askUsd: Number(s?.askUsd ?? 0),
+      pressureDeltaUsd: Number(s?.pressureDeltaUsd ?? 0),
+
       mid: Number(s?.mid ?? 0),
       depthMinUsd1p: Number(s?.depthMinUsd1p ?? 0),
     }))
@@ -191,21 +188,14 @@ function pruneSamples(samples, SETTINGS) {
 function validateSamples(mode, samplesFresh, SETTINGS) {
   const fresh = pruneSamples(samplesFresh, SETTINGS);
 
-  const need = Number(
-    SETTINGS?.entry?.samplesNeed ??
-    DEFAULT_SAMPLES_NEED_30M
-  );
+  const need = Number(SETTINGS?.entry?.samplesNeed ?? DEFAULT_SAMPLES_NEED_30M);
+  const minAgree = Number(SETTINGS?.entry?.minAgree ?? DEFAULT_MIN_AGREE_30M);
 
-  const minAgree = Number(
-    SETTINGS?.entry?.minAgree ??
-    DEFAULT_MIN_AGREE_30M
-  );
-
-  if (fresh.length < need) {
-    return { valid: false, reason: "Not enough samples", fresh };
-  }
+  if (fresh.length < need) return { valid: false, reason: "Not enough samples", fresh };
 
   const lastN = fresh.slice(-need);
+
+  // direction op score (0.2%)
   const agree = lastN.filter((s) => (mode === "bull" ? s.score > 0 : s.score < 0)).length;
   const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
 
@@ -214,7 +204,41 @@ function validateSamples(mode, samplesFresh, SETTINGS) {
     return { valid: false, reason: "Direction not consistent", fresh: lastN, avgScore, agree };
   }
 
-  return { valid: true, reason: "OK", fresh: lastN, avgScore, agree };
+  // PRO: 1% score mag niet totaal de andere kant op flippen (milde check)
+  const avgScore1p = lastN.reduce((a, s) => a + (s.score1p ?? 0), 0) / lastN.length;
+  const score1pOk = mode === "bull" ? avgScore1p > -0.15 : avgScore1p < 0.15;
+
+  if (!score1pOk) {
+    return { valid: false, reason: "1% imbalance contradicts", fresh: lastN, avgScore, agree, avgScore1p };
+  }
+
+  return { valid: true, reason: "OK", fresh: lastN, avgScore, agree, avgScore1p };
+}
+
+// slope helper (per minuut)
+function calcSlopeMin(samples, field) {
+  const pts = (samples || [])
+    .map(s => ({ t: Number(s?.ts || 0), y: Number(s?.[field]) }))
+    .filter(p => p.t > 0 && Number.isFinite(p.y))
+    .sort((a, b) => a.t - b.t);
+
+  if (pts.length < 6) return 0;
+
+  const t0 = pts[0].t;
+  const xs = pts.map(p => (p.t - t0) / 60000);
+  const ys = pts.map(p => p.y);
+
+  const n = xs.length;
+  const meanX = xs.reduce((a, b) => a + b, 0) / n;
+  const meanY = ys.reduce((a, b) => a + b, 0) / n;
+
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = xs[i] - meanX;
+    num += dx * (ys[i] - meanY);
+    den += dx * dx;
+  }
+  return den === 0 ? 0 : num / den;
 }
 
 // ================== WATCHLIST LOGIC ==================
@@ -243,12 +267,9 @@ function addToWatch(watch, symbols) {
   return merged.slice(0, WATCH_MAX);
 }
 
-// ================== CANDIDATES SELECTIE (RADAR FIRST) ==================
+// ================== CANDIDATES SELECTIE ==================
 async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS, obMap) {
-  const radar = (latest?.funnel?.radar || []).slice(
-    0,
-    Number(SETTINGS?.obPickRadar || radarFallback || 25)
-  );
+  const radar = (latest?.funnel?.radar || []).slice(0, Number(SETTINGS?.obPickRadar || radarFallback || 25));
   const almost = (latest?.funnel?.almost || []).slice(0, Number(SETTINGS?.obPickAlmost || 25));
   const buildup = (latest?.funnel?.buildup || []).slice(0, Number(SETTINGS?.obPickBuildup || 25));
 
@@ -263,9 +284,7 @@ async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTI
 
   out = uniqueUpper([...out, ...poolNow]).slice(0, maxPerRun);
 
-  // obMap hier is existence-map (Bitget listing)
   if (obMap) out = out.filter((sym) => !!obMap[String(sym).toUpperCase()]);
-
   return out.slice(0, maxPerRun);
 }
 
@@ -291,9 +310,14 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
 
   const v = validateSamples(mode, pruned, SETTINGS);
 
+  // bestaande slope gate (score slope) uit core
   const slopeCheck = typeof core.checkObSlopeGate === "function"
     ? core.checkObSlopeGate({ stage: "sampler", mode, obSamples: pruned, settings: SETTINGS })
     : { ok: true, slope: 0, reason: "no-slope" };
+
+  // extra pro: depth slope (geen gate, alleen info)
+  const slopeDepth1p = calcSlopeMin(pruned, "depthMinUsd1p");
+  const slopeScore = calcSlopeMin(pruned, "score");
 
   const finalValid = !!v.valid && !!slopeCheck.ok;
   const finalReason = finalValid
@@ -306,30 +330,51 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
   const result = {
     symbol,
     side: mode,
+
     valid: finalValid,
     reason: finalReason,
 
     stale,
     ageSec: Math.round(ageMs / 1000),
 
+    // top-level quick fields
     score: sample.score,
+    score05p: sample.score05p,
+    score1p: sample.score1p,
+    pressureDeltaUsd: sample.pressureDeltaUsd,
+
     spreadPct: sample.spreadPct,
     lor: sample.lor,
     depthMinUsd1p: sample.depthMinUsd1p,
 
     avgScore: v.avgScore ?? null,
+    avgScore1p: v.avgScore1p ?? null,
     agree: v.agree ?? null,
-    slope: slopeCheck.slope ?? null,
+
+    // pro slopes
+    slope: slopeCheck.slope ?? null, // legacy
+    slopeScore,
+    slopeDepth1p,
 
     ob: {
       ts: sample.ts,
       mid: sample.mid,
       spreadPct: sample.spreadPct,
+
       bidUsd: sample.bidUsd,
       askUsd: sample.askUsd,
+
       score: sample.score,
+      score05p: sample.score05p,
+      score1p: sample.score1p,
+
+      pressureDeltaUsd: sample.pressureDeltaUsd,
+
       lor: sample.lor,
       depthMinUsd1p: sample.depthMinUsd1p,
+
+      slopeScore,
+      slopeDepth1p,
     },
 
     tookMs: Date.now() - startedAt,
@@ -362,7 +407,6 @@ export default async function handler(req, res) {
 
     const radarFallback = Math.max(5, Math.min(120, Number(req.query?.radar || 25) || 25));
 
-    // ob:map is existence-map
     const obMapBlob = await kv.get(`ob:map:${mode}`);
     const obMap = safeObj(obMapBlob)?.map && typeof obMapBlob.map === "object" ? obMapBlob.map : null;
 
