@@ -53,6 +53,10 @@ function fmtUsd(x, d = 6) {
 // ✅ OB max age (stale gate)
 const OB_MAX_AGE_MS = 75 * 60 * 1000; // 75 min
 
+// ✅ Discord anti-spam
+const NOTIFY_COOLDOWN_MS = 25 * 60 * 1000; // 25 min per coin
+const HOLD_AFTER_ENTRY_SCANS = 2; // 2x achter elkaar ENTRY => HOLD melding
+
 // --------------------
 // Discord helpers
 // --------------------
@@ -78,16 +82,14 @@ async function sendDiscord(webhook, content) {
 }
 
 function stageWebhook(stageUpper) {
-  // ENTRY -> ELITE kanaal
+  // ENTRY/HOLD/SELL -> ELITE kanaal
   if (stageUpper === "ENTRY") return process.env.DISCORD_WEBHOOK_ELITE;
+  if (stageUpper === "HOLD") return process.env.DISCORD_WEBHOOK_ELITE;
+  if (stageUpper === "SELL") return process.env.DISCORD_WEBHOOK_ELITE;
 
   if (stageUpper === "ALMOST") return process.env.DISCORD_WEBHOOK_ALMOST;
   if (stageUpper === "BUILDUP") return process.env.DISCORD_WEBHOOK_BUILDUP;
   if (stageUpper === "RADAR") return process.env.DISCORD_WEBHOOK_RADAR;
-
-  // voorbereid voor later:
-  if (stageUpper === "HOLD") return process.env.DISCORD_WEBHOOK_HOLD;
-  if (stageUpper === "SELL") return process.env.DISCORD_WEBHOOK_SELL;
 
   return "";
 }
@@ -107,20 +109,18 @@ async function flushNotices(noticesByHook) {
   let failed = 0;
   const details = [];
 
-  // Discord limiet is o.a. message size; we sturen per webhook in blokken
   for (const url of urls) {
     const lines = noticesByHook[url] || [];
     if (!lines.length) continue;
 
-    const CHUNK = 15; // max regels per bericht (veilig)
+    const CHUNK = 15;
     for (let i = 0; i < lines.length; i += CHUNK) {
       const part = lines.slice(i, i + CHUNK);
       const msg = part.join("\n");
 
       const r = await sendDiscord(url, msg);
-      if (r.ok) {
-        sent++;
-      } else {
+      if (r.ok) sent++;
+      else {
         failed++;
         details.push({ webhook: url, ...r });
       }
@@ -303,8 +303,8 @@ function adaptiveEntryThresholds(core, c, vm) {
 }
 
 // --------------------
-// ✅ Consistency + scans (geen 0/0, geen undefined)
-// + return prevStage zodat we transitions kunnen detecteren
+// ✅ Consistency + scans + prevStage
+// + extra: entryStreak + lastNotifyAt + lastHoldAt
 // --------------------
 function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
   const S = stateObj || {};
@@ -329,20 +329,49 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
 
   const ok = total >= need && same >= minAgree;
 
+  const prevEntryStreak = n(prev.entryStreak, 0);
+  const entryStreak = st === "ENTRY" ? prevEntryStreak + 1 : 0;
+
   S[sym] = {
     ...prev,
     scans,
     hist,
     lastSeenAt: nowTs,
     stage: st,
+    entryStreak,
+    // lastNotifyAt / lastHoldAt blijven staan als ze er al zijn
   };
 
   return {
     state: S,
     prevStage,
     stageScans: scans,
+    entryStreak,
     consistency: { ok, ratio, same, total, need, minAgree },
   };
+}
+
+function canNotify(stateEntry, nowTs) {
+  const lastAt = n(stateEntry?.lastNotifyAt, 0);
+  if (lastAt > 0 && nowTs - lastAt < NOTIFY_COOLDOWN_MS) return false;
+  return true;
+}
+
+function markNotified(stateObj, sym, nowTs) {
+  if (!stateObj?.[sym]) return;
+  stateObj[sym].lastNotifyAt = nowTs;
+}
+
+function markHoldNotified(stateObj, sym, nowTs) {
+  if (!stateObj?.[sym]) return;
+  stateObj[sym].lastHoldAt = nowTs;
+  stateObj[sym].lastNotifyAt = nowTs;
+}
+
+function holdAlreadySentRecently(stateEntry, nowTs) {
+  const lastHoldAt = n(stateEntry?.lastHoldAt, 0);
+  if (lastHoldAt > 0 && nowTs - lastHoldAt < NOTIFY_COOLDOWN_MS) return true;
+  return false;
 }
 
 // ======================================================
@@ -370,7 +399,7 @@ export default async function handler(req, res) {
     res.setHeader("cache-control", "no-store");
 
     // --------------------
-    // BTC soft gate (block alleen als BTC duidelijk opposite is)
+    // BTC soft gate
     // --------------------
     if (btc.state !== "NEUTRAL") {
       if (mode === "bull" && btc.state === "BEAR") {
@@ -527,35 +556,86 @@ export default async function handler(req, res) {
         }
       }
 
-      // ✅ consistency/scans + prevStage (met definitieve stage)
-      const stFix = updateStateAndConsistency(state, c.symbol, stage, core, now);
+      // ✅ state + prevStage + entryStreak
+      const sym = up(c.symbol);
+      const prevEntry = safeObj(state[sym]) || {};
+      const stFix = updateStateAndConsistency(state, sym, stage, core, now);
+
       const stageScans = stFix.stageScans;
       const consistency = stFix.consistency;
-      const prevStage = stFix.prevStage;
-
-      // ✅ DISCORD: alleen melding als coin van stage verandert
-      // - geen melding bij “eerste keer gezien” (prevStage leeg)
-      // - ENTRY altijd mee (valt hier automatisch onder stage change)
+      const prevStage = up(stFix.prevStage);
       const currStage = up(stage);
-      const prev = up(prevStage);
+      const entryStreak = n(stFix.entryStreak, 0);
 
-      const changed = !!prev && prev !== currStage;
-      if (changed) {
-        const hook = stageWebhook(currStage);
+      // ✅ DISCORD LOGICA
+      // 1) ENTRY: prev != ENTRY && curr == ENTRY
+      // 2) HOLD: curr == ENTRY, prev == ENTRY, entryStreak == HOLD_AFTER_ENTRY_SCANS (1x)
+      // 3) SELL: prev == ENTRY && curr != ENTRY
+      // 4) anders: alleen bij stage change (prev gevuld) -> nieuwe stage webhook
+      if (prevStage) {
+        const doNotify = canNotify(prevEntry, now);
 
-        const line =
-          `**${up(c.symbol)}** (${mode.toUpperCase()})  ` +
-          `${prev} → **${currStage}**  ` +
-          `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
-          `1h ${fmtPct(c.change1h, 2)} • 24h ${fmtPct(c.change24, 2)} • ` +
-          `price ${fmtUsd(c.price, 6)}`;
+        // SELL eerst (belangrijk)
+        if (doNotify && prevStage === "ENTRY" && currStage !== "ENTRY") {
+          const hook = stageWebhook("SELL");
+          const line =
+            `**${sym}** (${mode.toUpperCase()})  ` +
+            `ENTRY → **SELL**  ` +
+            `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
+            `1h ${fmtPct(c.change1h, 2)} • 24h ${fmtPct(c.change24, 2)} • ` +
+            `price ${fmtUsd(c.price, 6)}`;
+          pushNotice(noticesByHook, hook, line);
+          markNotified(state, sym, now);
+        }
 
-        pushNotice(noticesByHook, hook, line);
+        // ENTRY
+        else if (doNotify && prevStage !== "ENTRY" && currStage === "ENTRY") {
+          const hook = stageWebhook("ENTRY");
+          const line =
+            `**${sym}** (${mode.toUpperCase()})  ` +
+            `${prevStage} → **ENTRY**  ` +
+            `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
+            `1h ${fmtPct(c.change1h, 2)} • 24h ${fmtPct(c.change24, 2)} • ` +
+            `price ${fmtUsd(c.price, 6)}`;
+          pushNotice(noticesByHook, hook, line);
+          markNotified(state, sym, now);
+        }
+
+        // HOLD (na 2 scans achter elkaar ENTRY)
+        else if (
+          currStage === "ENTRY" &&
+          prevStage === "ENTRY" &&
+          entryStreak === HOLD_AFTER_ENTRY_SCANS &&
+          !holdAlreadySentRecently(prevEntry, now)
+        ) {
+          const hook = stageWebhook("HOLD");
+          const line =
+            `**${sym}** (${mode.toUpperCase()})  ` +
+            `ENTRY → **HOLD**  ` +
+            `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
+            `1h ${fmtPct(c.change1h, 2)} • 24h ${fmtPct(c.change24, 2)} • ` +
+            `price ${fmtUsd(c.price, 6)}`;
+          pushNotice(noticesByHook, hook, line);
+          markHoldNotified(state, sym, now);
+        }
+
+        // normale stage change (RADAR/BUILDUP/ALMOST)
+        else if (doNotify && prevStage !== currStage) {
+          const hook = stageWebhook(currStage);
+          const line =
+            `**${sym}** (${mode.toUpperCase()})  ` +
+            `${prevStage} → **${currStage}**  ` +
+            `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
+            `1h ${fmtPct(c.change1h, 2)} • 24h ${fmtPct(c.change24, 2)} • ` +
+            `price ${fmtUsd(c.price, 6)}`;
+          pushNotice(noticesByHook, hook, line);
+          markNotified(state, sym, now);
+        }
       }
 
       const item = {
         id: c.id,
-        symbol: c.symbol,
+        symbol: sym,
         name: c.name,
         price: c.price,
         volume: c.volume,
@@ -613,7 +693,7 @@ export default async function handler(req, res) {
     buildup.sort((a, b) => b.vm - a.vm);
     radar.sort((a, b) => b.vm - a.vm);
 
-    // ✅ stuur discord meldingen (geclusterd per webhook)
+    // ✅ stuur discord meldingen
     const discord = await flushNotices(noticesByHook);
 
     const result = {
@@ -633,11 +713,10 @@ export default async function handler(req, res) {
         enabled: true,
         sent: discord.sent,
         failed: discord.failed,
-        // laat errors kort zien (handig in logs / response)
         errors: (discord.details || []).slice(0, 5),
       },
       note:
-        "Discord only on stage change (prev->new). ENTRY goes to ELITE. First-seen coins do not notify.",
+        "Discord: only on stage change + ENTRY/HOLD/SELL on ELITE. HOLD triggers after 2 consecutive ENTRY scans. Cooldown per coin.",
     };
 
     await kv.set(core.keyLatest(mode), result);
