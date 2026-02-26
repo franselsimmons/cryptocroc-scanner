@@ -25,14 +25,14 @@ function safeObj(x) {
   return x && typeof x === "object" ? x : null;
 }
 
-// ✅ OB max age (stale gate) — 30 min scan => OB mag ouder zijn dan 15 min
-// Neem ruim boven 30 min zodat je scan niet steeds alles afkeurt.
-const OB_MAX_AGE_MS = 75 * 60 * 1000; // 75 min
+// ✅ 30m scan: OB mag ouder zijn dan 30m, anders keur je te veel af
+// Sampler gebruikt 120m stale -> hier iets ruimer.
+const OB_MAX_AGE_MS = 130 * 60 * 1000; // 130 min
 
 // --------------------
-// 1) BTC gate (swing-proof + juiste CG velden)
+// 1) BTC gate (data ophalen) + state via core (als beschikbaar)
 // --------------------
-async function fetchBtcGate() {
+async function fetchBtcData() {
   const url =
     "https://api.coingecko.com/api/v3/coins/markets" +
     "?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1" +
@@ -41,7 +41,6 @@ async function fetchBtcGate() {
   const arr = await fetchJson(url);
   const b = arr?.[0] || {};
 
-  // ✅ CoinGecko levert soms *_in_currency velden. Pak beide als fallback.
   const chg1h = n(
     b?.price_change_percentage_1h_in_currency ??
     b?.price_change_percentage_1h ??
@@ -60,22 +59,49 @@ async function fetchBtcGate() {
   const low = n(b?.low_24h, 0);
   const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-  // ✅ Swing gate: 1h leidend (past bij jouw 30m scan), 24h als backup
-  let state = "NEUTRAL";
-
-  if (chg1h >= 0.15) state = "BULL";
-  else if (chg1h <= -0.15) state = "BEAR";
-  else {
-    if (chg24 >= 0.35) state = "BULL";
-    if (chg24 <= -0.35) state = "BEAR";
-  }
-
   return {
-    state,
     chg1h: +chg1h.toFixed(3),
     chg24: +chg24.toFixed(3),
     range24: +range24.toFixed(3),
   };
+}
+
+// fallback als core nog geen computeBtcState heeft
+function fallbackComputeBtcState(btc, settings) {
+  const cfg = safeObj(settings?.btc) || {};
+  const softOpenNeutral = cfg?.softOpenNeutral !== false;
+
+  const chg1h = n(btc?.chg1h, 0);
+  const chg24 = n(btc?.chg24, 0);
+
+  // swing: 1h leidend, 24h backup
+  const TH_1H = n(cfg?.th1h, 0.15);
+  const TH_24H = n(cfg?.th24h, 0.35);
+
+  let state = "NEUTRAL";
+  if (chg1h >= TH_1H) state = "BULL";
+  else if (chg1h <= -TH_1H) state = "BEAR";
+  else {
+    if (chg24 >= TH_24H) state = "BULL";
+    else if (chg24 <= -TH_24H) state = "BEAR";
+    else state = "NEUTRAL";
+  }
+
+  // soft open: als je dat wil, dan NEUTRAL nooit blokkeren
+  if (softOpenNeutral && state === "NEUTRAL") return "NEUTRAL";
+  return state;
+}
+
+function computeBtcState(core, btc) {
+  if (typeof core?.computeBtcState === "function") {
+    try {
+      return core.computeBtcState(btc, core.SETTINGS);
+    } catch {
+      // als core functie faalt: fallback
+      return fallbackComputeBtcState(btc, core?.SETTINGS);
+    }
+  }
+  return fallbackComputeBtcState(btc, core?.SETTINGS);
 }
 
 // --------------------
@@ -94,7 +120,6 @@ async function fetchCgTop(limit) {
     const low = n(c?.low_24h, 0);
     const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-    // ✅ Ook hier: 24h kan *_in_currency zijn (afhankelijk van CG/params)
     const change24 = n(
       c?.price_change_percentage_24h_in_currency ??
       c?.price_change_percentage_24h ??
@@ -102,7 +127,6 @@ async function fetchCgTop(limit) {
       0
     );
 
-    // ✅ 1h is vrijwel altijd *_in_currency bij deze endpoint
     const change1h = n(
       c?.price_change_percentage_1h_in_currency ??
       c?.price_change_percentage_1h ??
@@ -143,8 +167,6 @@ function passRadar(core, c) {
 
 // --------------------
 // Stage logic (SWING, 30m scan)
-// - Gebruik change1h voor richting (sneller signaal voor swing-entry)
-// - Iets hogere VM drempels voor kwaliteit
 // --------------------
 function stageFromSwing(mode, c) {
   const vm = c.vm;
@@ -152,34 +174,30 @@ function stageFromSwing(mode, c) {
   const ch1h = c.change1h;
 
   const wantUp = mode === "bull";
-
-  // richting (swing): 1h moet in de goede richting zitten
   const inDir = wantUp ? ch1h >= 0.20 : ch1h <= -0.20;
 
-  // swing ALMOST: betere kwaliteit, minder ruis
   if (vm >= 0.24 && range <= 20 && inDir) return "ALMOST";
-
-  // swing BUILDUP: iets losser
   if (vm >= 0.18 && range <= 28) return "BUILDUP";
-
   return "RADAR";
 }
 
 // --------------------
-// OB map loader (sneller/goedkoper)
+// OB exists-map loader (Bitget listing map, NIET results)
+// map_refresh schrijft: `ob:map:${mode}` -> { ts, size, map }
+// map is meestal symbol -> true/1
 // --------------------
-async function loadObMap(mode) {
-  // map_refresh schrijft: `ob:map:${mode}` -> { ts, size, map }
+async function loadObExistsMap(mode) {
   const blob = await kv.get(`ob:map:${mode}`);
   const m = safeObj(blob)?.map;
   return safeObj(m) || null;
 }
 
 // --------------------
-// OB lookup: eerst map, anders KV
+// OB lookup: ALWAYS KV result
+// (obMap is alleen exists-map om te skippen als coin niet op Bitget spot bestaat)
 // --------------------
-async function getObForSymbol({ core, mode, symbol, obMap }) {
-  if (obMap && obMap[symbol]) return obMap[symbol];
+async function getObForSymbol({ core, mode, symbol, obExistsMap }) {
+  if (obExistsMap && !obExistsMap[String(symbol).toUpperCase()]) return null;
   return await kv.get(core.keyObResult(mode, symbol));
 }
 
@@ -194,7 +212,13 @@ export default async function handler(req, res) {
     const core = await import(`../lib/_core_${mode}.js`);
 
     const now = Date.now();
-    const btc = await fetchBtcGate();
+
+    // BTC: data + state via core (of fallback)
+    const btcRaw = await fetchBtcData();
+    const btc = {
+      ...btcRaw,
+      state: computeBtcState(core, btcRaw),
+    };
 
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
@@ -240,22 +264,20 @@ export default async function handler(req, res) {
 
     const state = (await kv.get(core.keyState(mode))) || {};
 
-    // ✅ 1x load ob map (als die er is)
-    const obMap = await loadObMap(mode);
+    // ✅ 1x load exists-map
+    const obExistsMap = await loadObExistsMap(mode);
 
     for (const c of cg) {
       const radarGate = passRadar(core, c);
       if (!radarGate.ok) continue;
 
       const vm = radarGate.vm;
-
-      // ✅ SWING stage
       let stageBase = stageFromSwing(mode, { ...c, vm });
 
-      // ✅ OB lookup (map eerst, anders KV)
-      const ob = await getObForSymbol({ core, mode, symbol: c.symbol, obMap });
+      // ✅ OB result (NOOIT obExistsMap als result gebruiken)
+      const ob = await getObForSymbol({ core, mode, symbol: c.symbol, obExistsMap });
 
-      // ✅ stale gate
+      // ✅ stale gate (op basis van echte ts)
       const obTs = n(ob?.ob?.ts ?? ob?.ts, 0);
       const obAge = obTs > 0 ? (now - obTs) : Number.POSITIVE_INFINITY;
       const obFresh = obTs > 0 && obAge <= OB_MAX_AGE_MS;
@@ -300,9 +322,9 @@ export default async function handler(req, res) {
       if (stageBase === "ALMOST") {
         const E = core.SETTINGS.entry;
 
-        if (!ob) entryGate = "OB missing";
+        if (!ob) entryGate = "OB missing / not on Bitget spot";
         else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
-        else if (!obValid) entryGate = "OB validating";
+        else if (!obValid) entryGate = String(ob?.reason || "OB validating / collecting samples");
         else if (confidence < n(E.minConfidence, 0)) entryGate = "Confidence < min";
         else if (spreadPct > n(E.spreadMaxPct, 999)) entryGate = "Spread too wide";
         else if (depthMinUsd1p < n(E.depthMinUsd1p, 0)) entryGate = "Depth too thin (<$)";
@@ -374,8 +396,8 @@ export default async function handler(req, res) {
         radar: radar.length,
       },
       funnel: { entry, almost, buildup, radar },
-      obMap: obMap ? { ok: true, size: Object.keys(obMap).length } : { ok: false },
-      note: "Swing mode tuned for 30m scan (OB stale 75m, stage uses 1h direction).",
+      obMap: obExistsMap ? { ok: true, size: Object.keys(obExistsMap).length } : { ok: false },
+      note: "Swing mode tuned for 30m scan (OB age 130m). ob:map is existence-map only; results are read from KV.",
     };
 
     await kv.set(core.keyLatest(mode), result);
