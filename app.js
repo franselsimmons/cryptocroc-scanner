@@ -83,12 +83,35 @@ function sizingText(c) {
   return `Advies ${s.pct}% (BTC ${s.zone})`;
 }
 
+function tradePill(c) {
+  const t = c?.trade || null;
+  if (!t) return "";
+
+  // OPEN = HOLD
+  if (t.status === "OPEN") {
+    const pnl = Number.isFinite(Number(t.pnl)) ? Number(t.pnl) : null; // in scan.js is dit ratio (0.012 = 1.2)
+    const maxPnl = Number.isFinite(Number(t.maxPnl)) ? Number(t.maxPnl) : null;
+    const pnlTxt = pnl === null ? "" : ` • pnl ${fmtPct(pnl * 100)}`;
+    const maxTxt = maxPnl === null ? "" : ` • max ${fmtPct(maxPnl * 100)}`;
+    return `<div class="pill pillHold">HOLD${pnlTxt}${maxTxt}</div>`;
+  }
+
+  // CLOSED = SELL (komt alleen voor in de scan waarin hij sluit)
+  if (t.status === "CLOSED") {
+    const reason = t?.exit?.reason ? ` • ${t.exit.reason}` : "";
+    return `<div class="pill pillSell">SELL${reason}</div>`;
+  }
+
+  return "";
+}
+
 function coinRow(c) {
   const div = document.createElement("div");
   div.className = "coinRow";
 
   const adv = sizingText(c);
   const scans = Number.isFinite(Number(c.stageScans)) ? Number(c.stageScans) : 0;
+  const tPill = tradePill(c);
 
   div.innerHTML = `
     <div class="coinTop">
@@ -99,7 +122,7 @@ function coinRow(c) {
 
       ${confBar(c.confidence)}
 
-      <div class="pill pillAdv">${adv}</div>
+      ${tPill || `<div class="pill pillAdv">${adv}</div>`}
     </div>
 
     <div class="coinMeta">
@@ -132,16 +155,49 @@ function btcLine(btc) {
   return `BTC: ${btc.state} | chg24 ${fmtPct(btc.chg24)} | range24 ${fmtPct(btc.range24)}`;
 }
 
+function flattenFunnel(data) {
+  const f = data?.funnel || {};
+  const all = []
+    .concat(f.entry || [])
+    .concat(f.almost || [])
+    .concat(f.buildup || [])
+    .concat(f.radar || []);
+  return all;
+}
+
+function pickHoldAndSell(data) {
+  const all = flattenFunnel(data);
+
+  const hold = all.filter((c) => c?.trade?.status === "OPEN");
+  const sell = all.filter((c) => c?.trade?.status === "CLOSED");
+
+  // netjes sorteren
+  hold.sort((a, b) => (Number(b?.trade?.pnl) || 0) - (Number(a?.trade?.pnl) || 0));
+  sell.sort((a, b) => (Number(b?.trade?.exitAt || 0) || 0) - (Number(a?.trade?.exitAt || 0) || 0));
+
+  return { hold, sell };
+}
+
 function renderAll(data) {
   const ts = data?.ts ? new Date(data.ts) : null;
   const stamp = ts ? ts.toLocaleString() : "—";
 
+  const { hold, sell } = pickHoldAndSell(data);
+
   const statusLine = el("statusLine");
   if (statusLine) {
     statusLine.textContent =
-      `${btcLine(data.btc)} • Laatste update: ${stamp} • ENTRY ${data.counts.entry} • ALMOST ${data.counts.almost} • BUILDUP ${data.counts.buildup} • RADAR ${data.counts.radar}`;
+      `${btcLine(data.btc)} • Laatste update: ${stamp} • ` +
+      `HOLD ${hold.length} • SELL ${sell.length} • ` +
+      `ENTRY ${data?.counts?.entry || 0} • ALMOST ${data?.counts?.almost || 0} • ` +
+      `BUILDUP ${data?.counts?.buildup || 0} • RADAR ${data?.counts?.radar || 0}`;
   }
 
+  // ✅ nieuwe panelen
+  renderStage("stageHold", hold);
+  renderStage("stageSell", sell);
+
+  // bestaande funnel
   renderStage("stageEntry", data?.funnel?.entry || []);
   renderStage("stageAlmost", data?.funnel?.almost || []);
   renderStage("stageBuildup", data?.funnel?.buildup || []);
@@ -231,7 +287,13 @@ async function openModalMain(c) {
   setTab("Why");
   syncTopbarHeight();
 
-  el("mTitle").textContent = `${c.symbol} • ${MODE.toUpperCase()} • ${c.stage}`;
+  const t = c?.trade || null;
+  const tradeState =
+    t?.status === "OPEN" ? "HOLD" :
+    t?.status === "CLOSED" ? "SELL" :
+    c.stage;
+
+  el("mTitle").textContent = `${c.symbol} • ${MODE.toUpperCase()} • ${tradeState}`;
   el("mSub").textContent =
     `Price $${safe(c.price, 6)} • Chg24 ${fmtPct(c.change24)} • Range24 ${fmtPct(c.range24)} • VM ${safe(c.vm, 2)} • Conf ${c.confidence}/100`;
 
@@ -253,6 +315,27 @@ async function openModalMain(c) {
     `Stage: ${c.stage}`,
     `scans: ${scans}`
   );
+
+  // ✅ Trade info bovenaan als hij open is
+  if (t?.status === "OPEN") {
+    const pnl = Number.isFinite(Number(t.pnl)) ? Number(t.pnl) : 0;
+    const maxPnl = Number.isFinite(Number(t.maxPnl)) ? Number(t.maxPnl) : 0;
+    addCheck(
+      whyList,
+      true,
+      "Trade status: OPEN (HOLD)",
+      `pnl ${fmtPct(pnl * 100)} • max ${fmtPct(maxPnl * 100)} • barsOpen ${Number(t.barsOpen || 0)}`,
+      "ok"
+    );
+  } else if (t?.status === "CLOSED") {
+    addCheck(
+      whyList,
+      true,
+      "Trade status: CLOSED (SELL)",
+      `reason: ${t?.exit?.reason || "—"}`,
+      "warn"
+    );
+  }
 
   addCheck(
     whyList,
@@ -277,9 +360,9 @@ async function openModalMain(c) {
     `VolAcc: ${safe(c.volAcc, 2)}`
   );
 
-  // ✅ Entry gate: groen als "OK"
+  // ✅ Entry gate: groen als "passed"/"ok"
   const eg = String(c?.why?.entryGate || "");
-  const egOk = /ok/i.test(eg);
+  const egOk = /(passed|ok)/i.test(eg);
 
   addCheck(
     whyList,
@@ -301,7 +384,6 @@ async function openModalMain(c) {
       headers: { "cache-control": "no-cache" },
     });
 
-    // als server 401/403 geeft: toon netjes
     if (!r.ok) {
       liqList.innerHTML = "";
       addCheck(liqList, false, "Orderbook error", `${r.status} ${r.statusText}`, "warn");
@@ -321,7 +403,6 @@ async function openModalMain(c) {
           obOk ? "ok" : "warn"
         );
 
-        // ✅ Adaptive thresholds uit scan.js
         const reqSpread = Number(c?.req?.spreadMaxPct ?? 0.55);
         const reqDepth = Number(c?.req?.depthMinUsd1p ?? 200000);
 
