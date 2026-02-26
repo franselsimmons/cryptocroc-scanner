@@ -6,7 +6,6 @@
   <title>CryptoCroc Scanner</title>
   <link rel="stylesheet" href="/styles.css" />
   <style>
-    /* MAIN accent */
     :root{ --accent:#3d7cff; }
   </style>
 </head>
@@ -25,21 +24,18 @@
   </header>
 
   <main class="grid">
-    <!-- ✅ NIEUW: HOLD (open trades) -->
     <section class="panel">
       <div class="panelTitle">HOLD</div>
       <div class="panelHint">Open trades (ENTRY is al gebeurd) — blijven open tot SELL-regel triggert.</div>
       <div class="stageBody" id="stageHold"></div>
     </section>
 
-    <!-- ✅ NIEUW: SELL (recent sells) -->
     <section class="panel">
       <div class="panelTitle">SELL</div>
       <div class="panelHint">Laatste exits — gesloten trades + reden (hard stop / OB-break / time-stop).</div>
       <div class="stageBody" id="stageSell"></div>
     </section>
 
-    <!-- Bestaande funnel panels -->
     <section class="panel">
       <div class="panelTitle">ENTRY</div>
       <div class="panelHint">Entry-signaal (als FULL mode): dit is de “instap-trigger” voor de trade engine.</div>
@@ -65,7 +61,6 @@
     </section>
   </main>
 
-  <!-- MODAL (zelfde voor Main + Moon) -->
   <div class="modal hidden" id="modal">
     <div class="modalCard">
       <div class="modalTop">
