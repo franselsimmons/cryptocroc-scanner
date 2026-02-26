@@ -11,7 +11,6 @@ syncTopbarHeight();
 // ===== helpers =====
 const el = (id) => document.getElementById(id);
 
-// ✅ cache-buster: altijd unieke URL zodat je nooit “oude bull/bear” krijgt
 function bust() {
   return `t=${Date.now()}`;
 }
@@ -31,7 +30,6 @@ function setMode(mode) {
   MODE = mode;
   localStorage.setItem("MODE", mode);
 
-  // (nice) zet ook in URL zodat refresh hetzelfde blijft
   const url = new URL(location.href);
   url.searchParams.set("mode", mode);
   history.replaceState({}, "", url.toString());
@@ -60,7 +58,6 @@ function fmt(n) {
   return (Number(n) || 0).toFixed(2);
 }
 
-// ===== confidence kleur =====
 function confColor(conf) {
   const c = Number(conf) || 0;
   if (c < 50) return "#EF4444";
@@ -86,12 +83,12 @@ function sizingText(c) {
   return `Advies ${s.pct}% (BTC ${s.zone})`;
 }
 
-// ===== coins list =====
 function coinRow(c) {
   const div = document.createElement("div");
   div.className = "coinRow";
 
   const adv = sizingText(c);
+  const scans = Number.isFinite(Number(c.stageScans)) ? Number(c.stageScans) : 0;
 
   div.innerHTML = `
     <div class="coinTop">
@@ -111,7 +108,7 @@ function coinRow(c) {
       <span>vol: $${fmtUSD(c.volume)}</span>
       <span>mc: $${fmtUSD(c.marketCap)}</span>
       <span>vm: ${fmt(c.vm)}</span>
-      <span>scans: ${c.stageScans}</span>
+      <span>scans: ${scans}</span>
     </div>
   `;
   div.addEventListener("click", () => openModalMain(c));
@@ -127,9 +124,7 @@ function renderStage(targetId, arr) {
     box.innerHTML = `<div class="empty">Geen coins.</div>`;
     return;
   }
-  for (const c of arr) {
-    box.appendChild(coinRow(c));
-  }
+  for (const c of arr) box.appendChild(coinRow(c));
 }
 
 function btcLine(btc) {
@@ -231,7 +226,6 @@ function safe(n, d = 2) {
   return x.toFixed(d);
 }
 
-// ===== Main modal content =====
 async function openModalMain(c) {
   showModal(true);
   setTab("Why");
@@ -241,25 +235,30 @@ async function openModalMain(c) {
   el("mSub").textContent =
     `Price $${safe(c.price, 6)} • Chg24 ${fmtPct(c.change24)} • Range24 ${fmtPct(c.range24)} • VM ${safe(c.vm, 2)} • Conf ${c.confidence}/100`;
 
-  // WHY (menselijk)
   const whyList = el("mWhyList");
   whyList.innerHTML = "";
 
+  const scans = Number.isFinite(Number(c.stageScans)) ? Number(c.stageScans) : 0;
+
   const consRatio = Number(c?.consistency?.ratio || 0);
   const consOk = !!c?.consistency?.ok;
+  const consSame = Number(c?.consistency?.same || 0);
+  const consTotal = Number(c?.consistency?.total || 0);
+  const consNeed = Number(c?.consistency?.need || 0);
+  const consMinAgree = Number(c?.consistency?.minAgree || 0);
 
   addCheck(
     whyList,
     true,
     `Stage: ${c.stage}`,
-    `Desired: ${c?.why?.desired || "—"} • scans: ${c.stageScans}`
+    `scans: ${scans}`
   );
 
   addCheck(
     whyList,
     consOk,
     "Consistency",
-    `Ratio: ${(consRatio * 100).toFixed(0)}% (${c?.consistency?.same || 0}/${c?.consistency?.total || 0})`,
+    `Ratio: ${(consRatio * 100).toFixed(0)}% (${consSame}/${consTotal}) • need ${consNeed} • minAgree ${consMinAgree}`,
     consOk ? "ok" : "warn"
   );
 
@@ -278,19 +277,22 @@ async function openModalMain(c) {
     `VolAcc: ${safe(c.volAcc, 2)}`
   );
 
+  // ✅ Entry gate: groen als "OK"
+  const eg = String(c?.why?.entryGate || "");
+  const egOk = /ok/i.test(eg);
+
   addCheck(
     whyList,
-    !!(c?.why?.entryGate && String(c.why.entryGate).toLowerCase().includes("passed")),
+    egOk,
     "Entry gate",
-    c?.why?.entryGate || "—",
-    "warn"
+    eg || "—",
+    egOk ? "ok" : "warn"
   );
 
   // LIQ
   const liqList = el("mLiqList");
   liqList.innerHTML = "";
 
-  // live OB fetch (netjes)
   addCheck(liqList, true, "Orderbook", "Laden…", "warn");
 
   try {
@@ -298,64 +300,62 @@ async function openModalMain(c) {
       cache: "no-store",
       headers: { "cache-control": "no-cache" },
     });
-    const j = await r.json();
 
-    liqList.innerHTML = "";
-
-    if (j.status === "validating") {
-      addCheck(liqList, false, "Orderbook validating", j.tip || "Wacht even…", "warn");
-    } else if (j.ok === false) {
-      addCheck(liqList, false, "Orderbook error", j.error || "Unknown error", "warn");
+    // als server 401/403 geeft: toon netjes
+    if (!r.ok) {
+      liqList.innerHTML = "";
+      addCheck(liqList, false, "Orderbook error", `${r.status} ${r.statusText}`, "warn");
     } else {
-      // ✅ universele veilige uitlezing (root of j.ob)
-      const valid = !!j.valid;
-      const stale = !!j.stale;
-      const reason = j.reason || "-";
+      const j = await r.json();
+      liqList.innerHTML = "";
 
-      const spread = Number(j.spreadPct ?? j.ob?.spreadPct ?? 999);
-      const lor = Number(j.lor ?? j.ob?.lor ?? 1);
-      const depth = Number(j.depthMinUsd1p ?? j.ob?.depthMinUsd1p ?? 0);
+      if (j.status === "validating") {
+        addCheck(liqList, false, "Orderbook validating", j.tip || "Wacht even…", "warn");
+      } else {
+        const obOk = !!j.valid && !j.stale;
+        addCheck(
+          liqList,
+          obOk,
+          "OB status",
+          `valid: ${j.valid} • stale: ${j.stale} • reason: ${j.reason || "-"}`,
+          obOk ? "ok" : "warn"
+        );
 
-      const obOk = valid && !stale;
+        // ✅ Adaptive thresholds uit scan.js
+        const reqSpread = Number(c?.req?.spreadMaxPct ?? 0.55);
+        const reqDepth = Number(c?.req?.depthMinUsd1p ?? 200000);
 
-      addCheck(
-        liqList,
-        obOk,
-        "OB status",
-        `valid: ${valid} • stale: ${stale} • reason: ${reason}`,
-        obOk ? "ok" : "warn"
-      );
+        addCheck(
+          liqList,
+          Number(j.ob?.spreadPct || 999) <= reqSpread,
+          "Spread",
+          `spread: ${safe(j.ob?.spreadPct, 2)}% • max ${reqSpread}%`,
+          "warn"
+        );
 
-      addCheck(
-        liqList,
-        spread <= 0.55,
-        "Spread",
-        `spread: ${safe(spread, 2)}%`,
-        "warn"
-      );
+        addCheck(
+          liqList,
+          Number(j.ob?.lor || 1) <= 0.35,
+          "Largest order ratio",
+          `LOR: ${safe(j.ob?.lor, 2)} (max 0.35)`,
+          "warn"
+        );
 
-      addCheck(
-        liqList,
-        lor <= 0.35,
-        "Largest order ratio",
-        `LOR: ${safe(lor, 2)}`,
-        "warn"
-      );
-
-      addCheck(
-        liqList,
-        depth >= 200000,
-        "Depth 1%",
-        `depth1%: $${Math.round(depth).toLocaleString()}`,
-        "warn"
-      );
+        addCheck(
+          liqList,
+          Number(j.ob?.depthMinUsd1p || 0) >= reqDepth,
+          "Depth 1%",
+          `depth1%: $${Math.round(Number(j.ob?.depthMinUsd1p || 0)).toLocaleString()} • min $${Math.round(reqDepth).toLocaleString()}`,
+          "warn"
+        );
+      }
     }
   } catch {
     liqList.innerHTML = "";
     addCheck(liqList, false, "Orderbook", "OB ERROR: fetch mislukt", "warn");
   }
 
-  // RISK
+  // RISK (laat staan; jij vult dit later)
   setKV(el("mRiskKv"), [
     ["ATR% (proxy)", `${safe(Number(c.atrPct || 0) * 100, 2)}%`],
     ["SL", `$${safe(c.sl, 6)}`],
@@ -363,7 +363,6 @@ async function openModalMain(c) {
     ["Sizing advies", sizingText(c)],
   ]);
 
-  // DEBUG
   el("mDebug").textContent = JSON.stringify(c, null, 2);
 }
 
