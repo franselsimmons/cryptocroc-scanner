@@ -3,18 +3,19 @@
   --card:#0f1620;
   --card2:#0c121b;
 
-  /* iets lichter dan je oude line voor betere scheiding */
   --line:#24303f;
   --line2:#2b3a52;
 
   --text:#e8eef7;
   --muted:rgba(232,238,247,.72);
 
-  /* accent per funnel (we zetten dit per pagina) */
   --accent:#3d7cff; /* MAIN default */
   --danger:#ff5c5c;
 
-  /* wordt automatisch gezet door JS */
+  /* ✅ trade kleuren */
+  --hold:#22c55e;
+  --sell:#ff5c5c;
+
   --topbar-h:78px;
 }
 
@@ -115,7 +116,7 @@ body{
   font-size:12px; color:var(--muted);
 }
 
-/* Pills */
+/* ===== Pills ===== */
 .pill{
   padding:4px 10px;
   border:1px solid var(--line2);
@@ -126,10 +127,34 @@ body{
   display:inline-flex;
   align-items:center;
   gap:6px;
+  max-width: 100%;
+  white-space: nowrap;
 }
+
 .pillAdv{
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* ✅ HOLD pill */
+.pillHold{
+  border-color: color-mix(in srgb, var(--hold) 45%, transparent);
+  background: color-mix(in srgb, var(--hold) 14%, transparent);
+}
+
+/* ✅ SELL pill */
+.pillSell{
+  border-color: color-mix(in srgb, var(--sell) 55%, transparent);
+  background: color-mix(in srgb, var(--sell) 14%, transparent);
+}
+
+/* ✅ als tekst lang is (pnl/max), op mobiel netjes laten afkappen */
+@media (max-width: 520px){
+  .pill{
+    max-width: 92vw;
+    overflow:hidden;
+    text-overflow: ellipsis;
+  }
 }
 
 /* ===== Confidence bar ===== */
@@ -166,7 +191,7 @@ body{
   border-radius:14px;
 }
 
-/* ===== Modal (FIX: nooit meer onder topbar) ===== */
+/* ===== Modal ===== */
 .modal{
   position:fixed; inset:0;
   background:rgba(0,0,0,.55);
@@ -282,7 +307,6 @@ body{
 .checkText{ line-height:1.35; }
 .checkSmall{ color:var(--muted); font-size:12px; margin-top:2px; }
 
-/* Debug pre */
 .modalPre{
   margin:0;
   white-space:pre-wrap;
@@ -290,7 +314,6 @@ body{
   color:rgba(232,238,247,.92);
 }
 
-/* Mobile */
 @media (max-width: 900px){
   .grid{ grid-template-columns:1fr; }
 }
