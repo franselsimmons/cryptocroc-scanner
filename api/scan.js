@@ -25,13 +25,17 @@ function safeObj(x) {
   return x && typeof x === "object" ? x : null;
 }
 
+function up(x) {
+  return String(x || "").toUpperCase();
+}
+
 // ✅ OB max age (stale gate)
 const OB_MAX_AGE_MS = 75 * 60 * 1000; // 75 min
 
 // --------------------
-// 1) BTC gate (swing-proof)
+// 1) BTC fetch (alleen data, state komt uit core)
 // --------------------
-async function fetchBtcGate() {
+async function fetchBtc() {
   const url =
     "https://api.coingecko.com/api/v3/coins/markets" +
     "?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1" +
@@ -58,17 +62,7 @@ async function fetchBtcGate() {
   const low = n(b?.low_24h, 0);
   const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-  let state = "NEUTRAL";
-
-  if (chg1h >= 0.15) state = "BULL";
-  else if (chg1h <= -0.15) state = "BEAR";
-  else {
-    if (chg24 >= 0.35) state = "BULL";
-    if (chg24 <= -0.35) state = "BEAR";
-  }
-
   return {
-    state,
     chg1h: +chg1h.toFixed(3),
     chg24: +chg24.toFixed(3),
     range24: +range24.toFixed(3),
@@ -107,7 +101,7 @@ async function fetchCgTop(limit) {
 
     return {
       id: c?.id,
-      symbol: String(c?.symbol || "").toUpperCase(),
+      symbol: up(c?.symbol),
       name: c?.name,
       price,
       volume: n(c?.total_volume, 0),
@@ -162,70 +156,77 @@ async function loadObMap(mode) {
 }
 
 async function getObForSymbol({ core, mode, symbol, obMap }) {
-  const sym = String(symbol || "").toUpperCase();
+  const sym = up(symbol);
   if (obMap && obMap[sym]) return obMap[sym];
   return await kv.get(core.keyObResult(mode, sym));
 }
 
 // --------------------
-// ✅ Adaptive entry thresholds (minder strict, maar slim)
+// ✅ Adaptive entry thresholds (ALTIJD uit core tiers)
 // --------------------
 function adaptiveEntryThresholds(core, c, vm) {
   const base = core?.SETTINGS?.entry || {};
   const mc = n(c?.marketCap, 0);
 
-  // Defaults (als je niks instelt)
-  const tiers = Array.isArray(base?.adaptiveTiers) ? base.adaptiveTiers : [
-    { maxMc: 50_000_000,  minConf: 58, spreadMax: 1.20, depth1pMin: 8_000,   obScoreMin: 0.04 },
-    { maxMc: 200_000_000, minConf: 60, spreadMax: 1.05, depth1pMin: 20_000,  obScoreMin: 0.05 },
-    { maxMc: 1_000_000_000,minConf: 62, spreadMax: 0.90, depth1pMin: 60_000, obScoreMin: 0.06 },
-    { maxMc: Infinity,     minConf: 64, spreadMax: 0.80, depth1pMin: 120_000,obScoreMin: 0.07 },
-  ];
+  const tiers = Array.isArray(base?.adaptiveTiers) ? base.adaptiveTiers : null;
 
-  const t = tiers.find(x => mc <= n(x.maxMc, Infinity)) || tiers[tiers.length - 1];
+  // Als jij tiers niet zet, gebruiken we 1 tier uit base (geen gokken)
+  const oneTier = {
+    maxMc: Infinity,
+    minConf: n(base.minConfidence, 58),
+    spreadMax: n(base.spreadMaxPct, 1.20),
+    depth1pMin: n(base.depthMinUsd1p, 30_000),
+    obScoreMin: n(base.obScoreMin, 0.04),
+  };
 
-  // VM bonus: als VM hoog is, iets minder confidence nodig (want aandacht is er echt)
+  const list = tiers?.length ? tiers : [oneTier];
+  const t = list.find((x) => mc <= n(x.maxMc, Infinity)) || list[list.length - 1];
+
+  // VM bonus: hoge VM = echt aandacht → iets minder confidence nodig
   const vmBonus = vm >= 0.80 ? 4 : vm >= 0.50 ? 2 : 0;
 
-  const minConfidence = Math.max(0, n(t.minConf, n(base.minConfidence, 62)) - vmBonus);
+  // ✅ minConfidence: nooit onder base
+  const baseMinConf = n(base.minConfidence, n(t.minConf, 58));
+  const tierMinConf = n(t.minConf, baseMinConf);
+  const minConfidence = Math.max(0, Math.max(baseMinConf, tierMinConf - vmBonus));
 
-  // Clamp met jouw base settings (zodat jij altijd de “bovenkant” in de hand houdt)
-  const spreadMaxPct = Math.max(n(base.spreadMaxPct, 1.00), n(t.spreadMax, 1.00)); // grotere = soepeler
-  const depthMinUsd1p = Math.min(
-    n(base.depthMinUsd1p, 50_000), // als jij base hoger zet, blijf jij streng
-    n(t.depth1pMin, 50_000)
-  );
-  const obScoreMin = Math.min(
-    n(base.obScoreMin, 0.07),
-    n(t.obScoreMin, 0.07)
-  );
+  // ✅ spreadMaxPct: base is hard cap (lager = strenger)
+  const baseSpread = n(base.spreadMaxPct, n(t.spreadMax, 1.20));
+  const tierSpread = n(t.spreadMax, baseSpread);
+  const spreadMaxPct = Math.min(baseSpread, tierSpread);
 
-  return {
-    minConfidence,
-    spreadMaxPct,
-    depthMinUsd1p,
-    obScoreMin,
-  };
+  // ✅ depthMinUsd1p: base is minimum strictness (hoger = strenger)
+  const baseDepth = n(base.depthMinUsd1p, n(t.depth1pMin, 30_000));
+  const tierDepth = n(t.depth1pMin, baseDepth);
+  const depthMinUsd1p = Math.max(baseDepth, tierDepth);
+
+  // ✅ obScoreMin: base is minimum strictness (hoger = strenger)
+  const baseScore = n(base.obScoreMin, n(t.obScoreMin, 0.04));
+  const tierScore = n(t.obScoreMin, baseScore);
+  const obScoreMin = Math.max(baseScore, tierScore);
+
+  return { minConfidence, spreadMaxPct, depthMinUsd1p, obScoreMin };
 }
 
 // --------------------
-// ✅ Consistency (fix voor 0/0 + undefined)
+// ✅ Consistency + scans (geen 0/0, geen undefined)
 // --------------------
-function updateStateAndConsistency(stateObj, symbol, stageBase, core) {
+function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
   const S = stateObj || {};
-  const sym = String(symbol || "").toUpperCase();
+  const sym = up(symbol);
   const entryCfg = core?.SETTINGS?.entry || {};
-  const need = Math.max(2, n(entryCfg.samplesNeed, 6));
-  const minAgree = Math.max(1, n(entryCfg.minAgree, 4));
+
+  const need = Math.max(2, n(entryCfg.samplesNeed, 4));
+  const minAgree = Math.max(1, n(entryCfg.minAgree, 3));
 
   const prev = safeObj(S[sym]) || {};
   const scans = n(prev.scans, 0) + 1;
 
   const histPrev = Array.isArray(prev.hist) ? prev.hist : [];
-  const hist = histPrev.concat([String(stageBase || "").toUpperCase()]).slice(-Math.max(need, 12));
+  const st = up(stageFinal);
+  const hist = histPrev.concat([st]).slice(-Math.max(need, 12));
 
-  // “zelfde stage” in de laatste hist
-  const same = hist.filter(x => x === String(stageBase || "").toUpperCase()).length;
+  const same = hist.filter((x) => x === st).length;
   const total = hist.length;
   const ratio = total > 0 ? same / total : 0;
 
@@ -235,8 +236,8 @@ function updateStateAndConsistency(stateObj, symbol, stageBase, core) {
     ...prev,
     scans,
     hist,
-    lastSeenAt: Date.now(),
-    stage: stageBase,
+    lastSeenAt: nowTs,
+    stage: st,
   };
 
   return {
@@ -257,13 +258,20 @@ export default async function handler(req, res) {
     const core = await import(`../lib/_core_${mode}.js`);
 
     const now = Date.now();
-    const btc = await fetchBtcGate();
+
+    // BTC fetch + state via core
+    const btcBase = await fetchBtc();
+    const btcState = typeof core.computeBtcState === "function"
+      ? core.computeBtcState(btcBase, core.SETTINGS)
+      : btcBase.state || "NEUTRAL";
+
+    const btc = { ...btcBase, state: btcState };
 
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
 
     // --------------------
-    // BTC soft gate
+    // BTC soft gate (block alleen als BTC duidelijk opposite is)
     // --------------------
     if (btc.state !== "NEUTRAL") {
       if (mode === "bull" && btc.state === "BEAR") {
@@ -302,7 +310,6 @@ export default async function handler(req, res) {
     const entry = [];
 
     const state = (await kv.get(core.keyState(mode))) || {};
-
     const obMap = await loadObMap(mode);
 
     for (const c of cg) {
@@ -311,12 +318,13 @@ export default async function handler(req, res) {
 
       const vm = radarGate.vm;
 
+      // basis stage op swing
       let stageBase = stageFromSwing(mode, { ...c, vm });
 
-      // ✅ OB lookup
+      // OB lookup
       const ob = await getObForSymbol({ core, mode, symbol: c.symbol, obMap });
 
-      // ✅ stale gate
+      // stale gate
       const obTs = n(ob?.ob?.ts ?? ob?.ts, 0);
       const obAge = obTs > 0 ? (now - obTs) : Number.POSITIVE_INFINITY;
       const obFresh = obTs > 0 && obAge <= OB_MAX_AGE_MS;
@@ -334,20 +342,13 @@ export default async function handler(req, res) {
         obValid,
       });
 
-      // ✅ thresholds (adaptive)
+      // thresholds (adaptive, uit core tiers)
       const thr = adaptiveEntryThresholds(core, c, vm);
 
-      // ✅ state / consistency / scans fix
-      const stFix = updateStateAndConsistency(state, c.symbol, stageBase, core);
-      // stFix.state is same object ref, but keep explicit
-      // eslint-disable-next-line no-unused-vars
-      const stageScans = stFix.stageScans;
-      const consistency = stFix.consistency;
-
-      // ✅ OB samples alleen ophalen als nodig
+      // OB samples alleen ophalen als nodig
       let obSamples = null;
 
-      // ✅ ALMOST slope gate (verplicht)
+      // ALMOST slope gate (verplicht)
       let almostGate = "n/a";
       if (stageBase === "ALMOST") {
         obSamples = await kv.get(core.keyObSamples(mode, c.symbol));
@@ -360,11 +361,11 @@ export default async function handler(req, res) {
           stageBase = "BUILDUP";
           almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
         } else {
-          almostGate = "OK";
+          almostGate = "passed";
         }
       }
 
-      // ✅ ENTRY gate (nu: minder hard, maar wél kwaliteitsbewust)
+      // ENTRY gate
       let stage = stageBase;
       let entryGate = "n/a";
 
@@ -383,13 +384,11 @@ export default async function handler(req, res) {
             ? core.checkObSlopeGate({ stage: "entry", mode, obSamples, settings: core.SETTINGS })
             : { ok: true };
 
-          // ✅ extra “pro” signal (als aanwezig uit sampler)
           const pressureDelta = n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0);
           const score1p = n(ob?.ob?.score1p ?? ob?.score1p, 0);
 
-          // bull: je wil positieve druk; bear: negatieve druk (niet verplicht, maar helpt)
           const pressureOk = mode === "bull" ? pressureDelta >= 0 : pressureDelta <= 0;
-          const score1pOk = mode === "bull" ? score1p >= -0.10 : score1p <= 0.10; // mild, vooral tegen rare spikes
+          const score1pOk = mode === "bull" ? score1p >= -0.10 : score1p <= 0.10;
 
           if (!slopeCheck2.ok) {
             entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
@@ -399,10 +398,15 @@ export default async function handler(req, res) {
             entryGate = "1% imbalance weird";
           } else {
             stage = "ENTRY";
-            entryGate = "OK";
+            entryGate = "passed";
           }
         }
       }
+
+      // ✅ consistency/scans pas NU (met definitieve stage)
+      const stFix = updateStateAndConsistency(state, c.symbol, stage, core, now);
+      const stageScans = stFix.stageScans;
+      const consistency = stFix.consistency;
 
       const item = {
         id: c.id,
@@ -421,7 +425,6 @@ export default async function handler(req, res) {
         stageScans,
         consistency,
 
-        // ✅ thresholds teruggeven zodat UI weet wat “goed” is voor deze coin
         req: {
           minConfidence: thr.minConfidence,
           spreadMaxPct: thr.spreadMaxPct,
@@ -439,10 +442,11 @@ export default async function handler(req, res) {
           spreadPct: Number(spreadPct),
           depthMinUsd1p: Number(depthMinUsd1p),
           lor: Number(n(ob?.ob?.lor ?? ob?.lor, 1)),
-          // extra pro fields (als sampler ze vult)
+
           score1p: n(ob?.ob?.score1p ?? ob?.score1p, 0),
           score05p: n(ob?.ob?.score05p ?? ob?.score05p, 0),
           pressureDeltaUsd: n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0),
+
           slopeScore: n(ob?.slopeScore ?? ob?.ob?.slopeScore ?? ob?.slope ?? 0, 0),
           slopeDepth1p: n(ob?.slopeDepth1p ?? ob?.ob?.slopeDepth1p ?? 0, 0),
           ts: obTs || null,
@@ -475,7 +479,7 @@ export default async function handler(req, res) {
       },
       funnel: { entry, almost, buildup, radar },
       obMap: obMap ? { ok: true, size: Object.keys(obMap).length } : { ok: false },
-      note: "Adaptive ENTRY thresholds + real consistency/scans + pro OB fields.",
+      note: "BTC state via core.computeBtcState + adaptiveTiers from core + real scans/consistency + passed gates.",
     };
 
     await kv.set(core.keyLatest(mode), result);
