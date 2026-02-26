@@ -167,6 +167,41 @@ async function fetchBtc() {
   };
 }
 
+function normBtcState(x) {
+  const s = String(x || "").toUpperCase().trim();
+  if (s === "BULL" || s === "BEAR" || s === "NEUTRAL") return s;
+  return "NEUTRAL";
+}
+
+/**
+ * ✅ BTC policy:
+ * - BTC NEUTRAL  -> beide modes PREP (max BUILDUP)
+ * - BTC BULL     -> bull FULL, bear PREP
+ * - BTC BEAR     -> bear FULL, bull PREP
+ */
+function computeStageCap(mode, btcState) {
+  const st = normBtcState(btcState);
+  const m = String(mode || "").toLowerCase();
+
+  // default: PREP
+  let capStage = "BUILDUP";
+  let allowFull = false;
+
+  if (st === "BULL" && m === "bull") allowFull = true;
+  if (st === "BEAR" && m === "bear") allowFull = true;
+
+  if (allowFull) {
+    return { cap: false, capStage: "FULL", reason: `BTC ${st}: ${m} mag door naar ALMOST/ENTRY` };
+  }
+
+  // prep mode
+  if (st === "NEUTRAL") {
+    return { cap: true, capStage, reason: "BTC NEUTRAL: scannen door, maar max BUILDUP (huiswerk loopt)" };
+  }
+
+  return { cap: true, capStage, reason: `BTC ${st}: ${m} blijft prep-mode (max BUILDUP)` };
+}
+
 // --------------------
 // 2) Universe top coins
 // --------------------
@@ -395,43 +430,11 @@ export default async function handler(req, res) {
 
     const btc = { ...btcBase, state: btcState };
 
+    // ✅ NIEUW: stage cap policy (i.p.v. “hard block”)
+    const cap = computeStageCap(mode, btc.state);
+
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
-
-    // --------------------
-    // BTC soft gate
-    // --------------------
-    if (btc.state !== "NEUTRAL") {
-      if (mode === "bull" && btc.state === "BEAR") {
-        const out = {
-          ok: true,
-          ts: now,
-          mode,
-          btc,
-          counts: { entry: 0, almost: 0, buildup: 0, radar: 0 },
-          funnel: { entry: [], almost: [], buildup: [], radar: [] },
-          note: "Blocked by BTC gate",
-        };
-        await kv.set(core.keyLatest(mode), out);
-        res.statusCode = 200;
-        return res.end(JSON.stringify(out));
-      }
-
-      if (mode === "bear" && btc.state === "BULL") {
-        const out = {
-          ok: true,
-          ts: now,
-          mode,
-          btc,
-          counts: { entry: 0, almost: 0, buildup: 0, radar: 0 },
-          funnel: { entry: [], almost: [], buildup: [], radar: [] },
-          note: "Blocked by BTC gate",
-        };
-        await kv.set(core.keyLatest(mode), out);
-        res.statusCode = 200;
-        return res.end(JSON.stringify(out));
-      }
-    }
 
     // --------------------
     // Fetch universe
@@ -458,7 +461,7 @@ export default async function handler(req, res) {
       // basis stage op swing
       let stageBase = stageFromSwing(mode, { ...c, vm });
 
-      // OB lookup
+      // OB lookup (blijft altijd lopen, ook in prep-mode)
       const ob = await getObForSymbol({ core, mode, symbol: c.symbol, obMap });
 
       // stale gate
@@ -482,76 +485,85 @@ export default async function handler(req, res) {
       // thresholds (adaptive, uit core tiers)
       const thr = adaptiveEntryThresholds(core, c, vm);
 
-      // OB samples alleen ophalen als nodig
-      let obSamples = null;
-
-      // ALMOST slope gate (verplicht)
+      // gates
       let almostGate = "n/a";
-      if (stageBase === "ALMOST") {
-        obSamples = await kv.get(core.keyObSamples(mode, c.symbol));
-
-        const slopeCheck =
-          typeof core.checkObSlopeGate === "function"
-            ? core.checkObSlopeGate({
-                stage: "almost",
-                mode,
-                obSamples,
-                settings: core.SETTINGS,
-              })
-            : { ok: true };
-
-        if (!slopeCheck.ok) {
-          stageBase = "BUILDUP";
-          almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
-        } else {
-          almostGate = "passed";
-        }
-      }
-
-      // ENTRY gate
-      let stage = stageBase;
       let entryGate = "n/a";
 
-      if (stageBase === "ALMOST") {
-        if (!ob) entryGate = "OB missing";
-        else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
-        else if (!obValid) entryGate = "OB validating";
-        else if (confidence < n(thr.minConfidence, 0))
-          entryGate = `Confidence < ${thr.minConfidence}`;
-        else if (spreadPct > n(thr.spreadMaxPct, 999))
-          entryGate = `Spread > ${thr.spreadMaxPct}%`;
-        else if (depthMinUsd1p < n(thr.depthMinUsd1p, 0))
-          entryGate = `Depth1% < $${thr.depthMinUsd1p}`;
-        else if (Math.abs(obScore) < n(thr.obScoreMin, 0))
-          entryGate = `OB score < ${thr.obScoreMin}`;
-        else {
-          if (!obSamples) obSamples = await kv.get(core.keyObSamples(mode, c.symbol));
+      // ✅ NIEUW: als cap actief is: ALMOST/ENTRY worden BUILDUP, en we skippen slope/entry gates
+      let stage = stageBase;
+      if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
+        stage = "BUILDUP";
+        almostGate = `capped: ${cap.capStage}`;
+        entryGate = `capped: ${cap.capStage}`;
+      } else {
+        // OB samples alleen ophalen als nodig
+        let obSamples = null;
 
-          const slopeCheck2 =
+        // ALMOST slope gate (verplicht)
+        if (stageBase === "ALMOST") {
+          obSamples = await kv.get(core.keyObSamples(mode, c.symbol));
+
+          const slopeCheck =
             typeof core.checkObSlopeGate === "function"
               ? core.checkObSlopeGate({
-                  stage: "entry",
+                  stage: "almost",
                   mode,
                   obSamples,
                   settings: core.SETTINGS,
                 })
               : { ok: true };
 
-          const pressureDelta = n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0);
-          const score1p = n(ob?.ob?.score1p ?? ob?.score1p, 0);
-
-          const pressureOk = mode === "bull" ? pressureDelta >= 0 : pressureDelta <= 0;
-          const score1pOk = mode === "bull" ? score1p >= -0.1 : score1p <= 0.1;
-
-          if (!slopeCheck2.ok) {
-            entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
-          } else if (!pressureOk) {
-            entryGate = "Pressure delta contra";
-          } else if (!score1pOk) {
-            entryGate = "1% imbalance weird";
+          if (!slopeCheck.ok) {
+            stageBase = "BUILDUP";
+            stage = "BUILDUP";
+            almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
           } else {
-            stage = "ENTRY";
-            entryGate = "passed";
+            almostGate = "passed";
+          }
+        }
+
+        // ENTRY gate
+        if (stageBase === "ALMOST") {
+          if (!ob) entryGate = "OB missing";
+          else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
+          else if (!obValid) entryGate = "OB validating";
+          else if (confidence < n(thr.minConfidence, 0))
+            entryGate = `Confidence < ${thr.minConfidence}`;
+          else if (spreadPct > n(thr.spreadMaxPct, 999))
+            entryGate = `Spread > ${thr.spreadMaxPct}%`;
+          else if (depthMinUsd1p < n(thr.depthMinUsd1p, 0))
+            entryGate = `Depth1% < $${thr.depthMinUsd1p}`;
+          else if (Math.abs(obScore) < n(thr.obScoreMin, 0))
+            entryGate = `OB score < ${thr.obScoreMin}`;
+          else {
+            if (!obSamples) obSamples = await kv.get(core.keyObSamples(mode, c.symbol));
+
+            const slopeCheck2 =
+              typeof core.checkObSlopeGate === "function"
+                ? core.checkObSlopeGate({
+                    stage: "entry",
+                    mode,
+                    obSamples,
+                    settings: core.SETTINGS,
+                  })
+                : { ok: true };
+
+            const pressureDelta = n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0);
+            const score1p = n(ob?.ob?.score1p ?? ob?.score1p, 0);
+
+            const pressureOk = mode === "bull" ? pressureDelta >= 0 : pressureDelta <= 0;
+            const score1pOk = mode === "bull" ? score1p >= -0.1 : score1p <= 0.1;
+
+            if (!slopeCheck2.ok) {
+              entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
+            } else if (!pressureOk) {
+              entryGate = "Pressure delta contra";
+            } else if (!score1pOk) {
+              entryGate = "1% imbalance weird";
+            } else {
+              stage = "ENTRY";
+              entryGate = "passed";
+            }
           }
         }
       }
@@ -568,14 +580,10 @@ export default async function handler(req, res) {
       const entryStreak = n(stFix.entryStreak, 0);
 
       // ✅ DISCORD LOGICA
-      // 1) ENTRY: prev != ENTRY && curr == ENTRY
-      // 2) HOLD: curr == ENTRY, prev == ENTRY, entryStreak == HOLD_AFTER_ENTRY_SCANS (1x)
-      // 3) SELL: prev == ENTRY && curr != ENTRY
-      // 4) anders: alleen bij stage change (prev gevuld) -> nieuwe stage webhook
       if (prevStage) {
         const doNotify = canNotify(prevEntry, now);
 
-        // SELL eerst (belangrijk)
+        // SELL
         if (doNotify && prevStage === "ENTRY" && currStage !== "ENTRY") {
           const hook = stageWebhook("SELL");
           const line =
@@ -601,7 +609,7 @@ export default async function handler(req, res) {
           markNotified(state, sym, now);
         }
 
-        // HOLD (na 2 scans achter elkaar ENTRY)
+        // HOLD
         else if (
           currStage === "ENTRY" &&
           prevStage === "ENTRY" &&
@@ -619,7 +627,7 @@ export default async function handler(req, res) {
           markHoldNotified(state, sym, now);
         }
 
-        // normale stage change (RADAR/BUILDUP/ALMOST)
+        // normale stage change
         else if (doNotify && prevStage !== currStage) {
           const hook = stageWebhook(currStage);
           const line =
@@ -701,6 +709,13 @@ export default async function handler(req, res) {
       ts: now,
       mode,
       btc,
+      meta: {
+        btcPolicy: "NEUTRAL => cap to BUILDUP for both; BULL/BEAR => only matching mode goes FULL",
+        capActive: !!cap.cap,
+        capStage: cap.capStage,
+        capReason: cap.reason,
+        neutralZone: "BTC chg24 between -1.0% and +1.0% (from core thresholds)",
+      },
       counts: {
         entry: entry.length,
         almost: almost.length,
@@ -716,7 +731,7 @@ export default async function handler(req, res) {
         errors: (discord.details || []).slice(0, 5),
       },
       note:
-        "Discord: only on stage change + ENTRY/HOLD/SELL on ELITE. HOLD triggers after 2 consecutive ENTRY scans. Cooldown per coin.",
+        "BTC policy updated: scanning + OB continues always. When BTC is NEUTRAL or opposite, stages are capped at BUILDUP (prep-mode).",
     };
 
     await kv.set(core.keyLatest(mode), result);
