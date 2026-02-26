@@ -1,8 +1,10 @@
 // /api/orderbook.js
 import { kv } from "@vercel/kv";
+import { RUNTIME_CONFIG, requireSecret } from "../lib/_runtime.js";
 
-export const config = { runtime: "nodejs" };
+export const config = RUNTIME_CONFIG;
 
+// ===== helpers =====
 function normalizeBaseSymbol(input) {
   const s = String(input || "").trim().toUpperCase();
   if (!s) return "";
@@ -10,55 +12,68 @@ function normalizeBaseSymbol(input) {
   return cleaned.endsWith("USDT") ? cleaned.slice(0, -4) : cleaned;
 }
 
-async function fetchBinanceDepthRaw(baseSymbol, limit = 100) {
+function n(x, d = 0) {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : d;
+}
+
+// (optioneel) raw debug: Bitget depth, want sampler gebruikt Bitget
+async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
   const base = String(baseSymbol || "").toUpperCase();
-  if (!base) return { ok: false, error: "Missing base symbol" };
+  if (!base) return { ok: false, status: 400, msg: "Missing symbol" };
 
   const pair = `${base}USDT`;
-  const safeLimit = Math.max(5, Math.min(1000, Number(limit) || 100));
+  const safeLimit = Math.max(5, Math.min(150, Number(limit) || 100));
+  const type = "step0";
 
-  const url = `https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(
-    pair
-  )}&limit=${encodeURIComponent(String(safeLimit))}`;
+  const url =
+    `https://api.bitget.com/api/v2/spot/market/orderbook?` +
+    `symbol=${encodeURIComponent(pair)}&type=${encodeURIComponent(type)}&limit=${encodeURIComponent(String(safeLimit))}`;
 
-  const r = await fetch(url, {
-    method: "GET",
-    headers: {
-      accept: "application/json",
-      "user-agent": "CryptoCrocScanner/1.0 (+vercel)",
-    },
-  });
-
+  const r = await fetch(url, { headers: { accept: "application/json" } });
   const text = await r.text();
 
-  let json = null;
-  try { json = JSON.parse(text); } catch {}
+  let j = null;
+  try { j = JSON.parse(text); } catch {}
 
   if (!r.ok) {
     return {
       ok: false,
-      error: "Binance depth failed",
       status: r.status,
+      msg: j?.msg || "Bitget orderbook failed",
       url,
       preview: text.slice(0, 400),
     };
   }
 
-  if (!json) {
+  if (String(j?.code || "") !== "00000") {
     return {
       ok: false,
-      error: "Binance returned non-JSON",
-      status: r.status,
+      status: 400,
+      msg: j?.msg || "Bitget returned non-success code",
       url,
       preview: text.slice(0, 400),
     };
   }
 
-  return { ok: true, url, binance: json };
+  const depth = j?.data;
+  if (!depth?.bids?.length || !depth?.asks?.length) {
+    return {
+      ok: false,
+      status: 200,
+      msg: "Empty orderbook",
+      url,
+      preview: text.slice(0, 400),
+    };
+  }
+
+  return { ok: true, url, depth };
 }
 
 export default async function handler(req, res) {
   try {
+    if (!requireSecret(req, res)) return;
+
     const u = new URL(req.url, "http://localhost");
 
     const symbolRaw = u.searchParams.get("symbol") ?? req.query?.symbol;
@@ -76,9 +91,6 @@ export default async function handler(req, res) {
     const core = await import(`../lib/_core_${side}.js`);
     const { keyObResult, SETTINGS } = core;
 
-    const { requireSecret } = await import("../lib/_runtime.js");
-    if (!requireSecret(req, res)) return;
-
     const base = normalizeBaseSymbol(symbolRaw);
     if (!base) {
       res.statusCode = 400;
@@ -93,11 +105,12 @@ export default async function handler(req, res) {
     res.setHeader("cache-control", "no-store");
 
     // ====================================================
-    // RAW mode → direct Binance depth ophalen (debug)
+    // RAW mode → direct Bitget depth ophalen (debug)
+    // (sampler gebruikt Bitget, dus dit klopt nu wél)
     // ====================================================
     if (String(rawFlag) === "1") {
-      const live = await fetchBinanceDepthRaw(base, limitRaw);
-      return res.end(JSON.stringify({ symbol: base, pair, side, ...live }));
+      const live = await fetchBitgetOrderbookRaw(base, limitRaw);
+      return res.end(JSON.stringify({ ok: true, symbol: base, pair, side, ...live }));
     }
 
     // ====================================================
@@ -113,14 +126,31 @@ export default async function handler(req, res) {
           pair,
           side,
           status: "validating",
-          need: SETTINGS.entry.samplesNeed,
-          windowSec: SETTINGS.entry.samplesWindowSec,
-          tip: "Nog geen geldige OB in KV. Laat de OB sampler even draaien zodat samples verzameld worden.",
+          need: n(SETTINGS?.entry?.samplesNeed, 0),
+          windowSec: n(SETTINGS?.entry?.samplesWindowSec, 0),
+          tip: "Nog geen OB result in KV. Laat /api/ob/sampler?mode=bull of bear draaien zodat samples worden opgebouwd.",
         })
       );
     }
 
-    return res.end(JSON.stringify({ ok: true, symbol: base, pair, side, ...r }));
+    // UI verwacht velden: valid, stale, reason, ob{spreadPct,lor,depthMinUsd1p,ts}
+    // r heeft dit al; we geven het door + wat extra top-level aliases voor gemak.
+    const obTs = n(r?.ob?.ts ?? r?.ts, 0);
+
+    return res.end(
+      JSON.stringify({
+        ok: true,
+        symbol: base,
+        pair,
+        side,
+        ...r,
+        // handige aliases (maakt frontend checks simpel)
+        valid: !!r.valid,
+        stale: !!r.stale,
+        reason: String(r.reason || ""),
+        ts: n(r.ts, 0) || obTs,
+      })
+    );
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
