@@ -17,6 +17,22 @@ function n(x, d = 0) {
   return Number.isFinite(v) ? v : d;
 }
 
+// ✅ publiek lezen (KV-result) mag zonder secret
+// ✅ RAW debug (live Bitget) blijft wél achter secret
+function wantsSecret(req) {
+  // raw=1 of debug=1 => secret vereist
+  try {
+    const u = new URL(req.url, "http://localhost");
+    const rawFlag = u.searchParams.get("raw") ?? req.query?.raw ?? "0";
+    const dbgFlag = u.searchParams.get("debug") ?? req.query?.debug ?? "0";
+    return String(rawFlag) === "1" || String(dbgFlag) === "1";
+  } catch {
+    const rawFlag = req.query?.raw ?? "0";
+    const dbgFlag = req.query?.debug ?? "0";
+    return String(rawFlag) === "1" || String(dbgFlag) === "1";
+  }
+}
+
 // (optioneel) raw debug: Bitget depth, want sampler gebruikt Bitget
 async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
   const base = String(baseSymbol || "").toUpperCase();
@@ -72,7 +88,10 @@ async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
 
 export default async function handler(req, res) {
   try {
-    if (!requireSecret(req, res)) return;
+    // ✅ Alleen secret eisen bij RAW/live calls (anders krijgt je frontend 401)
+    if (wantsSecret(req)) {
+      if (!requireSecret(req, res)) return;
+    }
 
     const u = new URL(req.url, "http://localhost");
 
@@ -106,7 +125,7 @@ export default async function handler(req, res) {
 
     // ====================================================
     // RAW mode → direct Bitget depth ophalen (debug)
-    // (sampler gebruikt Bitget, dus dit klopt nu wél)
+    // (sampler gebruikt Bitget, dus dit klopt)
     // ====================================================
     if (String(rawFlag) === "1") {
       const live = await fetchBitgetOrderbookRaw(base, limitRaw);
