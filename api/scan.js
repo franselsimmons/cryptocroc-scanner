@@ -131,7 +131,7 @@ async function flushNotices(noticesByHook) {
 }
 
 // --------------------
-// 1) BTC fetch (alleen data, state komt uit core)
+// 1) BTC fetch (data)
 // --------------------
 async function fetchBtc() {
   const url =
@@ -173,6 +173,17 @@ function normBtcState(x) {
   return "NEUTRAL";
 }
 
+// ✅ STABIEL: 24h bepaalt regime (default ±1.0%)
+function computeBtcStateLocal(btcBase, SETTINGS) {
+  const cfg = safeObj(SETTINGS?.btc) || {};
+  const neutral24Pct = n(cfg.neutral24Pct, 1.0); // <- jouw “neutraal zone”
+  const chg24 = n(btcBase?.chg24, 0);
+
+  if (chg24 >= neutral24Pct) return "BULL";
+  if (chg24 <= -neutral24Pct) return "BEAR";
+  return "NEUTRAL";
+}
+
 /**
  * ✅ BTC policy:
  * - BTC NEUTRAL  -> beide modes PREP (max BUILDUP)
@@ -194,12 +205,39 @@ function computeStageCap(mode, btcState) {
     return { cap: false, capStage: "FULL", reason: `BTC ${st}: ${m} mag door naar ALMOST/ENTRY` };
   }
 
-  // prep mode
   if (st === "NEUTRAL") {
-    return { cap: true, capStage, reason: "BTC NEUTRAL: scannen door, maar max BUILDUP (huiswerk loopt)" };
+    return { cap: true, capStage, reason: "BTC NEUTRAL: scannen + OB door, maar max BUILDUP (prep-mode)" };
   }
 
   return { cap: true, capStage, reason: `BTC ${st}: ${m} blijft prep-mode (max BUILDUP)` };
+}
+
+// ✅ 1h fine-tune: alleen confidence tweak (geen block)
+function btcConfidenceAdjust(mode, btcState, btcBase, SETTINGS) {
+  const cfg = safeObj(SETTINGS?.btc) || {};
+  const fine1hAbs = n(cfg.fine1hAbsPct, 0.25); // vanaf welke 1h verandering we hem serieus nemen
+  const boost = n(cfg.confBoost, 4);          // +/- punten op confidence
+
+  // alleen finetune als er een “richting” is
+  const st = normBtcState(btcState);
+  if (st === "NEUTRAL") return { adj: 0, why: "BTC NEUTRAL: no 1h fine-tune" };
+
+  const chg1h = n(btcBase?.chg1h, 0);
+  const m = String(mode || "").toLowerCase();
+
+  const wantUp = m === "bull";
+  const pos = chg1h >= fine1hAbs;
+  const neg = chg1h <= -fine1hAbs;
+
+  // “meewerken” = 1h in dezelfde richting als jouw mode
+  if (wantUp && pos) return { adj: +boost, why: `BTC 1h aligns (+${boost})` };
+  if (!wantUp && neg) return { adj: +boost, why: `BTC 1h aligns (+${boost})` };
+
+  // “tegenwerken” = 1h in tegengestelde richting
+  if (wantUp && neg) return { adj: -boost, why: `BTC 1h contra (-${boost})` };
+  if (!wantUp && pos) return { adj: -boost, why: `BTC 1h contra (-${boost})` };
+
+  return { adj: 0, why: "BTC 1h small/neutral" };
 }
 
 // --------------------
@@ -374,7 +412,6 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
     lastSeenAt: nowTs,
     stage: st,
     entryStreak,
-    // lastNotifyAt / lastHoldAt blijven staan als ze er al zijn
   };
 
   return {
@@ -416,29 +453,28 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const mode = getMode(req); // "bull" of "bear"
+    const mode = getMode(req); // "bull" or "bear"
     const core = await import(`../lib/_core_${mode}.js`);
 
     const now = Date.now();
 
-    // BTC fetch + state via core
+    // BTC data
     const btcBase = await fetchBtc();
-    const btcState =
-      typeof core.computeBtcState === "function"
-        ? core.computeBtcState(btcBase, core.SETTINGS)
-        : btcBase.state || "NEUTRAL";
 
-    const btc = { ...btcBase, state: btcState };
+    // ✅ NIEUW: 24h regime = local, stabiel
+    const btcState = computeBtcStateLocal(btcBase, core.SETTINGS);
 
-    // ✅ NIEUW: stage cap policy (i.p.v. “hard block”)
+    // ✅ NIEUW: 1h fine tune (confidence +/-)
+    const btcTune = btcConfidenceAdjust(mode, btcState, btcBase, core.SETTINGS);
+
+    const btc = { ...btcBase, state: btcState, tune: btcTune };
+
+    // ✅ stage cap policy (geen hard block)
     const cap = computeStageCap(mode, btc.state);
 
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
 
-    // --------------------
-    // Fetch universe
-    // --------------------
     const cg = await fetchCgTop(core.SETTINGS.CG_TOP);
 
     const radar = [];
@@ -449,7 +485,6 @@ export default async function handler(req, res) {
     const state = (await kv.get(core.keyState(mode))) || {};
     const obMap = await loadObMap(mode);
 
-    // ✅ collect discord notices grouped per webhook
     const noticesByHook = {};
 
     for (const c of cg) {
@@ -458,13 +493,11 @@ export default async function handler(req, res) {
 
       const vm = radarGate.vm;
 
-      // basis stage op swing
       let stageBase = stageFromSwing(mode, { ...c, vm });
 
-      // OB lookup (blijft altijd lopen, ook in prep-mode)
+      // OB lookup blijft altijd lopen
       const ob = await getObForSymbol({ core, mode, symbol: c.symbol, obMap });
 
-      // stale gate
       const obTs = n(ob?.ob?.ts ?? ob?.ts, 0);
       const obAge = obTs > 0 ? now - obTs : Number.POSITIVE_INFINITY;
       const obFresh = obTs > 0 && obAge <= OB_MAX_AGE_MS;
@@ -475,31 +508,31 @@ export default async function handler(req, res) {
       const depthMinUsd1p = n(ob?.ob?.depthMinUsd1p ?? ob?.depthMinUsd1p, 0);
       const obScore = n(ob?.ob?.score ?? ob?.score, 0);
 
-      const confidence = core.computeConfidence({
+      // base confidence uit core + BTC 1h fine-tune
+      const confidenceBase = core.computeConfidence({
         vm,
         change24: c.change24,
         range24: c.range24,
         obValid,
       });
 
-      // thresholds (adaptive, uit core tiers)
+      const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
+
       const thr = adaptiveEntryThresholds(core, c, vm);
 
-      // gates
       let almostGate = "n/a";
       let entryGate = "n/a";
 
-      // ✅ NIEUW: als cap actief is: ALMOST/ENTRY worden BUILDUP, en we skippen slope/entry gates
       let stage = stageBase;
+
+      // ✅ cap: nooit voorbij BUILDUP in prep-mode
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
         stage = "BUILDUP";
         almostGate = `capped: ${cap.capStage}`;
         entryGate = `capped: ${cap.capStage}`;
       } else {
-        // OB samples alleen ophalen als nodig
         let obSamples = null;
 
-        // ALMOST slope gate (verplicht)
         if (stageBase === "ALMOST") {
           obSamples = await kv.get(core.keyObSamples(mode, c.symbol));
 
@@ -522,7 +555,6 @@ export default async function handler(req, res) {
           }
         }
 
-        // ENTRY gate
         if (stageBase === "ALMOST") {
           if (!ob) entryGate = "OB missing";
           else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
@@ -568,7 +600,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // ✅ state + prevStage + entryStreak
       const sym = up(c.symbol);
       const prevEntry = safeObj(state[sym]) || {};
       const stFix = updateStateAndConsistency(state, sym, stage, core, now);
@@ -579,11 +610,10 @@ export default async function handler(req, res) {
       const currStage = up(stage);
       const entryStreak = n(stFix.entryStreak, 0);
 
-      // ✅ DISCORD LOGICA
+      // Discord (zelfde logica, nu met confidence na BTC-tune)
       if (prevStage) {
         const doNotify = canNotify(prevEntry, now);
 
-        // SELL
         if (doNotify && prevStage === "ENTRY" && currStage !== "ENTRY") {
           const hook = stageWebhook("SELL");
           const line =
@@ -594,10 +624,7 @@ export default async function handler(req, res) {
             `price ${fmtUsd(c.price, 6)}`;
           pushNotice(noticesByHook, hook, line);
           markNotified(state, sym, now);
-        }
-
-        // ENTRY
-        else if (doNotify && prevStage !== "ENTRY" && currStage === "ENTRY") {
+        } else if (doNotify && prevStage !== "ENTRY" && currStage === "ENTRY") {
           const hook = stageWebhook("ENTRY");
           const line =
             `**${sym}** (${mode.toUpperCase()})  ` +
@@ -607,10 +634,7 @@ export default async function handler(req, res) {
             `price ${fmtUsd(c.price, 6)}`;
           pushNotice(noticesByHook, hook, line);
           markNotified(state, sym, now);
-        }
-
-        // HOLD
-        else if (
+        } else if (
           currStage === "ENTRY" &&
           prevStage === "ENTRY" &&
           entryStreak === HOLD_AFTER_ENTRY_SCANS &&
@@ -625,10 +649,7 @@ export default async function handler(req, res) {
             `price ${fmtUsd(c.price, 6)}`;
           pushNotice(noticesByHook, hook, line);
           markHoldNotified(state, sym, now);
-        }
-
-        // normale stage change
-        else if (doNotify && prevStage !== currStage) {
+        } else if (doNotify && prevStage !== currStage) {
           const hook = stageWebhook(currStage);
           const line =
             `**${sym}** (${mode.toUpperCase()})  ` +
@@ -652,7 +673,10 @@ export default async function handler(req, res) {
         change1h: +c.change1h.toFixed(4),
         range24: +c.range24.toFixed(4),
         vm: +vm.toFixed(6),
+
+        confidenceBase,
         confidence,
+        confidenceBtcAdj: btcTune.adj,
 
         stage: currStage,
         stageScans,
@@ -676,11 +700,9 @@ export default async function handler(req, res) {
               spreadPct: Number(spreadPct),
               depthMinUsd1p: Number(depthMinUsd1p),
               lor: Number(n(ob?.ob?.lor ?? ob?.lor, 1)),
-
               score1p: n(ob?.ob?.score1p ?? ob?.score1p, 0),
               score05p: n(ob?.ob?.score05p ?? ob?.score05p, 0),
               pressureDeltaUsd: n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0),
-
               slopeScore: n(ob?.slopeScore ?? ob?.ob?.slopeScore ?? ob?.slope ?? 0, 0),
               slopeDepth1p: n(ob?.slopeDepth1p ?? ob?.ob?.slopeDepth1p ?? 0, 0),
               ts: obTs || null,
@@ -701,8 +723,12 @@ export default async function handler(req, res) {
     buildup.sort((a, b) => b.vm - a.vm);
     radar.sort((a, b) => b.vm - a.vm);
 
-    // ✅ stuur discord meldingen
     const discord = await flushNotices(noticesByHook);
+
+    const btcCfg = safeObj(core.SETTINGS?.btc) || {};
+    const neutral24Pct = n(btcCfg.neutral24Pct, 1.0);
+    const fine1hAbsPct = n(btcCfg.fine1hAbsPct, 0.25);
+    const confBoost = n(btcCfg.confBoost, 4);
 
     const result = {
       ok: true,
@@ -710,11 +736,13 @@ export default async function handler(req, res) {
       mode,
       btc,
       meta: {
-        btcPolicy: "NEUTRAL => cap to BUILDUP for both; BULL/BEAR => only matching mode goes FULL",
+        cadence: "30m",
+        btcPolicy: "24h regime + 1h confidence fine-tune; NEUTRAL/opposite => cap to BUILDUP, maar scan+OB blijven lopen",
         capActive: !!cap.cap,
         capStage: cap.capStage,
         capReason: cap.reason,
-        neutralZone: "BTC chg24 between -1.0% and +1.0% (from core thresholds)",
+        neutralZone: `BTC 24h between -${neutral24Pct}% and +${neutral24Pct}%`,
+        fineTune: `BTC 1h abs >= ${fine1hAbsPct}% => confidence +/-${confBoost}`,
       },
       counts: {
         entry: entry.length,
@@ -731,7 +759,7 @@ export default async function handler(req, res) {
         errors: (discord.details || []).slice(0, 5),
       },
       note:
-        "BTC policy updated: scanning + OB continues always. When BTC is NEUTRAL or opposite, stages are capped at BUILDUP (prep-mode).",
+        "Update: BTC NEUTRAL stopt niet meer alles. Beide modes blijven ‘huiswerk’ doen (RADAR/BUILDUP) met OB-data. Alleen ALMOST/ENTRY is gecapt in prep-mode.",
     };
 
     await kv.set(core.keyLatest(mode), result);
