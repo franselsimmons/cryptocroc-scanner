@@ -1,6 +1,5 @@
 // /public/app.js
 
-// ===== topbar hoogte automatisch naar CSS var zetten =====
 function syncTopbarHeight() {
   const tb = document.querySelector(".topbar");
   const h = tb ? Math.ceil(tb.getBoundingClientRect().height) : 78;
@@ -10,7 +9,6 @@ window.addEventListener("resize", syncTopbarHeight);
 window.addEventListener("load", syncTopbarHeight);
 syncTopbarHeight();
 
-// ===== helpers =====
 const el = (id) => document.getElementById(id);
 
 function bust() {
@@ -42,7 +40,6 @@ function setMode(mode) {
   loadLatest();
 }
 
-// ===== formatters =====
 function fmtUSD(n) {
   n = Number(n) || 0;
   if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
@@ -78,9 +75,7 @@ function confBar(conf) {
   `;
 }
 
-// ===== SIZING (Advies) =====
-// ✅ BELANGRIJK: geen "Advies —" meer tonen.
-// Als er geen sizing is -> leeg (en dan laten we de pill ook weg).
+// ✅ geen "Advies —"
 function sizingText(c) {
   const s = c?.sizing || null;
   if (!s) return "";
@@ -90,7 +85,6 @@ function sizingText(c) {
   return `Advies ${pct}%${zone ? ` (BTC ${zone})` : ""}`;
 }
 
-// ===== TRADE pills =====
 function tradePillFromCoin(c) {
   const t = c?.trade || null;
   if (!t) return "";
@@ -111,8 +105,6 @@ function tradePillFromCoin(c) {
   return "";
 }
 
-// ✅ FIX: deze functie geeft al een complete pill terug.
-// In sellRow moet je hem NIET nog een keer in een pill wrappen.
 function tradePillFromSellRow(s) {
   const sym = s?.symbol || "—";
   const reason = s?.reason ? ` • ${s.reason}` : "";
@@ -122,16 +114,14 @@ function tradePillFromSellRow(s) {
   return `<div class="pill pillSell">SELL ${sym}${reason}${pnl}</div>`;
 }
 
-// ===== rows =====
 function coinRow(c) {
   const div = document.createElement("div");
   div.className = "coinRow";
 
-  const adv = sizingText(c); // kan leeg zijn
+  const adv = sizingText(c);
   const scans = Number.isFinite(Number(c.stageScans)) ? Number(c.stageScans) : 0;
   const tPill = tradePillFromCoin(c);
 
-  // ✅ Als geen trade en geen sizing -> geen pill tonen (strakker)
   const rightPill = tPill
     ? tPill
     : adv
@@ -242,15 +232,15 @@ function renderAll(data) {
   if (statusLine) {
     statusLine.textContent =
       `${btcLine(data.btc)} • Laatste update: ${stamp} • ` +
-      `HOLD ${hold.length} • SELL ${sell.length} • ` +
-      `ENTRY ${data?.counts?.entry || 0} • ALMOST ${data?.counts?.almost || 0} • ` +
-      `BUILDUP ${data?.counts?.buildup || 0} • RADAR ${data?.counts?.radar || 0}`;
+      `ENTRY ${data?.counts?.entry || 0} • HOLD ${hold.length} • SELL ${sell.length} • ` +
+      `ALMOST ${data?.counts?.almost || 0} • BUILDUP ${data?.counts?.buildup || 0} • RADAR ${data?.counts?.radar || 0}`;
   }
 
+  // ✅ Volgorde in UI: ENTRY -> HOLD -> SELL
+  renderStage("stageEntry", data?.funnel?.entry || [], coinRow);
   renderStage("stageHold", hold, coinRow);
   renderStage("stageSell", sell, sellRow);
 
-  renderStage("stageEntry", data?.funnel?.entry || [], coinRow);
   renderStage("stageAlmost", data?.funnel?.almost || [], coinRow);
   renderStage("stageBuildup", data?.funnel?.buildup || [], coinRow);
   renderStage("stageRadar", data?.funnel?.radar || [], coinRow);
@@ -305,6 +295,7 @@ function icon(ok, kind = "ok") {
 }
 
 function addCheck(container, ok, title, sub = "", kind = "ok") {
+  if (!container) return;
   const div = document.createElement("div");
   div.className = "checkItem";
   div.innerHTML = `
@@ -478,10 +469,8 @@ async function openModalMain(c) {
   el("mDebug").textContent = JSON.stringify(c, null, 2);
 }
 
-// buttons
 el("modeBull")?.addEventListener("click", () => setMode("bull"));
 el("modeBear")?.addEventListener("click", () => setMode("bear"));
 
-// init
 setMode(MODE);
 setInterval(loadLatest, 20000);
