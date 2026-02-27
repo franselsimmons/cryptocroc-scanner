@@ -50,8 +50,8 @@ function fmtUsd(x, d = 6) {
   return `$${v.toFixed(d)}`;
 }
 
-// ✅ OB max age (stale gate)
-const OB_MAX_AGE_MS = 75 * 60 * 1000; // 75 min
+// ✅ OB max age (stale gate) — versoepeld (was 75m)
+const OB_MAX_AGE_MS = 120 * 60 * 1000; // 120 min
 
 // ✅ Discord anti-spam
 const NOTIFY_COOLDOWN_MS = 25 * 60 * 1000; // 25 min per coin
@@ -149,13 +149,12 @@ function pageTradeStatus(tradeInfo) {
   return "—";
 }
 
-// ✅ Stats (upgrade #2)
-function computeStatsFromSells(sells) {
-  const arr = Array.isArray(sells) ? sells : [];
+// ✅ Stats (upgrade #2) — FIX: “last 50” echt nieuwste 50 nemen
+function computeStatsFromSells(sellsOldestToNewest) {
+  const arr = Array.isArray(sellsOldestToNewest) ? sellsOldestToNewest : [];
   const totalSells = arr.length;
 
-  // jij levert straks recentSells als newest-first, maar we doen het safe:
-  const newestFirst = arr.slice().reverse(); // oldest->newest => reverse = newest-first
+  const newestFirst = arr.slice().reverse(); // newest-first
   const last50 = newestFirst.slice(0, 50);
 
   if (!last50.length) {
@@ -188,8 +187,8 @@ function computeStatsFromSells(sells) {
   return {
     totalSells,
     n50,
-    winrate50: wins / n50,        // 0.62 = 62%
-    avgPnl50: pnlSum / n50,       // ratio
+    winrate50: wins / n50,
+    avgPnl50: pnlSum / n50,
     avgBarsOpen50: barsSum / n50,
     wins50: wins,
     losses50: losses,
@@ -219,7 +218,6 @@ async function sendDiscord(webhook, content) {
 }
 
 function stageWebhook(stageUpper) {
-  // ENTRY/HOLD/SELL -> ELITE kanaal
   if (stageUpper === "ENTRY") return process.env.DISCORD_WEBHOOK_ELITE;
   if (stageUpper === "HOLD") return process.env.DISCORD_WEBHOOK_ELITE;
   if (stageUpper === "SELL") return process.env.DISCORD_WEBHOOK_ELITE;
@@ -426,7 +424,7 @@ function passRadar(core, c) {
 }
 
 // --------------------
-// Stage logic (SWING)
+// Stage logic (SWING) — versoepeld zodat minder lang “ALMOST stuck”
 // --------------------
 function stageFromSwing(mode, c) {
   const vm = c.vm;
@@ -434,10 +432,14 @@ function stageFromSwing(mode, c) {
   const ch1h = c.change1h;
 
   const wantUp = mode === "bull";
-  const inDir = wantUp ? ch1h >= 0.2 : ch1h <= -0.2;
+  const inDir = wantUp ? ch1h >= 0.15 : ch1h <= -0.15;
 
-  if (vm >= 0.24 && range <= 20 && inDir) return "ALMOST";
-  if (vm >= 0.18 && range <= 28) return "BUILDUP";
+  // was: vm>=0.24 range<=20 inDir
+  if (vm >= 0.22 && range <= 24 && inDir) return "ALMOST";
+
+  // was: vm>=0.18 range<=28
+  if (vm >= 0.16 && range <= 32) return "BUILDUP";
+
   return "RADAR";
 }
 
@@ -457,7 +459,7 @@ async function getObForSymbol({ core, mode, symbol, obMap }) {
 }
 
 // --------------------
-// Adaptive entry thresholds
+// Adaptive entry thresholds — versoepeld (maar niet “roekeloos”)
 // --------------------
 function adaptiveEntryThresholds(core, c, vm) {
   const base = core?.SETTINGS?.entry || {};
@@ -480,19 +482,28 @@ function adaptiveEntryThresholds(core, c, vm) {
 
   const baseMinConf = n(base.minConfidence, n(t.minConf, 58));
   const tierMinConf = n(t.minConf, baseMinConf);
-  const minConfidence = Math.max(0, Math.max(baseMinConf, tierMinConf - vmBonus));
+
+  // ✅ minConfidence iets lager
+  const minConfidenceRaw = Math.max(0, Math.max(baseMinConf, tierMinConf - vmBonus));
+  const minConfidence = Math.max(0, minConfidenceRaw - 3); // <- versoepeling
 
   const baseSpread = n(base.spreadMaxPct, n(t.spreadMax, 1.2));
   const tierSpread = n(t.spreadMax, baseSpread);
-  const spreadMaxPct = Math.min(baseSpread, tierSpread);
+
+  // ✅ spread iets ruimer
+  const spreadMaxPct = Math.min(baseSpread, tierSpread) + 0.15;
 
   const baseDepth = n(base.depthMinUsd1p, n(t.depth1pMin, 30_000));
   const tierDepth = n(t.depth1pMin, baseDepth);
-  const depthMinUsd1p = Math.max(baseDepth, tierDepth);
+
+  // ✅ depth iets lager (maar nooit belachelijk laag)
+  const depthMinUsd1p = Math.max(15_000, Math.round(Math.max(baseDepth, tierDepth) * 0.75));
 
   const baseScore = n(base.obScoreMin, n(t.obScoreMin, 0.04));
   const tierScore = n(t.obScoreMin, baseScore);
-  const obScoreMin = Math.max(baseScore, tierScore);
+
+  // ✅ obScoreMin iets lager
+  const obScoreMin = Math.max(0.02, Math.max(baseScore, tierScore) * 0.75);
 
   return { minConfidence, spreadMaxPct, depthMinUsd1p, obScoreMin };
 }
@@ -604,7 +615,8 @@ export default async function handler(req, res) {
       const obAge = obTs > 0 ? now - obTs : Number.POSITIVE_INFINITY;
       const obFresh = obTs > 0 && obAge <= OB_MAX_AGE_MS;
 
-      const obValid = !!ob?.valid && obFresh;
+      // ✅ belangrijk: valid los van “fresh”
+      const obValid = !!ob?.valid;
 
       const spreadPct = n(ob?.ob?.spreadPct ?? ob?.spreadPct, 999);
       const depthMinUsd1p = n(ob?.ob?.depthMinUsd1p ?? ob?.depthMinUsd1p, 0);
@@ -614,7 +626,8 @@ export default async function handler(req, res) {
         vm,
         change24: c.change24,
         range24: c.range24,
-        obValid,
+        // voor confidence telt valid, niet “fresh”
+        obValid: !!obValid,
       });
 
       const confidence = Math.max(
@@ -637,6 +650,7 @@ export default async function handler(req, res) {
       } else {
         let obSamples = null;
 
+        // ALMOST slope gate
         if (stageBase === "ALMOST") {
           obSamples = await kv.get(core.keyObSamples(mode, sym));
 
@@ -659,6 +673,7 @@ export default async function handler(req, res) {
           }
         }
 
+        // ENTRY gate — versoepeld: score1p/pressure hoeven niet allebei perfect
         if (stageBase === "ALMOST") {
           if (!ob) entryGate = "OB missing";
           else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
@@ -683,12 +698,15 @@ export default async function handler(req, res) {
             const pressureDelta = n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0);
             const score1p = n(ob?.ob?.score1p ?? ob?.score1p, 0);
 
+            // ✅ ruimer: pressure richting, score1p band ruimer
             const pressureOk = mode === "bull" ? pressureDelta >= 0 : pressureDelta <= 0;
-            const score1pOk = mode === "bull" ? score1p >= -0.1 : score1p <= 0.1;
+            const score1pOk = mode === "bull" ? score1p >= -0.2 : score1p <= 0.2;
 
+            // ✅ versoepeling: niet ALLES hoeft perfect
+            // - slope moet kloppen (blijft kwaliteitsfilter)
+            // - en EITHER pressureOk OF score1pOk is voldoende
             if (!slopeCheck2.ok) entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
-            else if (!pressureOk) entryGate = "Pressure delta contra";
-            else if (!score1pOk) entryGate = "1% imbalance weird";
+            else if (!(pressureOk || score1pOk)) entryGate = "Pressure+1% contra";
             else {
               stage = "ENTRY";
               entryGate = "passed";
@@ -731,7 +749,7 @@ export default async function handler(req, res) {
         const obBreakHit = obBadStreak >= 2;
         const timeStopHit = barsOpen >= TIME_STOP_SCANS && maxPnl < TIME_STOP_MAXPNL;
 
-        // ✅ Trailing (upgrade #1)
+        // ✅ Trailing
         const drawdown = maxPnl - pnl;
 
         let trailHit = false;
@@ -1017,6 +1035,11 @@ export default async function handler(req, res) {
             trailAfterTp2Pct: TRAIL_AFTER_TP2 * 100,
           },
         },
+        relaxedGates: {
+          obMaxAgeMin: Math.round(OB_MAX_AGE_MS / 60000),
+          entry: "minConfidence -3, spread +0.15, depth *0.75 (min 15k), obScoreMin *0.75, pressure||score1p, score1p band ruimer",
+          almost: "vm/range/1h versoepeld",
+        },
       },
       counts: {
         entry: entry.length,
@@ -1046,7 +1069,7 @@ export default async function handler(req, res) {
         errors: (discord.details || []).slice(0, 5),
       },
       note:
-        "9/10 upgrades actief: TRAILING_TP exit + trading stats (winrate/avg pnl/bars). HOLD komt uit OPEN trades, SELL blijft zichtbaar via KV sells-log.",
+        "ALMOST/ENTRY is versoepeld zodat coins minder blijven hangen. TRAILING_TP + stats actief. HOLD uit OPEN trades, SELL via KV sells-log.",
     };
 
     await kv.set(core.keyLatest(mode), result);
