@@ -31,7 +31,6 @@ function analyzeEvents(events, mode) {
   const tradeOpen = ev.filter(e => e.type === "trade_open");
   const tradeClose = ev.filter(e => e.type === "trade_close");
 
-  // ---------- Funnel flow ----------
   const flow = {};
   const stuckReason = { RADAR: {}, BUILDUP: {}, ALMOST: {}, ENTRY: {} };
 
@@ -41,12 +40,10 @@ function analyzeEvents(events, mode) {
     if (!from || !to) continue;
     inc(flow, `${from}→${to}`);
 
-    // reden waarom hij bij “to” eindigde (gate/slope/cap etc)
     const reason = String(e.reason || "n/a");
     if (stuckReason[to]) inc(stuckReason[to], reason);
   }
 
-  // ---------- Trade join (tradeId) ----------
   const openById = {};
   for (const o of tradeOpen) {
     const id = String(o.tradeId || "");
@@ -59,8 +56,8 @@ function analyzeEvents(events, mode) {
   let givebackSum = 0;
   let givebackN = 0;
 
-  const earlyExit = []; // “te vroeg eruit” candidates
-  const lateExit = [];  // “te laat / giveback” candidates
+  const earlyExit = [];
+  const lateExit = [];
 
   for (const c of tradeClose) {
     const id = String(c.tradeId || "");
@@ -71,11 +68,11 @@ function analyzeEvents(events, mode) {
     const giveback = n(c.givebackPct, Math.max(0, maxPnl - pnl));
 
     inc(exitReasons, String(c.reason || "UNKNOWN"));
-
     givebackSum += giveback;
     givebackN++;
 
     const item = {
+      ts: n(c.ts, 0),
       tradeId: id,
       symbol: String(c.symbol || o?.symbol || "?"),
       mode,
@@ -93,25 +90,15 @@ function analyzeEvents(events, mode) {
 
     trades.push(item);
 
-    // simpele maar super nuttige “timing” regels:
-    // - te laat: maxPnl was mooi, maar eindigt laag -> giveback groot
-    if (giveback >= 2.0 && maxPnl >= 3.0) {
-      lateExit.push(item);
-    }
-    // - te vroeg: TRAILING_TP met heel klein giveback maar maxPnl nog klein
-    if (item.reason === "TRAILING_TP" && item.maxPnlPct < 3.0) {
-      earlyExit.push(item);
-    }
+    if (giveback >= 2.0 && maxPnl >= 3.0) lateExit.push(item);
+    if (item.reason === "TRAILING_TP" && item.maxPnlPct < 3.0) earlyExit.push(item);
   }
 
   trades.sort((a, b) => b.ts - a.ts);
 
   const avgGiveback = givebackN ? givebackSum / givebackN : 0;
 
-  // ---------- Suggestions ----------
   const suggestions = [];
-
-  // 1) Veel OB stale in ALMOST/ENTRY -> OB cadence/samplesWindow
   const topAlmost = topN(stuckReason.ALMOST, 3);
   const topEntry = topN(stuckReason.ENTRY, 3);
 
@@ -119,35 +106,32 @@ function analyzeEvents(events, mode) {
   if (topAlmost.some(x => reasonStr(x.key).includes("stale")) || topEntry.some(x => reasonStr(x.key).includes("stale"))) {
     suggestions.push({
       what: "OB is vaak te oud (stale) bij ALMOST/ENTRY",
-      do: "Maak OB sampler vaker, of vergroot samplesWindowSec, of verhoog OB_MAX_AGE_MS iets.",
-      why: "Als OB te vaak stale is, stopt je funnel en kom je te weinig in ENTRY.",
+      do: "OB sampler vaker laten lopen of OB_MAX_AGE_MS iets verhogen.",
+      why: "Anders stopt de funnel vóór ENTRY.",
     });
   }
 
-  // 2) Giveback hoog -> trailing te ruim of OB_BREAK te laat
   if (avgGiveback >= 1.5) {
     suggestions.push({
       what: "Veel giveback (winst was hoger, maar je eindigt lager)",
-      do: "Maak trailing strakker of activeer trailing eerder (TP1 lager) óf verlaag TRAIL_AFTER_TP1/T2.",
-      why: "Je pakt winst, maar je geeft veel terug voordat SELL komt.",
+      do: "Trailing strakker maken (TRAIL_AFTER_TP1/T2 kleiner) of TP1 iets lager zetten.",
+      why: "Je pakt winst, maar je geeft terug vóór SELL.",
     });
   }
 
-  // 3) Veel TIME_STOP -> entry te vroeg / momentum te zwak
   if ((exitReasons["TIME_STOP_NO_MOMENTUM"] || 0) >= 5) {
     suggestions.push({
       what: "Veel TIME_STOP exits",
-      do: "ENTRY-filter strenger maken op momentum (bijv. inDir of min VM), of TIME_STOP_SCANS verhogen zodat trades meer tijd krijgen.",
-      why: "Je gaat erin, maar beweging komt niet op gang.",
+      do: "ENTRY strenger op momentum (of TIME_STOP_SCANS hoger).",
+      why: "Je gaat erin, maar er komt geen beweging.",
     });
   }
 
-  // 4) Veel HARD_STOP -> stop te strak voor range
   if ((exitReasons["HARD_STOP"] || 0) >= 5) {
     suggestions.push({
       what: "Veel HARD_STOP exits",
-      do: "StopPctFromRange24 iets ruimer maken óf ENTRY alleen nemen bij lagere range24.",
-      why: "Je stopt te vaak uit op normale volatiliteit.",
+      do: "StopPctFromRange24 iets ruimer óf ENTRY alleen bij lagere range24.",
+      why: "Stop is te gevoelig voor normale volatiliteit.",
     });
   }
 
@@ -233,26 +217,26 @@ function htmlPage(mode, data) {
 
     <div class="grid">
       <div class="box">
-        <h3>Funnel flow (top)</h3>
+        <h3>Funnel flow (events)</h3>
         <ul>${list(data.flowTop)}</ul>
       </div>
       <div class="box">
-        <h3>Trade exit reasons (top)</h3>
+        <h3>Trade exit reasons</h3>
         <ul>${list(data.trades.exitReasonsTop)}</ul>
       </div>
       <div class="box">
-        <h3>Stuck reasons — ALMOST</h3>
+        <h3>Top redenen — ALMOST</h3>
         <ul>${list(data.stuckTop.ALMOST)}</ul>
       </div>
       <div class="box">
-        <h3>Stuck reasons — ENTRY</h3>
+        <h3>Top redenen — ENTRY</h3>
         <ul>${list(data.stuckTop.ENTRY)}</ul>
       </div>
     </div>
 
     <div class="box" style="margin-top:12px">
-      <h3>Timing analyse (te laat / giveback)</h3>
-      <div class="muted">Als giveback hoog is: je had meer winst kunnen pakken, maar je gaf terug vóór SELL.</div>
+      <h3>Timing: te laat (giveback)</h3>
+      <div class="muted">Giveback hoog = winst was hoger, maar je eindigt lager.</div>
       <div style="overflow:auto;margin-top:8px">
         <table>
           <thead>
@@ -268,8 +252,8 @@ function htmlPage(mode, data) {
     </div>
 
     <div class="box" style="margin-top:12px">
-      <h3>Timing analyse (mogelijk te vroeg)</h3>
-      <div class="muted">Als TRAILING_TP vaak al bij lage maxPnl gebeurt: trailing te vroeg/te strak.</div>
+      <h3>Timing: mogelijk te vroeg</h3>
+      <div class="muted">Veel TRAILING_TP bij lage maxPnL = te vroeg/te strak.</div>
       <div style="overflow:auto;margin-top:8px">
         <table>
           <thead>
@@ -326,4 +310,3 @@ export default async function handler(req, res) {
     return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
-/* EOF */
