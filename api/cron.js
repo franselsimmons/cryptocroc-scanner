@@ -1,4 +1,4 @@
-// /api/cron.js
+/* EOF: /api/cron.js */
 import { kv } from "@vercel/kv";
 
 import scan from "./scan.js";
@@ -116,11 +116,13 @@ function makeInternalReq({ mode, max, radar, secret }) {
   const query = { mode };
   if (max !== undefined) query.max = String(max);
   if (radar !== undefined) query.radar = String(radar);
-  if (secret) query.secret = secret;
+
+  // ✅ belangrijk: scan/ob endpoints accepteren secret als query + headers
+  if (secret) query.secret = String(secret);
 
   const headers = {};
   if (secret) {
-    headers["x-api-key"] = secret;
+    headers["x-api-key"] = String(secret);
     headers["authorization"] = `Bearer ${secret}`;
   }
 
@@ -139,7 +141,7 @@ function assertOk(name, parsed, resObj) {
 }
 
 // --------------------
-// KV lock (correct!)
+// KV lock
 // --------------------
 const CRON_LOCK_KEY = "lock:cron";
 const CRON_LOCK_TTL_SEC = 25 * 60;
@@ -185,12 +187,9 @@ async function runOneMode(mode, max, radar, secret) {
 
 export default async function handler(req, res) {
   const startedAt = Date.now();
-
-  // ✅ belangrijk: lock alleen releasen als je hem echt had
   let gotLock = false;
 
   try {
-    // ✅ forceer altijd JSON bij unauthorized
     const authOk = requireSecret(req, res);
     if (!authOk) {
       res.statusCode = 401;
@@ -214,7 +213,10 @@ export default async function handler(req, res) {
       );
     }
 
-    const secret = pickSecret();
+    // ✅ FIX: eerst query secret, dan pas ENV secret
+    const secretFromQuery = String(req?.query?.secret || "").trim();
+    const secret = secretFromQuery || pickSecret();
+
     const mode = normMode(req?.query?.mode);
     const max = q(req, "max", "20");
     const radar = q(req, "radar", "40");
@@ -258,8 +260,7 @@ export default async function handler(req, res) {
         ...out,
         cadence: "30m",
         tookMs: Date.now() - startedAt,
-        note:
-          "Bull+bear parallel. Per mode: obSampler -> map_refresh -> scan -> discord.",
+        note: "Bull+bear parallel. Per mode: obSampler -> map_refresh -> scan -> discord.",
       })
     );
   } catch (e) {
@@ -268,7 +269,7 @@ export default async function handler(req, res) {
     res.setHeader("cache-control", "no-store");
     return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   } finally {
-    // ✅ alleen lock releasen als jij hem had
     if (gotLock) await releaseLock();
   }
 }
+/* EOF */
