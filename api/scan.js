@@ -12,42 +12,85 @@ async function fetchJson(url) {
   const r = await fetch(url, { headers: { accept: "application/json" } });
   const t = await r.text();
   let j = null;
-  try { j = JSON.parse(t); } catch {}
+  try {
+    j = JSON.parse(t);
+  } catch {}
   if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 160)}`);
   return j;
 }
 
-function n(x, d = 0) { const v = Number(x); return Number.isFinite(v) ? v : d; }
-function safeObj(x) { return x && typeof x === "object" ? x : null; }
-function up(x) { return String(x || "").toUpperCase(); }
-function fmtPct(x, d = 2) { const v = Number(x); if (!Number.isFinite(v)) return "—"; const s = v >= 0 ? "+" : ""; return `${s}${v.toFixed(d)}%`; }
-function fmtNum(x, d = 2) { const v = Number(x); if (!Number.isFinite(v)) return "—"; return v.toFixed(d); }
-function fmtUsd(x, d = 6) { const v = Number(x); if (!Number.isFinite(v)) return "—"; return `$${v.toFixed(d)}`; }
+function n(x, d = 0) {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : d;
+}
+function safeObj(x) {
+  return x && typeof x === "object" ? x : null;
+}
+function up(x) {
+  return String(x || "").toUpperCase();
+}
+function fmtPct(x, d = 2) {
+  const v = Number(x);
+  if (!Number.isFinite(v)) return "—";
+  const s = v >= 0 ? "+" : "";
+  return `${s}${v.toFixed(d)}%`;
+}
+function fmtNum(x, d = 2) {
+  const v = Number(x);
+  if (!Number.isFinite(v)) return "—";
+  return v.toFixed(d);
+}
+function fmtUsd(x, d = 6) {
+  const v = Number(x);
+  if (!Number.isFinite(v)) return "—";
+  return `$${v.toFixed(d)}`;
+}
 
-const OB_MAX_AGE_MS = 120 * 60 * 1000;
-const NOTIFY_COOLDOWN_MS = 25 * 60 * 1000;
+// ✅ analytics mag scan nooit slopen
+async function safePushEvent(funnel, data) {
+  try {
+    await pushEvent(funnel, data);
+  } catch {
+    // swallow
+  }
+}
+
+// ✅ OB max age (stale gate)
+const OB_MAX_AGE_MS = 120 * 60 * 1000; // 120 min
+
+// ✅ Discord anti-spam
+const NOTIFY_COOLDOWN_MS = 25 * 60 * 1000; // 25 min per coin
 
 // ======================================================
-// TRADE ENGINE
+// ✅ TRADE ENGINE (ENTRY -> HOLD -> SELL)
 // ======================================================
-const TRADE_TTL_SEC = 60 * 60 * 48;
-const REENTRY_COOLDOWN_SEC = 60 * 60;
+const TRADE_TTL_SEC = 60 * 60 * 48; // 48 uur
+const REENTRY_COOLDOWN_SEC = 60 * 60; // 1 uur rust na SELL
 
-const TIME_STOP_SCANS = 6;
-const TIME_STOP_MAXPNL = 0.015;
-const HOLD_AFTER_SCANS = 2;
+const TIME_STOP_SCANS = 6; // 6 scans = 3 uur
+const TIME_STOP_MAXPNL = 0.015; // 1.5%
 
-const TP1_PNL = 0.025;
-const TP2_PNL = 0.05;
-const TRAIL_AFTER_TP1 = 0.022;
-const TRAIL_AFTER_TP2 = 0.016;
+const HOLD_AFTER_SCANS = 2; // 1x HOLD melding na 2 scans open
 
-const SELLS_TTL_SEC = 60 * 60 * 48;
+// ✅ TP / Trailing exit
+const TP1_PNL = 0.025; // 2.5%
+const TP2_PNL = 0.05; // 5.0%
+const TRAIL_AFTER_TP1 = 0.022; // 2.2% terugval
+const TRAIL_AFTER_TP2 = 0.016; // 1.6% terugval
+
+// ✅ SELL LOG (zodat pagina SELL kan tonen)
+const SELLS_TTL_SEC = 60 * 60 * 48; // 48 uur
 const SELLS_KEEP = 50;
 
-function kTrade(mode, sym) { return `trade:${String(mode).toLowerCase()}:${up(sym)}`; }
-function kCooldown(mode, sym) { return `trade:cooldown:${String(mode).toLowerCase()}:${up(sym)}`; }
-function kSells(mode) { return `trade:sells:${String(mode).toLowerCase()}`; }
+function kTrade(mode, sym) {
+  return `trade:${String(mode).toLowerCase()}:${up(sym)}`;
+}
+function kCooldown(mode, sym) {
+  return `trade:cooldown:${String(mode).toLowerCase()}:${up(sym)}`;
+}
+function kSells(mode) {
+  return `trade:sells:${String(mode).toLowerCase()}`;
+}
 
 async function logSell(mode, sellObj) {
   const key = kSells(mode);
@@ -63,10 +106,16 @@ function calcPnlPct(mode, entryPrice, nowPrice) {
   const e = n(entryPrice, 0);
   const p = n(nowPrice, 0);
   if (!(e > 0) || !(p > 0)) return 0;
-  if (String(mode).toLowerCase() === "bear") return (e - p) / e;
+
+  if (String(mode).toLowerCase() === "bear") {
+    // short: winst als prijs daalt
+    return (e - p) / e;
+  }
+  // long: winst als prijs stijgt
   return (p - e) / e;
 }
 
+// hybride stop op basis van range24
 function stopPctFromRange24(range24Pct) {
   const r = n(range24Pct, 0);
   if (r <= 18) return 0.03;
@@ -74,10 +123,14 @@ function stopPctFromRange24(range24Pct) {
   return 0.045;
 }
 
+// “OB tegen” = pressure + score draaien tegen jouw kant
 function isObAgainst(mode, ob) {
   const pd = n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0);
   const sc = n(ob?.ob?.score ?? ob?.score, 0);
-  if (String(mode).toLowerCase() === "bear") return pd > 0 && sc > 0;
+
+  if (String(mode).toLowerCase() === "bear") {
+    return pd > 0 && sc > 0;
+  }
   return pd < 0 && sc < 0;
 }
 
@@ -89,6 +142,7 @@ function isObInvalidFresh(obValid, obFresh, ob) {
   return false;
 }
 
+// tradeStatus voor pagina
 function pageTradeStatus(tradeInfo) {
   if (!tradeInfo) return "—";
   if (tradeInfo.status === "OPEN") {
@@ -98,6 +152,7 @@ function pageTradeStatus(tradeInfo) {
   return "—";
 }
 
+// ✅ Stats — “last 50” echt nieuwste 50
 function computeStatsFromSells(sellsOldestToNewest) {
   const arr = Array.isArray(sellsOldestToNewest) ? sellsOldestToNewest : [];
   const totalSells = arr.length;
@@ -106,7 +161,15 @@ function computeStatsFromSells(sellsOldestToNewest) {
   const last50 = newestFirst.slice(0, 50);
 
   if (!last50.length) {
-    return { totalSells, n50: 0, winrate50: 0, avgPnl50: 0, avgBarsOpen50: 0, wins50: 0, losses50: 0 };
+    return {
+      totalSells,
+      n50: 0,
+      winrate50: 0,
+      avgPnl50: 0,
+      avgBarsOpen50: 0,
+      wins50: 0,
+      losses50: 0,
+    };
   }
 
   let wins = 0;
@@ -136,7 +199,7 @@ function computeStatsFromSells(sellsOldestToNewest) {
 }
 
 // --------------------
-// Discord helpers (jouw versie)
+// Discord helpers
 // --------------------
 async function sendDiscord(webhook, content) {
   const url = String(webhook || "").trim();
@@ -217,14 +280,29 @@ async function fetchBtc() {
   const arr = await fetchJson(url);
   const b = arr?.[0] || {};
 
-  const chg1h = n(b?.price_change_percentage_1h_in_currency ?? b?.price_change_percentage_1h ?? 0, 0);
-  const chg24 = n(b?.price_change_percentage_24h_in_currency ?? b?.price_change_percentage_24h ?? 0, 0);
+  const chg1h = n(
+    b?.price_change_percentage_1h_in_currency ??
+      b?.price_change_percentage_1h ??
+      0,
+    0
+  );
+
+  const chg24 = n(
+    b?.price_change_percentage_24h_in_currency ??
+      b?.price_change_percentage_24h ??
+      0,
+    0
+  );
 
   const high = n(b?.high_24h, 0);
   const low = n(b?.low_24h, 0);
   const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-  return { chg1h: +chg1h.toFixed(3), chg24: +chg24.toFixed(3), range24: +range24.toFixed(3) };
+  return {
+    chg1h: +chg1h.toFixed(3),
+    chg24: +chg24.toFixed(3),
+    range24: +range24.toFixed(3),
+  };
 }
 
 function normBtcState(x) {
@@ -253,8 +331,14 @@ function computeStageCap(mode, btcState) {
   if (st === "BULL" && m === "bull") allowFull = true;
   if (st === "BEAR" && m === "bear") allowFull = true;
 
-  if (allowFull) return { cap: false, capStage: "FULL", reason: `BTC ${st}: ${m} mag door naar ALMOST/ENTRY` };
-  if (st === "NEUTRAL") return { cap: true, capStage, reason: "BTC NEUTRAL: scannen + OB door, maar max BUILDUP (prep-mode)" };
+  if (allowFull) {
+    return { cap: false, capStage: "FULL", reason: `BTC ${st}: ${m} mag door naar ALMOST/ENTRY` };
+  }
+
+  if (st === "NEUTRAL") {
+    return { cap: true, capStage, reason: "BTC NEUTRAL: scannen + OB door, maar max BUILDUP (prep-mode)" };
+  }
+
   return { cap: true, capStage, reason: `BTC ${st}: ${m} blijft prep-mode (max BUILDUP)` };
 }
 
@@ -268,8 +352,8 @@ function btcConfidenceAdjust(mode, btcState, btcBase, SETTINGS) {
 
   const chg1h = n(btcBase?.chg1h, 0);
   const m = String(mode || "").toLowerCase();
-  const wantUp = m === "bull";
 
+  const wantUp = m === "bull";
   const pos = chg1h >= fine1hAbs;
   const neg = chg1h <= -fine1hAbs;
 
@@ -287,7 +371,10 @@ function btcConfidenceAdjust(mode, btcState, btcBase, SETTINGS) {
 // --------------------
 async function fetchCgTop(limit) {
   const per = Math.min(250, Math.max(50, Number(limit || 250)));
-  const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=${per}&page=1&sparkline=false&price_change_percentage=1h,24h`;
+  const url =
+    `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc` +
+    `&per_page=${per}&page=1&sparkline=false&price_change_percentage=1h,24h`;
+
   const arr = await fetchJson(url);
 
   return (arr || []).map((c) => {
@@ -296,8 +383,19 @@ async function fetchCgTop(limit) {
     const low = n(c?.low_24h, 0);
     const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-    const change24 = n(c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0, 0);
-    const change1h = n(c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0, 0);
+    const change24 = n(
+      c?.price_change_percentage_24h_in_currency ??
+        c?.price_change_percentage_24h ??
+        0,
+      0
+    );
+
+    const change1h = n(
+      c?.price_change_percentage_1h_in_currency ??
+        c?.price_change_percentage_1h ??
+        0,
+      0
+    );
 
     return {
       id: c?.id,
@@ -367,6 +465,7 @@ async function getObForSymbol({ core, mode, symbol, obMap }) {
 function adaptiveEntryThresholds(core, c, vm) {
   const base = core?.SETTINGS?.entry || {};
   const mc = n(c?.marketCap, 0);
+
   const tiers = Array.isArray(base?.adaptiveTiers) ? base.adaptiveTiers : null;
 
   const oneTier = {
@@ -429,9 +528,20 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
 
   const ok = total >= need && same >= minAgree;
 
-  S[sym] = { ...prev, scans, hist, lastSeenAt: nowTs, stage: st };
+  S[sym] = {
+    ...prev,
+    scans,
+    hist,
+    lastSeenAt: nowTs,
+    stage: st,
+  };
 
-  return { state: S, prevStage, stageScans: scans, consistency: { ok, ratio, same, total, need, minAgree } };
+  return {
+    state: S,
+    prevStage,
+    stageScans: scans,
+    consistency: { ok, ratio, same, total, need, minAgree },
+  };
 }
 
 function canNotify(stateEntry, nowTs) {
@@ -452,10 +562,12 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const mode = getMode(req); // bull/bear
+    const mode = getMode(req); // "bull" or "bear"
     const core = await import(`../lib/_core_${mode}.js`);
+
     const now = Date.now();
 
+    // BTC
     const btcBase = await fetchBtc();
     const btcState = computeBtcStateLocal(btcBase, core.SETTINGS);
     const btcTune = btcConfidenceAdjust(mode, btcState, btcBase, core.SETTINGS);
@@ -490,7 +602,9 @@ export default async function handler(req, res) {
 
       let stageBase = stageFromSwing(mode, { ...c, vm });
 
+      // OB
       const ob = await getObForSymbol({ core, mode, symbol: sym, obMap });
+
       const obTs = n(ob?.ob?.ts ?? ob?.ts, 0);
       const obAge = obTs > 0 ? now - obTs : Number.POSITIVE_INFINITY;
       const obFresh = obTs > 0 && obAge <= OB_MAX_AGE_MS;
@@ -511,8 +625,10 @@ export default async function handler(req, res) {
       const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
       const thr = adaptiveEntryThresholds(core, c, vm);
 
+      // Funnel stage + gates
       let almostGate = "n/a";
       let entryGate = "n/a";
+
       let stage = stageBase;
 
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
@@ -522,12 +638,18 @@ export default async function handler(req, res) {
       } else {
         let obSamples = null;
 
+        // ALMOST slope gate
         if (stageBase === "ALMOST") {
           obSamples = await kv.get(core.keyObSamples(mode, sym));
 
           const slopeCheck =
             typeof core.checkObSlopeGate === "function"
-              ? core.checkObSlopeGate({ stage: "almost", mode, obSamples, settings: core.SETTINGS })
+              ? core.checkObSlopeGate({
+                  stage: "almost",
+                  mode,
+                  obSamples,
+                  settings: core.SETTINGS,
+                })
               : { ok: true };
 
           if (!slopeCheck.ok) {
@@ -539,6 +661,7 @@ export default async function handler(req, res) {
           }
         }
 
+        // ENTRY gate
         if (stageBase === "ALMOST") {
           if (!ob) entryGate = "OB missing";
           else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
@@ -552,7 +675,12 @@ export default async function handler(req, res) {
 
             const slopeCheck2 =
               typeof core.checkObSlopeGate === "function"
-                ? core.checkObSlopeGate({ stage: "entry", mode, obSamples, settings: core.SETTINGS })
+                ? core.checkObSlopeGate({
+                    stage: "entry",
+                    mode,
+                    obSamples,
+                    settings: core.SETTINGS,
+                  })
                 : { ok: true };
 
             const pressureDelta = n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0);
@@ -582,6 +710,7 @@ export default async function handler(req, res) {
 
       let tradeInfo = null;
 
+      // manage OPEN
       if (tradeExisting && tradeExisting?.status === "OPEN") {
         const entryPrice = n(tradeExisting.entryPrice, 0);
         const barsOpen = n(tradeExisting.barsOpen, 0) + 1;
@@ -604,7 +733,9 @@ export default async function handler(req, res) {
         const obBreakHit = obBadStreak >= 2;
         const timeStopHit = barsOpen >= TIME_STOP_SCANS && maxPnl < TIME_STOP_MAXPNL;
 
+        // trailing
         const drawdown = maxPnl - pnl;
+
         let trailHit = false;
         let trailCfg = null;
 
@@ -640,7 +771,7 @@ export default async function handler(req, res) {
           });
 
           // ✅ EVENT: trade_close
-          await pushEvent("main", {
+          await safePushEvent("main", {
             type: "trade_close",
             mode,
             symbol: sym,
@@ -733,7 +864,7 @@ export default async function handler(req, res) {
           await kv.set(tKey, tradeObj, { ex: TRADE_TTL_SEC });
 
           // ✅ EVENT: trade_open
-          await pushEvent("main", {
+          await safePushEvent("main", {
             type: "trade_open",
             mode,
             symbol: sym,
@@ -762,15 +893,20 @@ export default async function handler(req, res) {
       const prevStage = up(stFix.prevStage);
       const currStage = up(stage);
 
-      // ✅ EVENT: stage_change (alleen als hij echt verandert)
+      // ✅ EVENT: stage_change
       if (prevStage && prevStage !== currStage) {
-        await pushEvent("main", {
+        await safePushEvent("main", {
           type: "stage_change",
           mode,
           symbol: sym,
           from: prevStage,
           to: currStage,
-          reason: currStage === "ENTRY" ? entryGate : (currStage === "ALMOST" ? almostGate : "stage_logic"),
+          reason:
+            currStage === "ENTRY"
+              ? entryGate
+              : currStage === "ALMOST"
+              ? almostGate
+              : "stage_logic",
           confidence,
           vm,
         });
@@ -795,6 +931,7 @@ export default async function handler(req, res) {
         }
       }
 
+      // open trades tabel
       if (tradeInfo?.status === "OPEN") {
         openTrades.push({
           symbol: sym,
@@ -882,15 +1019,15 @@ export default async function handler(req, res) {
 
     const discord = await flushNotices(noticesByHook);
 
-    const btcCfg = safeObj(core.SETTINGS?.btc) || {};
-    const neutral24Pct = n(btcCfg.neutral24Pct, 1.0);
-    const fine1hAbsPct = n(btcCfg.fine1hAbsPct, 0.25);
-    const confBoost = n(btcCfg.confBoost, 4);
-
     const sellsRaw = (await kv.get(kSells(mode))) || [];
     const sellsArr = Array.isArray(sellsRaw) ? sellsRaw.slice(-SELLS_KEEP) : [];
     const recentSells = sellsArr.slice().reverse();
     const stats = computeStatsFromSells(sellsArr);
+
+    const btcCfg = safeObj(core.SETTINGS?.btc) || {};
+    const neutral24Pct = n(btcCfg.neutral24Pct, 1.0);
+    const fine1hAbsPct = n(btcCfg.fine1hAbsPct, 0.25);
+    const confBoost = n(btcCfg.confBoost, 4);
 
     const result = {
       ok: true,
