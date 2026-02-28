@@ -1,21 +1,18 @@
-// portfolio.js
+// /portfolio.js
 const el = (id) => document.getElementById(id);
 
 const API = "/api/portfolio/latest";
 
 el("refreshBtn").onclick = () => load();
 
-function fmt(n) { return (Number(n) || 0).toFixed(2); }
-function pct(n) {
-  n = Number(n) || 0;
-  const s = n >= 0 ? "+" : "";
-  return s + fmt(n) + "%";
-}
-function pill(txt) { return `<span class="pill">${txt}</span>`; }
+function fmt(n){ return (Number(n)||0).toFixed(2); }
+function pct(n){ n=Number(n)||0; const s=n>=0?"+":""; return s+fmt(n)+"%"; }
 
-function pnlSpan(n) {
-  n = Number(n) || 0;
-  const cls = n >= 0 ? "pnlPos" : "pnlNeg";
+function pill(txt){ return `<span class="pill">${txt}</span>`; }
+
+function pnlSpan(n){
+  n = Number(n)||0;
+  const cls = n>=0 ? "pnlPos" : "pnlNeg";
   return `<span class="${cls}">${pct(n)}</span>`;
 }
 
@@ -25,48 +22,40 @@ function usd6(x) {
   return v.toFixed(6);
 }
 
-function safeStr(x) { return String(x ?? ""); }
-
-function rowOpen(t) {
+function rowOpen(t){
   return `
-  <tr data-id="${t.id || ""}" data-type="open">
-    <td>
-      <b>${safeStr(t.symbol)}</b>
-      <div class="muted">${safeStr(t.funnel)} • ${safeStr(t.mode).toUpperCase()}</div>
-    </td>
+  <tr data-id="${t.id}" data-type="open">
+    <td><b>${t.symbol}</b><div class="muted">${t.funnel} • ${String(t.mode||"").toUpperCase()}</div></td>
     <td>$${usd6(t.entryPrice)}</td>
     <td>$${usd6(t.lastPrice)}</td>
-    <td class="muted">$${usd6(t.peakPrice)} / $${usd6(t.troughPrice)}</td>
+    <td>${pnlSpan(t.pnlPct)}</td>
     <td>${pill("OPEN")}</td>
   </tr>`;
 }
 
-function rowClosed(t) {
+function rowClosed(t){
   return `
-  <tr data-id="${t.id || ""}" data-type="closed">
-    <td>
-      <b>${safeStr(t.symbol)}</b>
-      <div class="muted">${safeStr(t.funnel)} • ${safeStr(t.mode).toUpperCase()}</div>
-    </td>
+  <tr data-id="${t.id}" data-type="closed">
+    <td><b>${t.symbol}</b><div class="muted">${t.funnel} • ${String(t.mode||"").toUpperCase()}</div></td>
     <td>$${usd6(t.entryPrice)} → $${usd6(t.exitPrice)}</td>
     <td>${pnlSpan(t.pnlPct)}</td>
-    <td class="muted">${safeStr(t.exitReason || "")}</td>
+    <td class="muted">${t.exitReason || ""}</td>
   </tr>`;
 }
 
-function tableOpen(list) {
-  if (!list || !list.length) return `<div class="empty">Geen open trades.</div>`;
+function tableOpen(list){
+  if(!list || !list.length) return `<div class="empty">Geen open trades.</div>`;
   return `
   <table class="table">
     <thead><tr>
-      <th>Coin</th><th>Entry</th><th>Last</th><th>Peak/Trough</th><th>Status</th>
+      <th>Coin</th><th>Entry</th><th>Last</th><th>PnL</th><th>Status</th>
     </tr></thead>
     <tbody>${list.map(rowOpen).join("")}</tbody>
   </table>`;
 }
 
-function tableClosed(list) {
-  if (!list || !list.length) return `<div class="empty">Nog geen closed trades.</div>`;
+function tableClosed(list){
+  if(!list || !list.length) return `<div class="empty">Nog geen closed trades.</div>`;
   return `
   <table class="table">
     <thead><tr>
@@ -76,64 +65,53 @@ function tableClosed(list) {
   </table>`;
 }
 
-function details(t) {
+function details(t){
   const entry = t.entryMeta || {};
-  const exit = t.exitMeta || {};
+  const live = t.liveMeta || {};
 
   return `
-  <div class="panelHint"><b>${safeStr(t.symbol)}</b> • ${safeStr(t.funnel)} • ${safeStr(t.mode).toUpperCase()} • ${safeStr(t.status)}</div>
-
+  <div class="panelHint"><b>${t.symbol}</b> • ${t.funnel} • ${String(t.mode||"").toUpperCase()} • ${t.status}</div>
   <pre>
 ENTRY
 - price: $${usd6(t.entryPrice)}
 - confidence: ${entry.confidence ?? "-"}
-- consistency: ${Math.round((entry.consistencyRatio || 0) * 100)}%
-- obScore: ${Number(entry.obScore || 0).toFixed(3)}
+- vm: ${fmt(entry.vm || 0)}
+- obScore: ${fmt(entry.obScore || 0)}
 - spread: ${fmt(entry.spreadPct || 0)}%
 - depth1%: $${Math.round(Number(entry.depthMinUsd1p || 0)).toLocaleString()}
-- vm: ${fmt(entry.vm || 0)}
-- volAcc: ${fmt(entry.volAcc || 0)}
-- gate: ${safeStr(entry.entryGate || "-")}
+- gate: ${entry.entryGate || "-"}
 
-${String(t.status).toUpperCase() === "CLOSED"
-    ? `EXIT
-- price: $${usd6(t.exitPrice)}
-- reason: ${safeStr(t.exitReason || "-")}
-- pnl: ${pct(t.pnlPct || 0)}
-- netPnl: ${pct(t.netPnlPct || 0)}
-- slippage: ${pct(t.slippagePct || 0)}
-`
-    : `LIVE
-- last: $${usd6(t.lastPrice)}
-- peak: $${usd6(t.peakPrice)}
-- trough: $${usd6(t.troughPrice)}
-`}</pre>`;
+LIVE
+- stage: ${live.stage || "-"}
+- obStatus: ${live.obStatus || "-"}
+- obReason: ${live.obReason || "-"}
+  </pre>`;
 }
 
 let CACHE = null;
 
-function bindClicks() {
+function bindClicks(){
   const rows = document.querySelectorAll("table.table tbody tr");
-  for (const tr of rows) {
+  for(const tr of rows){
     tr.onclick = () => {
       const id = tr.getAttribute("data-id");
       const type = tr.getAttribute("data-type");
-      if (!CACHE) return;
+      if(!CACHE) return;
 
       let t = null;
-      if (type === "open") t = (CACHE.open || []).find((x) => String(x.id) === String(id));
-      if (type === "closed") t = (CACHE.closed || []).find((x) => String(x.id) === String(id));
-      if (!t) return;
+      if(type === "open") t = (CACHE.open || []).find(x => x.id === id);
+      if(type === "closed") t = (CACHE.closed || []).find(x => x.id === id);
+      if(!t) return;
 
       el("detailsBox").innerHTML = details(t);
     };
   }
 }
 
-async function load() {
+async function load(){
   el("statusLine").textContent = "laden…";
-  try {
-    const r = await fetch(API, { cache: "no-store" });
+  try{
+    const r = await fetch(API, { cache:"no-store" });
     const j = await r.json();
     CACHE = j;
 
@@ -141,13 +119,13 @@ async function load() {
     const closed = j.closed || [];
 
     el("statusLine").textContent =
-      `Open trades: ${open.length} • Closed trades: ${closed.length} • Update: ${new Date(j.ts || Date.now()).toLocaleString()}`;
+      `Open trades: ${open.length} • Closed trades: ${closed.length} • Update: ${new Date(j.ts||Date.now()).toLocaleString()}`;
 
     el("openBox").innerHTML = tableOpen(open);
     el("closedBox").innerHTML = tableClosed(closed);
 
     bindClicks();
-  } catch (e) {
+  }catch(e){
     el("statusLine").textContent = "fout bij laden (check Vercel logs)";
   }
 }
