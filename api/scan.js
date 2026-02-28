@@ -1,4 +1,4 @@
-// /api/scan.js
+/* EOF: /api/scan.js */
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
 import { pushEvent } from "../lib/_analytics.js";
@@ -44,6 +44,11 @@ function fmtUsd(x, d = 6) {
   const v = Number(x);
   if (!Number.isFinite(v)) return "—";
   return `$${v.toFixed(d)}`;
+}
+
+// ✅ tradeId generator (zodat analyzer ENTRY↔SELL kan linken)
+function makeTradeId(mode, sym) {
+  return `trd_${String(mode)}_${String(sym)}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 // ✅ analytics mag scan nooit slopen
@@ -622,13 +627,16 @@ export default async function handler(req, res) {
         obValid: !!obValid,
       });
 
-      const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
+      const confidence = Math.max(
+        0,
+        Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0))
+      );
+
       const thr = adaptiveEntryThresholds(core, c, vm);
 
       // Funnel stage + gates
       let almostGate = "n/a";
       let entryGate = "n/a";
-
       let stage = stageBase;
 
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
@@ -757,8 +765,11 @@ export default async function handler(req, res) {
           await kv.del(tKey);
           await kv.set(cdKey, { ts: now, reason: exit.reason }, { ex: REENTRY_COOLDOWN_SEC });
 
+          const tradeId = String(tradeExisting.tradeId || "");
+
           await logSell(mode, {
             ts: now,
+            tradeId,
             symbol: sym,
             side: String(mode).toLowerCase(),
             reason: exit.reason,
@@ -770,9 +781,12 @@ export default async function handler(req, res) {
             extra: exit?.trailCfg ? { trailCfg: exit.trailCfg } : undefined,
           });
 
-          // ✅ EVENT: trade_close
+          const givebackPct = Math.max(0, (maxPnl - pnl) * 100);
+
+          // ✅ EVENT: trade_close (met tradeId + giveback)
           await safePushEvent("main", {
             type: "trade_close",
+            tradeId,
             mode,
             symbol: sym,
             reason: exit.reason,
@@ -780,6 +794,7 @@ export default async function handler(req, res) {
             exitPrice: priceNow,
             pnlPct: pnl * 100,
             maxPnlPct: maxPnl * 100,
+            givebackPct,
             barsOpen,
           });
 
@@ -788,6 +803,7 @@ export default async function handler(req, res) {
             `**${sym}** (${mode.toUpperCase()})  ` +
             `**SELL** • ${exit.reason}  ` +
             `pnl ${fmtPct(pnl * 100, 2)} • max ${fmtPct(maxPnl * 100, 2)} • ` +
+            `giveback ${fmtPct(givebackPct, 2)} • ` +
             `price ${fmtUsd(priceNow, 6)}`;
           pushNotice(noticesByHook, hook, line);
 
@@ -817,6 +833,7 @@ export default async function handler(req, res) {
 
           tradeInfo = {
             status: "OPEN",
+            tradeId: String(updated.tradeId || ""),
             entryPrice,
             entryAt: n(updated.entryAt, 0),
             barsOpen,
@@ -835,8 +852,11 @@ export default async function handler(req, res) {
         const isEntrySignal = stage === "ENTRY" && allowEntry;
 
         if (isEntrySignal && !inCooldown && priceNow > 0) {
+          const tradeId = makeTradeId(mode, sym);
+
           const tradeObj = {
             status: "OPEN",
+            tradeId,
             mode,
             symbol: sym,
             entryPrice: priceNow,
@@ -863,9 +883,10 @@ export default async function handler(req, res) {
 
           await kv.set(tKey, tradeObj, { ex: TRADE_TTL_SEC });
 
-          // ✅ EVENT: trade_open
+          // ✅ EVENT: trade_open (met tradeId)
           await safePushEvent("main", {
             type: "trade_open",
+            tradeId,
             mode,
             symbol: sym,
             entryPrice: priceNow,
@@ -882,7 +903,15 @@ export default async function handler(req, res) {
             `price ${fmtUsd(priceNow, 6)}`;
           pushNotice(noticesByHook, hook, line);
 
-          tradeInfo = { status: "OPEN", entryPrice: priceNow, entryAt: now, barsOpen: 0, pnl: 0, maxPnl: 0 };
+          tradeInfo = {
+            status: "OPEN",
+            tradeId,
+            entryPrice: priceNow,
+            entryAt: now,
+            barsOpen: 0,
+            pnl: 0,
+            maxPnl: 0,
+          };
         }
       }
 
@@ -916,7 +945,8 @@ export default async function handler(req, res) {
 
       if (!hasOpenTrade && prevStage) {
         const doNotify = canNotify(prevEntry, now);
-        const isFunnelStage = currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
+        const isFunnelStage =
+          currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
 
         if (doNotify && isFunnelStage && prevStage !== currStage) {
           const hook = stageWebhook(currStage);
@@ -936,6 +966,7 @@ export default async function handler(req, res) {
         openTrades.push({
           symbol: sym,
           side: String(mode).toLowerCase(),
+          tradeId: String(tradeInfo.tradeId || ""),
           entryPrice: n(tradeInfo.entryPrice, 0),
           entryAt: n(tradeInfo.entryAt, 0),
           barsOpen: n(tradeInfo.barsOpen, 0),
@@ -1051,7 +1082,12 @@ export default async function handler(req, res) {
           reentryCooldownSec: REENTRY_COOLDOWN_SEC,
           tradeTtlSec: TRADE_TTL_SEC,
           sellsLogKey: kSells(mode),
-          exits: ["HARD_STOP(range24)", "TRAILING_TP(maxPnl + drawdown)", "OB_BREAK_2X(fresh)", "TIME_STOP(no momentum)"],
+          exits: [
+            "HARD_STOP(range24)",
+            "TRAILING_TP(maxPnl + drawdown)",
+            "OB_BREAK_2X(fresh)",
+            "TIME_STOP(no momentum)",
+          ],
           trailing: {
             tp1Pct: TP1_PNL * 100,
             tp2Pct: TP2_PNL * 100,
@@ -1072,7 +1108,11 @@ export default async function handler(req, res) {
       trading: {
         openTrades,
         recentSells,
-        stats: { ...stats, winrate50Pct: stats.winrate50 * 100, avgPnl50Pct: stats.avgPnl50 * 100 },
+        stats: {
+          ...stats,
+          winrate50Pct: stats.winrate50 * 100,
+          avgPnl50Pct: stats.avgPnl50 * 100,
+        },
       },
       obMap: obMap ? { ok: true, size: Object.keys(obMap).length } : { ok: false },
       discord: {
@@ -1081,7 +1121,8 @@ export default async function handler(req, res) {
         failed: discord.failed,
         errors: (discord.details || []).slice(0, 5),
       },
-      note: "Scan logs stage_change + trade_open/close events naar cc:events:main:list (voor analyzer).",
+      note:
+        "Scan logs stage_change + trade_open/close (met tradeId + giveback) events naar cc:events:main:list (voor analyzer).",
     };
 
     await kv.set(core.keyLatest(mode), result);
@@ -1096,3 +1137,4 @@ export default async function handler(req, res) {
     return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
+/* EOF */
