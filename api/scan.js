@@ -12,9 +12,7 @@ async function fetchJson(url) {
   const r = await fetch(url, { headers: { accept: "application/json" } });
   const t = await r.text();
   let j = null;
-  try {
-    j = JSON.parse(t);
-  } catch {}
+  try { j = JSON.parse(t); } catch {}
   if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 160)}`);
   return j;
 }
@@ -53,11 +51,7 @@ function makeTradeId(mode, sym) {
 
 // ✅ analytics mag scan nooit slopen
 async function safePushEvent(funnel, data) {
-  try {
-    await pushEvent(funnel, data);
-  } catch {
-    // swallow
-  }
+  try { await pushEvent(funnel, data); } catch {}
 }
 
 // ✅ OB max age (stale gate)
@@ -72,7 +66,7 @@ const NOTIFY_COOLDOWN_MS = 25 * 60 * 1000; // 25 min per coin
 const TRADE_TTL_SEC = 60 * 60 * 48; // 48 uur
 const REENTRY_COOLDOWN_SEC = 60 * 60; // 1 uur rust na SELL
 
-const TIME_STOP_SCANS = 6; // 6 scans = 3 uur
+const TIME_STOP_SCANS = 6; // 6 scans = 3 uur (bij 30m cadence)
 const TIME_STOP_MAXPNL = 0.015; // 1.5%
 
 const HOLD_AFTER_SCANS = 2; // 1x HOLD melding na 2 scans open
@@ -182,7 +176,7 @@ function computeStatsFromSells(sellsOldestToNewest) {
   let barsSum = 0;
 
   for (const s of last50) {
-    const pnl = Number(s?.pnlPct || 0);
+    const pnl = Number(s?.pnlPct || 0); // fraction
     const bars = Number(s?.barsOpen || 0);
     if (pnl > 0) wins++;
     pnlSum += pnl;
@@ -568,7 +562,10 @@ export default async function handler(req, res) {
     if (!requireSecret(req, res)) return;
 
     const mode = getMode(req); // "bull" or "bear"
-    const core = await import(`../lib/_core_${mode}.js`);
+
+    // ✅ robust import (werkt of core files named exports hebben of default export)
+    const coreMod = await import(`../lib/_core_${mode}.js`);
+    const core = coreMod?.default ? coreMod.default : coreMod;
 
     const now = Date.now();
 
@@ -639,6 +636,7 @@ export default async function handler(req, res) {
       let entryGate = "n/a";
       let stage = stageBase;
 
+      // ✅ cap (BTC neutral/opposite): nooit ALMOST/ENTRY naar buiten
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
         stage = "BUILDUP";
         almostGate = `capped: ${cap.capStage}`;
@@ -669,7 +667,7 @@ export default async function handler(req, res) {
           }
         }
 
-        // ENTRY gate
+        // ENTRY gate (pas als base ALMOST is)
         if (stageBase === "ALMOST") {
           if (!ob) entryGate = "OB missing";
           else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
@@ -773,14 +771,15 @@ export default async function handler(req, res) {
             symbol: sym,
             side: String(mode).toLowerCase(),
             reason: exit.reason,
-            pnlPct: pnl,
-            maxPnlPct: maxPnl,
+            pnlPct: pnl,       // fraction
+            maxPnlPct: maxPnl, // fraction
             entryPrice,
             exitPrice: priceNow,
             barsOpen,
             extra: exit?.trailCfg ? { trailCfg: exit.trailCfg } : undefined,
           });
 
+          // ✅ giveback in % (zoals analyzer verwacht)
           const givebackPct = Math.max(0, (maxPnl - pnl) * 100);
 
           // ✅ EVENT: trade_close (met tradeId + giveback)
@@ -943,6 +942,7 @@ export default async function handler(req, res) {
 
       const hasOpenTrade = tradeInfo?.status === "OPEN";
 
+      // Discord funnel-notify (niet spammen tijdens OPEN trade)
       if (!hasOpenTrade && prevStage) {
         const doNotify = canNotify(prevEntry, now);
         const isFunnelStage =
@@ -970,8 +970,8 @@ export default async function handler(req, res) {
           entryPrice: n(tradeInfo.entryPrice, 0),
           entryAt: n(tradeInfo.entryAt, 0),
           barsOpen: n(tradeInfo.barsOpen, 0),
-          pnlPct: n(tradeInfo.pnl, 0),
-          maxPnlPct: n(tradeInfo.maxPnl, 0),
+          pnlPct: n(tradeInfo.pnl, 0),      // fraction
+          maxPnlPct: n(tradeInfo.maxPnl, 0),// fraction
           price: priceNow,
           confidence,
           vm,
