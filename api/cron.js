@@ -11,29 +11,18 @@ import { formatStage } from "../lib/formatDiscord.js";
 
 export const config = RUNTIME_CONFIG;
 
-// --------------------
-// mini response object (voor interne handler-calls)
-// --------------------
 function makeRes() {
   return {
     statusCode: 200,
     headers: {},
     body: "",
-    setHeader(k, v) {
-      this.headers[String(k).toLowerCase()] = v;
-    },
-    end(txt) {
-      this.body = txt || "";
-    },
+    setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; },
+    end(txt) { this.body = txt || ""; },
   };
 }
 
 function safeJson(txt) {
-  try {
-    return JSON.parse(txt);
-  } catch {
-    return { ok: false, raw: String(txt || "") };
-  }
+  try { return JSON.parse(txt); } catch { return { ok: false, raw: String(txt || "") }; }
 }
 
 function q(req, key, def) {
@@ -56,9 +45,6 @@ function stageSymbols(arr) {
     .slice(0, 50);
 }
 
-// --------------------
-// Discord MAIN tables (anti-spam: alleen als lijst veranderd is)
-// --------------------
 async function notifyMainDiscord(mode, scanResult) {
   const funnel = scanResult?.funnel || {};
   const radar = funnel.radar || [];
@@ -109,24 +95,10 @@ async function notifyMainDiscord(mode, scanResult) {
 }
 
 function pickSecret() {
-  return (
-    process.env.CC_SECRET ||
-    process.env.SECRET ||
-    process.env.API_SECRET ||
-    process.env.CRON_SECRET ||
-    ""
-  );
+  return (process.env.CC_SECRET || process.env.SECRET || process.env.API_SECRET || process.env.CRON_SECRET || "");
 }
 
-function makeInternalReq({ base, path, mode, max, radar, secret }) {
-  const qs = [];
-  qs.push(`mode=${encodeURIComponent(mode)}`);
-  if (max !== undefined) qs.push(`max=${encodeURIComponent(String(max))}`);
-  if (radar !== undefined) qs.push(`radar=${encodeURIComponent(String(radar))}`);
-  if (secret) qs.push(`secret=${encodeURIComponent(secret)}`);
-
-  const url = `${base}${path}?${qs.join("&")}`;
-
+function makeInternalReq({ mode, max, radar, secret }) {
   const query = { mode };
   if (max !== undefined) query.max = String(max);
   if (radar !== undefined) query.radar = String(radar);
@@ -138,77 +110,33 @@ function makeInternalReq({ base, path, mode, max, radar, secret }) {
     headers["authorization"] = `Bearer ${secret}`;
   }
 
-  return { method: "GET", url, query, headers };
+  return { method: "GET", query, headers };
 }
 
 function assertOk(name, parsed, resObj) {
   if (parsed?.ok === false) {
-    throw new Error(
-      `${name} returned ok:false (status ${resObj?.statusCode || "?"}) :: ${
-        parsed?.error || parsed?.msg || parsed?.reason || parsed?.raw || "unknown"
-      }`
-    );
+    throw new Error(`${name} returned ok:false (status ${resObj?.statusCode || "?"}) :: ${parsed?.error || parsed?.raw || "unknown"}`);
   }
-  if (parsed?.error) {
-    throw new Error(`${name} error :: ${parsed.error}`);
-  }
+  if (parsed?.error) throw new Error(`${name} error :: ${parsed.error}`);
 }
 
-// --------------------
-// KV lock (voorkomt overlap cron-runs)
-// --------------------
 const CRON_LOCK_KEY = "lock:cron";
-const CRON_LOCK_TTL_SEC = 25 * 60; // 25 min (past bij 30m cadence, maar vangt overlap af)
+const CRON_LOCK_TTL_SEC = 25 * 60;
 
 async function acquireLock() {
-  // NX = alleen zetten als key nog niet bestaat
-  // Upstash KV ondersteunt set(key, value, { nx: true, ex: seconds })
-  const ok = await kv.set(CRON_LOCK_KEY, String(Date.now()), {
-    nx: true,
-    ex: CRON_LOCK_TTL_SEC,
-  });
+  const ok = await kv.set(CRON_LOCK_KEY, String(Date.now()), { nx: true, ex: CRON_LOCK_TTL_SEC });
   return !!ok;
 }
 
 async function releaseLock() {
-  try {
-    await kv.del(CRON_LOCK_KEY);
-  } catch {}
+  try { await kv.del(CRON_LOCK_KEY); } catch {}
 }
 
-// --------------------
-// run 1 mode end-to-end
-// --------------------
 async function runOneMode(mode, max, radar, secret) {
-  const base = "http://localhost";
+  const reqOb = makeInternalReq({ mode, max, radar, secret });
+  const reqMap = makeInternalReq({ mode, secret });
+  const reqScan = makeInternalReq({ mode, max, radar, secret });
 
-  const reqOb = makeInternalReq({
-    base,
-    path: "/api/ob/sampler",
-    mode,
-    max,
-    radar,
-    secret,
-  });
-
-  const reqMap = makeInternalReq({
-    base,
-    path: "/api/ob/map_refresh",
-    mode,
-    secret,
-  });
-
-  const reqScan = makeInternalReq({
-    base,
-    path: "/api/scan",
-    mode,
-    max,
-    radar,
-    secret,
-  });
-
-  // ✅ volgorde binnen 1 mode blijft hetzelfde (jouw 30m design)
-  // 1) OB sampler -> 2) map_refresh -> 3) scan -> 4) discord
   const resOb = makeRes();
   await obSampler(reqOb, resOb);
   const obOut = safeJson(resOb.body);
@@ -226,70 +154,39 @@ async function runOneMode(mode, max, radar, secret) {
 
   const discord = await notifyMainDiscord(mode, scanOut);
 
-  return { mode, ob: obOut, obMap: mapOut, scan: scanOut, discord };
+  return { ok: true, mode, ob: obOut, obMap: mapOut, scan: scanOut, discord };
 }
 
-// --------------------
-// handler
-// --------------------
 export default async function handler(req, res) {
   const startedAt = Date.now();
   try {
     if (!requireSecret(req, res)) return;
 
-    // ✅ 1 lock voor alles: voorkomt dat 2 cron-runs tegelijk rommel maken
     const locked = await acquireLock();
     if (!locked) {
       res.statusCode = 200;
       res.setHeader("content-type", "application/json; charset=utf-8");
       res.setHeader("cache-control", "no-store");
-      return res.end(
-        JSON.stringify({
-          ok: true,
-          skipped: true,
-          reason: "cron already running (lock active)",
-          ts: Date.now(),
-        })
-      );
+      return res.end(JSON.stringify({ ok: true, skipped: true, reason: "cron already running (lock active)", ts: Date.now() }));
     }
 
     const secret = pickSecret();
     const mode = normMode(req?.query?.mode);
-
     const max = q(req, "max", "20");
     const radar = q(req, "radar", "40");
 
     let out = null;
 
     if (mode === "both") {
-      // ✅ HIER: bull + bear ECHT tegelijk (parallel)
       const [bullRes, bearRes] = await Promise.allSettled([
         runOneMode("bull", max, radar, secret),
         runOneMode("bear", max, radar, secret),
       ]);
 
-      // Als 1 faalt, wil je dat direct zien
-      const bull =
-        bullRes.status === "fulfilled"
-          ? bullRes.value
-          : { ok: false, error: String(bullRes.reason?.message || bullRes.reason || "bull failed") };
+      const bull = bullRes.status === "fulfilled" ? bullRes.value : { ok: false, error: String(bullRes.reason?.message || bullRes.reason || "bull failed") };
+      const bear = bearRes.status === "fulfilled" ? bearRes.value : { ok: false, error: String(bearRes.reason?.message || bearRes.reason || "bear failed") };
 
-      const bear =
-        bearRes.status === "fulfilled"
-          ? bearRes.value
-          : { ok: false, error: String(bearRes.reason?.message || bearRes.reason || "bear failed") };
-
-      // Als één faalt -> overall ok:false (zodat je in logs meteen ziet dat er iets mis is)
-      const ok = !(bull?.ok === false || bear?.ok === false);
-
-      out = {
-        ok,
-        ts: Date.now(),
-        mode: "both",
-        params: { max, radar },
-        bull,
-        bear,
-      };
+      out = { ok: bull.ok && bear.ok, ts: Date.now(), mode: "both", params: { max, radar }, bull, bear };
     } else {
       const one = await runOneMode(mode, max, radar, secret);
       out = { ok: true, ts: Date.now(), mode, params: { max, radar }, ...one };
@@ -298,15 +195,12 @@ export default async function handler(req, res) {
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
-    return res.end(
-      JSON.stringify({
-        ...out,
-        cadence: "30m",
-        tookMs: Date.now() - startedAt,
-        note:
-          "mode=both draait bull + bear parallel (Promise.allSettled). Binnen elke mode blijft: obSampler -> map_refresh -> scan -> discord. KV lock voorkomt overlap.",
-      })
-    );
+    return res.end(JSON.stringify({
+      ...out,
+      cadence: "30m",
+      tookMs: Date.now() - startedAt,
+      note: "Bull+bear parallel. Per mode: obSampler -> map_refresh -> scan -> discord. Scan logt events voor analyzer.",
+    }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json; charset=utf-8");
