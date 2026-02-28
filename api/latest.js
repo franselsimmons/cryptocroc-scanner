@@ -1,3 +1,4 @@
+// /api/latest.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, getMode } from "../lib/_runtime.js";
 
@@ -5,15 +6,11 @@ export const config = RUNTIME_CONFIG;
 
 export default async function handler(req, res) {
   try {
-    const mode = getMode(req);
-
-    const core = await import(`../lib/_core_${mode}.js`);
-    const data = await kv.get(core.keyLatest(mode));
+    const mode = getMode(req); // bull|bear
+    const data = await kv.get(`latest:${String(mode).toLowerCase()}`);
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
-
-    // 🔥 anti-cache (browser + vercel edge + proxies)
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
@@ -26,8 +23,9 @@ export default async function handler(req, res) {
           ts: Date.now(),
           mode,
           btc: null,
-          counts: { entry: 0, almost: 0, buildup: 0, radar: 0 },
+          counts: { entry: 0, almost: 0, buildup: 0, radar: 0, openTrades: 0, recentSells: 0 },
           funnel: { entry: [], almost: [], buildup: [], radar: [] },
+          trading: { openTrades: [], recentSells: [], stats: {} },
         })
       );
     }
