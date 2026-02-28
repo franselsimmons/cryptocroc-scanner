@@ -16,13 +16,21 @@ function makeRes() {
     statusCode: 200,
     headers: {},
     body: "",
-    setHeader(k, v) { this.headers[String(k).toLowerCase()] = v; },
-    end(txt) { this.body = txt || ""; },
+    setHeader(k, v) {
+      this.headers[String(k).toLowerCase()] = v;
+    },
+    end(txt) {
+      this.body = txt || "";
+    },
   };
 }
 
 function safeJson(txt) {
-  try { return JSON.parse(txt); } catch { return { ok: false, raw: String(txt || "") }; }
+  try {
+    return JSON.parse(txt);
+  } catch {
+    return { ok: false, raw: String(txt || "") };
+  }
 }
 
 function q(req, key, def) {
@@ -95,7 +103,13 @@ async function notifyMainDiscord(mode, scanResult) {
 }
 
 function pickSecret() {
-  return (process.env.CC_SECRET || process.env.SECRET || process.env.API_SECRET || process.env.CRON_SECRET || "");
+  return (
+    process.env.CC_SECRET ||
+    process.env.SECRET ||
+    process.env.API_SECRET ||
+    process.env.CRON_SECRET ||
+    ""
+  );
 }
 
 function makeInternalReq({ mode, max, radar, secret }) {
@@ -115,21 +129,33 @@ function makeInternalReq({ mode, max, radar, secret }) {
 
 function assertOk(name, parsed, resObj) {
   if (parsed?.ok === false) {
-    throw new Error(`${name} returned ok:false (status ${resObj?.statusCode || "?"}) :: ${parsed?.error || parsed?.raw || "unknown"}`);
+    throw new Error(
+      `${name} returned ok:false (status ${resObj?.statusCode || "?"}) :: ${
+        parsed?.error || parsed?.raw || "unknown"
+      }`
+    );
   }
   if (parsed?.error) throw new Error(`${name} error :: ${parsed.error}`);
 }
 
+// --------------------
+// KV lock (correct!)
+// --------------------
 const CRON_LOCK_KEY = "lock:cron";
 const CRON_LOCK_TTL_SEC = 25 * 60;
 
 async function acquireLock() {
-  const ok = await kv.set(CRON_LOCK_KEY, String(Date.now()), { nx: true, ex: CRON_LOCK_TTL_SEC });
+  const ok = await kv.set(CRON_LOCK_KEY, String(Date.now()), {
+    nx: true,
+    ex: CRON_LOCK_TTL_SEC,
+  });
   return !!ok;
 }
 
 async function releaseLock() {
-  try { await kv.del(CRON_LOCK_KEY); } catch {}
+  try {
+    await kv.del(CRON_LOCK_KEY);
+  } catch {}
 }
 
 async function runOneMode(mode, max, radar, secret) {
@@ -159,15 +185,33 @@ async function runOneMode(mode, max, radar, secret) {
 
 export default async function handler(req, res) {
   const startedAt = Date.now();
-  try {
-    if (!requireSecret(req, res)) return;
 
-    const locked = await acquireLock();
-    if (!locked) {
+  // ✅ belangrijk: lock alleen releasen als je hem echt had
+  let gotLock = false;
+
+  try {
+    // ✅ forceer altijd JSON bij unauthorized
+    const authOk = requireSecret(req, res);
+    if (!authOk) {
+      res.statusCode = 401;
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      res.setHeader("cache-control", "no-store");
+      return res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+    }
+
+    gotLock = await acquireLock();
+    if (!gotLock) {
       res.statusCode = 200;
       res.setHeader("content-type", "application/json; charset=utf-8");
       res.setHeader("cache-control", "no-store");
-      return res.end(JSON.stringify({ ok: true, skipped: true, reason: "cron already running (lock active)", ts: Date.now() }));
+      return res.end(
+        JSON.stringify({
+          ok: true,
+          skipped: true,
+          reason: "cron already running (lock active)",
+          ts: Date.now(),
+        })
+      );
     }
 
     const secret = pickSecret();
@@ -183,10 +227,24 @@ export default async function handler(req, res) {
         runOneMode("bear", max, radar, secret),
       ]);
 
-      const bull = bullRes.status === "fulfilled" ? bullRes.value : { ok: false, error: String(bullRes.reason?.message || bullRes.reason || "bull failed") };
-      const bear = bearRes.status === "fulfilled" ? bearRes.value : { ok: false, error: String(bearRes.reason?.message || bearRes.reason || "bear failed") };
+      const bull =
+        bullRes.status === "fulfilled"
+          ? bullRes.value
+          : { ok: false, error: String(bullRes.reason?.message || bullRes.reason || "bull failed") };
 
-      out = { ok: bull.ok && bear.ok, ts: Date.now(), mode: "both", params: { max, radar }, bull, bear };
+      const bear =
+        bearRes.status === "fulfilled"
+          ? bearRes.value
+          : { ok: false, error: String(bearRes.reason?.message || bearRes.reason || "bear failed") };
+
+      out = {
+        ok: bull.ok && bear.ok,
+        ts: Date.now(),
+        mode: "both",
+        params: { max, radar },
+        bull,
+        bear,
+      };
     } else {
       const one = await runOneMode(mode, max, radar, secret);
       out = { ok: true, ts: Date.now(), mode, params: { max, radar }, ...one };
@@ -195,18 +253,22 @@ export default async function handler(req, res) {
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
-    return res.end(JSON.stringify({
-      ...out,
-      cadence: "30m",
-      tookMs: Date.now() - startedAt,
-      note: "Bull+bear parallel. Per mode: obSampler -> map_refresh -> scan -> discord. Scan logt events voor analyzer.",
-    }));
+    return res.end(
+      JSON.stringify({
+        ...out,
+        cadence: "30m",
+        tookMs: Date.now() - startedAt,
+        note:
+          "Bull+bear parallel. Per mode: obSampler -> map_refresh -> scan -> discord.",
+      })
+    );
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
     return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   } finally {
-    await releaseLock();
+    // ✅ alleen lock releasen als jij hem had
+    if (gotLock) await releaseLock();
   }
 }
