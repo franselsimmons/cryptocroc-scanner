@@ -1,6 +1,7 @@
 // /api/scan.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
+import { pushEvent } from "../lib/_analytics.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -11,81 +12,42 @@ async function fetchJson(url) {
   const r = await fetch(url, { headers: { accept: "application/json" } });
   const t = await r.text();
   let j = null;
-  try {
-    j = JSON.parse(t);
-  } catch {}
+  try { j = JSON.parse(t); } catch {}
   if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 160)}`);
   return j;
 }
 
-function n(x, d = 0) {
-  const v = Number(x);
-  return Number.isFinite(v) ? v : d;
-}
+function n(x, d = 0) { const v = Number(x); return Number.isFinite(v) ? v : d; }
+function safeObj(x) { return x && typeof x === "object" ? x : null; }
+function up(x) { return String(x || "").toUpperCase(); }
+function fmtPct(x, d = 2) { const v = Number(x); if (!Number.isFinite(v)) return "—"; const s = v >= 0 ? "+" : ""; return `${s}${v.toFixed(d)}%`; }
+function fmtNum(x, d = 2) { const v = Number(x); if (!Number.isFinite(v)) return "—"; return v.toFixed(d); }
+function fmtUsd(x, d = 6) { const v = Number(x); if (!Number.isFinite(v)) return "—"; return `$${v.toFixed(d)}`; }
 
-function safeObj(x) {
-  return x && typeof x === "object" ? x : null;
-}
-
-function up(x) {
-  return String(x || "").toUpperCase();
-}
-
-function fmtPct(x, d = 2) {
-  const v = Number(x);
-  if (!Number.isFinite(v)) return "—";
-  const s = v >= 0 ? "+" : "";
-  return `${s}${v.toFixed(d)}%`;
-}
-
-function fmtNum(x, d = 2) {
-  const v = Number(x);
-  if (!Number.isFinite(v)) return "—";
-  return v.toFixed(d);
-}
-
-function fmtUsd(x, d = 6) {
-  const v = Number(x);
-  if (!Number.isFinite(v)) return "—";
-  return `$${v.toFixed(d)}`;
-}
-
-// ✅ OB max age (stale gate) — versoepeld (was 75m)
-const OB_MAX_AGE_MS = 120 * 60 * 1000; // 120 min
-
-// ✅ Discord anti-spam
-const NOTIFY_COOLDOWN_MS = 25 * 60 * 1000; // 25 min per coin
+const OB_MAX_AGE_MS = 120 * 60 * 1000;
+const NOTIFY_COOLDOWN_MS = 25 * 60 * 1000;
 
 // ======================================================
-// ✅ TRADE ENGINE (ENTRY -> HOLD -> SELL)
+// TRADE ENGINE
 // ======================================================
-const TRADE_TTL_SEC = 60 * 60 * 48; // 48 uur
-const REENTRY_COOLDOWN_SEC = 60 * 60; // 1 uur rust na SELL
+const TRADE_TTL_SEC = 60 * 60 * 48;
+const REENTRY_COOLDOWN_SEC = 60 * 60;
 
-const TIME_STOP_SCANS = 6; // 6 scans = 3 uur
-const TIME_STOP_MAXPNL = 0.015; // 1.5%
+const TIME_STOP_SCANS = 6;
+const TIME_STOP_MAXPNL = 0.015;
+const HOLD_AFTER_SCANS = 2;
 
-const HOLD_AFTER_SCANS = 2; // 1x HOLD melding na 2 scans open
+const TP1_PNL = 0.025;
+const TP2_PNL = 0.05;
+const TRAIL_AFTER_TP1 = 0.022;
+const TRAIL_AFTER_TP2 = 0.016;
 
-// ✅ TP / Trailing exit (upgrade #1)
-const TP1_PNL = 0.025;         // 2.5% winst gehaald = trailing actief
-const TP2_PNL = 0.05;          // 5.0% winst gehaald = strakker trailing
-const TRAIL_AFTER_TP1 = 0.022; // 2.2% terugval vanaf top => SELL
-const TRAIL_AFTER_TP2 = 0.016; // 1.6% terugval vanaf top => SELL
-
-// ✅ SELL LOG (zodat pagina SELL kan tonen)
-const SELLS_TTL_SEC = 60 * 60 * 48; // 48 uur
+const SELLS_TTL_SEC = 60 * 60 * 48;
 const SELLS_KEEP = 50;
 
-function kTrade(mode, sym) {
-  return `trade:${String(mode).toLowerCase()}:${up(sym)}`;
-}
-function kCooldown(mode, sym) {
-  return `trade:cooldown:${String(mode).toLowerCase()}:${up(sym)}`;
-}
-function kSells(mode) {
-  return `trade:sells:${String(mode).toLowerCase()}`;
-}
+function kTrade(mode, sym) { return `trade:${String(mode).toLowerCase()}:${up(sym)}`; }
+function kCooldown(mode, sym) { return `trade:cooldown:${String(mode).toLowerCase()}:${up(sym)}`; }
+function kSells(mode) { return `trade:sells:${String(mode).toLowerCase()}`; }
 
 async function logSell(mode, sellObj) {
   const key = kSells(mode);
@@ -101,45 +63,32 @@ function calcPnlPct(mode, entryPrice, nowPrice) {
   const e = n(entryPrice, 0);
   const p = n(nowPrice, 0);
   if (!(e > 0) || !(p > 0)) return 0;
-
-  if (String(mode).toLowerCase() === "bear") {
-    // short: winst als prijs daalt
-    return (e - p) / e;
-  }
-  // long: winst als prijs stijgt
+  if (String(mode).toLowerCase() === "bear") return (e - p) / e;
   return (p - e) / e;
 }
 
-// hybride stop op basis van range24 (simpel + passend bij smallcaps)
 function stopPctFromRange24(range24Pct) {
   const r = n(range24Pct, 0);
-  if (r <= 18) return 0.03;  // 3.0%
-  if (r <= 28) return 0.035; // 3.5%
-  return 0.045;              // 4.5%
+  if (r <= 18) return 0.03;
+  if (r <= 28) return 0.035;
+  return 0.045;
 }
 
-// “OB tegen” = pressure + score draaien tegen jouw kant
 function isObAgainst(mode, ob) {
   const pd = n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0);
   const sc = n(ob?.ob?.score ?? ob?.score, 0);
-
-  if (String(mode).toLowerCase() === "bear") {
-    // bear wil neer: bullish pressure/score = tegen
-    return pd > 0 && sc > 0;
-  }
-  // bull wil omhoog: bearish pressure/score = tegen
+  if (String(mode).toLowerCase() === "bear") return pd > 0 && sc > 0;
   return pd < 0 && sc < 0;
 }
 
 function isObInvalidFresh(obValid, obFresh, ob) {
-  if (!obFresh) return false; // stale = geen harde conclusie
+  if (!obFresh) return false;
   if (!ob) return true;
   if (ob.valid === false) return true;
   if (!obValid) return true;
   return false;
 }
 
-// tradeStatus voor pagina: ENTRY (net open), HOLD (open), —
 function pageTradeStatus(tradeInfo) {
   if (!tradeInfo) return "—";
   if (tradeInfo.status === "OPEN") {
@@ -149,24 +98,15 @@ function pageTradeStatus(tradeInfo) {
   return "—";
 }
 
-// ✅ Stats (upgrade #2) — FIX: “last 50” echt nieuwste 50 nemen
 function computeStatsFromSells(sellsOldestToNewest) {
   const arr = Array.isArray(sellsOldestToNewest) ? sellsOldestToNewest : [];
   const totalSells = arr.length;
 
-  const newestFirst = arr.slice().reverse(); // newest-first
+  const newestFirst = arr.slice().reverse();
   const last50 = newestFirst.slice(0, 50);
 
   if (!last50.length) {
-    return {
-      totalSells,
-      n50: 0,
-      winrate50: 0,
-      avgPnl50: 0,
-      avgBarsOpen50: 0,
-      wins50: 0,
-      losses50: 0,
-    };
+    return { totalSells, n50: 0, winrate50: 0, avgPnl50: 0, avgBarsOpen50: 0, wins50: 0, losses50: 0 };
   }
 
   let wins = 0;
@@ -174,7 +114,7 @@ function computeStatsFromSells(sellsOldestToNewest) {
   let barsSum = 0;
 
   for (const s of last50) {
-    const pnl = Number(s?.pnlPct || 0); // ratio
+    const pnl = Number(s?.pnlPct || 0);
     const bars = Number(s?.barsOpen || 0);
     if (pnl > 0) wins++;
     pnlSum += pnl;
@@ -196,7 +136,7 @@ function computeStatsFromSells(sellsOldestToNewest) {
 }
 
 // --------------------
-// Discord helpers
+// Discord helpers (jouw versie)
 // --------------------
 async function sendDiscord(webhook, content) {
   const url = String(webhook || "").trim();
@@ -266,7 +206,7 @@ async function flushNotices(noticesByHook) {
 }
 
 // --------------------
-// 1) BTC fetch (data)
+// 1) BTC fetch
 // --------------------
 async function fetchBtc() {
   const url =
@@ -277,29 +217,14 @@ async function fetchBtc() {
   const arr = await fetchJson(url);
   const b = arr?.[0] || {};
 
-  const chg1h = n(
-    b?.price_change_percentage_1h_in_currency ??
-      b?.price_change_percentage_1h ??
-      0,
-    0
-  );
-
-  const chg24 = n(
-    b?.price_change_percentage_24h_in_currency ??
-      b?.price_change_percentage_24h ??
-      0,
-    0
-  );
+  const chg1h = n(b?.price_change_percentage_1h_in_currency ?? b?.price_change_percentage_1h ?? 0, 0);
+  const chg24 = n(b?.price_change_percentage_24h_in_currency ?? b?.price_change_percentage_24h ?? 0, 0);
 
   const high = n(b?.high_24h, 0);
   const low = n(b?.low_24h, 0);
   const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-  return {
-    chg1h: +chg1h.toFixed(3),
-    chg24: +chg24.toFixed(3),
-    range24: +range24.toFixed(3),
-  };
+  return { chg1h: +chg1h.toFixed(3), chg24: +chg24.toFixed(3), range24: +range24.toFixed(3) };
 }
 
 function normBtcState(x) {
@@ -328,14 +253,8 @@ function computeStageCap(mode, btcState) {
   if (st === "BULL" && m === "bull") allowFull = true;
   if (st === "BEAR" && m === "bear") allowFull = true;
 
-  if (allowFull) {
-    return { cap: false, capStage: "FULL", reason: `BTC ${st}: ${m} mag door naar ALMOST/ENTRY` };
-  }
-
-  if (st === "NEUTRAL") {
-    return { cap: true, capStage, reason: "BTC NEUTRAL: scannen + OB door, maar max BUILDUP (prep-mode)" };
-  }
-
+  if (allowFull) return { cap: false, capStage: "FULL", reason: `BTC ${st}: ${m} mag door naar ALMOST/ENTRY` };
+  if (st === "NEUTRAL") return { cap: true, capStage, reason: "BTC NEUTRAL: scannen + OB door, maar max BUILDUP (prep-mode)" };
   return { cap: true, capStage, reason: `BTC ${st}: ${m} blijft prep-mode (max BUILDUP)` };
 }
 
@@ -349,8 +268,8 @@ function btcConfidenceAdjust(mode, btcState, btcBase, SETTINGS) {
 
   const chg1h = n(btcBase?.chg1h, 0);
   const m = String(mode || "").toLowerCase();
-
   const wantUp = m === "bull";
+
   const pos = chg1h >= fine1hAbs;
   const neg = chg1h <= -fine1hAbs;
 
@@ -369,7 +288,6 @@ function btcConfidenceAdjust(mode, btcState, btcBase, SETTINGS) {
 async function fetchCgTop(limit) {
   const per = Math.min(250, Math.max(50, Number(limit || 250)));
   const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=${per}&page=1&sparkline=false&price_change_percentage=1h,24h`;
-
   const arr = await fetchJson(url);
 
   return (arr || []).map((c) => {
@@ -378,19 +296,8 @@ async function fetchCgTop(limit) {
     const low = n(c?.low_24h, 0);
     const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-    const change24 = n(
-      c?.price_change_percentage_24h_in_currency ??
-        c?.price_change_percentage_24h ??
-        0,
-      0
-    );
-
-    const change1h = n(
-      c?.price_change_percentage_1h_in_currency ??
-        c?.price_change_percentage_1h ??
-        0,
-      0
-    );
+    const change24 = n(c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0, 0);
+    const change1h = n(c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0, 0);
 
     return {
       id: c?.id,
@@ -424,7 +331,7 @@ function passRadar(core, c) {
 }
 
 // --------------------
-// Stage logic (SWING) — versoepeld zodat minder lang “ALMOST stuck”
+// Stage logic (SWING)
 // --------------------
 function stageFromSwing(mode, c) {
   const vm = c.vm;
@@ -434,12 +341,8 @@ function stageFromSwing(mode, c) {
   const wantUp = mode === "bull";
   const inDir = wantUp ? ch1h >= 0.15 : ch1h <= -0.15;
 
-  // was: vm>=0.24 range<=20 inDir
   if (vm >= 0.22 && range <= 24 && inDir) return "ALMOST";
-
-  // was: vm>=0.18 range<=28
   if (vm >= 0.16 && range <= 32) return "BUILDUP";
-
   return "RADAR";
 }
 
@@ -459,12 +362,11 @@ async function getObForSymbol({ core, mode, symbol, obMap }) {
 }
 
 // --------------------
-// Adaptive entry thresholds — versoepeld (maar niet “roekeloos”)
+// Adaptive entry thresholds
 // --------------------
 function adaptiveEntryThresholds(core, c, vm) {
   const base = core?.SETTINGS?.entry || {};
   const mc = n(c?.marketCap, 0);
-
   const tiers = Array.isArray(base?.adaptiveTiers) ? base.adaptiveTiers : null;
 
   const oneTier = {
@@ -483,26 +385,19 @@ function adaptiveEntryThresholds(core, c, vm) {
   const baseMinConf = n(base.minConfidence, n(t.minConf, 58));
   const tierMinConf = n(t.minConf, baseMinConf);
 
-  // ✅ minConfidence iets lager
   const minConfidenceRaw = Math.max(0, Math.max(baseMinConf, tierMinConf - vmBonus));
-  const minConfidence = Math.max(0, minConfidenceRaw - 3); // <- versoepeling
+  const minConfidence = Math.max(0, minConfidenceRaw - 3);
 
   const baseSpread = n(base.spreadMaxPct, n(t.spreadMax, 1.2));
   const tierSpread = n(t.spreadMax, baseSpread);
-
-  // ✅ spread iets ruimer
   const spreadMaxPct = Math.min(baseSpread, tierSpread) + 0.15;
 
   const baseDepth = n(base.depthMinUsd1p, n(t.depth1pMin, 30_000));
   const tierDepth = n(t.depth1pMin, baseDepth);
-
-  // ✅ depth iets lager (maar nooit belachelijk laag)
   const depthMinUsd1p = Math.max(15_000, Math.round(Math.max(baseDepth, tierDepth) * 0.75));
 
   const baseScore = n(base.obScoreMin, n(t.obScoreMin, 0.04));
   const tierScore = n(t.obScoreMin, baseScore);
-
-  // ✅ obScoreMin iets lager
   const obScoreMin = Math.max(0.02, Math.max(baseScore, tierScore) * 0.75);
 
   return { minConfidence, spreadMaxPct, depthMinUsd1p, obScoreMin };
@@ -534,20 +429,9 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
 
   const ok = total >= need && same >= minAgree;
 
-  S[sym] = {
-    ...prev,
-    scans,
-    hist,
-    lastSeenAt: nowTs,
-    stage: st,
-  };
+  S[sym] = { ...prev, scans, hist, lastSeenAt: nowTs, stage: st };
 
-  return {
-    state: S,
-    prevStage,
-    stageScans: scans,
-    consistency: { ok, ratio, same, total, need, minAgree },
-  };
+  return { state: S, prevStage, stageScans: scans, consistency: { ok, ratio, same, total, need, minAgree } };
 }
 
 function canNotify(stateEntry, nowTs) {
@@ -568,12 +452,10 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const mode = getMode(req); // "bull" or "bear"
+    const mode = getMode(req); // bull/bear
     const core = await import(`../lib/_core_${mode}.js`);
-
     const now = Date.now();
 
-    // BTC
     const btcBase = await fetchBtc();
     const btcState = computeBtcStateLocal(btcBase, core.SETTINGS);
     const btcTune = btcConfidenceAdjust(mode, btcState, btcBase, core.SETTINGS);
@@ -608,14 +490,11 @@ export default async function handler(req, res) {
 
       let stageBase = stageFromSwing(mode, { ...c, vm });
 
-      // OB
       const ob = await getObForSymbol({ core, mode, symbol: sym, obMap });
-
       const obTs = n(ob?.ob?.ts ?? ob?.ts, 0);
       const obAge = obTs > 0 ? now - obTs : Number.POSITIVE_INFINITY;
       const obFresh = obTs > 0 && obAge <= OB_MAX_AGE_MS;
 
-      // ✅ belangrijk: valid los van “fresh”
       const obValid = !!ob?.valid;
 
       const spreadPct = n(ob?.ob?.spreadPct ?? ob?.spreadPct, 999);
@@ -626,21 +505,14 @@ export default async function handler(req, res) {
         vm,
         change24: c.change24,
         range24: c.range24,
-        // voor confidence telt valid, niet “fresh”
         obValid: !!obValid,
       });
 
-      const confidence = Math.max(
-        0,
-        Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0))
-      );
-
+      const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
       const thr = adaptiveEntryThresholds(core, c, vm);
 
-      // Funnel stage + gates
       let almostGate = "n/a";
       let entryGate = "n/a";
-
       let stage = stageBase;
 
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
@@ -650,18 +522,12 @@ export default async function handler(req, res) {
       } else {
         let obSamples = null;
 
-        // ALMOST slope gate
         if (stageBase === "ALMOST") {
           obSamples = await kv.get(core.keyObSamples(mode, sym));
 
           const slopeCheck =
             typeof core.checkObSlopeGate === "function"
-              ? core.checkObSlopeGate({
-                  stage: "almost",
-                  mode,
-                  obSamples,
-                  settings: core.SETTINGS,
-                })
+              ? core.checkObSlopeGate({ stage: "almost", mode, obSamples, settings: core.SETTINGS })
               : { ok: true };
 
           if (!slopeCheck.ok) {
@@ -673,7 +539,6 @@ export default async function handler(req, res) {
           }
         }
 
-        // ENTRY gate — versoepeld: score1p/pressure hoeven niet allebei perfect
         if (stageBase === "ALMOST") {
           if (!ob) entryGate = "OB missing";
           else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
@@ -687,24 +552,15 @@ export default async function handler(req, res) {
 
             const slopeCheck2 =
               typeof core.checkObSlopeGate === "function"
-                ? core.checkObSlopeGate({
-                    stage: "entry",
-                    mode,
-                    obSamples,
-                    settings: core.SETTINGS,
-                  })
+                ? core.checkObSlopeGate({ stage: "entry", mode, obSamples, settings: core.SETTINGS })
                 : { ok: true };
 
             const pressureDelta = n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0);
             const score1p = n(ob?.ob?.score1p ?? ob?.score1p, 0);
 
-            // ✅ ruimer: pressure richting, score1p band ruimer
             const pressureOk = mode === "bull" ? pressureDelta >= 0 : pressureDelta <= 0;
             const score1pOk = mode === "bull" ? score1p >= -0.2 : score1p <= 0.2;
 
-            // ✅ versoepeling: niet ALLES hoeft perfect
-            // - slope moet kloppen (blijft kwaliteitsfilter)
-            // - en EITHER pressureOk OF score1pOk is voldoende
             if (!slopeCheck2.ok) entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
             else if (!(pressureOk || score1pOk)) entryGate = "Pressure+1% contra";
             else {
@@ -726,7 +582,6 @@ export default async function handler(req, res) {
 
       let tradeInfo = null;
 
-      // OPEN trade: manage
       if (tradeExisting && tradeExisting?.status === "OPEN") {
         const entryPrice = n(tradeExisting.entryPrice, 0);
         const barsOpen = n(tradeExisting.barsOpen, 0) + 1;
@@ -749,9 +604,7 @@ export default async function handler(req, res) {
         const obBreakHit = obBadStreak >= 2;
         const timeStopHit = barsOpen >= TIME_STOP_SCANS && maxPnl < TIME_STOP_MAXPNL;
 
-        // ✅ Trailing
         const drawdown = maxPnl - pnl;
-
         let trailHit = false;
         let trailCfg = null;
 
@@ -784,6 +637,19 @@ export default async function handler(req, res) {
             exitPrice: priceNow,
             barsOpen,
             extra: exit?.trailCfg ? { trailCfg: exit.trailCfg } : undefined,
+          });
+
+          // ✅ EVENT: trade_close
+          await pushEvent("main", {
+            type: "trade_close",
+            mode,
+            symbol: sym,
+            reason: exit.reason,
+            entryPrice,
+            exitPrice: priceNow,
+            pnlPct: pnl * 100,
+            maxPnlPct: maxPnl * 100,
+            barsOpen,
           });
 
           const hook = stageWebhook("SELL");
@@ -832,7 +698,7 @@ export default async function handler(req, res) {
         }
       }
 
-      // no OPEN trade: open on ENTRY
+      // open on ENTRY
       if (!tradeInfo) {
         const inCooldown = !!cooldown;
         const isEntrySignal = stage === "ENTRY" && allowEntry;
@@ -853,9 +719,29 @@ export default async function handler(req, res) {
             entryConfidence: confidence,
             entryVm: vm,
             entryRange24: c.range24,
+            entryMeta: {
+              entryGate,
+              almostGate,
+              confidence,
+              vm,
+              spreadPct,
+              depthMinUsd1p,
+              obScore,
+            },
           };
 
           await kv.set(tKey, tradeObj, { ex: TRADE_TTL_SEC });
+
+          // ✅ EVENT: trade_open
+          await pushEvent("main", {
+            type: "trade_open",
+            mode,
+            symbol: sym,
+            entryPrice: priceNow,
+            confidence,
+            vm,
+            entryGate,
+          });
 
           const hook = stageWebhook("ENTRY");
           const line =
@@ -873,17 +759,28 @@ export default async function handler(req, res) {
       const prevEntry = safeObj(state[sym]) || {};
       const stFix = updateStateAndConsistency(state, sym, stage, core, now);
 
-      const stageScans = stFix.stageScans;
-      const consistency = stFix.consistency;
       const prevStage = up(stFix.prevStage);
       const currStage = up(stage);
+
+      // ✅ EVENT: stage_change (alleen als hij echt verandert)
+      if (prevStage && prevStage !== currStage) {
+        await pushEvent("main", {
+          type: "stage_change",
+          mode,
+          symbol: sym,
+          from: prevStage,
+          to: currStage,
+          reason: currStage === "ENTRY" ? entryGate : (currStage === "ALMOST" ? almostGate : "stage_logic"),
+          confidence,
+          vm,
+        });
+      }
 
       const hasOpenTrade = tradeInfo?.status === "OPEN";
 
       if (!hasOpenTrade && prevStage) {
         const doNotify = canNotify(prevEntry, now);
-        const isFunnelStage =
-          currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
+        const isFunnelStage = currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
 
         if (doNotify && isFunnelStage && prevStage !== currStage) {
           const hook = stageWebhook(currStage);
@@ -898,7 +795,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // ✅ open trades tabel
       if (tradeInfo?.status === "OPEN") {
         openTrades.push({
           symbol: sym,
@@ -914,7 +810,6 @@ export default async function handler(req, res) {
         });
       }
 
-      // ✅ VolAcc bestaat nu echt
       const volAcc = vm;
 
       const item = {
@@ -939,8 +834,8 @@ export default async function handler(req, res) {
         trade: tradeInfo,
         tradeStatus: pageTradeStatus(tradeInfo),
 
-        stageScans,
-        consistency,
+        stageScans: stFix.stageScans,
+        consistency: stFix.consistency,
 
         req: {
           minConfidence: thr.minConfidence,
@@ -992,12 +887,9 @@ export default async function handler(req, res) {
     const fine1hAbsPct = n(btcCfg.fine1hAbsPct, 0.25);
     const confBoost = n(btcCfg.confBoost, 4);
 
-    // ✅ sells log
     const sellsRaw = (await kv.get(kSells(mode))) || [];
     const sellsArr = Array.isArray(sellsRaw) ? sellsRaw.slice(-SELLS_KEEP) : [];
-    const recentSells = sellsArr.slice().reverse(); // newest-first
-
-    // ✅ stats (upgrade #2)
+    const recentSells = sellsArr.slice().reverse();
     const stats = computeStatsFromSells(sellsArr);
 
     const result = {
@@ -1022,23 +914,13 @@ export default async function handler(req, res) {
           reentryCooldownSec: REENTRY_COOLDOWN_SEC,
           tradeTtlSec: TRADE_TTL_SEC,
           sellsLogKey: kSells(mode),
-          exits: [
-            "HARD_STOP(range24)",
-            "TRAILING_TP(maxPnl + drawdown)",
-            "OB_BREAK_2X(fresh)",
-            "TIME_STOP(no momentum)",
-          ],
+          exits: ["HARD_STOP(range24)", "TRAILING_TP(maxPnl + drawdown)", "OB_BREAK_2X(fresh)", "TIME_STOP(no momentum)"],
           trailing: {
             tp1Pct: TP1_PNL * 100,
             tp2Pct: TP2_PNL * 100,
             trailAfterTp1Pct: TRAIL_AFTER_TP1 * 100,
             trailAfterTp2Pct: TRAIL_AFTER_TP2 * 100,
           },
-        },
-        relaxedGates: {
-          obMaxAgeMin: Math.round(OB_MAX_AGE_MS / 60000),
-          entry: "minConfidence -3, spread +0.15, depth *0.75 (min 15k), obScoreMin *0.75, pressure||score1p, score1p band ruimer",
-          almost: "vm/range/1h versoepeld",
         },
       },
       counts: {
@@ -1050,17 +932,11 @@ export default async function handler(req, res) {
         recentSells: recentSells.length,
       },
       funnel: { entry, almost, buildup, radar },
-
       trading: {
         openTrades,
         recentSells,
-        stats: {
-          ...stats,
-          winrate50Pct: stats.winrate50 * 100,
-          avgPnl50Pct: stats.avgPnl50 * 100,
-        },
+        stats: { ...stats, winrate50Pct: stats.winrate50 * 100, avgPnl50Pct: stats.avgPnl50 * 100 },
       },
-
       obMap: obMap ? { ok: true, size: Object.keys(obMap).length } : { ok: false },
       discord: {
         enabled: true,
@@ -1068,8 +944,7 @@ export default async function handler(req, res) {
         failed: discord.failed,
         errors: (discord.details || []).slice(0, 5),
       },
-      note:
-        "ALMOST/ENTRY is versoepeld zodat coins minder blijven hangen. TRAILING_TP + stats actief. HOLD uit OPEN trades, SELL via KV sells-log.",
+      note: "Scan logs stage_change + trade_open/close events naar cc:events:main:list (voor analyzer).",
     };
 
     await kv.set(core.keyLatest(mode), result);
