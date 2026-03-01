@@ -1,28 +1,25 @@
-// api/ob/sampler.js
 import { kv } from "@vercel/kv";
 
 export const config = { runtime: "nodejs" };
 
 // ================== TUNING (veilig voor Vercel) ==================
-const HARD_MAX_PER_RUN = 30;
+const HARD_MAX_PER_RUN = 60;          // was 30
 const REQUEST_DELAY_MS = 120;
 
-const OB_STALE_MS = 120 * 60 * 1000; // 120 min (UI "stale" is los van scan-stale)
+const OB_STALE_MS = 120 * 60 * 1000;
 
-const DEFAULT_SAMPLES_WINDOW_SEC = 6 * 3600;  // 6 uur fallback
+const DEFAULT_SAMPLES_WINDOW_SEC = 6 * 3600;
 const DEFAULT_SAMPLES_MAX = 24;
-const DEFAULT_SAMPLES_TTL_SEC = 60 * 60 * 48; // 48 uur
-const DEFAULT_RESULT_TTL_SEC = 60 * 30;       // 30 min
+const DEFAULT_SAMPLES_TTL_SEC = 60 * 60 * 48;
+const DEFAULT_RESULT_TTL_SEC = 60 * 30;
 
-// ✅ 30m cadence: in 3 uur heb je max ~6 samples.
-// samplesNeed=4 is precies jouw design.
 const DEFAULT_SAMPLES_NEED_30M = 4;
 const DEFAULT_MIN_AGREE_30M = 3;
 
-// WATCHLIST
-const WATCH_MAX = 120;
+// WATCHLIST (kleiner = sneller rond)
+const WATCH_MAX = 60;                // was 120
 const WATCH_TTL_SEC = 60 * 60 * 12;
-const WATCH_PREFER = 18;
+const WATCH_PREFER = 30;             // was 18
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function safeObj(x) { return x && typeof x === "object" ? x : null; }
@@ -111,7 +108,6 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  // 0.2% band (score)
   const pct02 = 0.002;
   const bid02 = sumDepth(bids, mid, pct02, true);
   const ask02 = sumDepth(asks, mid, pct02, false);
@@ -126,7 +122,6 @@ function computeObSample(depth) {
   const biggest02 = Math.max(bid02.biggest, ask02.biggest);
   const lor = denom02 > 0 ? biggest02 / denom02 : 1;
 
-  // extra PRO: 0.5% en 1% imbalance
   const pct05 = 0.005;
   const bid05 = sumDepth(bids, mid, pct05, true);
   const ask05 = sumDepth(asks, mid, pct05, false);
@@ -142,7 +137,6 @@ function computeObSample(depth) {
     mid,
     spreadPct,
 
-    // core
     bidUsd,
     askUsd,
     score,
@@ -150,7 +144,6 @@ function computeObSample(depth) {
     lor,
     depthMinUsd1p,
 
-    // pro
     score05p,
     score1p,
   };
@@ -197,7 +190,6 @@ function validateSamples(mode, samplesFresh, SETTINGS) {
 
   const lastN = fresh.slice(-need);
 
-  // direction op score (0.2%)
   const agree = lastN.filter((s) => (mode === "bull" ? s.score > 0 : s.score < 0)).length;
   const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
 
@@ -206,7 +198,6 @@ function validateSamples(mode, samplesFresh, SETTINGS) {
     return { valid: false, reason: "Direction not consistent", fresh: lastN, avgScore, agree };
   }
 
-  // PRO: 1% score mag niet totaal de andere kant op flippen (milde check)
   const avgScore1p = lastN.reduce((a, s) => a + (s.score1p ?? 0), 0) / lastN.length;
   const score1pOk = mode === "bull" ? avgScore1p > -0.15 : avgScore1p < 0.15;
 
@@ -217,8 +208,6 @@ function validateSamples(mode, samplesFresh, SETTINGS) {
   return { valid: true, reason: "OK", fresh: lastN, avgScore, agree, avgScore1p };
 }
 
-// slope helper (per minuut)
-// ✅ was: min 6 punten (fout voor 30m cadence) → nu min 4 / samplesNeed
 function calcSlopeMin(samples, field, SETTINGS) {
   const need = Number(SETTINGS?.entry?.samplesNeed ?? DEFAULT_SAMPLES_NEED_30M);
   const minPts = Math.max(4, need);
@@ -276,23 +265,21 @@ function addToWatch(watch, symbols) {
 }
 
 // ================== CANDIDATES SELECTIE ==================
-// ✅ nu: RADAR + BUILDUP + ALMOST + ENTRY
 async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS, obMap) {
   const f = latest?.funnel || {};
 
   const take = (arr, n) => (Array.isArray(arr) ? arr.slice(0, Math.max(0, Number(n || 0))) : []);
 
-  const pickEntry  = Number(SETTINGS?.obPickEntry  ?? 20);
-  const pickAlmost = Number(SETTINGS?.obPickAlmost ?? 25);
-  const pickBuildup= Number(SETTINGS?.obPickBuildup?? 25);
-  const pickRadar  = Number(SETTINGS?.obPickRadar  ?? radarFallback ?? 25);
+  const pickEntry  = Number(SETTINGS?.obPickEntry  ?? 25);
+  const pickAlmost = Number(SETTINGS?.obPickAlmost ?? 30);
+  const pickBuildup= Number(SETTINGS?.obPickBuildup?? 30);
+  const pickRadar  = Number(SETTINGS?.obPickRadar  ?? radarFallback ?? 40);
 
   const entry  = take(f.entry,   pickEntry);
   const almost = take(f.almost,  pickAlmost);
   const buildup= take(f.buildup, pickBuildup);
   const radar  = take(f.radar,   pickRadar);
 
-  // ✅ prioriteit: ENTRY/ALMOST eerst, maar RADAR blijft erin
   const picked = [...entry, ...almost, ...buildup, ...radar];
 
   const poolNow = uniqueUpper(picked.map((x) => x?.symbol)).filter((s) => !isBadSymbol(s));
@@ -305,7 +292,6 @@ async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTI
 
   out = uniqueUpper([...out, ...poolNow]).slice(0, maxPerRun);
 
-  // ✅ als obMap bestaat: alleen symbols samplen die we echt op Bitget kennen
   if (obMap) out = out.filter((sym) => !!obMap[String(sym).toUpperCase()]);
 
   return out.slice(0, maxPerRun);
@@ -331,15 +317,12 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
   const samplesEx = Math.max(3600, Number(SETTINGS?.entry?.samplesTtlSec || DEFAULT_SAMPLES_TTL_SEC));
   await kv.set(kS, pruned, { ex: samplesEx });
 
-  // ✅ validatie is “richting consistent + 1% check”
   const v = validateSamples(mode, pruned, SETTINGS);
 
-  // ✅ bestaande slope gate uit core (matcht jouw core minPts=4)
   const slopeCheck = typeof core.checkObSlopeGate === "function"
     ? core.checkObSlopeGate({ stage: "sampler", mode, obSamples: pruned, settings: SETTINGS })
     : { ok: true, slope: 0, reason: "no-slope" };
 
-  // extra pro: slopes (geen harde gates, puur info)
   const slopeDepth1p = calcSlopeMin(pruned, "depthMinUsd1p", SETTINGS);
   const slopeScore = calcSlopeMin(pruned, "score", SETTINGS);
 
@@ -348,7 +331,6 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
     ? "OK"
     : (v.valid ? (slopeCheck.reason || "OB slope failed") : (v.reason || "OB invalid"));
 
-  // sample is altijd “vers”; stale is bedoeld voor UI als result oud blijft liggen
   const ageMs = Date.now() - sample.ts;
   const stale = ageMs > OB_STALE_MS;
 
@@ -362,7 +344,6 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
     stale,
     ageSec: Math.round(ageMs / 1000),
 
-    // top-level quick fields
     score: sample.score,
     score05p: sample.score05p,
     score1p: sample.score1p,
@@ -376,8 +357,7 @@ async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyO
     avgScore1p: v.avgScore1p ?? null,
     agree: v.agree ?? null,
 
-    // slopes
-    slope: slopeCheck.slope ?? null, // legacy
+    slope: slopeCheck.slope ?? null,
     slopeScore,
     slopeDepth1p,
 
@@ -428,10 +408,10 @@ export default async function handler(req, res) {
     const core = await import(`../../lib/_core_${mode}.js`);
     const { SETTINGS, keyLatest, keyObSamples, keyObResult } = core;
 
-    const maxPerRunRaw = Number(req.query?.max || 12) || 12;
+    const maxPerRunRaw = Number(req.query?.max || 60) || 60;
     const maxPerRun = Math.max(1, Math.min(HARD_MAX_PER_RUN, Math.min(80, maxPerRunRaw)));
 
-    const radarFallback = Math.max(5, Math.min(120, Number(req.query?.radar || 25) || 25));
+    const radarFallback = Math.max(5, Math.min(250, Number(req.query?.radar || 200) || 200));
 
     const obMapBlob = await kv.get(`ob:map:${mode}`);
     const obMap = safeObj(obMapBlob)?.map && typeof obMapBlob.map === "object" ? obMapBlob.map : null;
@@ -479,7 +459,7 @@ export default async function handler(req, res) {
       ok: true,
       mode,
       ts: Date.now(),
-      cadenceHint: "Designed for 30m cron (samplesNeed=4 within 3h window).",
+      cadenceHint: "Designed for 15m cron (enough samples within 3h window).",
       maxPerRun,
       radarFallback,
       obMapOk: !!obMap,
