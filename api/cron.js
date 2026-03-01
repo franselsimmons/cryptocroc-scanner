@@ -111,10 +111,11 @@ function pickSecret() {
   );
 }
 
-function makeInternalReq({ mode, max, radar, secret }) {
+function makeInternalReq({ mode, max, radar, symbols, secret }) {
   const query = { mode };
   if (max !== undefined) query.max = String(max);
   if (radar !== undefined) query.radar = String(radar);
+  if (symbols) query.symbols = String(symbols);
 
   if (secret) query.secret = String(secret);
 
@@ -124,8 +125,6 @@ function makeInternalReq({ mode, max, radar, secret }) {
     headers["authorization"] = `Bearer ${secret}`;
   }
 
-  // Belangrijk: Vercel cron header doorgeven in interne calls is niet nodig,
-  // maar we houden het simpel.
   return { method: "GET", query, headers };
 }
 
@@ -160,7 +159,6 @@ async function releaseLock() {
   } catch {}
 }
 
-// ✅ Vercel Cron Jobs sturen header: x-vercel-cron: 1
 function isVercelCron(req) {
   const h = req?.headers || {};
   const v =
@@ -171,24 +169,21 @@ function isVercelCron(req) {
   return String(v || "") !== "";
 }
 
-async function runOneMode(mode, max, radar, secret) {
+async function runOneMode(mode, max, radar, symbols, secret) {
   const reqMap = makeInternalReq({ mode, secret });
-  const reqOb = makeInternalReq({ mode, max, radar, secret });
+  const reqOb = makeInternalReq({ mode, symbols, secret });
   const reqScan = makeInternalReq({ mode, max, radar, secret });
 
-  // ✅ 1) Map refresh eerst (sampler filtert op obMap)
   const resMap = makeRes();
   await obMapRefresh(reqMap, resMap);
   const mapOut = safeJson(resMap.body);
   assertOk(`obMapRefresh(${mode})`, mapOut, resMap);
 
-  // ✅ 2) Dan sampler
   const resOb = makeRes();
   await obSampler(reqOb, resOb);
   const obOut = safeJson(resOb.body);
   assertOk(`obSampler(${mode})`, obOut, resOb);
 
-  // ✅ 3) Dan scan
   const resScan = makeRes();
   await scan(reqScan, resScan);
   const scanOut = safeJson(resScan.body);
@@ -204,8 +199,6 @@ export default async function handler(req, res) {
   let gotLock = false;
 
   try {
-    // ✅ Allow: Vercel Cron header
-    // ✅ Allow: secret check (handmatig)
     const authOk = isVercelCron(req) || requireSecret(req, res);
     if (!authOk) {
       res.statusCode = 401;
@@ -219,32 +212,31 @@ export default async function handler(req, res) {
       res.statusCode = 200;
       res.setHeader("content-type", "application/json; charset=utf-8");
       res.setHeader("cache-control", "no-store");
-      return res.end(
-        JSON.stringify({
-          ok: true,
-          skipped: true,
-          reason: "cron already running (lock active)",
-          ts: Date.now(),
-        })
-      );
+      return res.end(JSON.stringify({
+        ok: true,
+        skipped: true,
+        reason: "cron already running (lock active)",
+        ts: Date.now(),
+      }));
     }
 
-    // ✅ eerst query secret, dan pas ENV secret
     const secretFromQuery = String(req?.query?.secret || "").trim();
     const secret = secretFromQuery || pickSecret();
 
     const mode = normMode(req?.query?.mode);
 
-    // ✅ default omhoog: genoeg samples + genoeg coins per run
     const max = q(req, "max", "60");
     const radar = q(req, "radar", "200");
+
+    // ✅ vanaf nu staan je default symbols HIER (ipv vercel.json querystring)
+    const symbols = q(req, "symbols", "PEPE,SONIC,TURBO");
 
     let out = null;
 
     if (mode === "both") {
       const [bullRes, bearRes] = await Promise.allSettled([
-        runOneMode("bull", max, radar, secret),
-        runOneMode("bear", max, radar, secret),
+        runOneMode("bull", max, radar, symbols, secret),
+        runOneMode("bear", max, radar, symbols, secret),
       ]);
 
       const bull =
@@ -261,26 +253,24 @@ export default async function handler(req, res) {
         ok: bull.ok && bear.ok,
         ts: Date.now(),
         mode: "both",
-        params: { max, radar },
+        params: { max, radar, symbols },
         bull,
         bear,
       };
     } else {
-      const one = await runOneMode(mode, max, radar, secret);
-      out = { ok: true, ts: Date.now(), mode, params: { max, radar }, ...one };
+      const one = await runOneMode(mode, max, radar, symbols, secret);
+      out = { ok: true, ts: Date.now(), mode, params: { max, radar, symbols }, ...one };
     }
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
-    return res.end(
-      JSON.stringify({
-        ...out,
-        cadence: "15m",
-        tookMs: Date.now() - startedAt,
-        note: "Per mode: map_refresh -> obSampler -> scan -> discord.",
-      })
-    );
+    return res.end(JSON.stringify({
+      ...out,
+      cadence: "30m",
+      tookMs: Date.now() - startedAt,
+      note: "Per mode: map_refresh -> obSampler -> scan -> discord.",
+    }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json; charset=utf-8");
