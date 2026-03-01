@@ -298,6 +298,7 @@ function normBtcState(x) {
   return "NEUTRAL";
 }
 
+// ========== OUDE BTC HELPERS (blijven staan, maar worden niet meer gebruikt) ==========
 function computeBtcStateLocal(btcBase, SETTINGS) {
   const cfg = safeObj(SETTINGS?.btc) || {};
   const neutral24Pct = n(cfg.neutral24Pct, 1.0);
@@ -306,27 +307,6 @@ function computeBtcStateLocal(btcBase, SETTINGS) {
   if (chg24 >= neutral24Pct) return "BULL";
   if (chg24 <= -neutral24Pct) return "BEAR";
   return "NEUTRAL";
-}
-
-function computeStageCap(mode, btcState) {
-  const st = normBtcState(btcState);
-  const m = String(mode || "").toLowerCase();
-
-  let capStage = "BUILDUP";
-  let allowFull = false;
-
-  if (st === "BULL" && m === "bull") allowFull = true;
-  if (st === "BEAR" && m === "bear") allowFull = true;
-
-  if (allowFull) {
-    return { cap: false, capStage: "FULL", reason: `BTC ${st}: ${m} mag door naar ALMOST/ENTRY` };
-  }
-
-  if (st === "NEUTRAL") {
-    return { cap: true, capStage, reason: "BTC NEUTRAL: scannen + OB door, maar max BUILDUP (prep-mode)" };
-  }
-
-  return { cap: true, capStage, reason: `BTC ${st}: ${m} blijft prep-mode (max BUILDUP)` };
 }
 
 function btcConfidenceAdjust(mode, btcState, btcBase, SETTINGS) {
@@ -351,6 +331,92 @@ function btcConfidenceAdjust(mode, btcState, btcBase, SETTINGS) {
   if (!wantUp && pos) return { adj: -boost, why: `BTC 1h contra (-${boost})` };
 
   return { adj: 0, why: "BTC 1h small/neutral" };
+}
+
+// ========== NIEUWE COMPAT‑BTC HELPERS ==========
+function getBtcCfg(SETTINGS) {
+  const b = (SETTINGS && SETTINGS.btc) ? SETTINGS.btc : {};
+  return {
+    // oude stijl (core)
+    bullMinChg24: Number.isFinite(Number(b.bullMinChg24)) ? Number(b.bullMinChg24) : 1.0,
+    bearMaxChg24: Number.isFinite(Number(b.bearMaxChg24)) ? Number(b.bearMaxChg24) : -1.0,
+    softOpenNeutral: !!b.softOpenNeutral,
+
+    // nieuwe stijl (scan)
+    neutral24Pct: Number.isFinite(Number(b.neutral24Pct)) ? Number(b.neutral24Pct) : null,
+    fine1hAbsPct: Number.isFinite(Number(b.fine1hAbsPct)) ? Number(b.fine1hAbsPct) : 0.25,
+    confBoost: Number.isFinite(Number(b.confBoost)) ? Number(b.confBoost) : 4,
+  };
+}
+
+function computeBtcStateCompat(btcBase, SETTINGS) {
+  const cfg = getBtcCfg(SETTINGS);
+  const chg24 = n(btcBase?.chg24, 0);
+
+  // als neutral24Pct bestaat → gebruik die band (oude scan‑logica)
+  if (cfg.neutral24Pct != null) {
+    if (chg24 >= cfg.neutral24Pct) return "BULL";
+    if (chg24 <= -cfg.neutral24Pct) return "BEAR";
+    return "NEUTRAL";
+  }
+
+  // anders → gebruik core logica (bullMin/bearMax)
+  if (chg24 >= cfg.bullMinChg24) return "BULL";
+  if (chg24 <= cfg.bearMaxChg24) return "BEAR";
+  return "NEUTRAL";
+}
+
+function btcConfidenceAdjustCompat(mode, btcState, btcBase, SETTINGS) {
+  const cfg = getBtcCfg(SETTINGS);
+  const st = normBtcState(btcState);
+
+  // als BTC neutral is en softOpenNeutral=true → geen straf/bonus
+  if (st === "NEUTRAL" && cfg.softOpenNeutral) {
+    return { adj: 0, why: "BTC NEUTRAL (soft open)" };
+  }
+
+  if (st === "NEUTRAL") return { adj: 0, why: "BTC NEUTRAL" };
+
+  const fine1hAbs = cfg.fine1hAbsPct;
+  const boost = cfg.confBoost;
+
+  const chg1h = n(btcBase?.chg1h, 0);
+  const wantUp = String(mode).toLowerCase() === "bull";
+
+  const pos = chg1h >= fine1hAbs;
+  const neg = chg1h <= -fine1hAbs;
+
+  if (wantUp && pos) return { adj: +boost, why: `BTC 1h aligns (+${boost})` };
+  if (!wantUp && neg) return { adj: +boost, why: `BTC 1h aligns (+${boost})` };
+
+  if (wantUp && neg) return { adj: -boost, why: `BTC 1h contra (-${boost})` };
+  if (!wantUp && pos) return { adj: -boost, why: `BTC 1h contra (-${boost})` };
+
+  return { adj: 0, why: "BTC 1h small/neutral" };
+}
+
+// --------------------
+// Stage cap
+// --------------------
+function computeStageCap(mode, btcState) {
+  const st = normBtcState(btcState);
+  const m = String(mode || "").toLowerCase();
+
+  let capStage = "BUILDUP";
+  let allowFull = false;
+
+  if (st === "BULL" && m === "bull") allowFull = true;
+  if (st === "BEAR" && m === "bear") allowFull = true;
+
+  if (allowFull) {
+    return { cap: false, capStage: "FULL", reason: `BTC ${st}: ${m} mag door naar ALMOST/ENTRY` };
+  }
+
+  if (st === "NEUTRAL") {
+    return { cap: true, capStage, reason: "BTC NEUTRAL: scannen + OB door, maar max BUILDUP (prep-mode)" };
+  }
+
+  return { cap: true, capStage, reason: `BTC ${st}: ${m} blijft prep-mode (max BUILDUP)` };
 }
 
 // --------------------
@@ -582,8 +648,9 @@ export default async function handler(req, res) {
     const now = Date.now();
 
     const btcBase = await fetchBtc();
-    const btcState = computeBtcStateLocal(btcBase, core.SETTINGS);
-    const btcTune = btcConfidenceAdjust(mode, btcState, btcBase, core.SETTINGS);
+    // Vervangen door compat‑versies
+    const btcState = computeBtcStateCompat(btcBase, core.SETTINGS);
+    const btcTune = btcConfidenceAdjustCompat(mode, btcState, btcBase, core.SETTINGS);
     const btc = { ...btcBase, state: btcState, tune: btcTune };
 
     const cap = computeStageCap(mode, btc.state);
