@@ -1,14 +1,23 @@
-// api/ob.js
-import { kv } from "@vercel/kv";
+// /api/ob.js
+import { requireSecret } from "../lib/_runtime.js";
+import { getObSnapshot, obKey, obMapKey } from "../lib/obStore.js";
 
 export const config = { runtime: "nodejs" };
 
+function n(x, d = 0) {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : d;
+}
+
 export default async function handler(req, res) {
   try {
+    // dit is debug → altijd secret
+    if (!requireSecret(req, res)) return;
+
     const mode = String(req.query?.mode || "bull").toLowerCase();
     if (mode !== "bull" && mode !== "bear") {
       res.statusCode = 400;
-      res.setHeader("content-type", "application/json");
+      res.setHeader("content-type", "application/json; charset=utf-8");
       res.setHeader("cache-control", "no-store");
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
@@ -16,45 +25,35 @@ export default async function handler(req, res) {
     const symbol = String(req.query?.symbol || "").toUpperCase().trim();
     if (!symbol) {
       res.statusCode = 400;
-      res.setHeader("content-type", "application/json");
+      res.setHeader("content-type", "application/json; charset=utf-8");
       res.setHeader("cache-control", "no-store");
       return res.end(JSON.stringify({ ok: false, error: "Missing ?symbol=PEPE" }));
     }
 
-    const rt = await import("../lib/_runtime.js");
-    if (!rt.requireSecret(req, res)) return;
+    const maxAgeSec = Math.max(60, n(req.query?.maxAgeSec, 3 * 3600));
 
-    // Gebruik exact dezelfde key-logica als de core
-    const core = await import(`../lib/_core_${mode}.js`);
-    const { keyObResult } = core;
-
-    const key = keyObResult(mode, symbol);
-    const data = await kv.get(key);
+    const r = await getObSnapshot(mode, symbol, maxAgeSec);
 
     res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
+    res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
 
-    if (!data) {
-      return res.end(JSON.stringify({
-        ok: false,
+    return res.end(
+      JSON.stringify({
+        ok: true,
         mode,
         symbol,
-        key,
-        error: "No OB result yet. Run sampler first.",
-      }));
-    }
-
-    return res.end(JSON.stringify({
-      ok: true,
-      mode,
-      symbol,
-      key,
-      data,
-    }));
+        keys: {
+          obKey: obKey(mode, symbol),
+          obMapKey: obMapKey(mode),
+        },
+        maxAgeSec,
+        result: r,
+      })
+    );
   } catch (e) {
     res.statusCode = 500;
-    res.setHeader("content-type", "application/json");
+    res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
     return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
