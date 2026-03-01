@@ -1,59 +1,61 @@
-/* EOF: /api/ob.js */
-
+// api/ob.js
 import { kv } from "@vercel/kv";
 
-function tryKeys(mode, pair) {
-  const p = String(pair || "").toUpperCase();
-  // probeer meerdere varianten, want jij hebt nu een mismatch ergens
-  return [
-    `ob:snap:${mode}:${p}`,
-    `ob:snap:${mode}:${p.replace("-", "")}`,
-    `ob:snap:${mode}:${p.replace("/", "")}`,
-    `ob:snap:${mode}:${p.replace("-", "").replace("/", "")}`,
-    `ob:snap:${p}`,                 // sommige setups gebruiken geen mode
-    `ob:snap:${mode}:${p}:latest`,   // andere setups hebben :latest
-  ];
-}
+export const config = { runtime: "nodejs" };
 
 export default async function handler(req, res) {
   try {
-    const mode = String(req.query.mode || "bull").toLowerCase();
-    const pair = String(req.query.key || req.query.pair || "").trim();
-
-    if (!pair) {
-      return res.status(400).json({ ok: false, error: "Provide ?key=PAIR (example: PEPEUSDT)" });
-    }
+    const mode = String(req.query?.mode || "bull").toLowerCase();
     if (mode !== "bull" && mode !== "bear") {
-      return res.status(400).json({ ok: false, error: "mode must be bull or bear" });
+      res.statusCode = 400;
+      res.setHeader("content-type", "application/json");
+      res.setHeader("cache-control", "no-store");
+      return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
-    const candidates = tryKeys(mode, pair);
-
-    let foundKey = null;
-    let data = null;
-
-    for (const k of candidates) {
-      const v = await kv.get(k);
-      if (v) {
-        foundKey = k;
-        data = v;
-        break;
-      }
+    const symbol = String(req.query?.symbol || "").toUpperCase().trim();
+    if (!symbol) {
+      res.statusCode = 400;
+      res.setHeader("content-type", "application/json");
+      res.setHeader("cache-control", "no-store");
+      return res.end(JSON.stringify({ ok: false, error: "Missing ?symbol=PEPE" }));
     }
 
-    return res.status(200).json({
+    const rt = await import("../lib/_runtime.js");
+    if (!rt.requireSecret(req, res)) return;
+
+    // Gebruik exact dezelfde key-logica als de core
+    const core = await import(`../lib/_core_${mode}.js`);
+    const { keyObResult } = core;
+
+    const key = keyObResult(mode, symbol);
+    const data = await kv.get(key);
+
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json");
+    res.setHeader("cache-control", "no-store");
+
+    if (!data) {
+      return res.end(JSON.stringify({
+        ok: false,
+        mode,
+        symbol,
+        key,
+        error: "No OB result yet. Run sampler first.",
+      }));
+    }
+
+    return res.end(JSON.stringify({
       ok: true,
       mode,
-      requested: pair,
-      tried: candidates,
-      foundKey,
-      exists: !!data,
-      data: data || null,
-      ts: Date.now(),
-    });
+      symbol,
+      key,
+      data,
+    }));
   } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+    res.statusCode = 500;
+    res.setHeader("content-type", "application/json");
+    res.setHeader("cache-control", "no-store");
+    return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
-
-/* EOF */
