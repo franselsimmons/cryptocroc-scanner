@@ -1,4 +1,5 @@
 import { kv } from "@vercel/kv";
+import { createHash } from "crypto";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
 import { pushEvent } from "../lib/_analytics.js";
 import { getObSnapshot, obMapKey } from "../lib/obStore.js";
@@ -8,14 +9,47 @@ export const config = RUNTIME_CONFIG;
 // --------------------
 // Helpers
 // --------------------
+function cgKey(url) {
+  const h = createHash("sha1").update(String(url || "")).digest("hex");
+  return `cg:${h}`;
+}
+
+// ✅ CoinGecko KV cache (anti-429)
+// - fresh cache: 60s (zodat bull+bear in dezelfde minuut geen dubbele calls doen)
+// - stale cache: 10m fallback (als CG 429 geeft, kan je scanner door blijven draaien)
+const CG_FRESH_TTL_SEC = 60;
+const CG_STALE_TTL_SEC = 10 * 60;
+
 async function fetchJson(url) {
+  const key = cgKey(url);
+  const staleKey = `${key}:stale`;
+
+  // 1) eerst fresh cache
+  const cached = await kv.get(key);
+  if (cached) return cached;
+
+  // 2) live fetch
   const r = await fetch(url, { headers: { accept: "application/json" } });
   const t = await r.text();
+
+  // 3) 429 => gebruik stale fallback als die bestaat
+  if (r.status === 429) {
+    const stale = await kv.get(staleKey);
+    if (stale) return stale;
+    throw new Error(`Fetch failed 429: ${t.slice(0, 220)}`);
+  }
+
   let j = null;
   try {
     j = JSON.parse(t);
   } catch {}
+
   if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 160)}`);
+
+  // 4) set caches
+  await kv.set(key, j, { ex: CG_FRESH_TTL_SEC });
+  await kv.set(staleKey, j, { ex: CG_STALE_TTL_SEC });
+
   return j;
 }
 
@@ -333,16 +367,14 @@ function btcConfidenceAdjust(mode, btcState, btcBase, SETTINGS) {
   return { adj: 0, why: "BTC 1h small/neutral" };
 }
 
-// ========== NIEUWE COMPAT‑BTC HELPERS ==========
+// ========== NIEUWE COMPAT-BTC HELPERS ==========
 function getBtcCfg(SETTINGS) {
-  const b = (SETTINGS && SETTINGS.btc) ? SETTINGS.btc : {};
+  const b = SETTINGS && SETTINGS.btc ? SETTINGS.btc : {};
   return {
-    // oude stijl (core)
     bullMinChg24: Number.isFinite(Number(b.bullMinChg24)) ? Number(b.bullMinChg24) : 1.0,
     bearMaxChg24: Number.isFinite(Number(b.bearMaxChg24)) ? Number(b.bearMaxChg24) : -1.0,
     softOpenNeutral: !!b.softOpenNeutral,
 
-    // nieuwe stijl (scan)
     neutral24Pct: Number.isFinite(Number(b.neutral24Pct)) ? Number(b.neutral24Pct) : null,
     fine1hAbsPct: Number.isFinite(Number(b.fine1hAbsPct)) ? Number(b.fine1hAbsPct) : 0.25,
     confBoost: Number.isFinite(Number(b.confBoost)) ? Number(b.confBoost) : 4,
@@ -353,14 +385,12 @@ function computeBtcStateCompat(btcBase, SETTINGS) {
   const cfg = getBtcCfg(SETTINGS);
   const chg24 = n(btcBase?.chg24, 0);
 
-  // als neutral24Pct bestaat → gebruik die band (oude scan‑logica)
   if (cfg.neutral24Pct != null) {
     if (chg24 >= cfg.neutral24Pct) return "BULL";
     if (chg24 <= -cfg.neutral24Pct) return "BEAR";
     return "NEUTRAL";
   }
 
-  // anders → gebruik core logica (bullMin/bearMax)
   if (chg24 >= cfg.bullMinChg24) return "BULL";
   if (chg24 <= cfg.bearMaxChg24) return "BEAR";
   return "NEUTRAL";
@@ -370,7 +400,6 @@ function btcConfidenceAdjustCompat(mode, btcState, btcBase, SETTINGS) {
   const cfg = getBtcCfg(SETTINGS);
   const st = normBtcState(btcState);
 
-  // als BTC neutral is en softOpenNeutral=true → geen straf/bonus
   if (st === "NEUTRAL" && cfg.softOpenNeutral) {
     return { adj: 0, why: "BTC NEUTRAL (soft open)" };
   }
@@ -648,7 +677,6 @@ export default async function handler(req, res) {
     const now = Date.now();
 
     const btcBase = await fetchBtc();
-    // Vervangen door compat‑versies
     const btcState = computeBtcStateCompat(btcBase, core.SETTINGS);
     const btcTune = btcConfidenceAdjustCompat(mode, btcState, btcBase, core.SETTINGS);
     const btc = { ...btcBase, state: btcState, tune: btcTune };
@@ -717,7 +745,7 @@ export default async function handler(req, res) {
       } else {
         let obSamples = null;
 
-        // ALMOST slope gate (blijft werken, want sampler vult keyObSamples)
+        // ALMOST slope gate
         if (stageBase === "ALMOST") {
           obSamples = await kv.get(core.keyObSamples(mode, sym));
 
@@ -1103,6 +1131,11 @@ export default async function handler(req, res) {
       btc,
       meta: {
         cadence: "30m",
+        cgCache: {
+          freshTtlSec: CG_FRESH_TTL_SEC,
+          staleTtlSec: CG_STALE_TTL_SEC,
+          note: "Fresh cache voorkomt dubbele bull/bear calls; stale fallback houdt scanner draaiend bij 429.",
+        },
         btcPolicy:
           "24h regime + 1h confidence fine-tune; NEUTRAL/opposite => cap to BUILDUP (prep), maar scan+OB blijven lopen",
         capActive: !!cap.cap,
