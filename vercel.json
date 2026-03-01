@@ -1,10 +1,10 @@
 {
   "crons": [
-    { "path": "/api/scan?mode=bull", "schedule": "*/5 * * * *" },
-    { "path": "/api/scan?mode=bear", "schedule": "*/5 * * * *" },
+    { "path": "/api/scan?mode=bull", "schedule": "*/30 * * * *" },
+    { "path": "/api/scan?mode=bear", "schedule": "*/30 * * * *" },
 
-    { "path": "/api/ob/sampler?mode=bull&symbols=PEPE,SONIC,TURBO", "schedule": "*/5 * * * *" },
-    { "path": "/api/ob/sampler?mode=bear&symbols=PEPE,SONIC,TURBO", "schedule": "*/5 * * * *" },
+    { "path": "/api/ob/sampler?mode=bull&symbols=PEPE,SONIC,TURBO", "schedule": "*/30 * * * *" },
+    { "path": "/api/ob/sampler?mode=bear&symbols=PEPE,SONIC,TURBO", "schedule": "*/30 * * * *" },
 
     { "path": "/api/moon/cron?mode=bull", "schedule": "*/5 * * * *" },
     { "path": "/api/moon/cron?mode=bear", "schedule": "*/5 * * * *" },
