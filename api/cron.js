@@ -219,11 +219,9 @@ export default async function handler(req, res) {
   let gotLock = false;
 
   try {
-    // ✅ Cron calls: Vercel stuurt x-vercel-cron header -> altijd ok
-    // ✅ Handmatig testen: secret nodig
+    // Vercel Cron = altijd toegestaan
     if (!isVercelCron(req)) {
-      // requireSecret stuurt zélf al de 401 response als het fout is,
-      // dus hier gewoon stoppen.
+      // Alleen bij handmatig testen secret checken
       if (!requireSecret(req, res)) return;
     }
 
