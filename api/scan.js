@@ -46,14 +46,12 @@ function fmtUsd(x, d = 6) {
   return `$${v.toFixed(d)}`;
 }
 
-// ✅ tradeId generator (zodat analyzer ENTRY↔SELL kan linken)
 function makeTradeId(mode, sym) {
   return `trd_${String(mode)}_${String(sym)}_${Date.now()}_${Math.random()
     .toString(36)
     .slice(2, 10)}`;
 }
 
-// ✅ analytics mag scan nooit slopen
 async function safePushEvent(funnel, data) {
   try {
     await pushEvent(funnel, data);
@@ -61,31 +59,29 @@ async function safePushEvent(funnel, data) {
 }
 
 // ✅ OB max age (stale gate)
-const OB_MAX_AGE_MS = 120 * 60 * 1000; // 120 min
+const OB_MAX_AGE_MS = 120 * 60 * 1000;
 const OB_MAX_AGE_SEC = Math.floor(OB_MAX_AGE_MS / 1000);
 
 // ✅ Discord anti-spam
-const NOTIFY_COOLDOWN_MS = 25 * 60 * 1000; // 25 min per coin
+const NOTIFY_COOLDOWN_MS = 25 * 60 * 1000;
 
 // ======================================================
-// ✅ TRADE ENGINE (ENTRY -> HOLD -> SELL)
+// ✅ TRADE ENGINE
 // ======================================================
-const TRADE_TTL_SEC = 60 * 60 * 48; // 48 uur
-const REENTRY_COOLDOWN_SEC = 60 * 60; // 1 uur rust na SELL
+const TRADE_TTL_SEC = 60 * 60 * 48;
+const REENTRY_COOLDOWN_SEC = 60 * 60;
 
-const TIME_STOP_SCANS = 6; // 6 scans = 3 uur (bij 30m cadence)
-const TIME_STOP_MAXPNL = 0.015; // 1.5%
+const TIME_STOP_SCANS = 6;
+const TIME_STOP_MAXPNL = 0.015;
 
-const HOLD_AFTER_SCANS = 2; // 1x HOLD melding na 2 scans open
+const HOLD_AFTER_SCANS = 2;
 
-// ✅ TP / Trailing exit
-const TP1_PNL = 0.025; // 2.5%
-const TP2_PNL = 0.05; // 5.0%
-const TRAIL_AFTER_TP1 = 0.022; // 2.2% terugval
-const TRAIL_AFTER_TP2 = 0.016; // 1.6% terugval
+const TP1_PNL = 0.025;
+const TP2_PNL = 0.05;
+const TRAIL_AFTER_TP1 = 0.022;
+const TRAIL_AFTER_TP2 = 0.016;
 
-// ✅ SELL LOG (zodat pagina SELL kan tonen)
-const SELLS_TTL_SEC = 60 * 60 * 48; // 48 uur
+const SELLS_TTL_SEC = 60 * 60 * 48;
 const SELLS_KEEP = 50;
 
 function kTrade(mode, sym) {
@@ -113,15 +109,10 @@ function calcPnlPct(mode, entryPrice, nowPrice) {
   const p = n(nowPrice, 0);
   if (!(e > 0) || !(p > 0)) return 0;
 
-  if (String(mode).toLowerCase() === "bear") {
-    // short: winst als prijs daalt
-    return (e - p) / e;
-  }
-  // long: winst als prijs stijgt
+  if (String(mode).toLowerCase() === "bear") return (e - p) / e;
   return (p - e) / e;
 }
 
-// hybride stop op basis van range24
 function stopPctFromRange24(range24Pct) {
   const r = n(range24Pct, 0);
   if (r <= 18) return 0.03;
@@ -129,14 +120,11 @@ function stopPctFromRange24(range24Pct) {
   return 0.045;
 }
 
-// “OB tegen” = pressure + score draaien tegen jouw kant
 function isObAgainst(mode, ob) {
   const pd = n(ob?.pressureDeltaUsd, 0);
   const sc = n(ob?.score, 0);
 
-  if (String(mode).toLowerCase() === "bear") {
-    return pd > 0 && sc > 0;
-  }
+  if (String(mode).toLowerCase() === "bear") return pd > 0 && sc > 0;
   return pd < 0 && sc < 0;
 }
 
@@ -147,7 +135,6 @@ function isObInvalidFresh(obFresh, ob) {
   return false;
 }
 
-// tradeStatus voor pagina
 function pageTradeStatus(tradeInfo) {
   if (!tradeInfo) return "—";
   if (tradeInfo.status === "OPEN") {
@@ -157,7 +144,6 @@ function pageTradeStatus(tradeInfo) {
   return "—";
 }
 
-// ✅ Stats — “last 50” echt nieuwste 50
 function computeStatsFromSells(sellsOldestToNewest) {
   const arr = Array.isArray(sellsOldestToNewest) ? sellsOldestToNewest : [];
   const totalSells = arr.length;
@@ -182,7 +168,7 @@ function computeStatsFromSells(sellsOldestToNewest) {
   let barsSum = 0;
 
   for (const s of last50) {
-    const pnl = Number(s?.pnlPct || 0); // fraction
+    const pnl = Number(s?.pnlPct || 0);
     const bars = Number(s?.barsOpen || 0);
     if (pnl > 0) wins++;
     pnlSum += pnl;
@@ -274,7 +260,7 @@ async function flushNotices(noticesByHook) {
 }
 
 // --------------------
-// 1) BTC fetch
+// BTC fetch
 // --------------------
 async function fetchBtc() {
   const url =
@@ -368,7 +354,7 @@ function btcConfidenceAdjust(mode, btcState, btcBase, SETTINGS) {
 }
 
 // --------------------
-// 2) Universe top coins
+// Universe top coins
 // --------------------
 async function fetchCgTop(limit) {
   const per = Math.min(250, Math.max(50, Number(limit || 250)));
@@ -442,7 +428,7 @@ function stageFromSwing(mode, c) {
 }
 
 // --------------------
-// OB loaders (nieuw: cc:ob:* via obStore)
+// OB loaders (cc:ob:* via obStore)
 // --------------------
 async function loadObMap(mode) {
   try {
@@ -457,12 +443,10 @@ async function getObForSymbol({ mode, symbol, obMap }) {
   const sym = up(symbol);
 
   if (obMap && Object.prototype.hasOwnProperty.call(obMap, sym)) {
-    // sym staat in map => snapshot bestaat (of bestond recent), haal hem op
     const ob = await getObSnapshot(mode, sym, OB_MAX_AGE_SEC);
     return obSnapshotToFlat(ob, sym);
   }
 
-  // ook zonder map: gewoon proberen (werkt altijd)
   const ob = await getObSnapshot(mode, sym, OB_MAX_AGE_SEC);
   return obSnapshotToFlat(ob, sym);
 }
@@ -592,13 +576,11 @@ export default async function handler(req, res) {
 
     const mode = getMode(req); // "bull" or "bear"
 
-    // ✅ robust import (werkt of core files named exports hebben of default export)
     const coreMod = await import(`../lib/_core_${mode}.js`);
     const core = coreMod?.default ? coreMod.default : coreMod;
 
     const now = Date.now();
 
-    // BTC
     const btcBase = await fetchBtc();
     const btcState = computeBtcStateLocal(btcBase, core.SETTINGS);
     const btcTune = btcConfidenceAdjust(mode, btcState, btcBase, core.SETTINGS);
@@ -633,7 +615,7 @@ export default async function handler(req, res) {
 
       let stageBase = stageFromSwing(mode, { ...c, vm });
 
-      // OB (nieuw)
+      // OB
       const ob = await getObForSymbol({ mode, symbol: sym, obMap });
 
       const obTs = n(ob?.ts, 0);
@@ -657,12 +639,10 @@ export default async function handler(req, res) {
 
       const thr = adaptiveEntryThresholds(core, c, vm);
 
-      // Funnel stage + gates
       let almostGate = "n/a";
       let entryGate = "n/a";
       let stage = stageBase;
 
-      // ✅ cap (BTC neutral/opposite): nooit ALMOST/ENTRY naar buiten
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
         stage = "BUILDUP";
         almostGate = `capped: ${cap.capStage}`;
@@ -670,7 +650,7 @@ export default async function handler(req, res) {
       } else {
         let obSamples = null;
 
-        // ALMOST slope gate
+        // ALMOST slope gate (blijft werken, want sampler vult keyObSamples)
         if (stageBase === "ALMOST") {
           obSamples = await kv.get(core.keyObSamples(mode, sym));
 
@@ -693,7 +673,7 @@ export default async function handler(req, res) {
           }
         }
 
-        // ENTRY gate (pas als base ALMOST is)
+        // ENTRY gate
         if (stageBase === "ALMOST") {
           if (!ob || ob.ok === false) entryGate = "OB missing";
           else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
@@ -716,7 +696,6 @@ export default async function handler(req, res) {
                 : { ok: true };
 
             const pressureDelta = n(ob?.pressureDeltaUsd, 0);
-
             const pressureOk = mode === "bull" ? pressureDelta >= 0 : pressureDelta <= 0;
 
             if (!slopeCheck2.ok) entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
@@ -740,7 +719,6 @@ export default async function handler(req, res) {
 
       let tradeInfo = null;
 
-      // manage OPEN
       if (tradeExisting && tradeExisting?.status === "OPEN") {
         const entryPrice = n(tradeExisting.entryPrice, 0);
         const barsOpen = n(tradeExisting.barsOpen, 0) + 1;
@@ -763,7 +741,6 @@ export default async function handler(req, res) {
         const obBreakHit = obBadStreak >= 2;
         const timeStopHit = barsOpen >= TIME_STOP_SCANS && maxPnl < TIME_STOP_MAXPNL;
 
-        // trailing
         const drawdown = maxPnl - pnl;
 
         let trailHit = false;
@@ -795,18 +772,16 @@ export default async function handler(req, res) {
             symbol: sym,
             side: String(mode).toLowerCase(),
             reason: exit.reason,
-            pnlPct: pnl, // fraction
-            maxPnlPct: maxPnl, // fraction
+            pnlPct: pnl,
+            maxPnlPct: maxPnl,
             entryPrice,
             exitPrice: priceNow,
             barsOpen,
             extra: exit?.trailCfg ? { trailCfg: exit.trailCfg } : undefined,
           });
 
-          // ✅ giveback in % (zoals analyzer verwacht)
           const givebackPct = Math.max(0, (maxPnl - pnl) * 100);
 
-          // ✅ EVENT: trade_close (met tradeId + giveback)
           await safePushEvent("main", {
             type: "trade_close",
             tradeId,
@@ -869,7 +844,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // open on ENTRY
       if (!tradeInfo) {
         const inCooldown = !!cooldown;
         const isEntrySignal = stage === "ENTRY" && allowEntry;
@@ -893,20 +867,11 @@ export default async function handler(req, res) {
             entryConfidence: confidence,
             entryVm: vm,
             entryRange24: c.range24,
-            entryMeta: {
-              entryGate,
-              almostGate,
-              confidence,
-              vm,
-              spreadPct,
-              depthMinUsd1p,
-              obScore,
-            },
+            entryMeta: { entryGate, almostGate, confidence, vm, spreadPct, depthMinUsd1p, obScore },
           };
 
           await kv.set(tKey, tradeObj, { ex: TRADE_TTL_SEC });
 
-          // ✅ EVENT: trade_open (met tradeId)
           await safePushEvent("main", {
             type: "trade_open",
             tradeId,
@@ -926,26 +891,16 @@ export default async function handler(req, res) {
             `price ${fmtUsd(priceNow, 6)}`;
           pushNotice(noticesByHook, hook, line);
 
-          tradeInfo = {
-            status: "OPEN",
-            tradeId,
-            entryPrice: priceNow,
-            entryAt: now,
-            barsOpen: 0,
-            pnl: 0,
-            maxPnl: 0,
-          };
+          tradeInfo = { status: "OPEN", tradeId, entryPrice: priceNow, entryAt: now, barsOpen: 0, pnl: 0, maxPnl: 0 };
         }
       }
 
-      // Funnel state
       const prevEntry = safeObj(state[sym]) || {};
       const stFix = updateStateAndConsistency(state, sym, stage, core, now);
 
       const prevStage = up(stFix.prevStage);
       const currStage = up(stage);
 
-      // ✅ EVENT: stage_change
       if (prevStage && prevStage !== currStage) {
         await safePushEvent("main", {
           type: "stage_change",
@@ -966,7 +921,6 @@ export default async function handler(req, res) {
 
       const hasOpenTrade = tradeInfo?.status === "OPEN";
 
-      // Discord funnel-notify (niet spammen tijdens OPEN trade)
       if (!hasOpenTrade && prevStage) {
         const doNotify = canNotify(prevEntry, now);
         const isFunnelStage = currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
@@ -984,7 +938,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // open trades tabel
       if (tradeInfo?.status === "OPEN") {
         openTrades.push({
           symbol: sym,
@@ -993,15 +946,13 @@ export default async function handler(req, res) {
           entryPrice: n(tradeInfo.entryPrice, 0),
           entryAt: n(tradeInfo.entryAt, 0),
           barsOpen: n(tradeInfo.barsOpen, 0),
-          pnlPct: n(tradeInfo.pnl, 0), // fraction
-          maxPnlPct: n(tradeInfo.maxPnl, 0), // fraction
+          pnlPct: n(tradeInfo.pnl, 0),
+          maxPnlPct: n(tradeInfo.maxPnl, 0),
           price: priceNow,
           confidence,
           vm,
         });
       }
-
-      const volAcc = vm;
 
       const item = {
         id: c.id,
@@ -1014,7 +965,7 @@ export default async function handler(req, res) {
         change1h: +c.change1h.toFixed(4),
         range24: +c.range24.toFixed(4),
         vm: +vm.toFixed(6),
-        volAcc: +volAcc.toFixed(6),
+        volAcc: +vm.toFixed(6),
 
         confidenceBase,
         confidence,
@@ -1100,7 +1051,12 @@ export default async function handler(req, res) {
           reentryCooldownSec: REENTRY_COOLDOWN_SEC,
           tradeTtlSec: TRADE_TTL_SEC,
           sellsLogKey: kSells(mode),
-          exits: ["HARD_STOP(range24)", "TRAILING_TP(maxPnl + drawdown)", "OB_BREAK_2X(fresh)", "TIME_STOP(no momentum)"],
+          exits: [
+            "HARD_STOP(range24)",
+            "TRAILING_TP(maxPnl + drawdown)",
+            "OB_BREAK_2X(fresh)",
+            "TIME_STOP(no momentum)",
+          ],
           trailing: {
             tp1Pct: TP1_PNL * 100,
             tp2Pct: TP2_PNL * 100,
@@ -1134,7 +1090,8 @@ export default async function handler(req, res) {
         failed: discord.failed,
         errors: (discord.details || []).slice(0, 5),
       },
-      note: "Scan logs stage_change + trade_open/close (met tradeId + giveback) events naar cc:events:main:list (voor analyzer).",
+      note:
+        "Scan logs stage_change + trade_open/close (met tradeId + giveback) events naar cc:events:main:list (voor analyzer).",
     };
 
     await kv.set(core.keyLatest(mode), result);
