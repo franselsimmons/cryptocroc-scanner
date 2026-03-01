@@ -1,6 +1,6 @@
 // /api/orderbook.js
-import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, requireSecret } from "../lib/_runtime.js";
+import { getObSnapshot } from "../lib/obStore.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -32,7 +32,9 @@ async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
   const text = await r.text();
 
   let j = null;
-  try { j = JSON.parse(text); } catch {}
+  try {
+    j = JSON.parse(text);
+  } catch {}
 
   if (!r.ok) {
     return {
@@ -73,21 +75,24 @@ export default async function handler(req, res) {
     const u = new URL(req.url, "http://localhost");
 
     const symbolRaw = u.searchParams.get("symbol") ?? req.query?.symbol;
-    const sideRaw = u.searchParams.get("side") ?? req.query?.side ?? "bull";
+    const modeRaw = u.searchParams.get("mode") ?? req.query?.mode ?? "bull";
     const rawFlag = u.searchParams.get("raw") ?? req.query?.raw ?? "0";
     const limitRaw = u.searchParams.get("limit") ?? req.query?.limit ?? "100";
+    const maxAgeSecRaw = u.searchParams.get("maxAgeSec") ?? req.query?.maxAgeSec ?? "";
 
-    const side = String(sideRaw || "").toLowerCase();
-    if (side !== "bull" && side !== "bear") {
+    const mode = String(modeRaw || "").toLowerCase();
+    if (mode !== "bull" && mode !== "bear") {
       res.statusCode = 400;
-      res.setHeader("content-type", "application/json");
-      return res.end(JSON.stringify({ ok: false, error: "side must be bull/bear" }));
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      res.setHeader("cache-control", "no-store");
+      return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
     const base = normalizeBaseSymbol(symbolRaw);
     if (!base) {
       res.statusCode = 400;
-      res.setHeader("content-type", "application/json");
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      res.setHeader("cache-control", "no-store");
       return res.end(JSON.stringify({ ok: false, error: "Missing symbol" }));
     }
 
@@ -98,58 +103,58 @@ export default async function handler(req, res) {
     res.setHeader("cache-control", "no-store");
 
     // ====================================================
-    // RAW mode → live Bitget depth (DEBUG)
-    // ✅ dit moet secret-protected
+    // RAW mode → live Bitget depth (DEBUG) → secret protected
     // ====================================================
     if (String(rawFlag) === "1") {
       if (!requireSecret(req, res)) return;
       const live = await fetchBitgetOrderbookRaw(base, limitRaw);
-      return res.end(JSON.stringify({ ok: true, symbol: base, pair, side, ...live }));
+      return res.end(JSON.stringify({ ok: true, symbol: base, pair, mode, ...live }));
     }
 
     // ====================================================
-    // NORMAL mode → KV lookup (PUBLIC)
-    // ✅ dit is veilig, alleen read van KV
+    // NORMAL mode → obStore snapshot (PUBLIC read)
     // ====================================================
-    const core = await import(`../lib/_core_${side}.js`);
-    const { keyObResult, SETTINGS } = core;
+    const maxAgeSec =
+      String(maxAgeSecRaw).trim() !== "" ? Math.max(60, n(maxAgeSecRaw, 0)) : 3 * 3600;
 
-    const r = await kv.get(keyObResult(side, base));
+    const snapRes = await getObSnapshot(mode, base, maxAgeSec);
 
-    if (!r) {
-      return res.end(
-        JSON.stringify({
-          ok: true,
-          symbol: base,
-          pair,
-          side,
-          status: "validating",
-          need: n(SETTINGS?.entry?.samplesNeed, 0),
-          windowSec: n(SETTINGS?.entry?.samplesWindowSec, 0),
-          tip: "Nog geen OB result in KV. Laat /api/ob/sampler?mode=bull of bear draaien zodat samples worden opgebouwd.",
-        })
-      );
-    }
-
-    const obTs = n(r?.ob?.ts ?? r?.ts, 0);
+    // snapRes = { ok, valid, fresh, stale, reason, ageSec, snap }
+    const snap = snapRes.snap;
 
     return res.end(
       JSON.stringify({
         ok: true,
         symbol: base,
         pair,
-        side,
-        ...r,
-        valid: !!r.valid,
-        stale: !!r.stale,
-        reason: String(r.reason || ""),
-        ts: n(r.ts, 0) || obTs,
+        mode,
+        valid: !!snapRes.valid,
+        fresh: !!snapRes.fresh,
+        stale: !!snapRes.stale,
+        reason: String(snapRes.reason || ""),
+        ageSec: snapRes.ageSec ?? null,
+        ts: snap ? n(snap.ts, 0) : null,
+        snap: snap
+          ? {
+              ts: n(snap.ts, 0),
+              symbol: String(snap.symbol || base).toUpperCase(),
+              mode: String(snap.mode || mode),
+              spreadPct: n(snap.spreadPct, null),
+              depthMinUsd1p: n(snap.depthMinUsd1p, null),
+              pressureDeltaUsd: n(snap.pressureDeltaUsd, 0),
+              score: n(snap.score, null),
+            }
+          : null,
+        tip:
+          snapRes.valid
+            ? "OK"
+            : "Nog geen verse snapshot. Laat je OB sampler draaien zodat obStore gevuld wordt.",
       })
     );
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
-    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+    return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
