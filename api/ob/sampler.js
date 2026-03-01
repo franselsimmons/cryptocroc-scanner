@@ -1,483 +1,80 @@
-import { kv } from "@vercel/kv";
+import { RUNTIME_CONFIG, requireSecret } from "../../lib/_runtime.js";
+import { putObSnapshot } from "../../lib/obStore.js";
 
-export const config = { runtime: "nodejs" };
+export const config = RUNTIME_CONFIG;
 
-// ================== TUNING (veilig voor Vercel) ==================
-const HARD_MAX_PER_RUN = 60;          // was 30
-const REQUEST_DELAY_MS = 120;
+async function fetchBitgetOrderbook(symbol) {
+  const pair = `${symbol.toUpperCase()}USDT`;
+  const url = `https://api.bitget.com/api/v2/spot/market/orderbook?symbol=${pair}&type=step0&limit=100`;
 
-const OB_STALE_MS = 120 * 60 * 1000;
+  const r = await fetch(url);
+  const j = await r.json().catch(() => null);
 
-const DEFAULT_SAMPLES_WINDOW_SEC = 6 * 3600;
-const DEFAULT_SAMPLES_MAX = 24;
-const DEFAULT_SAMPLES_TTL_SEC = 60 * 60 * 48;
-const DEFAULT_RESULT_TTL_SEC = 60 * 30;
-
-const DEFAULT_SAMPLES_NEED_30M = 4;
-const DEFAULT_MIN_AGREE_30M = 3;
-
-// WATCHLIST (kleiner = sneller rond)
-const WATCH_MAX = 60;                // was 120
-const WATCH_TTL_SEC = 60 * 60 * 12;
-const WATCH_PREFER = 30;             // was 18
-
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-function safeObj(x) { return x && typeof x === "object" ? x : null; }
-
-function uniqueUpper(list) {
-  const out = [];
-  const seen = new Set();
-  for (const x of list) {
-    const s = String(x || "").toUpperCase().trim();
-    if (!s) continue;
-    if (seen.has(s)) continue;
-    seen.add(s);
-    out.push(s);
+  if (!r.ok || !j || j.code !== "00000") {
+    return { ok: false };
   }
-  return out;
+
+  return { ok: true, depth: j.data };
 }
 
-// ================== BITGET V2 ORDERBOOK (SPOT) ==================
-async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
-  const base = String(baseSymbol || "").toUpperCase();
-  if (!base) return { ok: false, status: 400, msg: "Missing symbol" };
-
-  const pair = `${base}USDT`;
-  const safeLimit = Math.max(5, Math.min(150, Number(limit) || 100));
-  const type = "step0";
-
-  const url =
-    `https://api.bitget.com/api/v2/spot/market/orderbook?` +
-    `symbol=${encodeURIComponent(pair)}&type=${encodeURIComponent(type)}&limit=${encodeURIComponent(String(safeLimit))}`;
-
-  const r = await fetch(url, { headers: { accept: "application/json" } });
-  const text = await r.text();
-
-  let j = null;
-  try { j = JSON.parse(text); } catch {}
-
-  if (!r.ok) {
-    return { ok: false, status: r.status, msg: j?.msg || "Bitget orderbook failed", url, preview: text.slice(0, 200) };
-  }
-  if (String(j?.code || "") !== "00000") {
-    return { ok: false, status: 400, msg: j?.msg || "Bitget returned non-success code", url, preview: text.slice(0, 200) };
-  }
-
-  const depth = j?.data;
-  if (!depth?.bids?.length || !depth?.asks?.length) {
-    return { ok: false, status: 200, msg: "Empty orderbook", url, preview: text.slice(0, 200) };
-  }
-
-  return { ok: true, url, depth };
-}
-
-function sumDepth(levels, mid, pct, isBid) {
-  const limit = isBid ? mid * (1 - pct) : mid * (1 + pct);
-  let total = 0;
-  let biggest = 0;
-
-  for (const row of levels) {
-    const p = Number(row?.[0]);
-    const s = Number(row?.[1]);
-    if (!Number.isFinite(p) || !Number.isFinite(s)) continue;
-
-    if (isBid && p < limit) break;
-    if (!isBid && p > limit) break;
-
-    const usd = p * s;
-    total += usd;
-    if (usd > biggest) biggest = usd;
-  }
-  return { total, biggest };
-}
-
-function imbalanceScore(bidUsd, askUsd) {
-  const denom = bidUsd + askUsd;
-  return denom > 0 ? (bidUsd - askUsd) / denom : 0;
-}
-
-function computeObSample(depth) {
+function compute(depth) {
   const bids = depth?.bids || [];
   const asks = depth?.asks || [];
   if (!bids.length || !asks.length) return null;
 
-  const bid = Number(bids[0]?.[0]);
-  const ask = Number(asks[0]?.[0]);
-  if (!(bid > 0) || !(ask > 0)) return null;
+  const bid = Number(bids[0][0]);
+  const ask = Number(asks[0][0]);
+  if (!bid || !ask) return null;
 
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  const pct02 = 0.002;
-  const bid02 = sumDepth(bids, mid, pct02, true);
-  const ask02 = sumDepth(asks, mid, pct02, false);
+  const bidUsd = bids.slice(0, 10).reduce((a, x) => a + Number(x[0]) * Number(x[1]), 0);
+  const askUsd = asks.slice(0, 10).reduce((a, x) => a + Number(x[0]) * Number(x[1]), 0);
 
-  const bidUsd = bid02.total;
-  const askUsd = ask02.total;
-
-  const score = imbalanceScore(bidUsd, askUsd);
-  const pressureDeltaUsd = bidUsd - askUsd;
-
-  const denom02 = bidUsd + askUsd;
-  const biggest02 = Math.max(bid02.biggest, ask02.biggest);
-  const lor = denom02 > 0 ? biggest02 / denom02 : 1;
-
-  const pct05 = 0.005;
-  const bid05 = sumDepth(bids, mid, pct05, true);
-  const ask05 = sumDepth(asks, mid, pct05, false);
-  const score05p = imbalanceScore(bid05.total, ask05.total);
-
-  const bid1 = sumDepth(bids, mid, 0.01, true);
-  const ask1 = sumDepth(asks, mid, 0.01, false);
-  const depthMinUsd1p = Math.min(bid1.total, ask1.total);
-  const score1p = imbalanceScore(bid1.total, ask1.total);
+  const depthMinUsd1p = Math.min(bidUsd, askUsd);
+  const score = (bidUsd - askUsd) / (bidUsd + askUsd || 1);
 
   return {
     ts: Date.now(),
-    mid,
     spreadPct,
-
-    bidUsd,
-    askUsd,
-    score,
-    pressureDeltaUsd,
-    lor,
     depthMinUsd1p,
-
-    score05p,
-    score1p,
+    pressureDeltaUsd: bidUsd - askUsd,
+    score,
   };
-}
-
-function pruneSamples(samples, SETTINGS) {
-  const now = Date.now();
-  const winSec = Number(SETTINGS?.entry?.samplesWindowSec || DEFAULT_SAMPLES_WINDOW_SEC);
-  const winMs = winSec * 1000;
-
-  const maxKeep = Math.max(6, Math.min(60, Number(SETTINGS?.entry?.samplesMax || DEFAULT_SAMPLES_MAX)));
-
-  const arr = Array.isArray(samples) ? samples : [];
-  return arr
-    .map((s) => ({
-      ts: Number(s?.ts || 0),
-      score: Number(s?.score ?? 0),
-      score05p: Number(s?.score05p ?? 0),
-      score1p: Number(s?.score1p ?? 0),
-
-      spreadPct: Number(s?.spreadPct ?? 999),
-      lor: Number(s?.lor ?? 1),
-
-      bidUsd: Number(s?.bidUsd ?? 0),
-      askUsd: Number(s?.askUsd ?? 0),
-      pressureDeltaUsd: Number(s?.pressureDeltaUsd ?? 0),
-
-      mid: Number(s?.mid ?? 0),
-      depthMinUsd1p: Number(s?.depthMinUsd1p ?? 0),
-    }))
-    .filter((s) => s.ts > 0 && Number.isFinite(s.score))
-    .filter((s) => now - s.ts <= winMs)
-    .sort((a, b) => a.ts - b.ts)
-    .slice(-maxKeep);
-}
-
-function validateSamples(mode, samplesFresh, SETTINGS) {
-  const fresh = pruneSamples(samplesFresh, SETTINGS);
-
-  const need = Number(SETTINGS?.entry?.samplesNeed ?? DEFAULT_SAMPLES_NEED_30M);
-  const minAgree = Number(SETTINGS?.entry?.minAgree ?? DEFAULT_MIN_AGREE_30M);
-
-  if (fresh.length < need) return { valid: false, reason: "Not enough samples", fresh };
-
-  const lastN = fresh.slice(-need);
-
-  const agree = lastN.filter((s) => (mode === "bull" ? s.score > 0 : s.score < 0)).length;
-  const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
-
-  const avgOk = mode === "bull" ? avgScore > 0 : avgScore < 0;
-  if (!avgOk || agree < minAgree) {
-    return { valid: false, reason: "Direction not consistent", fresh: lastN, avgScore, agree };
-  }
-
-  const avgScore1p = lastN.reduce((a, s) => a + (s.score1p ?? 0), 0) / lastN.length;
-  const score1pOk = mode === "bull" ? avgScore1p > -0.15 : avgScore1p < 0.15;
-
-  if (!score1pOk) {
-    return { valid: false, reason: "1% imbalance contradicts", fresh: lastN, avgScore, agree, avgScore1p };
-  }
-
-  return { valid: true, reason: "OK", fresh: lastN, avgScore, agree, avgScore1p };
-}
-
-function calcSlopeMin(samples, field, SETTINGS) {
-  const need = Number(SETTINGS?.entry?.samplesNeed ?? DEFAULT_SAMPLES_NEED_30M);
-  const minPts = Math.max(4, need);
-
-  const pts = (samples || [])
-    .map(s => ({ t: Number(s?.ts || 0), y: Number(s?.[field]) }))
-    .filter(p => p.t > 0 && Number.isFinite(p.y))
-    .sort((a, b) => a.t - b.t);
-
-  if (pts.length < minPts) return 0;
-
-  const tail = pts.slice(-minPts);
-
-  const t0 = tail[0].t;
-  const xs = tail.map(p => (p.t - t0) / 60000);
-  const ys = tail.map(p => p.y);
-
-  const n = xs.length;
-  const meanX = xs.reduce((a, b) => a + b, 0) / n;
-  const meanY = ys.reduce((a, b) => a + b, 0) / n;
-
-  let num = 0, den = 0;
-  for (let i = 0; i < n; i++) {
-    const dx = xs[i] - meanX;
-    num += dx * (ys[i] - meanY);
-    den += dx * dx;
-  }
-  return den === 0 ? 0 : num / den;
-}
-
-// ================== WATCHLIST LOGIC ==================
-async function loadWatch(mode) {
-  const key = `ob:watch:${mode}`;
-  const w = await kv.get(key);
-  return Array.isArray(w) ? uniqueUpper(w) : [];
-}
-
-async function saveWatch(mode, list) {
-  const key = `ob:watch:${mode}`;
-  const pruned = uniqueUpper(list).slice(0, WATCH_MAX);
-  await kv.set(key, pruned, { ex: WATCH_TTL_SEC });
-  return pruned;
-}
-
-function isBadSymbol(sym) {
-  const s = String(sym || "").toUpperCase().trim();
-  if (!s) return true;
-  if (s.length > 18) return true;
-  return false;
-}
-
-function addToWatch(watch, symbols) {
-  const merged = uniqueUpper([...(watch || []), ...(symbols || [])]);
-  return merged.slice(0, WATCH_MAX);
-}
-
-// ================== CANDIDATES SELECTIE ==================
-async function pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS, obMap) {
-  const f = latest?.funnel || {};
-
-  const take = (arr, n) => (Array.isArray(arr) ? arr.slice(0, Math.max(0, Number(n || 0))) : []);
-
-  const pickEntry  = Number(SETTINGS?.obPickEntry  ?? 25);
-  const pickAlmost = Number(SETTINGS?.obPickAlmost ?? 30);
-  const pickBuildup= Number(SETTINGS?.obPickBuildup?? 30);
-  const pickRadar  = Number(SETTINGS?.obPickRadar  ?? radarFallback ?? 40);
-
-  const entry  = take(f.entry,   pickEntry);
-  const almost = take(f.almost,  pickAlmost);
-  const buildup= take(f.buildup, pickBuildup);
-  const radar  = take(f.radar,   pickRadar);
-
-  const picked = [...entry, ...almost, ...buildup, ...radar];
-
-  const poolNow = uniqueUpper(picked.map((x) => x?.symbol)).filter((s) => !isBadSymbol(s));
-
-  const watch = await loadWatch(mode);
-  const updatedWatch = await saveWatch(mode, addToWatch(watch, poolNow));
-
-  const prefer = Math.max(1, Math.min(maxPerRun, WATCH_PREFER));
-  let out = updatedWatch.slice(0, prefer);
-
-  out = uniqueUpper([...out, ...poolNow]).slice(0, maxPerRun);
-
-  if (obMap) out = out.filter((sym) => !!obMap[String(sym).toUpperCase()]);
-
-  return out.slice(0, maxPerRun);
-}
-
-// ================== PER COIN PROCESS ==================
-async function processCandidate(core, mode, symbol, SETTINGS, keyObSamples, keyObResult) {
-  const startedAt = Date.now();
-
-  const live = await fetchBitgetOrderbookRaw(symbol, 100);
-  if (!live.ok) return { ok: false, symbol, ...live };
-
-  const sample = computeObSample(live.depth);
-  if (!sample) {
-    return { ok: false, symbol, status: 200, msg: "Could not compute sample", url: live.url };
-  }
-
-  const kS = keyObSamples(mode, symbol);
-  const prev = (await kv.get(kS)) || [];
-  const merged = Array.isArray(prev) ? prev.concat([sample]) : [sample];
-  const pruned = pruneSamples(merged, SETTINGS);
-
-  const samplesEx = Math.max(3600, Number(SETTINGS?.entry?.samplesTtlSec || DEFAULT_SAMPLES_TTL_SEC));
-  await kv.set(kS, pruned, { ex: samplesEx });
-
-  const v = validateSamples(mode, pruned, SETTINGS);
-
-  const slopeCheck = typeof core.checkObSlopeGate === "function"
-    ? core.checkObSlopeGate({ stage: "sampler", mode, obSamples: pruned, settings: SETTINGS })
-    : { ok: true, slope: 0, reason: "no-slope" };
-
-  const slopeDepth1p = calcSlopeMin(pruned, "depthMinUsd1p", SETTINGS);
-  const slopeScore = calcSlopeMin(pruned, "score", SETTINGS);
-
-  const finalValid = !!v.valid && !!slopeCheck.ok;
-  const finalReason = finalValid
-    ? "OK"
-    : (v.valid ? (slopeCheck.reason || "OB slope failed") : (v.reason || "OB invalid"));
-
-  const ageMs = Date.now() - sample.ts;
-  const stale = ageMs > OB_STALE_MS;
-
-  const result = {
-    symbol,
-    side: mode,
-
-    valid: finalValid,
-    reason: finalReason,
-
-    stale,
-    ageSec: Math.round(ageMs / 1000),
-
-    score: sample.score,
-    score05p: sample.score05p,
-    score1p: sample.score1p,
-    pressureDeltaUsd: sample.pressureDeltaUsd,
-
-    spreadPct: sample.spreadPct,
-    lor: sample.lor,
-    depthMinUsd1p: sample.depthMinUsd1p,
-
-    avgScore: v.avgScore ?? null,
-    avgScore1p: v.avgScore1p ?? null,
-    agree: v.agree ?? null,
-
-    slope: slopeCheck.slope ?? null,
-    slopeScore,
-    slopeDepth1p,
-
-    ob: {
-      ts: sample.ts,
-      mid: sample.mid,
-      spreadPct: sample.spreadPct,
-
-      bidUsd: sample.bidUsd,
-      askUsd: sample.askUsd,
-
-      score: sample.score,
-      score05p: sample.score05p,
-      score1p: sample.score1p,
-
-      pressureDeltaUsd: sample.pressureDeltaUsd,
-
-      lor: sample.lor,
-      depthMinUsd1p: sample.depthMinUsd1p,
-
-      slopeScore,
-      slopeDepth1p,
-    },
-
-    tookMs: Date.now() - startedAt,
-    ts: Date.now(),
-  };
-
-  const resultEx = Math.max(900, Number(SETTINGS?.entry?.resultTtlSec || DEFAULT_RESULT_TTL_SEC));
-  await kv.set(keyObResult(mode, symbol), result, { ex: resultEx });
-
-  return { ok: true, symbol, valid: finalValid, reason: finalReason };
 }
 
 export default async function handler(req, res) {
   try {
-    const mode = String(req.query?.mode || "bull").toLowerCase();
-    if (mode !== "bull" && mode !== "bear") {
-      res.statusCode = 400;
-      res.setHeader("content-type", "application/json");
-      res.setHeader("cache-control", "no-store");
-      return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
-    }
+    if (!requireSecret(req, res)) return;
 
-    const rt = await import("../../lib/_runtime.js");
-    if (!rt.requireSecret(req, res)) return;
-
-    const core = await import(`../../lib/_core_${mode}.js`);
-    const { SETTINGS, keyLatest, keyObSamples, keyObResult } = core;
-
-    const maxPerRunRaw = Number(req.query?.max || 60) || 60;
-    const maxPerRun = Math.max(1, Math.min(HARD_MAX_PER_RUN, Math.min(80, maxPerRunRaw)));
-
-    const radarFallback = Math.max(5, Math.min(250, Number(req.query?.radar || 200) || 200));
-
-    const obMapBlob = await kv.get(`ob:map:${mode}`);
-    const obMap = safeObj(obMapBlob)?.map && typeof obMapBlob.map === "object" ? obMapBlob.map : null;
-
-    const latest = await kv.get(keyLatest(mode));
-    const candidatesRaw = await pickCandidatesSmart(mode, latest, maxPerRun, radarFallback, SETTINGS, obMap);
-
-    const candidates = uniqueUpper(candidatesRaw).filter((s) => !isBadSymbol(s));
-
-    let totalTried = 0;
-    let totalProcessed = 0;
-    let totalValid = 0;
-    let failed = 0;
+    const mode = String(req.query.mode || "bull");
+    const symbols = String(req.query.symbols || "")
+      .split(",")
+      .map(s => s.trim().toUpperCase())
+      .filter(Boolean);
 
     const processed = [];
-    const failedDetails = [];
 
-    for (const sym of candidates) {
-      totalTried++;
-      if (totalTried > 1) await sleep(REQUEST_DELAY_MS);
+    for (const symbol of symbols) {
+      const live = await fetchBitgetOrderbook(symbol);
+      if (!live.ok) continue;
 
-      const r = await processCandidate(core, mode, sym, SETTINGS, keyObSamples, keyObResult);
-      if (r.ok) {
-        totalProcessed++;
-        if (r.valid) totalValid++;
-        processed.push({ symbol: sym, valid: r.valid, reason: r.reason });
-      } else {
-        failed++;
-        failedDetails.push({
-          symbol: r.symbol,
-          status: r.status,
-          msg: r.msg || r.error || "failed",
-          url: r.url,
-          preview: r.preview,
-        });
-      }
+      const snap = compute(live.depth);
+      if (!snap) continue;
+
+      await putObSnapshot(mode, symbol, snap);
+      processed.push(symbol);
     }
 
-    const watchNow = await loadWatch(mode);
-
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.setHeader("cache-control", "no-store");
-    return res.end(JSON.stringify({
+    return res.status(200).json({
       ok: true,
       mode,
-      ts: Date.now(),
-      cadenceHint: "Designed for 15m cron (enough samples within 3h window).",
-      maxPerRun,
-      radarFallback,
-      obMapOk: !!obMap,
-      watchSize: watchNow.length,
-      watchHead: watchNow.slice(0, 20),
-      candidatesRaw,
-      candidates,
       processed,
-      totalTried,
-      totalProcessed,
-      totalValid,
-      failed,
-      failedDetails: failedDetails.slice(0, 20),
-    }));
+      count: processed.length,
+      ts: Date.now(),
+    });
   } catch (e) {
-    res.statusCode = 500;
-    res.setHeader("content-type", "application/json");
-    res.setHeader("cache-control", "no-store");
-    return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 }
