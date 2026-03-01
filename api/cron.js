@@ -219,12 +219,12 @@ export default async function handler(req, res) {
   let gotLock = false;
 
   try {
-    const authOk = isVercelCron(req) || requireSecret(req, res);
-    if (!authOk) {
-      res.statusCode = 401;
-      res.setHeader("content-type", "application/json; charset=utf-8");
-      res.setHeader("cache-control", "no-store");
-      return res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+    // ✅ Cron calls: Vercel stuurt x-vercel-cron header -> altijd ok
+    // ✅ Handmatig testen: secret nodig
+    if (!isVercelCron(req)) {
+      // requireSecret stuurt zélf al de 401 response als het fout is,
+      // dus hier gewoon stoppen.
+      if (!requireSecret(req, res)) return;
     }
 
     gotLock = await acquireLock();
