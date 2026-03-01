@@ -1,3 +1,4 @@
+/* EOF: /api/cron.js */
 import { kv } from "@vercel/kv";
 
 import scan from "./scan.js";
@@ -10,16 +11,30 @@ import { formatStage } from "../lib/formatDiscord.js";
 
 export const config = RUNTIME_CONFIG;
 
+// --------------------
+// mini-res object dat ALLE stijlen aankan:
+// - res.statusCode + res.end()
+// - res.status(200).json()
+// --------------------
 function makeRes() {
   return {
     statusCode: 200,
     headers: {},
     body: "",
     setHeader(k, v) {
-      this.headers[String(k).toLowerCase()] = v;
+      this.headers[String(k).toLowerCase()] = String(v);
+    },
+    status(code) {
+      this.statusCode = Number(code) || 200;
+      return this;
+    },
+    json(obj) {
+      this.setHeader("content-type", "application/json; charset=utf-8");
+      this.end(JSON.stringify(obj));
+      return this;
     },
     end(txt) {
-      this.body = txt || "";
+      this.body = String(txt || "");
     },
   };
 }
@@ -111,13 +126,20 @@ function pickSecret() {
   );
 }
 
-function makeInternalReq({ mode, max, radar, symbols, secret }) {
-  const query = { mode };
+// ✅ BELANGRIJK: maak een echte req.url zodat handlers met new URL(req.url) niet crashen
+function makeInternalReq({ path, mode, max, radar, symbols, secret }) {
+  const query = {};
+  if (mode !== undefined) query.mode = String(mode);
   if (max !== undefined) query.max = String(max);
   if (radar !== undefined) query.radar = String(radar);
   if (symbols) query.symbols = String(symbols);
-
   if (secret) query.secret = String(secret);
+
+  const qs = Object.keys(query)
+    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(query[k])}`)
+    .join("&");
+
+  const url = `${String(path)}${qs ? `?${qs}` : ""}`;
 
   const headers = {};
   if (secret) {
@@ -125,7 +147,7 @@ function makeInternalReq({ mode, max, radar, symbols, secret }) {
     headers["authorization"] = `Bearer ${secret}`;
   }
 
-  return { method: "GET", query, headers };
+  return { method: "GET", query, headers, url };
 }
 
 function assertOk(name, parsed, resObj) {
@@ -154,25 +176,23 @@ async function acquireLock() {
 }
 
 async function releaseLock() {
-  try {
-    await kv.del(CRON_LOCK_KEY);
-  } catch {}
+  try { await kv.del(CRON_LOCK_KEY); } catch {}
 }
 
 function isVercelCron(req) {
   const h = req?.headers || {};
   const v =
     h["x-vercel-cron"] ||
-    h["X-Vercel-Cron"] ||
     h["x-vercel-cron-job"] ||
+    h["X-Vercel-Cron"] ||
     h["X-Vercel-Cron-Job"];
   return String(v || "") !== "";
 }
 
 async function runOneMode(mode, max, radar, symbols, secret) {
-  const reqMap = makeInternalReq({ mode, secret });
-  const reqOb = makeInternalReq({ mode, symbols, secret });
-  const reqScan = makeInternalReq({ mode, max, radar, secret });
+  const reqMap  = makeInternalReq({ path: "/api/ob/map_refresh", mode, secret });
+  const reqOb   = makeInternalReq({ path: "/api/ob/sampler", mode, symbols, secret });
+  const reqScan = makeInternalReq({ path: "/api/scan", mode, max, radar, secret });
 
   const resMap = makeRes();
   await obMapRefresh(reqMap, resMap);
@@ -220,6 +240,7 @@ export default async function handler(req, res) {
       }));
     }
 
+    // ✅ eerst query secret, dan ENV secret
     const secretFromQuery = String(req?.query?.secret || "").trim();
     const secret = secretFromQuery || pickSecret();
 
@@ -227,8 +248,6 @@ export default async function handler(req, res) {
 
     const max = q(req, "max", "60");
     const radar = q(req, "radar", "200");
-
-    // ✅ vanaf nu staan je default symbols HIER (ipv vercel.json querystring)
     const symbols = q(req, "symbols", "PEPE,SONIC,TURBO");
 
     let out = null;
