@@ -1,7 +1,7 @@
-/* EOF: /api/scan.js */
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
 import { pushEvent } from "../lib/_analytics.js";
+import { getObSnapshot, obMapKey } from "../lib/obStore.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -12,7 +12,9 @@ async function fetchJson(url) {
   const r = await fetch(url, { headers: { accept: "application/json" } });
   const t = await r.text();
   let j = null;
-  try { j = JSON.parse(t); } catch {}
+  try {
+    j = JSON.parse(t);
+  } catch {}
   if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 160)}`);
   return j;
 }
@@ -46,16 +48,21 @@ function fmtUsd(x, d = 6) {
 
 // ✅ tradeId generator (zodat analyzer ENTRY↔SELL kan linken)
 function makeTradeId(mode, sym) {
-  return `trd_${String(mode)}_${String(sym)}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  return `trd_${String(mode)}_${String(sym)}_${Date.now()}_${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
 }
 
 // ✅ analytics mag scan nooit slopen
 async function safePushEvent(funnel, data) {
-  try { await pushEvent(funnel, data); } catch {}
+  try {
+    await pushEvent(funnel, data);
+  } catch {}
 }
 
 // ✅ OB max age (stale gate)
 const OB_MAX_AGE_MS = 120 * 60 * 1000; // 120 min
+const OB_MAX_AGE_SEC = Math.floor(OB_MAX_AGE_MS / 1000);
 
 // ✅ Discord anti-spam
 const NOTIFY_COOLDOWN_MS = 25 * 60 * 1000; // 25 min per coin
@@ -124,8 +131,8 @@ function stopPctFromRange24(range24Pct) {
 
 // “OB tegen” = pressure + score draaien tegen jouw kant
 function isObAgainst(mode, ob) {
-  const pd = n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0);
-  const sc = n(ob?.ob?.score ?? ob?.score, 0);
+  const pd = n(ob?.pressureDeltaUsd, 0);
+  const sc = n(ob?.score, 0);
 
   if (String(mode).toLowerCase() === "bear") {
     return pd > 0 && sc > 0;
@@ -133,11 +140,10 @@ function isObAgainst(mode, ob) {
   return pd < 0 && sc < 0;
 }
 
-function isObInvalidFresh(obValid, obFresh, ob) {
+function isObInvalidFresh(obFresh, ob) {
   if (!obFresh) return false;
   if (!ob) return true;
   if (ob.valid === false) return true;
-  if (!obValid) return true;
   return false;
 }
 
@@ -280,16 +286,12 @@ async function fetchBtc() {
   const b = arr?.[0] || {};
 
   const chg1h = n(
-    b?.price_change_percentage_1h_in_currency ??
-      b?.price_change_percentage_1h ??
-      0,
+    b?.price_change_percentage_1h_in_currency ?? b?.price_change_percentage_1h ?? 0,
     0
   );
 
   const chg24 = n(
-    b?.price_change_percentage_24h_in_currency ??
-      b?.price_change_percentage_24h ??
-      0,
+    b?.price_change_percentage_24h_in_currency ?? b?.price_change_percentage_24h ?? 0,
     0
   );
 
@@ -383,16 +385,12 @@ async function fetchCgTop(limit) {
     const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
     const change24 = n(
-      c?.price_change_percentage_24h_in_currency ??
-        c?.price_change_percentage_24h ??
-        0,
+      c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0,
       0
     );
 
     const change1h = n(
-      c?.price_change_percentage_1h_in_currency ??
-        c?.price_change_percentage_1h ??
-        0,
+      c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0,
       0
     );
 
@@ -444,18 +442,49 @@ function stageFromSwing(mode, c) {
 }
 
 // --------------------
-// OB map loader
+// OB loaders (nieuw: cc:ob:* via obStore)
 // --------------------
 async function loadObMap(mode) {
-  const blob = await kv.get(`ob:map:${mode}`);
-  const m = safeObj(blob)?.map;
-  return safeObj(m) || null;
+  try {
+    const m = await kv.hgetall(obMapKey(mode));
+    return safeObj(m) || null;
+  } catch {
+    return null;
+  }
 }
 
-async function getObForSymbol({ core, mode, symbol, obMap }) {
+async function getObForSymbol({ mode, symbol, obMap }) {
   const sym = up(symbol);
-  if (obMap && obMap[sym]) return obMap[sym];
-  return await kv.get(core.keyObResult(mode, sym));
+
+  if (obMap && Object.prototype.hasOwnProperty.call(obMap, sym)) {
+    // sym staat in map => snapshot bestaat (of bestond recent), haal hem op
+    const ob = await getObSnapshot(mode, sym, OB_MAX_AGE_SEC);
+    return obSnapshotToFlat(ob, sym);
+  }
+
+  // ook zonder map: gewoon proberen (werkt altijd)
+  const ob = await getObSnapshot(mode, sym, OB_MAX_AGE_SEC);
+  return obSnapshotToFlat(ob, sym);
+}
+
+function obSnapshotToFlat(ob, sym) {
+  const snap = safeObj(ob?.snap) || null;
+
+  return {
+    symbol: sym,
+    ok: !!ob?.ok,
+    valid: !!ob?.valid,
+    fresh: !!ob?.fresh,
+    stale: !!ob?.stale,
+    reason: String(ob?.reason || ""),
+    ageSec: ob?.ageSec ?? null,
+
+    ts: n(snap?.ts, 0) || null,
+    spreadPct: Number.isFinite(Number(snap?.spreadPct)) ? Number(snap.spreadPct) : null,
+    depthMinUsd1p: Number.isFinite(Number(snap?.depthMinUsd1p)) ? Number(snap.depthMinUsd1p) : null,
+    pressureDeltaUsd: Number.isFinite(Number(snap?.pressureDeltaUsd)) ? Number(snap.pressureDeltaUsd) : 0,
+    score: Number.isFinite(Number(snap?.score)) ? Number(snap.score) : null,
+  };
 }
 
 // --------------------
@@ -604,18 +633,18 @@ export default async function handler(req, res) {
 
       let stageBase = stageFromSwing(mode, { ...c, vm });
 
-      // OB
-      const ob = await getObForSymbol({ core, mode, symbol: sym, obMap });
+      // OB (nieuw)
+      const ob = await getObForSymbol({ mode, symbol: sym, obMap });
 
-      const obTs = n(ob?.ob?.ts ?? ob?.ts, 0);
+      const obTs = n(ob?.ts, 0);
       const obAge = obTs > 0 ? now - obTs : Number.POSITIVE_INFINITY;
-      const obFresh = obTs > 0 && obAge <= OB_MAX_AGE_MS;
+      const obFresh = !!ob?.fresh;
 
       const obValid = !!ob?.valid;
 
-      const spreadPct = n(ob?.ob?.spreadPct ?? ob?.spreadPct, 999);
-      const depthMinUsd1p = n(ob?.ob?.depthMinUsd1p ?? ob?.depthMinUsd1p, 0);
-      const obScore = n(ob?.ob?.score ?? ob?.score, 0);
+      const spreadPct = n(ob?.spreadPct, 999);
+      const depthMinUsd1p = n(ob?.depthMinUsd1p, 0);
+      const obScore = n(ob?.score, 0);
 
       const confidenceBase = core.computeConfidence({
         vm,
@@ -624,10 +653,7 @@ export default async function handler(req, res) {
         obValid: !!obValid,
       });
 
-      const confidence = Math.max(
-        0,
-        Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0))
-      );
+      const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
 
       const thr = adaptiveEntryThresholds(core, c, vm);
 
@@ -669,9 +695,9 @@ export default async function handler(req, res) {
 
         // ENTRY gate (pas als base ALMOST is)
         if (stageBase === "ALMOST") {
-          if (!ob) entryGate = "OB missing";
+          if (!ob || ob.ok === false) entryGate = "OB missing";
           else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
-          else if (!obValid) entryGate = "OB validating";
+          else if (!obValid) entryGate = "OB invalid";
           else if (confidence < n(thr.minConfidence, 0)) entryGate = `Confidence < ${thr.minConfidence}`;
           else if (spreadPct > n(thr.spreadMaxPct, 999)) entryGate = `Spread > ${thr.spreadMaxPct}%`;
           else if (depthMinUsd1p < n(thr.depthMinUsd1p, 0)) entryGate = `Depth1% < $${thr.depthMinUsd1p}`;
@@ -689,14 +715,12 @@ export default async function handler(req, res) {
                   })
                 : { ok: true };
 
-            const pressureDelta = n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0);
-            const score1p = n(ob?.ob?.score1p ?? ob?.score1p, 0);
+            const pressureDelta = n(ob?.pressureDeltaUsd, 0);
 
             const pressureOk = mode === "bull" ? pressureDelta >= 0 : pressureDelta <= 0;
-            const score1pOk = mode === "bull" ? score1p >= -0.2 : score1p <= 0.2;
 
             if (!slopeCheck2.ok) entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
-            else if (!(pressureOk || score1pOk)) entryGate = "Pressure+1% contra";
+            else if (!pressureOk) entryGate = "Pressure contra";
             else {
               stage = "ENTRY";
               entryGate = "passed";
@@ -732,7 +756,7 @@ export default async function handler(req, res) {
             : priceNow <= entryPrice * (1 - stopPct);
 
         const obAgainst = obFresh ? isObAgainst(mode, ob) : false;
-        const obInvalid = isObInvalidFresh(obValid, obFresh, ob);
+        const obInvalid = isObInvalidFresh(obFresh, ob);
         const badNow = obFresh && (obAgainst || obInvalid);
         const obBadStreak = badNow ? n(tradeExisting.obBadStreak, 0) + 1 : 0;
 
@@ -771,7 +795,7 @@ export default async function handler(req, res) {
             symbol: sym,
             side: String(mode).toLowerCase(),
             reason: exit.reason,
-            pnlPct: pnl,       // fraction
+            pnlPct: pnl, // fraction
             maxPnlPct: maxPnl, // fraction
             entryPrice,
             exitPrice: priceNow,
@@ -945,8 +969,7 @@ export default async function handler(req, res) {
       // Discord funnel-notify (niet spammen tijdens OPEN trade)
       if (!hasOpenTrade && prevStage) {
         const doNotify = canNotify(prevEntry, now);
-        const isFunnelStage =
-          currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
+        const isFunnelStage = currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
 
         if (doNotify && isFunnelStage && prevStage !== currStage) {
           const hook = stageWebhook(currStage);
@@ -970,8 +993,8 @@ export default async function handler(req, res) {
           entryPrice: n(tradeInfo.entryPrice, 0),
           entryAt: n(tradeInfo.entryAt, 0),
           barsOpen: n(tradeInfo.barsOpen, 0),
-          pnlPct: n(tradeInfo.pnl, 0),      // fraction
-          maxPnlPct: n(tradeInfo.maxPnl, 0),// fraction
+          pnlPct: n(tradeInfo.pnl, 0), // fraction
+          maxPnlPct: n(tradeInfo.maxPnl, 0), // fraction
           price: priceNow,
           confidence,
           vm,
@@ -1015,19 +1038,14 @@ export default async function handler(req, res) {
         ob: ob
           ? {
               valid: !!ob.valid,
-              fresh: !!obFresh,
+              fresh: !!ob.fresh,
               stale: !!ob.stale,
-              ageSec: obTs > 0 ? Math.round(obAge / 1000) : null,
+              ageSec: obTs > 0 ? Math.round(obAge / 1000) : ob.ageSec ?? null,
               reason: String(ob.reason || ""),
-              score: Number(obScore),
-              spreadPct: Number(spreadPct),
-              depthMinUsd1p: Number(depthMinUsd1p),
-              lor: Number(n(ob?.ob?.lor ?? ob?.lor, 1)),
-              score1p: n(ob?.ob?.score1p ?? ob?.score1p, 0),
-              score05p: n(ob?.ob?.score05p ?? ob?.score05p, 0),
-              pressureDeltaUsd: n(ob?.ob?.pressureDeltaUsd ?? ob?.pressureDeltaUsd, 0),
-              slopeScore: n(ob?.slopeScore ?? ob?.ob?.slopeScore ?? ob?.slope ?? 0, 0),
-              slopeDepth1p: n(ob?.slopeDepth1p ?? ob?.ob?.slopeDepth1p ?? 0, 0),
+              score: Number(n(obScore, 0)),
+              spreadPct: Number(n(spreadPct, 999)),
+              depthMinUsd1p: Number(n(depthMinUsd1p, 0)),
+              pressureDeltaUsd: Number(n(ob.pressureDeltaUsd, 0)),
               ts: obTs || null,
             }
           : { status: "none" },
@@ -1082,12 +1100,7 @@ export default async function handler(req, res) {
           reentryCooldownSec: REENTRY_COOLDOWN_SEC,
           tradeTtlSec: TRADE_TTL_SEC,
           sellsLogKey: kSells(mode),
-          exits: [
-            "HARD_STOP(range24)",
-            "TRAILING_TP(maxPnl + drawdown)",
-            "OB_BREAK_2X(fresh)",
-            "TIME_STOP(no momentum)",
-          ],
+          exits: ["HARD_STOP(range24)", "TRAILING_TP(maxPnl + drawdown)", "OB_BREAK_2X(fresh)", "TIME_STOP(no momentum)"],
           trailing: {
             tp1Pct: TP1_PNL * 100,
             tp2Pct: TP2_PNL * 100,
@@ -1121,8 +1134,7 @@ export default async function handler(req, res) {
         failed: discord.failed,
         errors: (discord.details || []).slice(0, 5),
       },
-      note:
-        "Scan logs stage_change + trade_open/close (met tradeId + giveback) events naar cc:events:main:list (voor analyzer).",
+      note: "Scan logs stage_change + trade_open/close (met tradeId + giveback) events naar cc:events:main:list (voor analyzer).",
     };
 
     await kv.set(core.keyLatest(mode), result);
@@ -1137,4 +1149,3 @@ export default async function handler(req, res) {
     return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
-/* EOF */
