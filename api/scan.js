@@ -154,6 +154,39 @@ function stopPctFromRange24(range24Pct) {
   return 0.045;
 }
 
+// ✅ NEW: Risk/TP helper (voor UI)
+function calcRiskLevels(mode, basePrice, range24Pct) {
+  const e = n(basePrice, 0);
+  if (!(e > 0)) {
+    return {
+      atrPctProxy: 0,
+      stopPct: 0,
+      slPrice: null,
+      tp1Price: null,
+      tp2Price: null,
+      tp1Pct: TP1_PNL * 100,
+      tp2Pct: TP2_PNL * 100,
+    };
+  }
+
+  const stopPct = stopPctFromRange24(range24Pct);
+  const m = String(mode || "bull").toLowerCase();
+
+  const slPrice = m === "bear" ? e * (1 + stopPct) : e * (1 - stopPct);
+  const tp1Price = m === "bear" ? e * (1 - TP1_PNL) : e * (1 + TP1_PNL);
+  const tp2Price = m === "bear" ? e * (1 - TP2_PNL) : e * (1 + TP2_PNL);
+
+  return {
+    atrPctProxy: stopPct * 100, // proxy (range24 -> stop)
+    stopPct,
+    slPrice,
+    tp1Price,
+    tp2Price,
+    tp1Pct: TP1_PNL * 100,
+    tp2Pct: TP2_PNL * 100,
+  };
+}
+
 function isObAgainst(mode, ob) {
   const pd = n(ob?.pressureDeltaUsd, 0);
   const sc = n(ob?.score, 0);
@@ -986,7 +1019,15 @@ export default async function handler(req, res) {
             `price ${fmtUsd(priceNow, 6)}`;
           pushNotice(noticesByHook, hook, line);
 
-          tradeInfo = { status: "OPEN", tradeId, entryPrice: priceNow, entryAt: now, barsOpen: 0, pnl: 0, maxPnl: 0 };
+          tradeInfo = {
+            status: "OPEN",
+            tradeId,
+            entryPrice: priceNow,
+            entryAt: now,
+            barsOpen: 0,
+            pnl: 0,
+            maxPnl: 0,
+          };
         }
       }
 
@@ -1049,6 +1090,12 @@ export default async function handler(req, res) {
         });
       }
 
+      // ✅ NEW: risk object voor UI (base op trade-entry als OPEN, anders current price)
+      const riskBasePrice =
+        tradeInfo?.status === "OPEN" ? n(tradeInfo.entryPrice, priceNow) : priceNow;
+
+      const risk = calcRiskLevels(mode, riskBasePrice, c.range24);
+
       const item = {
         id: c.id,
         symbol: sym,
@@ -1073,6 +1120,19 @@ export default async function handler(req, res) {
 
         stageScans: stFix.stageScans,
         consistency: stFix.consistency,
+
+        // ✅ NEW: risk levels (zodat UI SL/TP kan renderen)
+        risk: {
+          atrPctProxy: Number(n(risk.atrPctProxy, 0)),
+          stopPct: Number(n(risk.stopPct, 0)),
+          slPrice: risk.slPrice == null ? null : Number(risk.slPrice),
+          tp1Price: risk.tp1Price == null ? null : Number(risk.tp1Price),
+          tp2Price: risk.tp2Price == null ? null : Number(risk.tp2Price),
+          tp1Pct: Number(n(risk.tp1Pct, TP1_PNL * 100)),
+          tp2Pct: Number(n(risk.tp2Pct, TP2_PNL * 100)),
+          basePrice: Number(n(riskBasePrice, 0)),
+          basis: tradeInfo?.status === "OPEN" ? "ENTRY_PRICE" : "CURRENT_PRICE",
+        },
 
         req: {
           minConfidence: thr.minConfidence,
@@ -1163,6 +1223,10 @@ export default async function handler(req, res) {
             trailAfterTp1Pct: TRAIL_AFTER_TP1 * 100,
             trailAfterTp2Pct: TRAIL_AFTER_TP2 * 100,
           },
+        },
+        riskUi: {
+          enabled: true,
+          note: "risk.* wordt per coin meegestuurd zodat de UI SL/TP kan tonen (basis: entryPrice bij OPEN trade).",
         },
       },
       counts: {
