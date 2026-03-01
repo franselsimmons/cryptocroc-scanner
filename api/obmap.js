@@ -1,52 +1,82 @@
+// api/obmap.js
 import { kv } from "@vercel/kv";
 
 export const config = { runtime: "nodejs" };
 
-function pickMode(raw) {
-  const m = String(raw || "bull").toLowerCase();
-  return m === "bear" ? "bear" : "bull";
+function safeObj(x) {
+  return x && typeof x === "object" ? x : null;
 }
 
 export default async function handler(req, res) {
   try {
-    const mode = pickMode(req.query.mode);
-    const secret = String(req.query.secret || "");
-
-    // als jij een secret wil afdwingen:
-    const expected = process.env.CC_SECRET || "";
-    if (expected && secret !== expected) {
-      return res.status(401).json({ ok: false, error: "bad secret" });
+    const mode = String(req.query?.mode || "bull").toLowerCase();
+    if (mode !== "bull" && mode !== "bear") {
+      res.statusCode = 400;
+      res.setHeader("content-type", "application/json");
+      res.setHeader("cache-control", "no-store");
+      return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
+
+    // secret check (zelfde als de rest)
+    const rt = await import("../lib/_runtime.js");
+    if (!rt.requireSecret(req, res)) return;
 
     const key = `ob:map:${mode}`;
-    const wrapper = await kv.get(key);
+    const blob = await kv.get(key);
 
-    // wrapper hoort te zijn: { ts, size, map }
-    if (!wrapper || typeof wrapper !== "object") {
-      return res.status(200).json({
-        ok: true,
-        mode,
-        key,
-        wrapper: null,
-        size: 0,
-        ts: Date.now(),
-        note: "No ob map in KV yet. Run /api/ob/map_refresh first.",
-      });
-    }
+    const obj = safeObj(blob);
+    const map = obj && safeObj(obj.map) ? obj.map : null;
 
-    const map = wrapper.map || {};
-    const symbols = Object.keys(map);
+    // Optioneel: ?symbol=PEPE → alleen die entry
+    const symbol = String(req.query?.symbol || "").toUpperCase().trim();
 
-    return res.status(200).json({
+    // Optioneel: ?flat=1 → alleen map object terug (makkelijk voor UI)
+    const flat = String(req.query?.flat || "") === "1";
+
+    const out = {
       ok: true,
       mode,
       key,
-      wrapper: ["ts", "size", "map"],
-      size: wrapper.size ?? symbols.length,
-      sample: symbols.slice(0, 20),
-      ts: wrapper.ts ?? Date.now(),
-    });
+      ts: obj?.ts || null,
+      size: obj?.size ?? (map ? Object.keys(map).length : 0),
+      wrapper: obj ? Object.keys(obj) : null,
+      sample: map ? Object.keys(map).slice(0, 20) : [],
+    };
+
+    if (!map) {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.setHeader("cache-control", "no-store");
+      return res.end(JSON.stringify({ ...out, ok: false, error: "No ob map in KV yet. Run /api/ob/map_refresh first." }));
+    }
+
+    if (symbol) {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.setHeader("cache-control", "no-store");
+      return res.end(JSON.stringify({
+        ...out,
+        symbol,
+        exists: !!map[symbol],
+        entry: map[symbol] || null,
+      }));
+    }
+
+    if (flat) {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.setHeader("cache-control", "no-store");
+      return res.end(JSON.stringify({ ok: true, mode, key, ts: obj?.ts || null, size: out.size, map }));
+    }
+
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json");
+    res.setHeader("cache-control", "no-store");
+    return res.end(JSON.stringify({ ...out, hasMap: true }));
   } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+    res.statusCode = 500;
+    res.setHeader("content-type", "application/json");
+    res.setHeader("cache-control", "no-store");
+    return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
