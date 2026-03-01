@@ -11,6 +11,14 @@ import { formatStage } from "../lib/formatDiscord.js";
 
 export const config = RUNTIME_CONFIG;
 
+// ================== CONSTANTS ==================
+const CRON_LOCK_KEY = "lock:cron";
+const CRON_LOCK_TTL_SEC = 25 * 60;
+
+// heartbeat: hiermee kan je UI/diagnose zien dat cron “leeft” ook als scan faalt
+const CRON_HEARTBEAT_KEY = "cron:last";
+const CRON_HEARTBEAT_TTL_SEC = 6 * 60 * 60;
+
 // --------------------
 // mini-res object dat ALLE stijlen aankan:
 // - res.statusCode + res.end()
@@ -150,23 +158,23 @@ function makeInternalReq({ path, mode, max, radar, symbols, secret }) {
   return { method: "GET", query, headers, url };
 }
 
-function assertOk(name, parsed, resObj) {
+// SOFT assert: nooit throwen → cron blijft “leven” en UI kan updaten
+function assertOkSoft(name, parsed, resObj) {
   if (parsed?.ok === false) {
-    throw new Error(
-      `${name} returned ok:false (status ${resObj?.statusCode || "?"}) :: ${
+    return {
+      ok: false,
+      error: `${name} returned ok:false (status ${resObj?.statusCode || "?"}) :: ${
         parsed?.error || parsed?.raw || "unknown"
-      }`
-    );
+      }`,
+    };
   }
-  if (parsed?.error) throw new Error(`${name} error :: ${parsed.error}`);
+  if (parsed?.error) return { ok: false, error: `${name} error :: ${parsed.error}` };
+  return { ok: true };
 }
 
 // --------------------
 // KV lock
 // --------------------
-const CRON_LOCK_KEY = "lock:cron";
-const CRON_LOCK_TTL_SEC = 25 * 60;
-
 async function acquireLock() {
   const ok = await kv.set(CRON_LOCK_KEY, String(Date.now()), {
     nx: true,
@@ -176,7 +184,9 @@ async function acquireLock() {
 }
 
 async function releaseLock() {
-  try { await kv.del(CRON_LOCK_KEY); } catch {}
+  try {
+    await kv.del(CRON_LOCK_KEY);
+  } catch {}
 }
 
 function isVercelCron(req) {
@@ -190,28 +200,36 @@ function isVercelCron(req) {
 }
 
 async function runOneMode(mode, max, radar, symbols, secret) {
-  const reqMap  = makeInternalReq({ path: "/api/ob/map_refresh", mode, secret });
-  const reqOb   = makeInternalReq({ path: "/api/ob/sampler", mode, symbols, secret });
+  const reqMap = makeInternalReq({ path: "/api/ob/map_refresh", mode, secret });
+  const reqOb = makeInternalReq({ path: "/api/ob/sampler", mode, symbols, secret });
   const reqScan = makeInternalReq({ path: "/api/scan", mode, max, radar, secret });
 
+  // 1) map_refresh
   const resMap = makeRes();
   await obMapRefresh(reqMap, resMap);
   const mapOut = safeJson(resMap.body);
-  assertOk(`obMapRefresh(${mode})`, mapOut, resMap);
+  const a1 = assertOkSoft(`obMapRefresh(${mode})`, mapOut, resMap);
 
+  // 2) sampler
   const resOb = makeRes();
   await obSampler(reqOb, resOb);
   const obOut = safeJson(resOb.body);
-  assertOk(`obSampler(${mode})`, obOut, resOb);
+  const a2 = assertOkSoft(`obSampler(${mode})`, obOut, resOb);
 
+  // 3) scan
   const resScan = makeRes();
   await scan(reqScan, resScan);
   const scanOut = safeJson(resScan.body);
-  assertOk(`scan(${mode})`, scanOut, resScan);
+  const a3 = assertOkSoft(`scan(${mode})`, scanOut, resScan);
 
-  const discord = await notifyMainDiscord(mode, scanOut);
+  const ok = a1.ok && a2.ok && a3.ok;
+  const errors = [a1, a2, a3].filter((x) => !x.ok).map((x) => x.error);
 
-  return { ok: true, mode, obMap: mapOut, ob: obOut, scan: scanOut, discord };
+  // discord alleen als scan ok is (anders kan scanOut incompleet zijn)
+  let discord = { ok: false, skipped: true, why: "scan not ok" };
+  if (ok) discord = await notifyMainDiscord(mode, scanOut);
+
+  return { ok, mode, errors, obMap: mapOut, ob: obOut, scan: scanOut, discord };
 }
 
 export default async function handler(req, res) {
@@ -230,12 +248,14 @@ export default async function handler(req, res) {
       res.statusCode = 200;
       res.setHeader("content-type", "application/json; charset=utf-8");
       res.setHeader("cache-control", "no-store");
-      return res.end(JSON.stringify({
-        ok: true,
-        skipped: true,
-        reason: "cron already running (lock active)",
-        ts: Date.now(),
-      }));
+      return res.end(
+        JSON.stringify({
+          ok: true,
+          skipped: true,
+          reason: "cron already running (lock active)",
+          ts: Date.now(),
+        })
+      );
     }
 
     // ✅ eerst query secret, dan ENV secret
@@ -259,15 +279,15 @@ export default async function handler(req, res) {
       const bull =
         bullRes.status === "fulfilled"
           ? bullRes.value
-          : { ok: false, error: String(bullRes.reason?.message || bullRes.reason || "bull failed") };
+          : { ok: false, errors: [String(bullRes.reason?.message || bullRes.reason || "bull failed")] };
 
       const bear =
         bearRes.status === "fulfilled"
           ? bearRes.value
-          : { ok: false, error: String(bearRes.reason?.message || bearRes.reason || "bear failed") };
+          : { ok: false, errors: [String(bearRes.reason?.message || bearRes.reason || "bear failed")] };
 
       out = {
-        ok: bull.ok && bear.ok,
+        ok: !!bull.ok && !!bear.ok,
         ts: Date.now(),
         mode: "both",
         params: { max, radar, symbols },
@@ -276,19 +296,43 @@ export default async function handler(req, res) {
       };
     } else {
       const one = await runOneMode(mode, max, radar, symbols, secret);
-      out = { ok: true, ts: Date.now(), mode, params: { max, radar, symbols }, ...one };
+      out = { ok: !!one.ok, ts: Date.now(), mode, params: { max, radar, symbols }, ...one };
     }
+
+    // ✅ ALWAYS heartbeat schrijven, ook als scan faalt (429 etc.)
+    await kv.set(
+      CRON_HEARTBEAT_KEY,
+      {
+        ts: Date.now(),
+        mode,
+        params: { max, radar, symbols },
+        ok: !!out?.ok,
+      },
+      { ex: CRON_HEARTBEAT_TTL_SEC }
+    );
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
-    return res.end(JSON.stringify({
-      ...out,
-      cadence: "30m",
-      tookMs: Date.now() - startedAt,
-      note: "Per mode: map_refresh -> obSampler -> scan -> discord.",
-    }));
+    return res.end(
+      JSON.stringify({
+        ...out,
+        cadence: "30m",
+        tookMs: Date.now() - startedAt,
+        heartbeatKey: CRON_HEARTBEAT_KEY,
+        note: "Per mode: map_refresh -> obSampler -> scan -> discord. Cron blijft leven bij 429; check cron:last.",
+      })
+    );
   } catch (e) {
+    // ook bij crash: heartbeat zetten zodat je ziet dat er een error was
+    try {
+      await kv.set(
+        CRON_HEARTBEAT_KEY,
+        { ts: Date.now(), ok: false, error: String(e?.message || e) },
+        { ex: CRON_HEARTBEAT_TTL_SEC }
+      );
+    } catch {}
+
     res.statusCode = 500;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
