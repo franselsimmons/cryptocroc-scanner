@@ -1,4 +1,3 @@
-/* EOF: /api/cron.js */
 import { kv } from "@vercel/kv";
 
 import scan from "./scan.js";
@@ -117,7 +116,6 @@ function makeInternalReq({ mode, max, radar, secret }) {
   if (max !== undefined) query.max = String(max);
   if (radar !== undefined) query.radar = String(radar);
 
-  // ✅ belangrijk: scan/ob endpoints accepteren secret als query + headers
   if (secret) query.secret = String(secret);
 
   const headers = {};
@@ -126,6 +124,8 @@ function makeInternalReq({ mode, max, radar, secret }) {
     headers["authorization"] = `Bearer ${secret}`;
   }
 
+  // Belangrijk: Vercel cron header doorgeven in interne calls is niet nodig,
+  // maar we houden het simpel.
   return { method: "GET", query, headers };
 }
 
@@ -160,21 +160,35 @@ async function releaseLock() {
   } catch {}
 }
 
+// ✅ Vercel Cron Jobs sturen header: x-vercel-cron: 1
+function isVercelCron(req) {
+  const h = req?.headers || {};
+  const v =
+    h["x-vercel-cron"] ||
+    h["X-Vercel-Cron"] ||
+    h["x-vercel-cron-job"] ||
+    h["X-Vercel-Cron-Job"];
+  return String(v || "") !== "";
+}
+
 async function runOneMode(mode, max, radar, secret) {
-  const reqOb = makeInternalReq({ mode, max, radar, secret });
   const reqMap = makeInternalReq({ mode, secret });
+  const reqOb = makeInternalReq({ mode, max, radar, secret });
   const reqScan = makeInternalReq({ mode, max, radar, secret });
 
-  const resOb = makeRes();
-  await obSampler(reqOb, resOb);
-  const obOut = safeJson(resOb.body);
-  assertOk(`obSampler(${mode})`, obOut, resOb);
-
+  // ✅ 1) Map refresh eerst (sampler filtert op obMap)
   const resMap = makeRes();
   await obMapRefresh(reqMap, resMap);
   const mapOut = safeJson(resMap.body);
   assertOk(`obMapRefresh(${mode})`, mapOut, resMap);
 
+  // ✅ 2) Dan sampler
+  const resOb = makeRes();
+  await obSampler(reqOb, resOb);
+  const obOut = safeJson(resOb.body);
+  assertOk(`obSampler(${mode})`, obOut, resOb);
+
+  // ✅ 3) Dan scan
   const resScan = makeRes();
   await scan(reqScan, resScan);
   const scanOut = safeJson(resScan.body);
@@ -182,7 +196,7 @@ async function runOneMode(mode, max, radar, secret) {
 
   const discord = await notifyMainDiscord(mode, scanOut);
 
-  return { ok: true, mode, ob: obOut, obMap: mapOut, scan: scanOut, discord };
+  return { ok: true, mode, obMap: mapOut, ob: obOut, scan: scanOut, discord };
 }
 
 export default async function handler(req, res) {
@@ -190,7 +204,9 @@ export default async function handler(req, res) {
   let gotLock = false;
 
   try {
-    const authOk = requireSecret(req, res);
+    // ✅ Allow: Vercel Cron header
+    // ✅ Allow: secret check (handmatig)
+    const authOk = isVercelCron(req) || requireSecret(req, res);
     if (!authOk) {
       res.statusCode = 401;
       res.setHeader("content-type", "application/json; charset=utf-8");
@@ -213,13 +229,15 @@ export default async function handler(req, res) {
       );
     }
 
-    // ✅ FIX: eerst query secret, dan pas ENV secret
+    // ✅ eerst query secret, dan pas ENV secret
     const secretFromQuery = String(req?.query?.secret || "").trim();
     const secret = secretFromQuery || pickSecret();
 
     const mode = normMode(req?.query?.mode);
-    const max = q(req, "max", "20");
-    const radar = q(req, "radar", "40");
+
+    // ✅ default omhoog: genoeg samples + genoeg coins per run
+    const max = q(req, "max", "60");
+    const radar = q(req, "radar", "200");
 
     let out = null;
 
@@ -258,9 +276,9 @@ export default async function handler(req, res) {
     return res.end(
       JSON.stringify({
         ...out,
-        cadence: "30m",
+        cadence: "15m",
         tookMs: Date.now() - startedAt,
-        note: "Bull+bear parallel. Per mode: obSampler -> map_refresh -> scan -> discord.",
+        note: "Per mode: map_refresh -> obSampler -> scan -> discord.",
       })
     );
   } catch (e) {
@@ -272,4 +290,3 @@ export default async function handler(req, res) {
     if (gotLock) await releaseLock();
   }
 }
-/* EOF */
