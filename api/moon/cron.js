@@ -1,5 +1,4 @@
-// /api/moon/cron.js
-import { requireSecret, RUNTIME_CONFIG } from "../../lib/_moon_core.js";
+import { requireSecret, RUNTIME_CONFIG, fetchCoinGeckoTopCached } from "../../lib/_moon_core.js";
 export const config = RUNTIME_CONFIG;
 
 async function hit(base, path) {
@@ -21,8 +20,12 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const base = `https://${req.headers.host}`; // altijd https, ook op local? lokaal is http, maar fetch accepteert http
+    const base = `https://${req.headers.host}`;
 
+    // 🔁 Haal CoinGecko-data één keer op en zet in cache
+    await fetchCoinGeckoTopCached();
+
+    // Roep de scans aan (bull en bear)
     const scanBull = await hit(base, "/api/moon/scan?mode=bull");
     const scanBear = await hit(base, "/api/moon/scan?mode=bear");
     const ob = await hit(base, "/api/moon/ob-sampler");
