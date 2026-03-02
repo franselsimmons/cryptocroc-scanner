@@ -15,14 +15,12 @@ export const config = RUNTIME_CONFIG;
 const CRON_LOCK_KEY = "lock:cron";
 const CRON_LOCK_TTL_SEC = 25 * 60;
 
-// heartbeat: hiermee kan je UI/diagnose zien dat cron “leeft” ook als scan faalt
+// heartbeat: UI/diagnose ziet dat cron leeft
 const CRON_HEARTBEAT_KEY = "cron:last";
 const CRON_HEARTBEAT_TTL_SEC = 6 * 60 * 60;
 
 // --------------------
-// mini-res object dat ALLE stijlen aankan:
-// - res.statusCode + res.end()
-// - res.status(200).json()
+// mini-res object dat ALLE stijlen aankan
 // --------------------
 function makeRes() {
   return {
@@ -134,7 +132,6 @@ function pickSecret() {
   );
 }
 
-// ✅ BELANGRIJK: maak een echte req.url zodat handlers met new URL(req.url) niet crashen
 function makeInternalReq({ path, mode, max, radar, symbols, secret }) {
   const query = {};
   if (mode !== undefined) query.mode = String(mode);
@@ -158,7 +155,6 @@ function makeInternalReq({ path, mode, max, radar, symbols, secret }) {
   return { method: "GET", query, headers, url };
 }
 
-// SOFT assert: nooit throwen → cron blijft “leven” en UI kan updaten
 function assertOkSoft(name, parsed, resObj) {
   if (parsed?.ok === false) {
     return {
@@ -225,7 +221,7 @@ async function runOneMode(mode, max, radar, symbols, secret) {
   const ok = a1.ok && a2.ok && a3.ok;
   const errors = [a1, a2, a3].filter((x) => !x.ok).map((x) => x.error);
 
-  // discord alleen als scan ok is (anders kan scanOut incompleet zijn)
+  // discord alleen als scan ok
   let discord = { ok: false, skipped: true, why: "scan not ok" };
   if (ok) discord = await notifyMainDiscord(mode, scanOut);
 
@@ -237,9 +233,9 @@ export default async function handler(req, res) {
   let gotLock = false;
 
   try {
-    // Vercel Cron = altijd toegestaan
+    // Vercel Cron = toegestaan
     if (!isVercelCron(req)) {
-      // Alleen bij handmatig testen secret checken
+      // Handmatig testen → secret verplicht
       if (!requireSecret(req, res)) return;
     }
 
@@ -258,7 +254,7 @@ export default async function handler(req, res) {
       );
     }
 
-    // ✅ eerst query secret, dan ENV secret
+    // eerst query secret, dan ENV secret
     const secretFromQuery = String(req?.query?.secret || "").trim();
     const secret = secretFromQuery || pickSecret();
 
@@ -299,7 +295,7 @@ export default async function handler(req, res) {
       out = { ok: !!one.ok, ts: Date.now(), mode, params: { max, radar, symbols }, ...one };
     }
 
-    // ✅ ALWAYS heartbeat schrijven, ook als scan faalt (429 etc.)
+    // ALWAYS heartbeat
     await kv.set(
       CRON_HEARTBEAT_KEY,
       {
@@ -320,11 +316,10 @@ export default async function handler(req, res) {
         cadence: "30m",
         tookMs: Date.now() - startedAt,
         heartbeatKey: CRON_HEARTBEAT_KEY,
-        note: "Per mode: map_refresh -> obSampler -> scan -> discord. Cron blijft leven bij 429; check cron:last.",
+        note: "Per mode: map_refresh -> obSampler -> scan -> discord. Check cron:last voor heartbeat.",
       })
     );
   } catch (e) {
-    // ook bij crash: heartbeat zetten zodat je ziet dat er een error was
     try {
       await kv.set(
         CRON_HEARTBEAT_KEY,
