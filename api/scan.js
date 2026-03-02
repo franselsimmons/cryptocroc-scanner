@@ -441,42 +441,63 @@ function computeStageCap(mode, btcState) {
   return { cap: true, capStage, reason: `BTC ${st}: ${m} blijft prep-mode (max BUILDUP)` };
 }
 
-async function fetchCgTop(limit) {
-  const per = Math.min(250, Math.max(50, Number(limit || 250)));
-  const url =
-    `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc` +
-    `&per_page=${per}&page=1&sparkline=false&price_change_percentage=1h,24h`;
+// ======================================================
+// ✅ AANGEPASTE FUNCTIE: haalt meerdere pagina's op
+// ======================================================
+async function fetchCgTop(limit = 1000) {
+  const perPage = 250;
+  // Maximaal 10 pagina's (2500 coins) om binnen gratis limiet te blijven
+  const maxPages = 10;
+  const pages = Math.min(maxPages, Math.ceil(limit / perPage));
+  let allCoins = [];
 
-  const arr = await fetchJson(url);
+  for (let page = 1; page <= pages; page++) {
+    const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=${perPage}&page=${page}&sparkline=false&price_change_percentage=1h,24h`;
 
-  return (arr || []).map((c) => {
-    const price = n(c?.current_price, 0);
-    const high = n(c?.high_24h, 0);
-    const low = n(c?.low_24h, 0);
-    const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
+    const arr = await fetchJson(url);
+    if (!arr || !Array.isArray(arr) || arr.length === 0) break;
 
-    const change24 = n(
-      c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0,
-      0
-    );
+    const mapped = arr.map((c) => {
+      const price = n(c?.current_price, 0);
+      const high = n(c?.high_24h, 0);
+      const low = n(c?.low_24h, 0);
+      const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-    const change1h = n(
-      c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0,
-      0
-    );
+      const change24 = n(
+        c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0,
+        0
+      );
 
-    return {
-      id: c?.id,
-      symbol: up(c?.symbol),
-      name: c?.name,
-      price,
-      volume: n(c?.total_volume, 0),
-      marketCap: n(c?.market_cap, 0),
-      change24,
-      change1h,
-      range24,
-    };
-  });
+      const change1h = n(
+        c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0,
+        0
+      );
+
+      return {
+        id: c?.id,
+        symbol: up(c?.symbol),
+        name: c?.name,
+        price,
+        volume: n(c?.total_volume, 0),
+        marketCap: n(c?.market_cap, 0),
+        change24,
+        change1h,
+        range24,
+      };
+    });
+
+    allCoins = allCoins.concat(mapped);
+
+    // Stop als we minder dan perPage coins krijgen (laatste pagina)
+    if (mapped.length < perPage) break;
+
+    // Kleine vertraging om netjes binnen rate limits te blijven
+    if (page < pages) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }
+
+  return allCoins;
 }
 
 function passRadar(core, mode, c) {
@@ -671,7 +692,7 @@ export default async function handler(req, res) {
     const cap = computeStageCap(mode, btc.state);
     const allowEntry = cap.cap === false;
 
-    const cg = await fetchCgTop(core.SETTINGS.CG_TOP);
+    const cg = await fetchCgTop(core.SETTINGS.CG_TOP || 1000);
 
     const radar = [];
     const buildup = [];
