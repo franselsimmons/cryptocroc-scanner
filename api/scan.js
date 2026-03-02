@@ -1,3 +1,4 @@
+/* EOF: /api/scan.js */
 import { kv } from "@vercel/kv";
 import { createHash } from "crypto";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
@@ -523,9 +524,9 @@ async function fetchCgTop(limit) {
 }
 
 // --------------------
-// Radar gate
+// Radar gate (MODE-AWARE: bull/bear vanaf start)
 // --------------------
-function passRadar(core, c) {
+function passRadar(core, mode, c) {
   const R = core?.SETTINGS?.radar || {};
   const vm = core.computeVm(c.volume, c.marketCap);
 
@@ -535,6 +536,16 @@ function passRadar(core, c) {
   if (vm < n(R.vmMin, 0)) return { ok: false, why: "vm too low" };
   if (Math.abs(c.change24) > n(R.maxAbsChg24, 999)) return { ok: false, why: "chg24 too high" };
   if (c.range24 > n(R.maxRange24, 999)) return { ok: false, why: "range24 too high" };
+
+  const m = String(mode || "").toLowerCase();
+
+  if (m === "bull") {
+    if (n(c.change1h, 0) < n(R.dir1hMinBull, 0.15)) return { ok: false, why: "dir fail (1h not up)" };
+    if (n(c.change24, 0) < n(R.dir24MinBull, 0.30)) return { ok: false, why: "dir fail (24h not up)" };
+  } else if (m === "bear") {
+    if (n(c.change1h, 0) > n(R.dir1hMaxBear, -0.15)) return { ok: false, why: "dir fail (1h not down)" };
+    if (n(c.change24, 0) > n(R.dir24MaxBear, -0.30)) return { ok: false, why: "dir fail (24h not down)" };
+  }
 
   return { ok: true, vm };
 }
@@ -734,7 +745,8 @@ export default async function handler(req, res) {
     const noticesByHook = {};
 
     for (const c of cg) {
-      const radarGate = passRadar(core, c);
+      // ✅ FIX: radar is nu mode-aware
+      const radarGate = passRadar(core, mode, c);
       if (!radarGate.ok) continue;
 
       const vm = radarGate.vm;
@@ -1090,7 +1102,6 @@ export default async function handler(req, res) {
         });
       }
 
-      // ✅ NEW: risk object voor UI (base op trade-entry als OPEN, anders current price)
       const riskBasePrice =
         tradeInfo?.status === "OPEN" ? n(tradeInfo.entryPrice, priceNow) : priceNow;
 
@@ -1121,7 +1132,6 @@ export default async function handler(req, res) {
         stageScans: stFix.stageScans,
         consistency: stFix.consistency,
 
-        // ✅ NEW: risk levels (zodat UI SL/TP kan renderen)
         risk: {
           atrPctProxy: Number(n(risk.atrPctProxy, 0)),
           stopPct: Number(n(risk.stopPct, 0)),
