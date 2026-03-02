@@ -30,15 +30,14 @@ import {
   computeConfidence,
   depthFloorUsd,
   computeMoonRisk,
+  getTierForMcap,
 
   isModeAllowedByBtc,
   calcPnlPct,
   hitStopOrTp,
 
-  // ✅ DIAG save
   saveMoonDiag,
 
-  // DISCORD
   sendDiscord,
   webhookForMoonStage,
   webhookMoonPortfolio,
@@ -57,7 +56,6 @@ import {
   pnlPctFromPrices,
 } from "../../lib/_analytics.js";
 
-// NIEUW: logger import
 import {
   logMoonSignal,
   computeInstability
@@ -280,7 +278,6 @@ async function updateMoonTradeMfeMae({ mode, symbol, priceNow }) {
   await writeTrades("moon", trades);
 }
 
-// NIEUW: functie om regime te bepalen op basis van BTC range24
 function computeRegime(btcRange24) {
   if (btcRange24 < 3) return "low";
   if (btcRange24 < 6) return "mid";
@@ -319,21 +316,8 @@ export default async function handler(req, res) {
         radar: MOON.radar,
         buildup: MOON.buildup,
         almost: MOON.almost,
-        elite: {
-          minConfidence: MOON.elite.minConfidence,
-          consistencyMin: MOON.elite.consistencyMin,
-          obScoreMin: MOON.elite.obScoreMin,
-          spreadMaxPct: MOON.elite.spreadMaxPct,
-          largestOrderRatioMax: MOON.elite.largestOrderRatioMax,
-          samplesNeed: MOON.elite.samplesNeed,
-          samplesWindowSec: MOON.elite.samplesWindowSec,
-          minAgree: MOON.elite.minAgree,
-          depthK: MOON.elite.depthK,
-          depthMinUsd: MOON.elite.depthMinUsd,
-          depthMaxUsd: MOON.elite.depthMaxUsd,
-          range24Max: MOON.elite.range24Max,
-          roll: MOON.elite.roll,
-        },
+        elite: MOON.elite,
+        tiers: MOON.tiers,
       },
     };
 
@@ -418,7 +402,6 @@ export default async function handler(req, res) {
 
       await kv.set(keyMoonLatest(mode), result);
 
-      // ✅ diag save
       diag.counts = result.counts;
       await saveMoonDiag(mode, diag);
 
@@ -460,6 +443,7 @@ export default async function handler(req, res) {
 
     for (const c of radarFiltered) {
       const sym = c.symbol;
+      const tier = getTierForMcap(c.marketCap);
 
       const prev = state[sym] || {
         enteredAt: now,
@@ -509,7 +493,7 @@ export default async function handler(req, res) {
       if (obView?.reason) inc(diag.reasons.obReason, obView.reason);
 
       const depthUsd = obView ? Math.min(obView.bidUsd, obView.askUsd) : 0;
-      const floorUsd = depthFloorUsd(c.marketCap);
+      const floorUsd = depthFloorUsd(c.marketCap, tier);
       const depthOk = depthUsd >= floorUsd;
 
       const confidence = computeConfidence({
@@ -528,7 +512,7 @@ export default async function handler(req, res) {
       const buildupGate = passBuildupMoon({ c, volAcc });
       inc(diag.reasons.buildupWhy, buildupGate.why);
 
-      const almostGate = passAlmostMoon({ priceHist, volAcc, confidence, consistencyRatio });
+      const almostGate = passAlmostMoon({ priceHist, volAcc, confidence, consistencyRatio, tier });
       inc(diag.reasons.almostWhy, almostGate.why);
 
       const eliteGate = passEliteMoon({
@@ -539,6 +523,7 @@ export default async function handler(req, res) {
         depthUsd,
         floorUsd,
         range24: c.range24,
+        tier,
       });
       inc(diag.reasons.eliteWhy, eliteGate.why);
 
@@ -574,6 +559,7 @@ export default async function handler(req, res) {
         range24: c.range24,
         confidence,
         depthOk,
+        tier,
       });
 
       if (stageChanged) {
@@ -593,6 +579,7 @@ export default async function handler(req, res) {
             depthUsd,
             depthFloorUsd: floorUsd,
             rolling,
+            tier: tier.name,
           },
         });
       }
@@ -703,13 +690,14 @@ export default async function handler(req, res) {
           elite: eliteGate.why,
           eliteExtra: eliteExtra ? "ROLLING ok" : "ROLLING fail",
         },
+        tier: tier.name,
       };
 
       if (stageChanged) {
         const hook = webhookForMoonStage(stage);
         if (hook) {
           const extra =
-            `why: ${item.why.eliteExtra} | depth: $${Math.round(depthUsd)} (floor $${Math.round(floorUsd)})\n` +
+            `tier: ${tier.name} | why: ${item.why.eliteExtra} | depth: $${Math.round(depthUsd)} (floor $${Math.round(floorUsd)})\n` +
             `rolling: ΔP15m ${Number(rolling.deltaPrice15m || 0).toFixed(2)}% | ΔV15m ${Number(rolling.deltaVol15m || 0).toFixed(2)} | slope ${Number(rolling.obSlope || 0).toFixed(4)} | stab ${Number(rolling.obStability || 0).toFixed(4)}`;
           await sendDiscord(hook, fmtMoonLine(item, mode, extra, now));
         }
@@ -720,6 +708,7 @@ export default async function handler(req, res) {
         if (hook) {
           const msg =
             `**${sym}** → **OPEN** (MOON ${fmtModeLabel(mode)})\n` +
+            `tier: ${tier.name}\n` +
             `Opened: ${fmtTs(trade.entryAt)}\n` +
             `Entry: $${Number(item.price).toFixed(8)} | SL: $${Number(item.risk?.sl || 0).toFixed(8)} | TP3: $${Number(item.risk?.tp3 || 0).toFixed(8)}\n` +
             `confidence: ${item.confidence}/100 | depthOk: ${item.depthOk ? "yes" : "no"}`;
@@ -757,7 +746,6 @@ export default async function handler(req, res) {
       if (stage === "ELITE") {
         elite.push(item);
 
-        // NIEUW: logging van ELITE signal
         const regime = computeRegime(btc.range24);
 
         const instability = computeInstability({
@@ -829,7 +817,6 @@ export default async function handler(req, res) {
     await kv.set(keyMoonPositions(mode), positions);
     await kv.set(keyMoonPortfolio(mode), portfolio);
 
-    // ✅ diag save
     await saveMoonDiag(mode, diag);
 
     res.statusCode = 200;
