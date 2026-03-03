@@ -12,6 +12,10 @@ export const config = RUNTIME_CONFIG;
 //   - Handmatig verkeer: lock actief (anti-spam)
 //   - Vercel Cron verkeer: BYPASS lock (anders kan "29:xx" timing je scans overslaan)
 //   - Optioneel: ?force=1 bypass lock
+//
+// ✅ FIX:
+//   - Als cron/force bypass gebruikt: lock alsnog SETTEN/REFRESHEN
+//     zodat handmatige refresh niet elke keer opnieuw scant.
 // ======================================================
 const SCAN_INTERVAL_SEC = 30 * 60; // 30 minuten
 
@@ -39,8 +43,20 @@ function wantsForce(req) {
   return s === "1" || s === "true" || s === "yes";
 }
 
+function scanLockKey(mode) {
+  return `scan:lock:${String(mode).toLowerCase()}`;
+}
+
+// ✅ NEW: force-set/refresh lock (used by cron/force bypass)
+async function setScanLock(mode, now = Date.now()) {
+  const key = scanLockKey(mode);
+  const nextUntil = now + SCAN_INTERVAL_SEC * 1000;
+  await kv.set(key, { until: nextUntil, setAt: now }, { ex: SCAN_INTERVAL_SEC });
+  return { key, until: nextUntil, now };
+}
+
 async function tryAcquireScanLock(mode) {
-  const key = `scan:lock:${String(mode).toLowerCase()}`;
+  const key = scanLockKey(mode);
   const now = Date.now();
   const nextUntil = now + SCAN_INTERVAL_SEC * 1000;
 
@@ -532,14 +548,19 @@ export default async function handler(req, res) {
     const coreMod = await import(`../lib/_core_${mode}.js`);
     const core = coreMod?.default ? coreMod.default : coreMod;
 
-    // ✅ IMPORTANT: cron/force bypass lock (zodat auto nooit "net te vroeg" wordt geblokkeerd)
+    // ✅ cron/force bypass lock-check, maar lock wordt WEL gezet (fix)
     const fromCron = isVercelCron(req);
     const force = wantsForce(req);
 
-    const lock =
-      fromCron || force
-        ? { ok: true, until: Date.now(), now: Date.now(), waitMs: 0 }
-        : await tryAcquireScanLock(mode);
+    let lock = null;
+
+    if (fromCron || force) {
+      const now = Date.now();
+      const l = await setScanLock(mode, now); // ✅ FIX: zet/refresh lock zodat manual niet spamt
+      lock = { ok: true, key: l.key, until: l.until, now: l.now, waitMs: 0 };
+    } else {
+      lock = await tryAcquireScanLock(mode);
+    }
 
     if (!lock.ok) {
       const latest = await kv.get(core.keyLatest(mode));
