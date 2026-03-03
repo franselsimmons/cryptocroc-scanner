@@ -132,7 +132,8 @@ function pickSecret() {
   );
 }
 
-function makeInternalReq({ path, mode, max, radar, symbols, secret }) {
+// ✅ Aangepaste makeInternalReq: ondersteunt nu method en cron-header
+function makeInternalReq({ path, mode, max, radar, symbols, secret, cron = false, method = "GET" }) {
   const query = {};
   if (mode !== undefined) query.mode = String(mode);
   if (max !== undefined) query.max = String(max);
@@ -151,8 +152,11 @@ function makeInternalReq({ path, mode, max, radar, symbols, secret }) {
     headers["x-api-key"] = String(secret);
     headers["authorization"] = `Bearer ${secret}`;
   }
+  if (cron) {
+    headers["x-vercel-cron"] = "1";
+  }
 
-  return { method: "GET", query, headers, url };
+  return { method, query, headers, url };
 }
 
 function assertOkSoft(name, parsed, resObj) {
@@ -198,7 +202,8 @@ function isVercelCron(req) {
 async function runOneMode(mode, max, radar, symbols, secret) {
   const reqMap = makeInternalReq({ path: "/api/ob/map_refresh", mode, secret });
   const reqOb = makeInternalReq({ path: "/api/ob/sampler", mode, symbols, secret });
-  const reqScan = makeInternalReq({ path: "/api/scan", mode, max, radar, secret });
+  // ✅ Scan nu via POST met cron-header
+  const reqScan = makeInternalReq({ path: "/api/scan", mode, max, radar, secret, cron: true, method: "POST" });
 
   // 1) map_refresh
   const resMap = makeRes();
@@ -233,10 +238,17 @@ export default async function handler(req, res) {
   let gotLock = false;
 
   try {
-    // Vercel Cron = toegestaan
-    if (!isVercelCron(req)) {
-      // Handmatig testen → secret verplicht
-      if (!requireSecret(req, res)) return;
+    // ✅ HARD BLOCK: alleen echte Vercel Cron (POST + header) mag deze functie uitvoeren
+    const method = String(req?.method || "GET").toUpperCase();
+    if (method !== "POST" || !isVercelCron(req)) {
+      res.statusCode = 403;
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      return res.end(
+        JSON.stringify({
+          ok: false,
+          error: "cron endpoint (POST + x-vercel-cron header) only",
+        })
+      );
     }
 
     gotLock = await acquireLock();
