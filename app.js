@@ -11,20 +11,19 @@ syncTopbarHeight();
 
 const el = (id) => document.getElementById(id);
 
-function bust() {
-  return `t=${Date.now()}`;
-}
-
+// ✅ Geen cache‑busting meer – URLs zijn statisch
 const API = {
-  latest: (mode) => `/api/latest?mode=${encodeURIComponent(mode)}&${bust()}`,
+  latest: (mode) => `/api/latest?mode=${encodeURIComponent(mode)}`,
   ob: (mode, symbol) =>
-    `/api/orderbook?side=${encodeURIComponent(mode)}&symbol=${encodeURIComponent(symbol)}&${bust()}`,
+    `/api/orderbook?side=${encodeURIComponent(mode)}&symbol=${encodeURIComponent(symbol)}`,
 };
 
 let MODE =
   new URLSearchParams(location.search).get("mode") ||
   localStorage.getItem("MODE") ||
   "bull";
+
+let lastTs = 0; // houdt de timestamp van de laatst getoonde data bij
 
 function setMode(mode) {
   MODE = mode;
@@ -75,7 +74,6 @@ function confBar(conf) {
   `;
 }
 
-// ✅ geen "Advies —"
 function sizingText(c) {
   const s = c?.sizing || null;
   if (!s) return "";
@@ -236,11 +234,9 @@ function renderAll(data) {
       `ALMOST ${data?.counts?.almost || 0} • BUILDUP ${data?.counts?.buildup || 0} • RADAR ${data?.counts?.radar || 0}`;
   }
 
-  // ✅ Volgorde in UI: ENTRY -> HOLD -> SELL
   renderStage("stageEntry", data?.funnel?.entry || [], coinRow);
   renderStage("stageHold", hold, coinRow);
   renderStage("stageSell", sell, sellRow);
-
   renderStage("stageAlmost", data?.funnel?.almost || [], coinRow);
   renderStage("stageBuildup", data?.funnel?.buildup || [], coinRow);
   renderStage("stageRadar", data?.funnel?.radar || [], coinRow);
@@ -257,6 +253,12 @@ async function loadLatest() {
     });
 
     const j = await r.json();
+    const ts = Number(j?.ts || 0);
+
+    // ✅ Alleen renderen als de timestamp veranderd is (voorkomt flikkeren)
+    if (ts && ts === lastTs) return;
+    if (ts) lastTs = ts;
+
     renderAll(j || {});
   } catch {
     const statusLine = el("statusLine");
@@ -473,4 +475,6 @@ el("modeBull")?.addEventListener("click", () => setMode("bull"));
 el("modeBear")?.addEventListener("click", () => setMode("bear"));
 
 setMode(MODE);
-setInterval(loadLatest, 20000);
+
+// ✅ Refresh interval naar 30 minuten
+setInterval(loadLatest, 30 * 60 * 1000); // elke 30 minuten
