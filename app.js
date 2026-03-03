@@ -1,5 +1,3 @@
-// /public/app.js
-
 function syncTopbarHeight() {
   const tb = document.querySelector(".topbar");
   const h = tb ? Math.ceil(tb.getBoundingClientRect().height) : 78;
@@ -22,7 +20,7 @@ let MODE =
   localStorage.getItem("MODE") ||
   "bull";
 
-// ✅ per mode onthouden welke snapshot we al hebben gerenderd
+// per mode onthouden welke snapshot we al hebben gerenderd
 const lastTsByMode = { bull: 0, bear: 0 };
 
 function setMode(mode) {
@@ -74,7 +72,7 @@ function confBar(conf) {
   `;
 }
 
-// ✅ geen "Advies —"
+// sizing advies (indien aanwezig)
 function sizingText(c) {
   const s = c?.sizing || null;
   if (!s) return "";
@@ -118,7 +116,11 @@ function coinRow(c) {
   div.className = "coinRow";
 
   const adv = sizingText(c);
-  const scans = Number.isFinite(Number(c.stageScans)) ? Number(c.stageScans) : 0;
+  // scans: gebruik c.stageScans als die bestaat, anders consistency.total
+  const scans =
+    Number.isFinite(Number(c.stageScans)) ? Number(c.stageScans) :
+    Number.isFinite(Number(c?.consistency?.total)) ? Number(c.consistency.total) :
+    0;
   const tPill = tradePillFromCoin(c);
 
   const rightPill = tPill
@@ -126,6 +128,12 @@ function coinRow(c) {
     : adv
     ? `<div class="pill pillAdv">${adv}</div>`
     : "";
+
+  // korte reden waarom nog niet in entry (alleen als die afwijkt)
+  const reason =
+    (c?.gates?.entry && c.gates.entry !== "passed" && c.gates.entry !== "n/a") ? `ENTRY: ${c.gates.entry}` :
+    (c?.gates?.almost && c.gates.almost !== "passed" && c.gates.almost !== "n/a") ? `ALMOST: ${c.gates.almost}` :
+    "";
 
   div.innerHTML = `
     <div class="coinTop">
@@ -147,6 +155,7 @@ function coinRow(c) {
       <span>vm: ${fmt(c.vm)}</span>
       <span>scans: ${scans}</span>
     </div>
+    ${reason ? `<div class="tag" style="margin-top:6px;">${reason}</div>` : ""}
   `;
 
   div.addEventListener("click", () => openModalMain(c));
@@ -227,15 +236,18 @@ function renderAll(data) {
   const hold = pickHold(data);
   const sell = pickSellFromLog(data);
 
+  // counts kunnen in data.meta.counts zitten, fallback naar data.counts
+  const counts = data?.meta?.counts || data?.counts || {};
+
   const statusLine = el("statusLine");
   if (statusLine) {
     statusLine.textContent =
       `${btcLine(data.btc)} • Laatste update: ${stamp} • ` +
-      `ENTRY ${data?.counts?.entry || 0} • HOLD ${hold.length} • SELL ${sell.length} • ` +
-      `ALMOST ${data?.counts?.almost || 0} • BUILDUP ${data?.counts?.buildup || 0} • RADAR ${data?.counts?.radar || 0}`;
+      `ENTRY ${counts.entry || 0} • HOLD ${hold.length} • SELL ${sell.length} • ` +
+      `ALMOST ${counts.almost || 0} • BUILDUP ${counts.buildup || 0} • RADAR ${counts.radar || 0}`;
   }
 
-  // ✅ Volgorde in UI: ENTRY -> HOLD -> SELL
+  // Volgorde in UI: ENTRY -> HOLD -> SELL
   renderStage("stageEntry", data?.funnel?.entry || [], coinRow);
   renderStage("stageHold", hold, coinRow);
   renderStage("stageSell", sell, sellRow);
@@ -257,7 +269,7 @@ async function loadLatest() {
 
     const j = await r.json();
 
-    // ✅ Alleen renderen als snapshot ts écht veranderd is
+    // Alleen renderen als snapshot ts écht veranderd is
     const ts = Number(j?.ts || 0);
     if (ts && ts === (lastTsByMode[MODE] || 0)) return;
     if (ts) lastTsByMode[MODE] = ts;
@@ -330,6 +342,36 @@ function safe(n, d = 2) {
   return x.toFixed(d);
 }
 
+// fallback risk voor als API geen sl/tp meegeeft (voor buildup/radar)
+function riskFallback(c) {
+  const price = Number(c?.price || 0);
+  if (!(price > 0)) return null;
+
+  // simpele ATR-proxy (range24 als volatiliteit): conservatief
+  const atrPct = Math.max(0.006, Math.min(0.06, (Number(c?.range24 || 0) / 100) * 0.25)); // 0.6%..6%
+
+  const rr = 2.0;
+  const sideUp = MODE === "bull";
+  const sl = sideUp ? price * (1 - atrPct) : price * (1 + atrPct);
+  const tp = sideUp ? price * (1 + atrPct * rr) : price * (1 - atrPct * rr);
+
+  return { atrPct, sl, tp, rr };
+}
+
+// advies-tekst per stage
+function actionText(c) {
+  const st = String(c?.stage || "").toUpperCase();
+  const t = c?.trade?.status;
+
+  if (t === "OPEN") return "HOLD (trade is open)";
+  if (t === "CLOSED") return "SELL is closed";
+
+  if (st === "ENTRY") return "ENTRY: instappen (als je trading aan staat)";
+  if (st === "ALMOST") return "WACHT: mist nog 1–2 gates";
+  if (st === "BUILDUP") return "OPTIONEEL: early entry (meer risico, SL breder)";
+  return "NIET DOEN: radar / alleen volgen";
+}
+
 async function openModalMain(c) {
   showModal(true);
   setTab("Why");
@@ -348,7 +390,10 @@ async function openModalMain(c) {
   const whyList = el("mWhyList");
   if (whyList) whyList.innerHTML = "";
 
-  const scans = Number.isFinite(Number(c.stageScans)) ? Number(c.stageScans) : 0;
+  const scans =
+    Number.isFinite(Number(c.stageScans)) ? Number(c.stageScans) :
+    Number.isFinite(Number(c?.consistency?.total)) ? Number(c.consistency.total) :
+    0;
 
   const consRatio = Number(c?.consistency?.ratio || 0);
   const consOk = !!c?.consistency?.ok;
@@ -379,6 +424,7 @@ async function openModalMain(c) {
     );
   }
 
+  // Consistency
   addCheck(
     whyList,
     consOk,
@@ -387,6 +433,7 @@ async function openModalMain(c) {
     consOk ? "ok" : "warn"
   );
 
+  // Confidence
   addCheck(
     whyList,
     Number(c.confidence || 0) >= 70,
@@ -395,13 +442,17 @@ async function openModalMain(c) {
     Number(c.confidence || 0) >= 70 ? "ok" : "warn"
   );
 
-  addCheck(whyList, true, "Volume acceleration", `VolAcc: ${safe(c.volAcc, 2)}`);
-
-  const eg = String(c?.why?.entryGate || "");
+  // Entry gate (geen why.entryGate meer, maar gates.entry)
+  const eg = String(c?.gates?.entry || "");
   const egOk = /(passed|ok)/i.test(eg);
   addCheck(whyList, egOk, "Entry gate", eg || "—", egOk ? "ok" : "warn");
 
-  // LIQ
+  // Anomaly (indien aanwezig)
+  if (c?.anomaly?.type) {
+    addCheck(whyList, false, "Anomaly", `${c.anomaly.type} • x${c.anomaly.factor}`, "warn");
+  }
+
+  // LIQUIDITY TAB
   const liqList = el("mLiqList");
   if (liqList) liqList.innerHTML = "";
   addCheck(liqList, true, "Orderbook", "Laden…", "warn");
@@ -431,8 +482,10 @@ async function openModalMain(c) {
           obOk ? "ok" : "warn"
         );
 
-        const reqSpread = Number(c?.req?.spreadMaxPct ?? 0.55);
-        const reqDepth = Number(c?.req?.depthMinUsd1p ?? 200000);
+        // thresholds uit c.thr (niet c.req)
+        const reqSpread = Number(c?.thr?.spreadMaxPct ?? 0.95);
+        const reqDepth = Number(c?.thr?.depthMinUsd1p ?? 45000);
+        const reqScore = Number(c?.thr?.obScoreMin ?? 0.05);
 
         addCheck(
           liqList,
@@ -457,6 +510,15 @@ async function openModalMain(c) {
           `depth1%: $${Math.round(Number(j.ob?.depthMinUsd1p || 0)).toLocaleString()} • min $${Math.round(reqDepth).toLocaleString()}`,
           "warn"
         );
+
+        // extra: OB score
+        addCheck(
+          liqList,
+          Math.abs(Number(j.ob?.score || 0)) >= reqScore,
+          "OB score",
+          `score: ${safe(j.ob?.score, 5)} • min ${reqScore}`,
+          "warn"
+        );
       }
     }
   } catch {
@@ -464,13 +526,23 @@ async function openModalMain(c) {
     addCheck(liqList, false, "Orderbook", "OB ERROR: fetch mislukt", "warn");
   }
 
+  // RISK TAB
+  const rf = riskFallback(c);
+  const atrPct = Number.isFinite(Number(c?.atrPct)) ? Number(c.atrPct) : (rf?.atrPct ?? null);
+  const sl = Number.isFinite(Number(c?.sl)) ? Number(c.sl) : (rf?.sl ?? null);
+  const tp = Number.isFinite(Number(c?.tp)) ? Number(c.tp) : (rf?.tp ?? null);
+  const rr = rf?.rr ?? 2.0;
+
   setKV(el("mRiskKv"), [
-    ["ATR% (proxy)", `${safe(Number(c.atrPct || 0) * 100, 2)}%`],
-    ["SL", `$${safe(c.sl, 6)}`],
-    ["TP", `$${safe(c.tp, 6)}`],
+    ["Actie", actionText(c)],
+    ["ATR% (proxy)", atrPct == null ? "—" : `${safe(atrPct * 100, 2)}%`],
+    ["SL", sl == null ? "—" : `$${safe(sl, 6)}`],
+    ["TP", tp == null ? "—" : `$${safe(tp, 6)}`],
+    ["R:R", rr ? rr.toFixed(1) : "—"],
     ["Sizing advies", sizingText(c) || "—"],
   ]);
 
+  // DEBUG TAB
   el("mDebug").textContent = JSON.stringify(c, null, 2);
 }
 
@@ -480,5 +552,5 @@ el("modeBear")?.addEventListener("click", () => setMode("bear"));
 // init
 setMode(MODE);
 
-// ✅ Snapshot refresh: 1x per 30 minuten
+// Snapshot refresh: 1x per 30 minuten
 setInterval(loadLatest, 30 * 60 * 1000);
