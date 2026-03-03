@@ -1,3 +1,10 @@
+/* /public/app.js
+   ✅ Retail-friendly UI
+   - Altijd TP/SL tonen (fallback als backend ze niet meestuurt)
+   - Liquidity tab: simpele “GO / WACHT / NIET DOEN” uitleg + reden waarom info ontbreekt
+   - Action tab: duidelijk wat klant moet doen + plan met Entry/SL/TP/RR
+*/
+
 function syncTopbarHeight() {
   const tb = document.querySelector(".topbar");
   const h = tb ? Math.ceil(tb.getBoundingClientRect().height) : 78;
@@ -37,6 +44,7 @@ function setMode(mode) {
   loadLatest(); // mode switch => meteen snapshot ophalen
 }
 
+// ==================== format helpers ====================
 function fmtUSD(n) {
   n = Number(n) || 0;
   if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
@@ -52,6 +60,11 @@ function fmtPct(n) {
 function fmt(n) {
   return (Number(n) || 0).toFixed(2);
 }
+function safe(n, d = 2) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "—";
+  return x.toFixed(d);
+}
 function pct(n, d = 2) {
   const x = Number(n);
   if (!Number.isFinite(x)) return "—";
@@ -59,6 +72,7 @@ function pct(n, d = 2) {
   return s + x.toFixed(d) + "%";
 }
 
+// ==================== Risk (altijd SL/TP) ====================
 // Altijd TP/SL kunnen tonen (fallback)
 function computeFallbackRisk(c, mode) {
   const price = Number(c?.price || 0);
@@ -72,27 +86,63 @@ function computeFallbackRisk(c, mode) {
 
   const sl = isBull ? price * (1 - 1.2 * atr) : price * (1 + 1.2 * atr);
   const tp = isBull ? price * (1 + 2.2 * atr) : price * (1 - 2.2 * atr);
-  const rr = Math.abs((tp - price) / (price - sl || 1e-9));
 
-  return { atrPct, sl, tp, rr };
+  const rr = Math.abs((tp - price) / (price - sl || 1e-9));
+  return { atrPct, sl, tp, rr, source: "fallback" };
 }
 
-// Bepaal actie op basis van stage en BTC-cap
+// pak risico uit backend als aanwezig, anders fallback
+function getRisk(c, mode) {
+  const price = Number(c?.price || 0);
+  const hasBackend =
+    Number.isFinite(Number(c?.sl)) &&
+    Number.isFinite(Number(c?.tp)) &&
+    Number(c?.sl) !== 0 &&
+    Number(c?.tp) !== 0;
+
+  if (hasBackend) {
+    const sl = Number(c.sl);
+    const tp = Number(c.tp);
+
+    // atrPct kan bij jou fractie zijn (c.atrPct), daarom defensief:
+    let atrPct = null;
+    if (Number.isFinite(Number(c?.atrPct))) {
+      // als atrPct < 1 aannemen fractie, anders al percentage
+      const v = Number(c.atrPct);
+      atrPct = v < 1 ? v * 100 : v;
+    }
+
+    const rr = price > 0 ? Math.abs((tp - price) / (price - sl || 1e-9)) : null;
+
+    return {
+      atrPct: atrPct ?? null,
+      sl,
+      tp,
+      rr: rr ?? null,
+      source: "backend",
+    };
+  }
+
+  return computeFallbackRisk(c, mode);
+}
+
+// ==================== Action label ====================
 function actionForStage(c, data) {
   const stage = String(c?.stage || "").toUpperCase();
   const btcState = String(data?.btc?.state || "NEUTRAL").toUpperCase();
   const cap = !!data?.cap?.cap;
 
   if (cap && (stage === "ALMOST" || stage === "ENTRY")) {
-    return { label: "WACHTEN", sub: `BTC is ${btcState} → max BUILDUP`, tone: "warn" };
+    return { label: "WACHTEN", sub: `BTC is ${btcState} → systeem laat nu geen ENTRY toe`, tone: "warn" };
   }
 
-  if (stage === "ENTRY") return { label: "INSTAPPEN", sub: "Alle gates groen", tone: "ok" };
-  if (stage === "ALMOST") return { label: "KLAARZETTEN", sub: "Mist nog 1–2 checks", tone: "warn" };
-  if (stage === "BUILDUP") return { label: "WATCHLIST", sub: "Nog niet bevestigd, maar interessant", tone: "warn" };
-  return { label: "SKIP/SCOUT", sub: "Te vroeg of te noisy", tone: "no" };
+  if (stage === "ENTRY") return { label: "INSTAPPEN", sub: "Alle checks zijn groen", tone: "ok" };
+  if (stage === "ALMOST") return { label: "KLAARZETTEN", sub: "Bijna klaar, mist nog 1–2 checks", tone: "warn" };
+  if (stage === "BUILDUP") return { label: "WATCHLIST", sub: "Interessant, maar nog niet bevestigd", tone: "warn" };
+  return { label: "SKIP", sub: "Te vroeg / te noisy", tone: "no" };
 }
 
+// ==================== Confidence UI ====================
 function confColor(conf) {
   const c = Number(conf) || 0;
   if (c < 50) return "#EF4444";
@@ -100,7 +150,6 @@ function confColor(conf) {
   if (c < 85) return "#3B82F6";
   return "#22C55E";
 }
-
 function confBar(conf) {
   const pct = Math.max(0, Math.min(100, Number(conf) || 0));
   const col = confColor(pct);
@@ -116,12 +165,13 @@ function confBar(conf) {
 function sizingText(c) {
   const s = c?.sizing || null;
   if (!s) return "";
-  const pct = Number.isFinite(Number(s.pct)) ? Number(s.pct) : null;
+  const pctVal = Number.isFinite(Number(s.pct)) ? Number(s.pct) : null;
   const zone = String(s.zone || "").trim();
-  if (pct === null) return "";
-  return `Advies ${pct}%${zone ? ` (BTC ${zone})` : ""}`;
+  if (pctVal === null) return "";
+  return `Advies ${pctVal}%${zone ? ` (BTC ${zone})` : ""}`;
 }
 
+// ==================== Pills ====================
 function tradePillFromCoin(c) {
   const t = c?.trade || null;
   if (!t) return "";
@@ -151,34 +201,27 @@ function tradePillFromSellRow(s) {
   return `<div class="pill pillSell">SELL ${sym}${reason}${pnl}</div>`;
 }
 
+// ==================== Coin row ====================
 function coinRow(c) {
   const div = document.createElement("div");
   div.className = "coinRow";
 
   const adv = sizingText(c);
-  // scans: gebruik c.stageScans als die bestaat, anders consistency.total
   const scans =
     Number.isFinite(Number(c.stageScans)) ? Number(c.stageScans) :
     Number.isFinite(Number(c?.consistency?.total)) ? Number(c.consistency.total) :
     0;
+
   const tPill = tradePillFromCoin(c);
+  const rightPill = tPill ? tPill : (adv ? `<div class="pill pillAdv">${adv}</div>` : "");
 
-  const rightPill = tPill
-    ? tPill
-    : adv
-    ? `<div class="pill pillAdv">${adv}</div>`
-    : "";
-
-  // korte reden waarom nog niet in entry (alleen als die afwijkt)
+  // korte reden waarom nog niet entry
   const reason =
-    (c?.gates?.entry && c.gates.entry !== "passed" && c.gates.entry !== "n/a") ? `ENTRY: ${c.gates.entry}` :
-    (c?.gates?.almost && c.gates.almost !== "passed" && c.gates.almost !== "n/a") ? `ALMOST: ${c.gates.almost}` :
+    (c?.gates?.entry && c.gates.entry !== "passed" && c.gates.entry !== "n/a") ? `Waarom geen ENTRY: ${c.gates.entry}` :
+    (c?.gates?.almost && c.gates.almost !== "passed" && c.gates.almost !== "n/a") ? `Waarom geen ALMOST: ${c.gates.almost}` :
     "";
 
-  // fallback TP/SL voor in de rij
-  const risk = (Number.isFinite(Number(c?.sl)) && Number.isFinite(Number(c?.tp)))
-    ? { sl: c.sl, tp: c.tp }
-    : computeFallbackRisk(c, MODE);
+  const risk = getRisk(c, MODE);
   const slTxt = risk ? `$${safe(risk.sl, 6)}` : "—";
   const tpTxt = risk ? `$${safe(risk.tp, 6)}` : "—";
 
@@ -190,7 +233,6 @@ function coinRow(c) {
       </div>
 
       ${confBar(c.confidence)}
-
       ${rightPill}
     </div>
 
@@ -204,6 +246,7 @@ function coinRow(c) {
       <span>SL: ${slTxt}</span>
       <span>TP: ${tpTxt}</span>
     </div>
+
     ${reason ? `<div class="tag" style="margin-top:6px;">${reason}</div>` : ""}
   `;
 
@@ -234,7 +277,6 @@ function sellRow(s) {
       <span>bars: ${Number(s?.barsOpen || 0)}</span>
     </div>
   `;
-
   return div;
 }
 
@@ -250,17 +292,10 @@ function renderStage(targetId, arr, renderer = coinRow) {
   for (const x of arr) box.appendChild(renderer(x));
 }
 
+// ==================== top status line ====================
 function btcLine(btc) {
   if (!btc) return "BTC: —";
   return `BTC: ${btc.state} | chg24 ${fmtPct(btc.chg24)} | range24 ${fmtPct(btc.range24)}`;
-}
-
-function leadersLine(leaders) {
-  const arr = Array.isArray(leaders) ? leaders.slice(0, 6) : [];
-  if (!arr.length) return "Leaders: —";
-  return "Leaders: " + arr
-    .map(x => `${x.symbol} ${fmtPct(x.change24)}`)
-    .join(" • ");
 }
 
 function flattenFunnel(data) {
@@ -287,7 +322,7 @@ function pickSellFromLog(data) {
 }
 
 function renderAll(data) {
-  // bewaar voor actie-tab
+  // bewaar voor modal action-tab
   window.__LAST_DATA__ = data;
 
   const ts = data?.ts ? new Date(data.ts) : null;
@@ -296,18 +331,16 @@ function renderAll(data) {
   const hold = pickHold(data);
   const sell = pickSellFromLog(data);
 
-  // counts kunnen in data.meta.counts zitten, fallback naar data.counts
   const counts = data?.meta?.counts || data?.counts || {};
 
   const statusLine = el("statusLine");
   if (statusLine) {
     statusLine.textContent =
-      `${btcLine(data.btc)} • ${leadersLine(data.leaders)} • Laatste update: ${stamp} • ` +
+      `${btcLine(data.btc)} • Laatste update: ${stamp} • ` +
       `ENTRY ${counts.entry || 0} • HOLD ${hold.length} • SELL ${sell.length} • ` +
       `ALMOST ${counts.almost || 0} • BUILDUP ${counts.buildup || 0} • RADAR ${counts.radar || 0}`;
   }
 
-  // Volgorde in UI: ENTRY -> HOLD -> SELL
   renderStage("stageEntry", data?.funnel?.entry || [], coinRow);
   renderStage("stageHold", hold, coinRow);
   renderStage("stageSell", sell, sellRow);
@@ -329,7 +362,6 @@ async function loadLatest() {
 
     const j = await r.json();
 
-    // Alleen renderen als snapshot ts écht veranderd is
     const ts = Number(j?.ts || 0);
     if (ts && ts === (lastTsByMode[MODE] || 0)) return;
     if (ts) lastTsByMode[MODE] = ts;
@@ -341,12 +373,13 @@ async function loadLatest() {
   }
 }
 
-// ===== modal =====
+// ==================== modal helpers ====================
 function showModal(on) {
   const modal = el("modal");
   if (!modal) return;
   modal.classList.toggle("hidden", !on);
 }
+
 function setTab(name) {
   const tabs = ["Action", "Why", "Liq", "Debug"];
   for (const t of tabs) {
@@ -396,15 +429,129 @@ function setKV(container, rows) {
   }
 }
 
-function safe(n, d = 2) {
-  const x = Number(n);
-  if (!Number.isFinite(x)) return "—";
-  return x.toFixed(d);
+// ==================== Retail-friendly liquidity summary ====================
+// Belangrijk: altijd vertellen WAAROM info ontbreekt (missing_snapshot / stale / validating / fetch error)
+function explainNoOb(j) {
+  const reason = String(j?.reason || "").trim();
+
+  if (j?.status === "validating") {
+    return "We verzamelen nog orderboek-data. Probeer het zo nog eens.";
+  }
+  if (reason === "missing_snapshot") {
+    return "Deze coin heeft nu geen betrouwbare orderboek-snapshot (exchange mapping / te weinig liquiditeit / rate limits).";
+  }
+  if (j?.stale) {
+    return "Orderboek-data is te oud (stale). We willen alleen verse data gebruiken.";
+  }
+  if (reason) {
+    return `Orderboek is niet bruikbaar: ${reason}.`;
+  }
+  return "Orderboek-data ontbreekt of kon niet worden opgehaald.";
 }
 
+function liquiditySummary(j, c) {
+  // thresholds uit c.thr (server berekend)
+  const reqSpread = Number(c?.thr?.spreadMaxPct ?? 0.95);
+  const reqDepth = Number(c?.thr?.depthMinUsd1p ?? 45000);
+  const reqScore = Number(c?.thr?.obScoreMin ?? 0.05);
+
+  // validating/geen object
+  if (!j || j.status === "validating") {
+    return {
+      ok: false,
+      title: "Liquiditeit wordt gecontroleerd",
+      text: "Nog geen orderboek data beschikbaar. Even wachten.",
+      why: explainNoOb(j),
+      tone: "warn",
+      details: [],
+    };
+  }
+
+  // hard fail: geen bruikbare snapshot
+  if (!j.valid || j.stale || String(j.reason || "") === "missing_snapshot") {
+    return {
+      ok: false,
+      title: "Niet instappen (geen betrouwbare liquiditeit)",
+      text: "We kunnen deze coin nu niet veilig traden omdat het orderboek ontbreekt of te oud is.",
+      why: explainNoOb(j),
+      tone: "no",
+      details: [
+        ["Max spread", `${safe(reqSpread, 3)}%`],
+        ["Min depth 1%", `$${Math.round(reqDepth).toLocaleString()}`],
+        ["Min OB score", `${safe(reqScore, 5)}`],
+      ],
+    };
+  }
+
+  // metric checks
+  const spread = Number(j.ob?.spreadPct);
+  const depth = Number(j.ob?.depthMinUsd1p);
+  const score = Number(j.ob?.score);
+
+  const spreadOk = Number.isFinite(spread) ? spread <= reqSpread : false;
+  const depthOk = Number.isFinite(depth) ? depth >= reqDepth : false;
+  const scoreOk = Number.isFinite(score) ? Math.abs(score) >= reqScore : false;
+
+  // score/spreaddata kan soms ontbreken -> uitleggen
+  const missingParts = [];
+  if (!Number.isFinite(spread)) missingParts.push("spread");
+  if (!Number.isFinite(depth)) missingParts.push("depth");
+  if (!Number.isFinite(score)) missingParts.push("score");
+
+  if (missingParts.length) {
+    return {
+      ok: false,
+      title: "Wachten (onvolledige orderboek-info)",
+      text: "We missen belangrijke liquiditeitsdata. Instappen is nu niet veilig.",
+      why: `Ontbreekt: ${missingParts.join(", ")}.`,
+      tone: "warn",
+      details: [
+        ["Spread", "—"],
+        ["Depth 1%", "—"],
+        ["OB score", "—"],
+      ],
+    };
+  }
+
+  if (!spreadOk || !depthOk || !scoreOk) {
+    // simpele klant-uitleg wat het betekent
+    const reasons = [];
+    if (!spreadOk) reasons.push("Spread is te hoog → je koopt/verkopt slechter");
+    if (!depthOk) reasons.push("Depth is te laag → prijs kan snel wegspringen");
+    if (!scoreOk) reasons.push("OB druk is te zwak → signaal niet sterk genoeg");
+
+    return {
+      ok: false,
+      title: "Voorzichtig (liquiditeit te zwak)",
+      text: "Deze coin kan slecht vullen of slippen. Wacht liever op betere liquiditeit.",
+      why: reasons.join(" • "),
+      tone: "warn",
+      details: [
+        ["Spread", `${safe(spread, 2)}% (max ${safe(reqSpread, 3)}%)`],
+        ["Depth 1%", `$${Math.round(depth).toLocaleString()} (min $${Math.round(reqDepth).toLocaleString()})`],
+        ["OB score", `${safe(score, 5)} (min ${safe(reqScore, 5)})`],
+      ],
+    };
+  }
+
+  return {
+    ok: true,
+    title: "Liquiditeit goed (instappen kan)",
+    text: "Orderboek is gezond. Kans op goede fills is hoog.",
+    why: "Alles binnen de limieten.",
+    tone: "ok",
+    details: [
+      ["Spread", `${safe(spread, 2)}% (max ${safe(reqSpread, 3)}%)`],
+      ["Depth 1%", `$${Math.round(depth).toLocaleString()} (min $${Math.round(reqDepth).toLocaleString()})`],
+      ["OB score", `${safe(score, 5)} (min ${safe(reqScore, 5)})`],
+    ],
+  };
+}
+
+// ==================== modal main ====================
 async function openModalMain(c) {
   showModal(true);
-  setTab("Action"); // standaard actie-tab
+  setTab("Action");
   syncTopbarHeight();
 
   const t = c?.trade || null;
@@ -417,44 +564,37 @@ async function openModalMain(c) {
   el("mSub").textContent =
     `Price $${safe(c.price, 6)} • Chg24 ${fmtPct(c.change24)} • Range24 ${fmtPct(c.range24)} • VM ${safe(c.vm, 2)} • Conf ${c.confidence}/100`;
 
-  // ----- ACTIE TAB -----
+  // -------- ACTION TAB --------
   const act = actionForStage(c, window.__LAST_DATA__ || {});
   el("mActionTitle").textContent = act.label;
   el("mActionSub").textContent = act.sub;
 
-  const risk = (Number.isFinite(Number(c?.sl)) && Number.isFinite(Number(c?.tp)))
-    ? {
-        atrPct: Number(c?.atrPct || 0) * 100, // c.atrPct is fractie -> percentage
-        sl: Number(c.sl),
-        tp: Number(c.tp)
-      }
-    : computeFallbackRisk(c, MODE);
-
+  const risk = getRisk(c, MODE);
   const entryPx = Number(c?.price || 0);
 
-  if (risk) {
-    // bereken rr als die niet direct beschikbaar is
-    let rr = risk.rr;
-    if (!rr && entryPx > 0 && risk.sl && risk.tp) {
-      rr = Math.abs((risk.tp - entryPx) / (entryPx - risk.sl || 1e-9));
-    }
-
-    const slPct = entryPx ? ((risk.sl - entryPx) / entryPx) * 100 : null;
-    const tpPct = entryPx ? ((risk.tp - entryPx) / entryPx) * 100 : null;
+  if (risk && entryPx > 0) {
+    const slPct = ((risk.sl - entryPx) / entryPx) * 100;
+    const tpPct = ((risk.tp - entryPx) / entryPx) * 100;
 
     setKV(el("mActionKv"), [
-      ["Plan", act.label === "INSTAPPEN" ? "Market/limit entry" : "Alleen alert + klaarzetten"],
+      ["Plan", act.label === "INSTAPPEN" ? "Instappen volgens plan" : "Nog niet instappen, wel klaarzetten"],
       ["Entry", `$${safe(entryPx, 6)}`],
       ["SL", `$${safe(risk.sl, 6)} (${pct(slPct, 2)})`],
       ["TP", `$${safe(risk.tp, 6)} (${pct(tpPct, 2)})`],
-      ["ATR proxy", `${safe(risk.atrPct, 2)}%`],
-      ["R:R", rr ? safe(rr, 2) : "—"],
+      ["R:R", risk.rr ? safe(risk.rr, 2) : "—"],
+      ["Bron SL/TP", risk.source === "backend" ? "Systeem (exact)" : "Fallback (range24 proxy)"],
+      ["ATR proxy", risk.atrPct != null ? `${safe(risk.atrPct, 2)}%` : "—"],
     ]);
   } else {
-    setKV(el("mActionKv"), [ ["Plan", "—"], ["Entry", "—"], ["SL", "—"], ["TP", "—"] ]);
+    setKV(el("mActionKv"), [
+      ["Plan", "—"],
+      ["Entry", "—"],
+      ["SL", "—"],
+      ["TP", "—"],
+    ]);
   }
 
-  // ----- WHY TAB -----
+  // -------- WHY TAB --------
   const whyList = el("mWhyList");
   if (whyList) whyList.innerHTML = "";
 
@@ -471,37 +611,14 @@ async function openModalMain(c) {
   const consMinAgree = Number(c?.consistency?.minAgree || 0);
 
   addCheck(whyList, true, `Stage: ${c.stage}`, `scans: ${scans}`);
-
-  if (t?.status === "OPEN") {
-    const pnl = Number.isFinite(Number(t.pnl)) ? Number(t.pnl) : 0;
-    const maxPnl = Number.isFinite(Number(t.maxPnl)) ? Number(t.maxPnl) : 0;
-    addCheck(
-      whyList,
-      true,
-      "Trade status: OPEN (HOLD)",
-      `pnl ${fmtPct(pnl * 100)} • max ${fmtPct(maxPnl * 100)} • barsOpen ${Number(t.barsOpen || 0)}`,
-      "ok"
-    );
-  } else if (t?.status === "CLOSED") {
-    addCheck(
-      whyList,
-      true,
-      "Trade status: CLOSED (SELL)",
-      `reason: ${t?.exit?.reason || "—"}`,
-      "warn"
-    );
-  }
-
-  // Consistency
   addCheck(
     whyList,
     consOk,
     "Consistency",
-    `Ratio: ${(consRatio * 100).toFixed(0)}% (${consSame}/${consTotal}) • need ${consNeed} • minAgree ${consMinAgree}`,
+    `Stabiel: ${(consRatio * 100).toFixed(0)}% (${consSame}/${consTotal}) • nodig ${consNeed} • minAgree ${consMinAgree}`,
     consOk ? "ok" : "warn"
   );
 
-  // Confidence
   addCheck(
     whyList,
     Number(c.confidence || 0) >= 70,
@@ -510,26 +627,23 @@ async function openModalMain(c) {
     Number(c.confidence || 0) >= 70 ? "ok" : "warn"
   );
 
-  // Entry gate (uit gates.entry)
+  // duidelijke gate reden
   const eg = String(c?.gates?.entry || "");
-  const egOk = /(passed|ok)/i.test(eg);
-  addCheck(whyList, egOk, "Entry gate", eg || "—", egOk ? "ok" : "warn");
-
-  // Volume acceleration (alleen als het veld bestaat)
-  if (Number.isFinite(Number(c?.volAcc))) {
-    addCheck(whyList, true, "Volume acceleration", `VolAcc: ${safe(c.volAcc, 2)}`);
+  const ag = String(c?.gates?.almost || "");
+  if (String(c.stage).toUpperCase() !== "ENTRY") {
+    const reason =
+      (eg && eg !== "passed" && eg !== "n/a") ? `Waarom geen ENTRY: ${eg}` :
+      (ag && ag !== "passed" && ag !== "n/a") ? `Waarom geen ALMOST: ${ag}` :
+      "Nog niet genoeg bevestiging.";
+    addCheck(whyList, false, "Waarom nog niet instappen", reason, "warn");
+  } else {
+    addCheck(whyList, true, "Waarom instappen", "Alle gates zijn groen.", "ok");
   }
 
-  // Anomaly (indien aanwezig)
-  if (c?.anomalies?.length) {
-    const msg = c.anomalies.map(a => `${a.type} x${a.factor}`).join(", ");
-    addCheck(whyList, false, "Anomalies", msg, "warn");
-  }
-
-  // ----- LIQUIDITY TAB -----
+  // -------- LIQ TAB (simpel + reden) --------
   const liqList = el("mLiqList");
   if (liqList) liqList.innerHTML = "";
-  addCheck(liqList, true, "Orderbook", "Laden…", "warn");
+  addCheck(liqList, true, "Liquiditeit", "Laden…", "warn");
 
   try {
     const r = await fetch(API.ob(MODE, c.symbol), {
@@ -539,75 +653,53 @@ async function openModalMain(c) {
 
     if (!r.ok) {
       if (liqList) liqList.innerHTML = "";
-      addCheck(liqList, false, "Orderbook error", `${r.status} ${r.statusText}`, "warn");
+      addCheck(liqList, false, "Liquiditeit niet beschikbaar", "Kon orderboek niet ophalen (server/exchange).", "warn");
+      addCheck(liqList, false, "Waarom zie ik geen cijfers?", `${r.status} ${r.statusText}`, "warn");
     } else {
       const j = await r.json();
       if (liqList) liqList.innerHTML = "";
 
-      if (j.status === "validating") {
-        addCheck(liqList, false, "Orderbook validating", j.tip || "Wacht even…", "warn");
-      } else {
-        const obOk = !!j.valid && !j.stale;
-        addCheck(
-          liqList,
-          obOk,
-          "OB status",
-          `valid: ${j.valid} • stale: ${j.stale} • reason: ${j.reason || "-"}`,
-          obOk ? "ok" : "warn"
-        );
+      const sum = liquiditySummary(j, c);
 
-        // thresholds uit c.thr
-        const reqSpread = Number(c?.thr?.spreadMaxPct ?? 0.95);
-        const reqDepth = Number(c?.thr?.depthMinUsd1p ?? 45000);
-        const reqScore = Number(c?.thr?.obScoreMin ?? 0.05);
+      // 1) hoofdregel: wat moet klant doen
+      addCheck(
+        liqList,
+        sum.ok,
+        sum.title,
+        sum.text,
+        sum.tone === "ok" ? "ok" : "warn"
+      );
 
-        addCheck(
-          liqList,
-          Number(j.ob?.spreadPct || 999) <= reqSpread,
-          "Spread",
-          `spread: ${safe(j.ob?.spreadPct, 2)}% • max ${reqSpread}%`,
-          "warn"
-        );
+      // 2) waarom (altijd tonen)
+      addCheck(
+        liqList,
+        sum.ok,
+        "Waarom",
+        sum.why || "—",
+        sum.tone === "ok" ? "ok" : "warn"
+      );
 
-        addCheck(
-          liqList,
-          Number(j.ob?.lor || 1) <= 0.35,
-          "Largest order ratio",
-          `LOR: ${safe(j.ob?.lor, 2)} (max 0.35)`,
-          "warn"
-        );
-
-        addCheck(
-          liqList,
-          Number(j.ob?.depthMinUsd1p || 0) >= reqDepth,
-          "Depth 1%",
-          `depth1%: $${Math.round(Number(j.ob?.depthMinUsd1p || 0)).toLocaleString()} • min $${Math.round(reqDepth).toLocaleString()}`,
-          "warn"
-        );
-
-        // OB score check
-        addCheck(
-          liqList,
-          Math.abs(Number(j.ob?.score || 0)) >= reqScore,
-          "OB score",
-          `score: ${safe(j.ob?.score, 5)} • min ${reqScore}`,
-          "warn"
-        );
+      // 3) detail (klein, maar duidelijk)
+      if (Array.isArray(sum.details) && sum.details.length) {
+        for (const [k, v] of sum.details) {
+          addCheck(liqList, true, k, v, "ok");
+        }
       }
     }
-  } catch {
+  } catch (e) {
     if (liqList) liqList.innerHTML = "";
-    addCheck(liqList, false, "Orderbook", "OB ERROR: fetch mislukt", "warn");
+    addCheck(liqList, false, "Liquiditeit niet beschikbaar", "Orderboek ophalen mislukt.", "warn");
+    addCheck(liqList, false, "Waarom zie ik geen cijfers?", String(e?.message || e), "warn");
   }
 
-  // ----- DEBUG TAB -----
+  // -------- DEBUG TAB --------
   el("mDebug").textContent = JSON.stringify(c, null, 2);
 }
 
+// ==================== init ====================
 el("modeBull")?.addEventListener("click", () => setMode("bull"));
 el("modeBear")?.addEventListener("click", () => setMode("bear"));
 
-// init
 setMode(MODE);
 
 // Snapshot refresh: 1x per 30 minuten
