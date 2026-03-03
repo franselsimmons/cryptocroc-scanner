@@ -52,7 +52,7 @@ function cgKey(url) {
   return `cg:${h}`;
 }
 
-// ✅ CoinGecko KV cache (anti-429)
+// ✅ CoinGecko KV cache (anti-429) per-request
 const CG_FRESH_TTL_SEC = 60;
 const CG_STALE_TTL_SEC = 10 * 60;
 
@@ -207,9 +207,9 @@ function computeStageCap(mode, btcState) {
 }
 
 // ======================================================
-// ✅ Haal meerdere CoinGecko pagina's op
+// ✅ Haal meerdere CoinGecko pagina's op (RAW)
 // ======================================================
-async function fetchCgTop(limit = 1000) {
+async function fetchCgTopRaw(limit = 1000) {
   const perPage = 250;
   const maxPages = 10;
   const pages = Math.min(maxPages, Math.ceil(limit / perPage));
@@ -256,6 +256,29 @@ async function fetchCgTop(limit = 1000) {
   }
 
   return allCoins;
+}
+
+// ======================================================
+// ✅ NEW: Universe cache (gratis meer coins zonder extra calls)
+// ======================================================
+const CG_UNIVERSE_CACHE_TTL_SEC = 10 * 60; // 10 minuten
+const CG_MAX_LIMIT = 2500; // 10 pages * 250
+
+function cgUniverseKey(limit) {
+  const lim = Math.max(1, Math.min(CG_MAX_LIMIT, Number(limit) || 1000));
+  return `cg:universe:vol_desc:usd:${lim}`;
+}
+
+async function fetchCgTop(limit = 1000) {
+  const lim = Math.max(1, Math.min(CG_MAX_LIMIT, Number(limit) || 1000));
+  const key = cgUniverseKey(lim);
+
+  const cached = await kv.get(key);
+  if (Array.isArray(cached) && cached.length) return cached;
+
+  const coins = await fetchCgTopRaw(lim);
+  await kv.set(key, coins, { ex: CG_UNIVERSE_CACHE_TTL_SEC });
+  return coins;
 }
 
 // ======================================================
@@ -319,7 +342,6 @@ function stageFromSwing(core, mode, c) {
   const range = c.range24;
   const ch1h = c.change1h;
 
-  // Dynamische direction threshold op basis van range (zelfde helper als radar)
   const dyn =
     typeof core.dynamicRadarThresholds === "function"
       ? core.dynamicRadarThresholds(range, core.SETTINGS)
@@ -336,13 +358,12 @@ function stageFromSwing(core, mode, c) {
 
   const inDir = wantUp ? ch1h >= dir1h : ch1h <= dir1h;
 
-  // ALMOST/BUILDUP drempels ook iets adaptief op range (volatiele coins krijgen iets hogere vm-eis)
   const r = n(range, 0);
   const s = Math.max(0, Math.min(1, (r - 8) / 22)); // 8..30 → 0..1
   const vmAlmost = 0.24 + 0.04 * s; // 0.24..0.28
   const vmBuildup = 0.18 + 0.03 * s; // 0.18..0.21
 
-  const maxRangeAlmost = dyn ? n(dyn.maxRange24, 22) - 2 : 22; // iets strenger dan radar cap
+  const maxRangeAlmost = dyn ? n(dyn.maxRange24, 22) - 2 : 22;
   const maxRangeBuildup = dyn ? n(dyn.maxRange24, 28) : 28;
 
   if (vm >= vmAlmost && range <= maxRangeAlmost && inDir) return "ALMOST";
@@ -424,7 +445,6 @@ function adaptiveEntryThresholds(core, c, vm) {
 
   const thrBase = { minConfidence, spreadMaxPct, depthMinUsd1p, obScoreMin };
 
-  // ✅ coin-adaptieve tuning (volume/mcap/vm) als core functie bestaat
   if (typeof core.dynamicEntryThresholds === "function") {
     const tuned = core.dynamicEntryThresholds(
       { marketCap: c.marketCap, volume: c.volume, vm },
@@ -539,10 +559,8 @@ export default async function handler(req, res) {
       const vm = radarGate.vm;
       const sym = up(c.symbol);
 
-      // base stage op swing/volume/range (coin-adaptief)
       let stageBase = stageFromSwing(core, mode, { ...c, vm });
 
-      // OB
       const ob = await getObForSymbol({ mode, symbol: sym });
       const obFresh = !!ob?.fresh;
       const obValid = !!ob?.valid;
@@ -551,7 +569,6 @@ export default async function handler(req, res) {
       const depthMinUsd1p = n(ob?.depthMinUsd1p, 0);
       const obScore = n(ob?.score, 0);
 
-      // confidence
       const confidenceBase = core.computeConfidence({
         vm,
         change24: c.change24,
@@ -560,21 +577,18 @@ export default async function handler(req, res) {
       });
       const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
 
-      // ENTRY thresholds (tiers + coin-adaptief)
       const thr = adaptiveEntryThresholds(core, c, vm);
 
       let stage = stageBase;
       let almostGate = "n/a";
       let entryGate = "n/a";
 
-      // BTC cap: ALMOST/ENTRY max naar BUILDUP als contra/neutral
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
         stage = "BUILDUP";
         stageBase = "BUILDUP";
         almostGate = `capped: ${cap.capStage}`;
         entryGate = `capped: ${cap.capStage}`;
       } else {
-        // ALMOST gate (optioneel slope check)
         if (stageBase === "ALMOST") {
           const obSamples = await kv.get(core.keyObSamples(mode, sym));
           const slopeCheck =
@@ -591,7 +605,6 @@ export default async function handler(req, res) {
           }
         }
 
-        // ENTRY gate (alleen als nog ALMOST)
         if (stageBase === "ALMOST") {
           if (!ob || ob.ok === false) entryGate = "OB missing";
           else if (!obFresh) entryGate = "OB stale";
@@ -620,7 +633,6 @@ export default async function handler(req, res) {
         }
       }
 
-      // consistency/state update
       const upd = updateStateAndConsistency(state, sym, stage, core, now);
 
       const item = {
@@ -645,7 +657,6 @@ export default async function handler(req, res) {
         },
         consistency: upd.consistency,
 
-        // debug: laat je zien welke dynamische drempels gebruikt zijn (handig tunen)
         dyn: {
           radar: radarGate.dynRadar || null,
           entry: {
@@ -675,13 +686,11 @@ export default async function handler(req, res) {
       else if (stage === "BUILDUP") buildup.push(item);
       else radar.push(item);
 
-      // optioneel analytics
       if (stage === "ENTRY") {
         await safePushEvent("scan_entry", { mode, symbol: sym, confidence, btcState: btc.state });
       }
     }
 
-    // Sort (beste bovenaan)
     const byScore = (a, b) =>
       (b.confidence - a.confidence) ||
       (b.vm - a.vm) ||
@@ -692,7 +701,6 @@ export default async function handler(req, res) {
     almost.sort(byScore);
     entry.sort(byScore);
 
-    // Limits uit SETTINGS
     const radarLimit = n(core?.SETTINGS?.RADAR_LIMIT, 60);
     const outRadar = radar.slice(0, radarLimit);
     const outBuildup = buildup.slice(0, radarLimit);
@@ -715,6 +723,13 @@ export default async function handler(req, res) {
       openTrades,
       meta: {
         scanLock: { active: false, until: lock.until, waitMs: 0 },
+        // extra debug: universe cache (gratis meer coins)
+        cgUniverse: {
+          cachedTtlSec: CG_UNIVERSE_CACHE_TTL_SEC,
+          maxLimit: CG_MAX_LIMIT,
+          requested: Number(core.SETTINGS.CG_TOP || 1000),
+          got: cg.length,
+        },
         counts: {
           cg: cg.length,
           radar: radar.length,
@@ -725,10 +740,9 @@ export default async function handler(req, res) {
       },
     };
 
-    // ✅ Persist latest + state
     const ttl = n(core?.SETTINGS?.entry?.resultTtlSec, 60 * 45);
     await kv.set(core.keyLatest(mode), out, { ex: Math.max(60, ttl) });
-    await kv.set(core.keyState(mode), state, { ex: 60 * 60 * 24 * 7 }); // 7 dagen state history
+    await kv.set(core.keyState(mode), state, { ex: 60 * 60 * 24 * 7 });
 
     return send(res, 200, out);
   } catch (e) {
