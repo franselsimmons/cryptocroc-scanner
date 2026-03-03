@@ -52,6 +52,46 @@ function fmtPct(n) {
 function fmt(n) {
   return (Number(n) || 0).toFixed(2);
 }
+function pct(n, d = 2) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "—";
+  const s = x >= 0 ? "+" : "";
+  return s + x.toFixed(d) + "%";
+}
+
+// Altijd TP/SL kunnen tonen (fallback)
+function computeFallbackRisk(c, mode) {
+  const price = Number(c?.price || 0);
+  if (!(price > 0)) return null;
+
+  const rangePct = Math.max(0, Number(c?.range24 || 0));
+  // ATR-proxy: range24/4, begrensd tussen 1.2% en 6.5%
+  let atrPct = Math.max(1.2, Math.min(6.5, rangePct / 4)); // percentage
+  const atr = atrPct / 100; // fractie
+  const isBull = String(mode || "bull").toLowerCase() === "bull";
+
+  const sl = isBull ? price * (1 - 1.2 * atr) : price * (1 + 1.2 * atr);
+  const tp = isBull ? price * (1 + 2.2 * atr) : price * (1 - 2.2 * atr);
+  const rr = Math.abs((tp - price) / (price - sl || 1e-9));
+
+  return { atrPct, sl, tp, rr };
+}
+
+// Bepaal actie op basis van stage en BTC-cap
+function actionForStage(c, data) {
+  const stage = String(c?.stage || "").toUpperCase();
+  const btcState = String(data?.btc?.state || "NEUTRAL").toUpperCase();
+  const cap = !!data?.cap?.cap;
+
+  if (cap && (stage === "ALMOST" || stage === "ENTRY")) {
+    return { label: "WACHTEN", sub: `BTC is ${btcState} → max BUILDUP`, tone: "warn" };
+  }
+
+  if (stage === "ENTRY") return { label: "INSTAPPEN", sub: "Alle gates groen", tone: "ok" };
+  if (stage === "ALMOST") return { label: "KLAARZETTEN", sub: "Mist nog 1–2 checks", tone: "warn" };
+  if (stage === "BUILDUP") return { label: "WATCHLIST", sub: "Nog niet bevestigd, maar interessant", tone: "warn" };
+  return { label: "SKIP/SCOUT", sub: "Te vroeg of te noisy", tone: "no" };
+}
 
 function confColor(conf) {
   const c = Number(conf) || 0;
@@ -135,6 +175,13 @@ function coinRow(c) {
     (c?.gates?.almost && c.gates.almost !== "passed" && c.gates.almost !== "n/a") ? `ALMOST: ${c.gates.almost}` :
     "";
 
+  // fallback TP/SL voor in de rij
+  const risk = (Number.isFinite(Number(c?.sl)) && Number.isFinite(Number(c?.tp)))
+    ? { sl: c.sl, tp: c.tp }
+    : computeFallbackRisk(c, MODE);
+  const slTxt = risk ? `$${safe(risk.sl, 6)}` : "—";
+  const tpTxt = risk ? `$${safe(risk.tp, 6)}` : "—";
+
   div.innerHTML = `
     <div class="coinTop">
       <div>
@@ -154,6 +201,8 @@ function coinRow(c) {
       <span>mc: $${fmtUSD(c.marketCap)}</span>
       <span>vm: ${fmt(c.vm)}</span>
       <span>scans: ${scans}</span>
+      <span>SL: ${slTxt}</span>
+      <span>TP: ${tpTxt}</span>
     </div>
     ${reason ? `<div class="tag" style="margin-top:6px;">${reason}</div>` : ""}
   `;
@@ -230,6 +279,9 @@ function pickSellFromLog(data) {
 }
 
 function renderAll(data) {
+  // bewaar voor actie-tab
+  window.__LAST_DATA__ = data;
+
   const ts = data?.ts ? new Date(data.ts) : null;
   const stamp = ts ? ts.toLocaleString() : "—";
 
@@ -288,7 +340,7 @@ function showModal(on) {
   modal.classList.toggle("hidden", !on);
 }
 function setTab(name) {
-  const tabs = ["Why", "Liq", "Risk", "Debug"];
+  const tabs = ["Action", "Why", "Liq", "Debug"];
   for (const t of tabs) {
     el("tab" + t)?.classList.toggle("active", t === name);
     el("box" + t)?.classList.toggle("hidden", t !== name);
@@ -300,9 +352,9 @@ el("modal")?.addEventListener("click", (e) => {
   if (e.target.id === "modal") showModal(false);
 });
 
+el("tabAction")?.addEventListener("click", () => setTab("Action"));
 el("tabWhy")?.addEventListener("click", () => setTab("Why"));
 el("tabLiq")?.addEventListener("click", () => setTab("Liq"));
-el("tabRisk")?.addEventListener("click", () => setTab("Risk"));
 el("tabDebug")?.addEventListener("click", () => setTab("Debug"));
 
 function icon(ok, kind = "ok") {
@@ -342,39 +394,9 @@ function safe(n, d = 2) {
   return x.toFixed(d);
 }
 
-// fallback risk voor als API geen sl/tp meegeeft (voor buildup/radar)
-function riskFallback(c) {
-  const price = Number(c?.price || 0);
-  if (!(price > 0)) return null;
-
-  // simpele ATR-proxy (range24 als volatiliteit): conservatief
-  const atrPct = Math.max(0.006, Math.min(0.06, (Number(c?.range24 || 0) / 100) * 0.25)); // 0.6%..6%
-
-  const rr = 2.0;
-  const sideUp = MODE === "bull";
-  const sl = sideUp ? price * (1 - atrPct) : price * (1 + atrPct);
-  const tp = sideUp ? price * (1 + atrPct * rr) : price * (1 - atrPct * rr);
-
-  return { atrPct, sl, tp, rr };
-}
-
-// advies-tekst per stage
-function actionText(c) {
-  const st = String(c?.stage || "").toUpperCase();
-  const t = c?.trade?.status;
-
-  if (t === "OPEN") return "HOLD (trade is open)";
-  if (t === "CLOSED") return "SELL is closed";
-
-  if (st === "ENTRY") return "ENTRY: instappen (als je trading aan staat)";
-  if (st === "ALMOST") return "WACHT: mist nog 1–2 gates";
-  if (st === "BUILDUP") return "OPTIONEEL: early entry (meer risico, SL breder)";
-  return "NIET DOEN: radar / alleen volgen";
-}
-
 async function openModalMain(c) {
   showModal(true);
-  setTab("Why");
+  setTab("Action"); // standaard actie-tab
   syncTopbarHeight();
 
   const t = c?.trade || null;
@@ -387,6 +409,44 @@ async function openModalMain(c) {
   el("mSub").textContent =
     `Price $${safe(c.price, 6)} • Chg24 ${fmtPct(c.change24)} • Range24 ${fmtPct(c.range24)} • VM ${safe(c.vm, 2)} • Conf ${c.confidence}/100`;
 
+  // ----- ACTIE TAB -----
+  const act = actionForStage(c, window.__LAST_DATA__ || {});
+  el("mActionTitle").textContent = act.label;
+  el("mActionSub").textContent = act.sub;
+
+  const risk = (Number.isFinite(Number(c?.sl)) && Number.isFinite(Number(c?.tp)))
+    ? {
+        atrPct: Number(c?.atrPct || 0) * 100, // c.atrPct is fractie -> percentage
+        sl: Number(c.sl),
+        tp: Number(c.tp)
+      }
+    : computeFallbackRisk(c, MODE);
+
+  const entryPx = Number(c?.price || 0);
+
+  if (risk) {
+    // bereken rr als die niet direct beschikbaar is
+    let rr = risk.rr;
+    if (!rr && entryPx > 0 && risk.sl && risk.tp) {
+      rr = Math.abs((risk.tp - entryPx) / (entryPx - risk.sl || 1e-9));
+    }
+
+    const slPct = entryPx ? ((risk.sl - entryPx) / entryPx) * 100 : null;
+    const tpPct = entryPx ? ((risk.tp - entryPx) / entryPx) * 100 : null;
+
+    setKV(el("mActionKv"), [
+      ["Plan", act.label === "INSTAPPEN" ? "Market/limit entry" : "Alleen alert + klaarzetten"],
+      ["Entry", `$${safe(entryPx, 6)}`],
+      ["SL", `$${safe(risk.sl, 6)} (${pct(slPct, 2)})`],
+      ["TP", `$${safe(risk.tp, 6)} (${pct(tpPct, 2)})`],
+      ["ATR proxy", `${safe(risk.atrPct, 2)}%`],
+      ["R:R", rr ? safe(rr, 2) : "—"],
+    ]);
+  } else {
+    setKV(el("mActionKv"), [ ["Plan", "—"], ["Entry", "—"], ["SL", "—"], ["TP", "—"] ]);
+  }
+
+  // ----- WHY TAB -----
   const whyList = el("mWhyList");
   if (whyList) whyList.innerHTML = "";
 
@@ -442,17 +502,22 @@ async function openModalMain(c) {
     Number(c.confidence || 0) >= 70 ? "ok" : "warn"
   );
 
-  // Entry gate (geen why.entryGate meer, maar gates.entry)
+  // Entry gate (uit gates.entry)
   const eg = String(c?.gates?.entry || "");
   const egOk = /(passed|ok)/i.test(eg);
   addCheck(whyList, egOk, "Entry gate", eg || "—", egOk ? "ok" : "warn");
+
+  // Volume acceleration (alleen als het veld bestaat)
+  if (Number.isFinite(Number(c?.volAcc))) {
+    addCheck(whyList, true, "Volume acceleration", `VolAcc: ${safe(c.volAcc, 2)}`);
+  }
 
   // Anomaly (indien aanwezig)
   if (c?.anomaly?.type) {
     addCheck(whyList, false, "Anomaly", `${c.anomaly.type} • x${c.anomaly.factor}`, "warn");
   }
 
-  // LIQUIDITY TAB
+  // ----- LIQUIDITY TAB -----
   const liqList = el("mLiqList");
   if (liqList) liqList.innerHTML = "";
   addCheck(liqList, true, "Orderbook", "Laden…", "warn");
@@ -482,7 +547,7 @@ async function openModalMain(c) {
           obOk ? "ok" : "warn"
         );
 
-        // thresholds uit c.thr (niet c.req)
+        // thresholds uit c.thr
         const reqSpread = Number(c?.thr?.spreadMaxPct ?? 0.95);
         const reqDepth = Number(c?.thr?.depthMinUsd1p ?? 45000);
         const reqScore = Number(c?.thr?.obScoreMin ?? 0.05);
@@ -511,7 +576,7 @@ async function openModalMain(c) {
           "warn"
         );
 
-        // extra: OB score
+        // OB score check
         addCheck(
           liqList,
           Math.abs(Number(j.ob?.score || 0)) >= reqScore,
@@ -526,23 +591,7 @@ async function openModalMain(c) {
     addCheck(liqList, false, "Orderbook", "OB ERROR: fetch mislukt", "warn");
   }
 
-  // RISK TAB
-  const rf = riskFallback(c);
-  const atrPct = Number.isFinite(Number(c?.atrPct)) ? Number(c.atrPct) : (rf?.atrPct ?? null);
-  const sl = Number.isFinite(Number(c?.sl)) ? Number(c.sl) : (rf?.sl ?? null);
-  const tp = Number.isFinite(Number(c?.tp)) ? Number(c.tp) : (rf?.tp ?? null);
-  const rr = rf?.rr ?? 2.0;
-
-  setKV(el("mRiskKv"), [
-    ["Actie", actionText(c)],
-    ["ATR% (proxy)", atrPct == null ? "—" : `${safe(atrPct * 100, 2)}%`],
-    ["SL", sl == null ? "—" : `$${safe(sl, 6)}`],
-    ["TP", tp == null ? "—" : `$${safe(tp, 6)}`],
-    ["R:R", rr ? rr.toFixed(1) : "—"],
-    ["Sizing advies", sizingText(c) || "—"],
-  ]);
-
-  // DEBUG TAB
+  // ----- DEBUG TAB -----
   el("mDebug").textContent = JSON.stringify(c, null, 2);
 }
 
