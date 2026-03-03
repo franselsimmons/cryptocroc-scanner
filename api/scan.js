@@ -65,34 +65,6 @@ async function setScanLock(mode, now = Date.now()) {
   return { key, until: nextUntil, now };
 }
 
-async function tryAcquireScanLock(mode) {
-  const key = scanLockKey(mode);
-  const now = Date.now();
-  const nextUntil = now + SCAN_INTERVAL_SEC * 1000;
-
-  // Atomisch: alleen lock zetten als hij niet bestaat (NX)
-  const ok = await kv.set(
-    key,
-    { until: nextUntil, setAt: now },
-    { nx: true, ex: SCAN_INTERVAL_SEC }
-  );
-
-  if (ok) {
-    return { ok: true, key, until: nextUntil, now, waitMs: 0 };
-  }
-
-  const cur = await kv.get(key);
-  const until = Number(cur?.until || 0);
-
-  if (until > now) {
-    return { ok: false, key, until, now, waitMs: until - now };
-  }
-
-  // stale key exists → refresh
-  await kv.set(key, { until: nextUntil, setAt: now }, { ex: SCAN_INTERVAL_SEC });
-  return { ok: true, key, until: nextUntil, now, waitMs: 0 };
-}
-
 // --------------------
 // Helpers
 // --------------------
@@ -590,65 +562,44 @@ export default async function handler(req, res) {
     const method = String(req?.method || "GET").toUpperCase();
 
     // ======================================================
-    // ✅ OPTIONEEL: Cron moet via POST (voorkomt spoofing)
+    // ✅ ABSOLUTE RULE: Alleen CRON of FORCE mag scannen.
+    //    Alles anders retourneert altijd de gecachte latest.
     // ======================================================
-    if (fromCron && method !== "POST") {
-      return send(res, 200, {
-        ok: false,
-        mode,
-        error: "cron must use POST"
-      });
-    }
-
-    // ======================================================
-    // ✅ HARD RULE: gewone GET (geen cron, geen force) -> NOOIT scannen
-    // ======================================================
-    if (!fromCron && !force && method === "GET") {
+    if (!fromCron && !force) {
       const latest = await kv.get(core.keyLatest(mode));
       const lockInfo = await getScanLockInfo(mode);
 
       if (latest) {
         latest.meta = latest.meta || {};
-        latest.meta.served = "cached_latest";
+        latest.meta.served = "cached_latest_no_scan";
+        latest.meta.debug = { method, fromCron, force };
         latest.meta.scanLock = lockInfo;
         return send(res, 200, latest);
       }
 
-      // ✅ NOOIT scannen op GET, ook niet als latest ontbreekt
       return send(res, 200, {
         ok: false,
         mode,
         error: "no latest yet (wait for cron scan)",
-        meta: { served: "get_no_scan", scanLock: lockInfo },
+        meta: {
+          served: "no_scan_no_latest",
+          scanLock: lockInfo,
+          debug: { method, fromCron, force },
+        },
       });
     }
 
-    // ✅ cron/force: lock wordt altijd gezet/refresh
-    let lock = null;
-    if (fromCron || force) {
-      const now0 = Date.now();
-      const l = await setScanLock(mode, now0);
-      lock = { ok: true, key: l.key, until: l.until, now: l.now, waitMs: 0 };
-    } else {
-      lock = await tryAcquireScanLock(mode);
-    }
+    // ======================================================
+    // Vanaf hier alleen cron/force → scan uitvoeren
+    // ======================================================
 
-    // locked? -> geef latest, scan niet
-    if (!lock.ok) {
-      const latest = await kv.get(core.keyLatest(mode));
-      if (latest) {
-        latest.meta = latest.meta || {};
-        latest.meta.served = "cached_latest_locked";
-        latest.meta.scanLock = { active: true, until: lock.until, waitMs: lock.waitMs };
-        return send(res, 200, latest);
-      }
-      return send(res, 200, {
-        ok: false,
-        mode,
-        error: "scan locked and no latest yet",
-        meta: { scanLock: { active: true, until: lock.until, waitMs: lock.waitMs } },
-      });
-    }
+    // Lock altijd zetten (cron/force mogen overschrijven)
+    const now0 = Date.now();
+    const l = await setScanLock(mode, now0);
+    const lock = { ok: true, key: l.key, until: l.until, now: l.now, waitMs: 0 };
+
+    // (Optioneel: je zou hier nog kunnen controleren of setScanLock echt gelukt is,
+    // maar bij een KV-fout zou een exceptie zijn gegooid.)
 
     const now = Date.now();
 
@@ -897,6 +848,7 @@ export default async function handler(req, res) {
           waitMs: lock.waitMs ?? 0,
           bypass: fromCron ? "vercel_cron" : force ? "force_post" : "",
         },
+        debug: { method, fromCron, force },
         cgUniverse: {
           cachedTtlSec: CG_UNIVERSE_CACHE_TTL_SEC,
           maxLimit: CG_MAX_LIMIT,
