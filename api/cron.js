@@ -4,6 +4,7 @@ import { kv } from "@vercel/kv";
 import scan from "./scan.js";
 import obSampler from "./ob/sampler.js";
 import obMapRefresh from "./ob/map_refresh.js";
+import universe from "./universe.js";   // <-- nieuw
 
 import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
 import { sendDiscord } from "../lib/discord.js";
@@ -152,6 +153,16 @@ function makeInternalReq({ path, mode, max, radar, symbols, secret, cron = false
 }
 
 // --------------------
+// NIEUW: universe helper (intern aanroepen)
+// --------------------
+async function runUniverse(secret) {
+  const reqUni = makeInternalReq({ path: "/api/universe", secret, cron: true, method: "GET" });
+  const resUni = makeRes();
+  await universe(reqUni, resUni);
+  return safeJson(resUni.body);
+}
+
+// --------------------
 // KV lock
 // --------------------
 async function acquireLock() {
@@ -247,14 +258,18 @@ export default async function handler(req, res) {
     const radar = q(req, "radar", "200");
     const symbols = q(req, "symbols", "PEPE,SONIC,TURBO");
 
+    // 1️⃣ Universe één keer vullen per cron-run
+    const uniOut = await runUniverse(secret);
+
     let out;
 
     if (mode === "both") {
       const bull = await runOneMode("bull", max, radar, symbols, secret);
       const bear = await runOneMode("bear", max, radar, symbols, secret);
-      out = { ok: true, mode: "both", bull, bear };
+      out = { ok: true, mode: "both", universe: uniOut, bull, bear };
     } else {
-      out = await runOneMode(mode, max, radar, symbols, secret);
+      const one = await runOneMode(mode, max, radar, symbols, secret);
+      out = { ok: true, mode, universe: uniOut, ...one };
     }
 
     await kv.set(
