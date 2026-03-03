@@ -9,6 +9,9 @@ export const config = RUNTIME_CONFIG;
 
 // ======================================================
 // ✅ 30 MIN SCAN LOCK (ATOMISCH)
+//   - Handmatig verkeer: lock actief (anti-spam)
+//   - Vercel Cron verkeer: BYPASS lock (anders kan "29:xx" timing je scans overslaan)
+//   - Optioneel: ?force=1 bypass lock
 // ======================================================
 const SCAN_INTERVAL_SEC = 30 * 60; // 30 minuten
 
@@ -17,6 +20,23 @@ function send(res, code, obj) {
   res.setHeader("content-type", "application/json; charset=utf-8");
   res.setHeader("cache-control", "no-store");
   return res.end(JSON.stringify(obj));
+}
+
+function isVercelCron(req) {
+  const h = req?.headers || {};
+  const v =
+    h["x-vercel-cron"] ||
+    h["x-vercel-cron-job"] ||
+    h["X-Vercel-Cron"] ||
+    h["X-Vercel-Cron-Job"];
+  return String(v || "") !== "";
+}
+
+function wantsForce(req) {
+  const q = req?.query || {};
+  const f = q.force ?? q.FORCE;
+  const s = String(f || "").trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes";
 }
 
 async function tryAcquireScanLock(mode) {
@@ -259,7 +279,7 @@ async function fetchCgTopRaw(limit = 1000) {
 }
 
 // ======================================================
-// ✅ NEW: Universe cache (gratis meer coins zonder extra calls)
+// ✅ Universe cache (gratis meer coins zonder extra calls)
 // ======================================================
 const CG_UNIVERSE_CACHE_TTL_SEC = 10 * 60; // 10 minuten
 const CG_MAX_LIMIT = 2500; // 10 pages * 250
@@ -288,13 +308,11 @@ function passRadar(core, mode, c) {
   const R = core?.SETTINGS?.radar || {};
   const vm = core.computeVm(c.volume, c.marketCap);
 
-  // Baseline hard filters
   if (c.marketCap < n(R.mcapMin, 0)) return { ok: false, why: "mcap too low" };
   if (c.marketCap > n(R.mcapMax, Number.MAX_SAFE_INTEGER)) return { ok: false, why: "mcap too high" };
   if (c.volume < n(R.volMin, 0)) return { ok: false, why: "volume too low" };
   if (vm < n(R.vmMin, 0)) return { ok: false, why: "vm too low" };
 
-  // Coin-adaptieve thresholds op basis van range24 (als core ze aanbiedt)
   const dyn =
     typeof core.dynamicRadarThresholds === "function"
       ? core.dynamicRadarThresholds(c.range24, core.SETTINGS)
@@ -306,7 +324,6 @@ function passRadar(core, mode, c) {
   if (Math.abs(c.change24) > maxAbsChg24) return { ok: false, why: "chg24 too high" };
   if (c.range24 > maxRange24) return { ok: false, why: "range24 too high" };
 
-  // Direction (coin-adaptief)
   const m = String(mode || "").toLowerCase();
   if (m === "bull") {
     const dir1hMin = dyn ? n(dyn.dir1hMinBull, n(R.dir1hMinBull, 0.2)) : n(R.dir1hMinBull, 0.2);
@@ -515,8 +532,12 @@ export default async function handler(req, res) {
     const coreMod = await import(`../lib/_core_${mode}.js`);
     const core = coreMod?.default ? coreMod.default : coreMod;
 
-    // ✅ LOCK CHECK: binnen 30 min -> return latest, geen scan
-    const lock = await tryAcquireScanLock(mode);
+    // ✅ IMPORTANT: cron/force bypass lock (zodat auto nooit "net te vroeg" wordt geblokkeerd)
+    const fromCron = isVercelCron(req);
+    const force = wantsForce(req);
+
+    const lock = fromCron || force ? { ok: true, until: Date.now(), now: Date.now(), waitMs: 0 } : await tryAcquireScanLock(mode);
+
     if (!lock.ok) {
       const latest = await kv.get(core.keyLatest(mode));
       if (latest) {
@@ -722,8 +743,12 @@ export default async function handler(req, res) {
       },
       openTrades,
       meta: {
-        scanLock: { active: false, until: lock.until, waitMs: 0 },
-        // extra debug: universe cache (gratis meer coins)
+        scanLock: {
+          active: !(fromCron || force),
+          until: lock.until ?? null,
+          waitMs: lock.waitMs ?? 0,
+          bypass: fromCron ? "vercel_cron" : force ? "force" : "",
+        },
         cgUniverse: {
           cachedTtlSec: CG_UNIVERSE_CACHE_TTL_SEC,
           maxLimit: CG_MAX_LIMIT,
