@@ -1,4 +1,3 @@
-/* /public/styles.css */
 :root{
   --bg:#0b0f14;
   --card:#0f1620;
@@ -13,7 +12,7 @@
   --accent:#3d7cff;
   --danger:#ff5c5c;
 
-  /* ✅ trade kleuren */
+  /* trade kleuren */
   --hold:#22c55e;
   --sell:#ff5c5c;
 
