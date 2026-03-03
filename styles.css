@@ -266,6 +266,35 @@ body{
 }
 .modalBoxTitle{ font-weight:900; margin-bottom:10px; }
 
+/* Actie tab specifiek */
+.actionHero{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  padding:12px;
+  border:1px solid rgba(255,255,255,.10);
+  border-radius:14px;
+  background: rgba(61,124,255,.06);
+  margin-bottom:10px;
+}
+.actionTitle{
+  font-weight:950;
+  font-size:16px;
+  letter-spacing:.2px;
+}
+.actionSub{
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.35;
+}
+.actionNote{
+  margin-top:10px;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.35;
+}
+
+/* KV lijstjes */
 .kv{
   display:flex;
   flex-direction:column;
@@ -283,6 +312,7 @@ body{
 .kvKey{ color:var(--muted); }
 .kvVal{ color:var(--text); font-variant-numeric: tabular-nums; text-align:right; }
 
+/* Check lijsten (Why, Liq) */
 .checkList{
   display:flex;
   flex-direction:column;
