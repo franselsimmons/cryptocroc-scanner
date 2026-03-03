@@ -9,9 +9,9 @@ export const config = RUNTIME_CONFIG;
 
 // ======================================================
 // ✅ 30 MIN SCAN LOCK (ATOMISCH)
-//   - Handmatig verkeer: lock actief (anti-spam)
-//   - Vercel Cron verkeer: BYPASS lock, MAAR lock wordt WEL gezet/refresh (fix)
-//   - Force: alleen via POST ?force=1 (zodat refresh nooit kan forcen)
+//   - Handmatig (GET/refresh): NOOIT scannen, altijd latest teruggeven (als aanwezig)
+//   - Vercel Cron: scannen (maar lock wordt ook gezet/refresh)
+//   - Force scan: alleen via POST ?force=1 (zodat refresh nooit force kan)
 // ======================================================
 const SCAN_INTERVAL_SEC = 30 * 60; // 30 minuten
 
@@ -24,15 +24,13 @@ function send(res, code, obj) {
 
 function isVercelCron(req) {
   const h = req?.headers || {};
-  // Node/Vercel headers zijn normaliter lowercase
   const v = h["x-vercel-cron"] || h["x-vercel-cron-job"];
   const s = String(v || "").trim().toLowerCase();
-  // ✅ stricter: alleen echte cron waarden
   return s === "1" || s === "true" || s === "yes" || s === "on";
 }
 
 function wantsForce(req) {
-  // ✅ Force alleen via POST, zodat browser refresh nooit “per ongeluk” force kan triggeren
+  // ✅ Force alleen via POST
   const method = String(req?.method || "GET").toUpperCase();
   if (method !== "POST") return false;
 
@@ -46,7 +44,20 @@ function scanLockKey(mode) {
   return `scan:lock:${String(mode).toLowerCase()}`;
 }
 
-// ✅ NEW: force-set/refresh lock (used by cron/force bypass)
+async function getScanLockInfo(mode) {
+  try {
+    const cur = await kv.get(scanLockKey(mode));
+    const until = Number(cur?.until || 0);
+    const setAt = Number(cur?.setAt || 0);
+    const now = Date.now();
+    const waitMs = until > now ? until - now : 0;
+    return { active: until > now, until: until || null, setAt: setAt || null, waitMs };
+  } catch {
+    return { active: false, until: null, setAt: null, waitMs: 0 };
+  }
+}
+
+// ✅ Force-set/refresh lock (used by cron/force)
 async function setScanLock(mode, now = Date.now()) {
   const key = scanLockKey(mode);
   const nextUntil = now + SCAN_INTERVAL_SEC * 1000;
@@ -60,13 +71,16 @@ async function tryAcquireScanLock(mode) {
   const nextUntil = now + SCAN_INTERVAL_SEC * 1000;
 
   // Atomisch: alleen lock zetten als hij niet bestaat (NX)
-  const ok = await kv.set(key, { until: nextUntil, setAt: now }, { nx: true, ex: SCAN_INTERVAL_SEC });
+  const ok = await kv.set(
+    key,
+    { until: nextUntil, setAt: now },
+    { nx: true, ex: SCAN_INTERVAL_SEC }
+  );
 
   if (ok) {
     return { ok: true, key, until: nextUntil, now, waitMs: 0 };
   }
 
-  // Lock bestond al → lees huidige
   const cur = await kv.get(key);
   const until = Number(cur?.until || 0);
 
@@ -74,7 +88,7 @@ async function tryAcquireScanLock(mode) {
     return { ok: false, key, until, now, waitMs: until - now };
   }
 
-  // Edge case: lock is “stale” maar key bestaat nog → force refresh
+  // stale key exists → refresh
   await kv.set(key, { until: nextUntil, setAt: now }, { ex: SCAN_INTERVAL_SEC });
   return { ok: true, key, until: nextUntil, now, waitMs: 0 };
 }
@@ -153,8 +167,14 @@ async function fetchBtc() {
   const arr = await fetchJson(url);
   const b = arr?.[0] || {};
 
-  const chg1h = n(b?.price_change_percentage_1h_in_currency ?? b?.price_change_percentage_1h ?? 0, 0);
-  const chg24 = n(b?.price_change_percentage_24h_in_currency ?? b?.price_change_percentage_24h ?? 0, 0);
+  const chg1h = n(
+    b?.price_change_percentage_1h_in_currency ?? b?.price_change_percentage_1h ?? 0,
+    0
+  );
+  const chg24 = n(
+    b?.price_change_percentage_24h_in_currency ?? b?.price_change_percentage_24h ?? 0,
+    0
+  );
 
   const high = n(b?.high_24h, 0);
   const low = n(b?.low_24h, 0);
@@ -265,8 +285,14 @@ async function fetchCgTopRaw(limit = 1000) {
       const low = n(c?.low_24h, 0);
       const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-      const change24 = n(c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0, 0);
-      const change1h = n(c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0, 0);
+      const change24 = n(
+        c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0,
+        0
+      );
+      const change1h = n(
+        c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0,
+        0
+      );
 
       return {
         id: c?.id,
@@ -510,8 +536,6 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
   const minAgree = Math.max(1, n(entryCfg.minAgree, 3));
 
   const prev = safeObj(S[sym]) || {};
-  const prevStage = up(prev.stage || "");
-
   const scans = n(prev.scans, 0) + 1;
 
   const histPrev = Array.isArray(prev.hist) ? prev.hist : [];
@@ -526,22 +550,14 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
 
   S[sym] = { ...prev, scans, hist, lastSeenAt: nowTs, stage: st };
 
-  return {
-    state: S,
-    prevStage,
-    stageScans: scans,
-    consistency: { ok, ratio, same, total, need, minAgree },
-  };
+  return { state: S, stageScans: scans, consistency: { ok, ratio, same, total, need, minAgree } };
 }
 
-// ======================================================
-// ✅ NEW: async pool (concurrency limiter) voor OB batching
-// ======================================================
+// ✅ concurrency limiter
 async function asyncPool(limit, items, worker) {
   const nLimit = Math.max(1, Number(limit || 8));
   const arr = Array.isArray(items) ? items : [];
   const out = new Array(arr.length);
-
   let idx = 0;
 
   async function runOne() {
@@ -569,12 +585,27 @@ export default async function handler(req, res) {
     const coreMod = await import(`../lib/_core_${mode}.js`);
     const core = coreMod?.default ? coreMod.default : coreMod;
 
-    // ✅ cron/force bypass lock-check, maar lock wordt WEL gezet (fix)
     const fromCron = isVercelCron(req);
     const force = wantsForce(req);
+    const method = String(req?.method || "GET").toUpperCase();
 
+    // ======================================================
+    // ✅ HARD RULE: gewone GET (geen cron, geen force) -> NOOIT scannen
+    // ======================================================
+    if (!fromCron && !force && method === "GET") {
+      const latest = await kv.get(core.keyLatest(mode));
+      if (latest) {
+        latest.meta = latest.meta || {};
+        latest.meta.served = "cached_latest";
+        latest.meta.scanLock = await getScanLockInfo(mode);
+        return send(res, 200, latest);
+      }
+      // geen latest? dan 1x bootstrappen (maar nog steeds beschermd door lock)
+      // valt door naar scan pad hieronder
+    }
+
+    // ✅ cron/force: lock wordt altijd gezet/refresh
     let lock = null;
-
     if (fromCron || force) {
       const now0 = Date.now();
       const l = await setScanLock(mode, now0);
@@ -583,11 +614,12 @@ export default async function handler(req, res) {
       lock = await tryAcquireScanLock(mode);
     }
 
-    // ✅ IMPORTANT: als locked → NOOIT scannen, alleen latest teruggeven (fix “refresh rescans”)
+    // locked? -> geef latest, scan niet
     if (!lock.ok) {
       const latest = await kv.get(core.keyLatest(mode));
       if (latest) {
         latest.meta = latest.meta || {};
+        latest.meta.served = "cached_latest_locked";
         latest.meta.scanLock = { active: true, until: lock.until, waitMs: lock.waitMs };
         return send(res, 200, latest);
       }
@@ -608,7 +640,7 @@ export default async function handler(req, res) {
 
     const cap = computeStageCap(mode, btc.state);
 
-    // ✅ 2500 coins als core.SETTINGS.CG_TOP = 2500
+    // ✅ coins count: core.SETTINGS.CG_TOP (max 2500)
     const cg = await fetchCgTop(core.SETTINGS.CG_TOP || 1000);
 
     const radar = [];
@@ -620,11 +652,7 @@ export default async function handler(req, res) {
     const state = (await kv.get(core.keyState(mode))) || {};
     await loadObMap(mode);
 
-    // ======================================================
-    // ✅ PASS 1: geen OB calls voor iedereen (performance)
-    // - Bepaal stageBase + vm
-    // - Verzamel ALMOST candidates apart voor OB batch
-    // ======================================================
+    // PASS 1: geen OB voor iedereen → alleen ALMOST kandidaten
     const almostCandidates = [];
 
     for (const c of cg) {
@@ -636,12 +664,10 @@ export default async function handler(req, res) {
 
       let stageBase = stageFromSwing(core, mode, { ...c, vm });
 
-      // BTC cap kan ALMOST/ENTRY naar BUILDUP drukken zonder OB
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
         stageBase = "BUILDUP";
       }
 
-      // Voor RADAR/BUILDUP doen we geen OB fetch (snel)
       if (stageBase !== "ALMOST") {
         const confidenceBase = core.computeConfidence({
           vm,
@@ -668,18 +694,10 @@ export default async function handler(req, res) {
           stage: stageBase,
           stageBase,
 
-          gates: {
-            radar: radarGate.why || "passed",
-            almost: "n/a",
-            entry: "n/a",
-          },
+          gates: { radar: radarGate.why || "passed", almost: "n/a", entry: "n/a" },
           consistency: upd.consistency,
 
-          dyn: {
-            radar: radarGate.dynRadar || null,
-            entry: null,
-          },
-
+          dyn: { radar: radarGate.dynRadar || null, entry: null },
           ob: {
             fresh: false,
             valid: false,
@@ -699,21 +717,15 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // ALMOST → later OB batch
       almostCandidates.push({ c, vm, sym, radarGate });
     }
 
-    // ======================================================
-    // ✅ PASS 2: OB batching alleen voor ALMOST candidates
-    // - parallel met concurrency limiter
-    // - hier kan ENTRY worden
-    // ======================================================
-    const OB_CONCURRENCY = 12; // tweak: 8..20 veilig
+    // PASS 2: OB batching voor ALMOST
+    const OB_CONCURRENCY = 12;
 
     const almostProcessed = await asyncPool(OB_CONCURRENCY, almostCandidates, async (x) => {
       const { c, vm, sym, radarGate } = x;
 
-      // OB fetch (nu pas)
       const ob = await getObForSymbol({ mode, symbol: sym });
       const obFresh = !!ob?.fresh;
       const obValid = !!ob?.valid;
@@ -737,7 +749,6 @@ export default async function handler(req, res) {
       let almostGate = "passed";
       let entryGate = "n/a";
 
-      // BTC cap check (double safety)
       if (cap.cap) {
         stage = "BUILDUP";
         stageBase = "BUILDUP";
@@ -755,7 +766,6 @@ export default async function handler(req, res) {
           stageBase = "BUILDUP";
           almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
         } else {
-          // ENTRY gate
           if (!ob || ob.ok === false) entryGate = "OB missing";
           else if (!obFresh) entryGate = "OB stale";
           else if (!obValid) entryGate = "OB invalid";
@@ -764,10 +774,9 @@ export default async function handler(req, res) {
           else if (depthMinUsd1p < n(thr.depthMinUsd1p, 0)) entryGate = `Depth1% < $${thr.depthMinUsd1p}`;
           else if (Math.abs(obScore) < n(thr.obScoreMin, 0)) entryGate = `OB score < ${thr.obScoreMin}`;
           else {
-            const obSamples2 = obSamples; // reuse
             const slopeCheck2 =
               typeof core.checkObSlopeGate === "function"
-                ? core.checkObSlopeGate({ stage: "entry", mode, obSamples: obSamples2, settings: core.SETTINGS })
+                ? core.checkObSlopeGate({ stage: "entry", mode, obSamples, settings: core.SETTINGS })
                 : { ok: true };
 
             const pressureDelta = n(ob?.pressureDeltaUsd, 0);
@@ -785,7 +794,7 @@ export default async function handler(req, res) {
 
       const upd = updateStateAndConsistency(state, sym, stage, core, now);
 
-      const item = {
+      return {
         symbol: sym,
         name: c.name || sym,
         price: n(c.price, 0),
@@ -800,11 +809,7 @@ export default async function handler(req, res) {
         stage,
         stageBase,
 
-        gates: {
-          radar: radarGate.why || "passed",
-          almost: almostGate,
-          entry: entryGate,
-        },
+        gates: { radar: radarGate.why || "passed", almost: almostGate, entry: entryGate },
         consistency: upd.consistency,
 
         dyn: {
@@ -830,29 +835,20 @@ export default async function handler(req, res) {
           reason: ob?.reason || "",
         },
       };
-
-      return item;
     });
 
-    // push processed almost/entry/buildup
     for (const item of almostProcessed) {
       if (!item) continue;
       if (item.stage === "ENTRY") {
         entry.push(item);
         await safePushEvent("scan_entry", { mode, symbol: item.symbol, confidence: item.confidence, btcState: btc.state });
-      } else if (item.stage === "ALMOST") {
-        almost.push(item);
-      } else if (item.stage === "BUILDUP") {
-        buildup.push(item);
-      } else {
-        radar.push(item);
-      }
+      } else if (item.stage === "ALMOST") almost.push(item);
+      else if (item.stage === "BUILDUP") buildup.push(item);
+      else radar.push(item);
     }
 
     const byScore = (a, b) =>
-      (b.confidence - a.confidence) ||
-      (b.vm - a.vm) ||
-      (Math.abs(b.change24) - Math.abs(a.change24));
+      (b.confidence - a.confidence) || (b.vm - a.vm) || (Math.abs(b.change24) - Math.abs(a.change24));
 
     radar.sort(byScore);
     buildup.sort(byScore);
@@ -872,14 +868,10 @@ export default async function handler(req, res) {
       tookMs: Date.now() - startedAt,
       btc,
       cap,
-      funnel: {
-        radar: outRadar,
-        buildup: outBuildup,
-        almost: outAlmost,
-        entry: outEntry,
-      },
+      funnel: { radar: outRadar, buildup: outBuildup, almost: outAlmost, entry: outEntry },
       openTrades,
       meta: {
+        served: fromCron ? "cron_scan" : force ? "force_scan_post" : "scan",
         scanLock: {
           active: !(fromCron || force),
           until: lock.until ?? null,
