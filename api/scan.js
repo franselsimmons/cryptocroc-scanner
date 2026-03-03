@@ -10,8 +10,8 @@ export const config = RUNTIME_CONFIG;
 // ======================================================
 // ✅ 30 MIN SCAN LOCK (ATOMISCH)
 //   - Handmatig (GET/refresh): NOOIT scannen, altijd latest teruggeven (als aanwezig)
-//   - Vercel Cron: scannen (maar lock wordt ook gezet/refresh)
-//   - Force scan: alleen via POST ?force=1 (zodat refresh nooit force kan)
+//   - Vercel Cron: scannen mits lock vrij is, anders latest
+//   - Force scan: alleen via POST ?force=1 (overschrijft lock)
 // ======================================================
 const SCAN_INTERVAL_SEC = 30 * 60; // 30 minuten
 
@@ -57,12 +57,41 @@ async function getScanLockInfo(mode) {
   }
 }
 
-// ✅ Force-set/refresh lock (used by cron/force)
+// ✅ Force-set/refresh lock (overschrijft altijd)
 async function setScanLock(mode, now = Date.now()) {
   const key = scanLockKey(mode);
   const nextUntil = now + SCAN_INTERVAL_SEC * 1000;
   await kv.set(key, { until: nextUntil, setAt: now }, { ex: SCAN_INTERVAL_SEC });
   return { key, until: nextUntil, now };
+}
+
+// ✅ Probeer lock te krijgen (alleen als niet actief)
+async function tryAcquireScanLock(mode) {
+  const key = scanLockKey(mode);
+  const now = Date.now();
+  const nextUntil = now + SCAN_INTERVAL_SEC * 1000;
+
+  // Atomisch: alleen lock zetten als hij niet bestaat (NX)
+  const ok = await kv.set(
+    key,
+    { until: nextUntil, setAt: now },
+    { nx: true, ex: SCAN_INTERVAL_SEC }
+  );
+
+  if (ok) {
+    return { ok: true, key, until: nextUntil, now, waitMs: 0 };
+  }
+
+  const cur = await kv.get(key);
+  const until = Number(cur?.until || 0);
+
+  if (until > now) {
+    return { ok: false, key, until, now, waitMs: until - now };
+  }
+
+  // stale key exists → refresh
+  await kv.set(key, { until: nextUntil, setAt: now }, { ex: SCAN_INTERVAL_SEC });
+  return { ok: true, key, until: nextUntil, now, waitMs: 0 };
 }
 
 // --------------------
@@ -590,17 +619,46 @@ export default async function handler(req, res) {
     }
 
     // ======================================================
-    // Vanaf hier alleen cron/force → scan uitvoeren
+    // Vanaf hier alleen cron/force
     // ======================================================
 
-    // Lock altijd zetten (cron/force mogen overschrijven)
-    const now0 = Date.now();
-    const l = await setScanLock(mode, now0);
-    const lock = { ok: true, key: l.key, until: l.until, now: l.now, waitMs: 0 };
+    let lock;
 
-    // (Optioneel: je zou hier nog kunnen controleren of setScanLock echt gelukt is,
-    // maar bij een KV-fout zou een exceptie zijn gegooid.)
+    if (force) {
+      // Force mag lock altijd overschrijven
+      const now0 = Date.now();
+      const l = await setScanLock(mode, now0);
+      lock = { ok: true, key: l.key, until: l.until, now: l.now, waitMs: 0 };
+    } else {
+      // Cron: probeer lock te krijgen (alleen als vrij)
+      lock = await tryAcquireScanLock(mode);
 
+      if (!lock.ok) {
+        // Lock actief -> geef latest terug, niet scannen
+        const latest = await kv.get(core.keyLatest(mode));
+        if (latest) {
+          latest.meta = latest.meta || {};
+          latest.meta.served = "cron_skipped_locked";
+          latest.meta.scanLock = { active: true, until: lock.until, waitMs: lock.waitMs };
+          latest.meta.debug = { method, fromCron, force };
+          return send(res, 200, latest);
+        }
+
+        return send(res, 200, {
+          ok: false,
+          mode,
+          error: "scan locked and no latest yet",
+          meta: {
+            scanLock: { active: true, until: lock.until, waitMs: lock.waitMs },
+            debug: { method, fromCron, force },
+          },
+        });
+      }
+    }
+
+    // ======================================================
+    // Lock verkregen → scan uitvoeren
+    // ======================================================
     const now = Date.now();
 
     const btcBase = await fetchBtc();
