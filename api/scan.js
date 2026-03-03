@@ -1,137 +1,21 @@
-/* EOF: /api/scan.js */
 import { kv } from "@vercel/kv";
-import { createHash } from "crypto";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
 import { pushEvent } from "../lib/_analytics.js";
 import { getObSnapshot, obMapKey } from "../lib/obStore.js";
 
 export const config = RUNTIME_CONFIG;
 
-// ======================================================
-// ✅ 30 MIN SCAN LOCK (ATOMISCH)
-//   - Handmatig (GET/refresh): NOOIT scannen, altijd latest teruggeven (als aanwezig)
-//   - Vercel Cron: scannen mits lock vrij is, anders latest
-//   - Force scan: alleen via POST ?force=1 (overschrijft lock)
-// ======================================================
-const SCAN_INTERVAL_SEC = 30 * 60; // 30 minuten
-
-function send(res, code, obj) {
-  res.statusCode = code;
-  res.setHeader("content-type", "application/json; charset=utf-8");
-  res.setHeader("cache-control", "no-store");
-  return res.end(JSON.stringify(obj));
-}
-
-function isVercelCron(req) {
-  const h = req?.headers || {};
-  const v = h["x-vercel-cron"] || h["x-vercel-cron-job"];
-  const s = String(v || "").trim().toLowerCase();
-  return s === "1" || s === "true" || s === "yes" || s === "on";
-}
-
-function wantsForce(req) {
-  // ✅ Force alleen via POST
-  const method = String(req?.method || "GET").toUpperCase();
-  if (method !== "POST") return false;
-
-  const q = req?.query || {};
-  const f = q.force ?? q.FORCE;
-  const s = String(f || "").trim().toLowerCase();
-  return s === "1" || s === "true" || s === "yes";
-}
-
-function scanLockKey(mode) {
-  return `scan:lock:${String(mode).toLowerCase()}`;
-}
-
-async function getScanLockInfo(mode) {
-  try {
-    const cur = await kv.get(scanLockKey(mode));
-    const until = Number(cur?.until || 0);
-    const setAt = Number(cur?.setAt || 0);
-    const now = Date.now();
-    const waitMs = until > now ? until - now : 0;
-    return { active: until > now, until: until || null, setAt: setAt || null, waitMs };
-  } catch {
-    return { active: false, until: null, setAt: null, waitMs: 0 };
-  }
-}
-
-// ✅ Force-set/refresh lock (overschrijft altijd)
-async function setScanLock(mode, now = Date.now()) {
-  const key = scanLockKey(mode);
-  const nextUntil = now + SCAN_INTERVAL_SEC * 1000;
-  await kv.set(key, { until: nextUntil, setAt: now }, { ex: SCAN_INTERVAL_SEC });
-  return { key, until: nextUntil, now };
-}
-
-// ✅ Probeer lock te krijgen (alleen als niet actief)
-async function tryAcquireScanLock(mode) {
-  const key = scanLockKey(mode);
-  const now = Date.now();
-  const nextUntil = now + SCAN_INTERVAL_SEC * 1000;
-
-  // Atomisch: alleen lock zetten als hij niet bestaat (NX)
-  const ok = await kv.set(
-    key,
-    { until: nextUntil, setAt: now },
-    { nx: true, ex: SCAN_INTERVAL_SEC }
-  );
-
-  if (ok) {
-    return { ok: true, key, until: nextUntil, now, waitMs: 0 };
-  }
-
-  const cur = await kv.get(key);
-  const until = Number(cur?.until || 0);
-
-  if (until > now) {
-    return { ok: false, key, until, now, waitMs: until - now };
-  }
-
-  // stale key exists → refresh
-  await kv.set(key, { until: nextUntil, setAt: now }, { ex: SCAN_INTERVAL_SEC });
-  return { ok: true, key, until: nextUntil, now, waitMs: 0 };
-}
-
 // --------------------
 // Helpers
 // --------------------
-function cgKey(url) {
-  const h = createHash("sha1").update(String(url || "")).digest("hex");
-  return `cg:${h}`;
-}
-
-// ✅ CoinGecko KV cache (anti-429) per-request
-const CG_FRESH_TTL_SEC = 60;
-const CG_STALE_TTL_SEC = 10 * 60;
-
 async function fetchJson(url) {
-  const key = cgKey(url);
-  const staleKey = `${key}:stale`;
-
-  const cached = await kv.get(key);
-  if (cached) return cached;
-
   const r = await fetch(url, { headers: { accept: "application/json" } });
   const t = await r.text();
-
-  if (r.status === 429) {
-    const stale = await kv.get(staleKey);
-    if (stale) return stale;
-    throw new Error(`Fetch failed 429: ${t.slice(0, 220)}`);
-  }
-
   let j = null;
   try {
     j = JSON.parse(t);
   } catch {}
-
   if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 160)}`);
-
-  await kv.set(key, j, { ex: CG_FRESH_TTL_SEC });
-  await kv.set(staleKey, j, { ex: CG_STALE_TTL_SEC });
-
   return j;
 }
 
@@ -145,6 +29,28 @@ function safeObj(x) {
 function up(x) {
   return String(x || "").toUpperCase();
 }
+function fmtPct(x, d = 2) {
+  const v = Number(x);
+  if (!Number.isFinite(v)) return "—";
+  const s = v >= 0 ? "+" : "";
+  return `${s}${v.toFixed(d)}%`;
+}
+function fmtNum(x, d = 2) {
+  const v = Number(x);
+  if (!Number.isFinite(v)) return "—";
+  return v.toFixed(d);
+}
+function fmtUsd(x, d = 6) {
+  const v = Number(x);
+  if (!Number.isFinite(v)) return "—";
+  return `$${v.toFixed(d)}`;
+}
+
+function makeTradeId(mode, sym) {
+  return `trd_${String(mode)}_${String(sym)}_${Date.now()}_${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
 
 async function safePushEvent(funnel, data) {
   try {
@@ -156,9 +62,206 @@ async function safePushEvent(funnel, data) {
 const OB_MAX_AGE_MS = 120 * 60 * 1000;
 const OB_MAX_AGE_SEC = Math.floor(OB_MAX_AGE_MS / 1000);
 
+// ✅ Discord anti-spam
+const NOTIFY_COOLDOWN_MS = 25 * 60 * 1000;
+
 // ======================================================
-// ✅ BTC fetch
+// ✅ TRADE ENGINE
 // ======================================================
+const TRADE_TTL_SEC = 60 * 60 * 48;
+const REENTRY_COOLDOWN_SEC = 60 * 60;
+
+const TIME_STOP_SCANS = 6;
+const TIME_STOP_MAXPNL = 0.015;
+
+const HOLD_AFTER_SCANS = 2;
+
+const TP1_PNL = 0.025;
+const TP2_PNL = 0.05;
+const TRAIL_AFTER_TP1 = 0.022;
+const TRAIL_AFTER_TP2 = 0.016;
+
+const SELLS_TTL_SEC = 60 * 60 * 48;
+const SELLS_KEEP = 50;
+
+function kTrade(mode, sym) {
+  return `trade:${String(mode).toLowerCase()}:${up(sym)}`;
+}
+function kCooldown(mode, sym) {
+  return `trade:cooldown:${String(mode).toLowerCase()}:${up(sym)}`;
+}
+function kSells(mode) {
+  return `trade:sells:${String(mode).toLowerCase()}`;
+}
+
+async function logSell(mode, sellObj) {
+  const key = kSells(mode);
+  const prev = (await kv.get(key)) || [];
+  const arr = Array.isArray(prev) ? prev : [];
+  arr.push(sellObj);
+  const last = arr.slice(-SELLS_KEEP);
+  await kv.set(key, last, { ex: SELLS_TTL_SEC });
+  return last;
+}
+
+function calcPnlPct(mode, entryPrice, nowPrice) {
+  const e = n(entryPrice, 0);
+  const p = n(nowPrice, 0);
+  if (!(e > 0) || !(p > 0)) return 0;
+
+  if (String(mode).toLowerCase() === "bear") return (e - p) / e;
+  return (p - e) / e;
+}
+
+function stopPctFromRange24(range24Pct) {
+  const r = n(range24Pct, 0);
+  if (r <= 18) return 0.03;
+  if (r <= 28) return 0.035;
+  return 0.045;
+}
+
+function isObAgainst(mode, ob) {
+  const pd = n(ob?.pressureDeltaUsd, 0);
+  const sc = n(ob?.score, 0);
+
+  if (String(mode).toLowerCase() === "bear") return pd > 0 && sc > 0;
+  return pd < 0 && sc < 0;
+}
+
+function isObInvalidFresh(obFresh, ob) {
+  if (!obFresh) return false;
+  if (!ob) return true;
+  if (ob.valid === false) return true;
+  return false;
+}
+
+function pageTradeStatus(tradeInfo) {
+  if (!tradeInfo) return "—";
+  if (tradeInfo.status === "OPEN") {
+    if (Number(tradeInfo.barsOpen) === 0) return "ENTRY";
+    return "HOLD";
+  }
+  return "—";
+}
+
+function computeStatsFromSells(sellsOldestToNewest) {
+  const arr = Array.isArray(sellsOldestToNewest) ? sellsOldestToNewest : [];
+  const totalSells = arr.length;
+
+  const newestFirst = arr.slice().reverse();
+  const last50 = newestFirst.slice(0, 50);
+
+  if (!last50.length) {
+    return {
+      totalSells,
+      n50: 0,
+      winrate50: 0,
+      avgPnl50: 0,
+      avgBarsOpen50: 0,
+      wins50: 0,
+      losses50: 0,
+    };
+  }
+
+  let wins = 0;
+  let pnlSum = 0;
+  let barsSum = 0;
+
+  for (const s of last50) {
+    const pnl = Number(s?.pnlPct || 0);
+    const bars = Number(s?.barsOpen || 0);
+    if (pnl > 0) wins++;
+    pnlSum += pnl;
+    barsSum += bars;
+  }
+
+  const n50 = last50.length;
+  const losses = n50 - wins;
+
+  return {
+    totalSells,
+    n50,
+    winrate50: wins / n50,
+    avgPnl50: pnlSum / n50,
+    avgBarsOpen50: barsSum / n50,
+    wins50: wins,
+    losses50: losses,
+  };
+}
+
+// --------------------
+// Discord helpers
+// --------------------
+async function sendDiscord(webhook, content) {
+  const url = String(webhook || "").trim();
+  if (!url) return { ok: false, skipped: true };
+
+  try {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+
+    const txt = await r.text().catch(() => "");
+    if (!r.ok) return { ok: false, status: r.status, preview: txt.slice(0, 200) };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+}
+
+function stageWebhook(stageUpper) {
+  if (stageUpper === "ENTRY") return process.env.DISCORD_WEBHOOK_ELITE;
+  if (stageUpper === "HOLD") return process.env.DISCORD_WEBHOOK_ELITE;
+  if (stageUpper === "SELL") return process.env.DISCORD_WEBHOOK_ELITE;
+
+  if (stageUpper === "ALMOST") return process.env.DISCORD_WEBHOOK_ALMOST;
+  if (stageUpper === "BUILDUP") return process.env.DISCORD_WEBHOOK_BUILDUP;
+  if (stageUpper === "RADAR") return process.env.DISCORD_WEBHOOK_RADAR;
+
+  return "";
+}
+
+function pushNotice(noticesByHook, webhook, line) {
+  const url = String(webhook || "").trim();
+  if (!url) return;
+  if (!noticesByHook[url]) noticesByHook[url] = [];
+  noticesByHook[url].push(line);
+}
+
+async function flushNotices(noticesByHook) {
+  const urls = Object.keys(noticesByHook || {});
+  if (!urls.length) return { sent: 0, failed: 0, details: [] };
+
+  let sent = 0;
+  let failed = 0;
+  const details = [];
+
+  for (const url of urls) {
+    const lines = noticesByHook[url] || [];
+    if (!lines.length) continue;
+
+    const CHUNK = 15;
+    for (let i = 0; i < lines.length; i += CHUNK) {
+      const part = lines.slice(i, i + CHUNK);
+      const msg = part.join("\n");
+
+      const r = await sendDiscord(url, msg);
+      if (r.ok) sent++;
+      else {
+        failed++;
+        details.push({ webhook: url, ...r });
+      }
+    }
+  }
+
+  return { sent, failed, details };
+}
+
+// --------------------
+// BTC fetch
+// --------------------
 async function fetchBtc() {
   const url =
     "https://api.coingecko.com/api/v3/coins/markets" +
@@ -172,6 +275,7 @@ async function fetchBtc() {
     b?.price_change_percentage_1h_in_currency ?? b?.price_change_percentage_1h ?? 0,
     0
   );
+
   const chg24 = n(
     b?.price_change_percentage_24h_in_currency ?? b?.price_change_percentage_24h ?? 0,
     0
@@ -194,13 +298,51 @@ function normBtcState(x) {
   return "NEUTRAL";
 }
 
+// ========== OUDE BTC HELPERS (blijven staan, maar worden niet meer gebruikt) ==========
+function computeBtcStateLocal(btcBase, SETTINGS) {
+  const cfg = safeObj(SETTINGS?.btc) || {};
+  const neutral24Pct = n(cfg.neutral24Pct, 1.0);
+  const chg24 = n(btcBase?.chg24, 0);
+
+  if (chg24 >= neutral24Pct) return "BULL";
+  if (chg24 <= -neutral24Pct) return "BEAR";
+  return "NEUTRAL";
+}
+
+function btcConfidenceAdjust(mode, btcState, btcBase, SETTINGS) {
+  const cfg = safeObj(SETTINGS?.btc) || {};
+  const fine1hAbs = n(cfg.fine1hAbsPct, 0.25);
+  const boost = n(cfg.confBoost, 4);
+
+  const st = normBtcState(btcState);
+  if (st === "NEUTRAL") return { adj: 0, why: "BTC NEUTRAL: no 1h fine-tune" };
+
+  const chg1h = n(btcBase?.chg1h, 0);
+  const m = String(mode || "").toLowerCase();
+
+  const wantUp = m === "bull";
+  const pos = chg1h >= fine1hAbs;
+  const neg = chg1h <= -fine1hAbs;
+
+  if (wantUp && pos) return { adj: +boost, why: `BTC 1h aligns (+${boost})` };
+  if (!wantUp && neg) return { adj: +boost, why: `BTC 1h aligns (+${boost})` };
+
+  if (wantUp && neg) return { adj: -boost, why: `BTC 1h contra (-${boost})` };
+  if (!wantUp && pos) return { adj: -boost, why: `BTC 1h contra (-${boost})` };
+
+  return { adj: 0, why: "BTC 1h small/neutral" };
+}
+
+// ========== NIEUWE COMPAT‑BTC HELPERS ==========
 function getBtcCfg(SETTINGS) {
-  const b = SETTINGS && SETTINGS.btc ? SETTINGS.btc : {};
+  const b = (SETTINGS && SETTINGS.btc) ? SETTINGS.btc : {};
   return {
+    // oude stijl (core)
     bullMinChg24: Number.isFinite(Number(b.bullMinChg24)) ? Number(b.bullMinChg24) : 1.0,
     bearMaxChg24: Number.isFinite(Number(b.bearMaxChg24)) ? Number(b.bearMaxChg24) : -1.0,
     softOpenNeutral: !!b.softOpenNeutral,
 
+    // nieuwe stijl (scan)
     neutral24Pct: Number.isFinite(Number(b.neutral24Pct)) ? Number(b.neutral24Pct) : null,
     fine1hAbsPct: Number.isFinite(Number(b.fine1hAbsPct)) ? Number(b.fine1hAbsPct) : 0.25,
     confBoost: Number.isFinite(Number(b.confBoost)) ? Number(b.confBoost) : 4,
@@ -211,12 +353,14 @@ function computeBtcStateCompat(btcBase, SETTINGS) {
   const cfg = getBtcCfg(SETTINGS);
   const chg24 = n(btcBase?.chg24, 0);
 
+  // als neutral24Pct bestaat → gebruik die band (oude scan‑logica)
   if (cfg.neutral24Pct != null) {
     if (chg24 >= cfg.neutral24Pct) return "BULL";
     if (chg24 <= -cfg.neutral24Pct) return "BEAR";
     return "NEUTRAL";
   }
 
+  // anders → gebruik core logica (bullMin/bearMax)
   if (chg24 >= cfg.bullMinChg24) return "BULL";
   if (chg24 <= cfg.bearMaxChg24) return "BEAR";
   return "NEUTRAL";
@@ -226,7 +370,11 @@ function btcConfidenceAdjustCompat(mode, btcState, btcBase, SETTINGS) {
   const cfg = getBtcCfg(SETTINGS);
   const st = normBtcState(btcState);
 
-  if (st === "NEUTRAL" && cfg.softOpenNeutral) return { adj: 0, why: "BTC NEUTRAL (soft open)" };
+  // als BTC neutral is en softOpenNeutral=true → geen straf/bonus
+  if (st === "NEUTRAL" && cfg.softOpenNeutral) {
+    return { adj: 0, why: "BTC NEUTRAL (soft open)" };
+  }
+
   if (st === "NEUTRAL") return { adj: 0, why: "BTC NEUTRAL" };
 
   const fine1hAbs = cfg.fine1hAbsPct;
@@ -247,6 +395,9 @@ function btcConfidenceAdjustCompat(mode, btcState, btcBase, SETTINGS) {
   return { adj: 0, why: "BTC 1h small/neutral" };
 }
 
+// --------------------
+// Stage cap
+// --------------------
 function computeStageCap(mode, btcState) {
   const st = normBtcState(btcState);
   const m = String(mode || "").toLowerCase();
@@ -257,96 +408,62 @@ function computeStageCap(mode, btcState) {
   if (st === "BULL" && m === "bull") allowFull = true;
   if (st === "BEAR" && m === "bear") allowFull = true;
 
-  if (allowFull) return { cap: false, capStage: "FULL", reason: `BTC ${st}: ${m} mag door naar ALMOST/ENTRY` };
-  if (st === "NEUTRAL") return { cap: true, capStage, reason: "BTC NEUTRAL: scannen + OB door, maar max BUILDUP" };
+  if (allowFull) {
+    return { cap: false, capStage: "FULL", reason: `BTC ${st}: ${m} mag door naar ALMOST/ENTRY` };
+  }
+
+  if (st === "NEUTRAL") {
+    return { cap: true, capStage, reason: "BTC NEUTRAL: scannen + OB door, maar max BUILDUP (prep-mode)" };
+  }
+
   return { cap: true, capStage, reason: `BTC ${st}: ${m} blijft prep-mode (max BUILDUP)` };
 }
 
-// ======================================================
-// ✅ Haal meerdere CoinGecko pagina's op (RAW)
-// ======================================================
-async function fetchCgTopRaw(limit = 1000) {
-  const perPage = 250;
-  const maxPages = 10;
-  const pages = Math.min(maxPages, Math.ceil(limit / perPage));
-  let allCoins = [];
+// --------------------
+// Universe top coins
+// --------------------
+async function fetchCgTop(limit) {
+  const per = Math.min(250, Math.max(50, Number(limit || 250)));
+  const url =
+    `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc` +
+    `&per_page=${per}&page=1&sparkline=false&price_change_percentage=1h,24h`;
 
-  for (let page = 1; page <= pages; page++) {
-    const url =
-      `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd` +
-      `&order=volume_desc&per_page=${perPage}&page=${page}&sparkline=false` +
-      `&price_change_percentage=1h,24h`;
+  const arr = await fetchJson(url);
 
-    const arr = await fetchJson(url);
-    if (!arr || !Array.isArray(arr) || arr.length === 0) break;
+  return (arr || []).map((c) => {
+    const price = n(c?.current_price, 0);
+    const high = n(c?.high_24h, 0);
+    const low = n(c?.low_24h, 0);
+    const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-    const mapped = arr.map((c) => {
-      const price = n(c?.current_price, 0);
-      const high = n(c?.high_24h, 0);
-      const low = n(c?.low_24h, 0);
-      const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
+    const change24 = n(
+      c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0,
+      0
+    );
 
-      const change24 = n(
-        c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0,
-        0
-      );
-      const change1h = n(
-        c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0,
-        0
-      );
+    const change1h = n(
+      c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0,
+      0
+    );
 
-      return {
-        id: c?.id,
-        symbol: up(c?.symbol),
-        name: c?.name,
-        price,
-        volume: n(c?.total_volume, 0),
-        marketCap: n(c?.market_cap, 0),
-        change24,
-        change1h,
-        range24,
-      };
-    });
-
-    allCoins = allCoins.concat(mapped);
-
-    if (mapped.length < perPage) break;
-
-    if (page < pages) {
-      await new Promise((r) => setTimeout(r, 200));
-    }
-  }
-
-  return allCoins;
+    return {
+      id: c?.id,
+      symbol: up(c?.symbol),
+      name: c?.name,
+      price,
+      volume: n(c?.total_volume, 0),
+      marketCap: n(c?.market_cap, 0),
+      change24,
+      change1h,
+      range24,
+    };
+  });
 }
 
-// ======================================================
-// ✅ Universe cache (gratis meer coins zonder extra calls)
-// ======================================================
-const CG_UNIVERSE_CACHE_TTL_SEC = 10 * 60; // 10 minuten
-const CG_MAX_LIMIT = 2500; // 10 pages * 250
-
-function cgUniverseKey(limit) {
-  const lim = Math.max(1, Math.min(CG_MAX_LIMIT, Number(limit) || 1000));
-  return `cg:universe:vol_desc:usd:${lim}`;
-}
-
-async function fetchCgTop(limit = 1000) {
-  const lim = Math.max(1, Math.min(CG_MAX_LIMIT, Number(limit) || 1000));
-  const key = cgUniverseKey(lim);
-
-  const cached = await kv.get(key);
-  if (Array.isArray(cached) && cached.length) return cached;
-
-  const coins = await fetchCgTopRaw(lim);
-  await kv.set(key, coins, { ex: CG_UNIVERSE_CACHE_TTL_SEC });
-  return coins;
-}
-
-// ======================================================
-// ✅ RADAR gate (NU COIN-ADAPTIEF)
-// ======================================================
-function passRadar(core, mode, c) {
+// --------------------
+// Radar gate
+// --------------------
+function passRadar(core, c) {
   const R = core?.SETTINGS?.radar || {};
   const vm = core.computeVm(c.volume, c.marketCap);
 
@@ -354,82 +471,31 @@ function passRadar(core, mode, c) {
   if (c.marketCap > n(R.mcapMax, Number.MAX_SAFE_INTEGER)) return { ok: false, why: "mcap too high" };
   if (c.volume < n(R.volMin, 0)) return { ok: false, why: "volume too low" };
   if (vm < n(R.vmMin, 0)) return { ok: false, why: "vm too low" };
+  if (Math.abs(c.change24) > n(R.maxAbsChg24, 999)) return { ok: false, why: "chg24 too high" };
+  if (c.range24 > n(R.maxRange24, 999)) return { ok: false, why: "range24 too high" };
 
-  const dyn =
-    typeof core.dynamicRadarThresholds === "function"
-      ? core.dynamicRadarThresholds(c.range24, core.SETTINGS)
-      : null;
-
-  const maxAbsChg24 = n(R.maxAbsChg24, 999);
-  const maxRange24 = dyn ? n(dyn.maxRange24, n(R.maxRange24, 999)) : n(R.maxRange24, 999);
-
-  if (Math.abs(c.change24) > maxAbsChg24) return { ok: false, why: "chg24 too high" };
-  if (c.range24 > maxRange24) return { ok: false, why: "range24 too high" };
-
-  const m = String(mode || "").toLowerCase();
-  if (m === "bull") {
-    const dir1hMin = dyn ? n(dyn.dir1hMinBull, n(R.dir1hMinBull, 0.2)) : n(R.dir1hMinBull, 0.2);
-    const dir24Min = dyn ? n(dyn.dir24MinBull, n(R.dir24MinBull, 0.5)) : n(R.dir24MinBull, 0.5);
-    if (n(c.change1h, 0) < dir1hMin) return { ok: false, why: "dir fail (1h not up)" };
-    if (n(c.change24, 0) < dir24Min) return { ok: false, why: "dir fail (24h not up)" };
-  } else if (m === "bear") {
-    const dir1hMax = dyn ? n(dyn.dir1hMaxBear, n(R.dir1hMaxBear, -0.2)) : n(R.dir1hMaxBear, -0.2);
-    const dir24Max = dyn ? n(dyn.dir24MaxBear, n(R.dir24MaxBear, -0.5)) : n(R.dir24MaxBear, -0.5);
-    if (n(c.change1h, 0) > dir1hMax) return { ok: false, why: "dir fail (1h not down)" };
-    if (n(c.change24, 0) > dir24Max) return { ok: false, why: "dir fail (24h not down)" };
-  }
-
-  return {
-    ok: true,
-    vm,
-    dynRadar: dyn
-      ? {
-          maxRange24: +n(dyn.maxRange24, 0).toFixed(2),
-          dir1h: m === "bull" ? +n(dyn.dir1hMinBull, 0).toFixed(3) : +n(dyn.dir1hMaxBear, 0).toFixed(3),
-          dir24: m === "bull" ? +n(dyn.dir24MinBull, 0).toFixed(3) : +n(dyn.dir24MaxBear, 0).toFixed(3),
-          scale: +n(dyn.scale, 0).toFixed(3),
-        }
-      : null,
-  };
+  return { ok: true, vm };
 }
 
-// ======================================================
-// Stage logic (NU COIN-ADAPTIEF op range24)
-// ======================================================
-function stageFromSwing(core, mode, c) {
+// --------------------
+// Stage logic (SWING)
+// --------------------
+function stageFromSwing(mode, c) {
   const vm = c.vm;
   const range = c.range24;
   const ch1h = c.change1h;
 
-  const dyn =
-    typeof core.dynamicRadarThresholds === "function"
-      ? core.dynamicRadarThresholds(range, core.SETTINGS)
-      : null;
-
   const wantUp = mode === "bull";
-  const dir1h = dyn
-    ? wantUp
-      ? n(dyn.dir1hMinBull, 0.2)
-      : n(dyn.dir1hMaxBear, -0.2)
-    : wantUp
-    ? 0.2
-    : -0.2;
+  const inDir = wantUp ? ch1h >= 0.15 : ch1h <= -0.15;
 
-  const inDir = wantUp ? ch1h >= dir1h : ch1h <= dir1h;
-
-  const r = n(range, 0);
-  const s = Math.max(0, Math.min(1, (r - 8) / 22)); // 8..30 → 0..1
-  const vmAlmost = 0.24 + 0.04 * s; // 0.24..0.28
-  const vmBuildup = 0.18 + 0.03 * s; // 0.18..0.21
-
-  const maxRangeAlmost = dyn ? n(dyn.maxRange24, 22) - 2 : 22;
-  const maxRangeBuildup = dyn ? n(dyn.maxRange24, 28) : 28;
-
-  if (vm >= vmAlmost && range <= maxRangeAlmost && inDir) return "ALMOST";
-  if (vm >= vmBuildup && range <= maxRangeBuildup) return "BUILDUP";
+  if (vm >= 0.22 && range <= 24 && inDir) return "ALMOST";
+  if (vm >= 0.16 && range <= 32) return "BUILDUP";
   return "RADAR";
 }
 
+// --------------------
+// OB loaders (cc:ob:* via obStore)
+// --------------------
 async function loadObMap(mode) {
   try {
     const m = await kv.hgetall(obMapKey(mode));
@@ -439,14 +505,21 @@ async function loadObMap(mode) {
   }
 }
 
-async function getObForSymbol({ mode, symbol }) {
+async function getObForSymbol({ mode, symbol, obMap }) {
   const sym = up(symbol);
+
+  if (obMap && Object.prototype.hasOwnProperty.call(obMap, sym)) {
+    const ob = await getObSnapshot(mode, sym, OB_MAX_AGE_SEC);
+    return obSnapshotToFlat(ob, sym);
+  }
+
   const ob = await getObSnapshot(mode, sym, OB_MAX_AGE_SEC);
   return obSnapshotToFlat(ob, sym);
 }
 
 function obSnapshotToFlat(ob, sym) {
   const snap = safeObj(ob?.snap) || null;
+
   return {
     symbol: sym,
     ok: !!ob?.ok,
@@ -464,9 +537,9 @@ function obSnapshotToFlat(ob, sym) {
   };
 }
 
-// ======================================================
-// ENTRY thresholds (tiers + coin-adaptieve OB tuning)
-// ======================================================
+// --------------------
+// Adaptive entry thresholds
+// --------------------
 function adaptiveEntryThresholds(core, c, vm) {
   const base = core?.SETTINGS?.entry || {};
   const mc = n(c?.marketCap, 0);
@@ -475,10 +548,10 @@ function adaptiveEntryThresholds(core, c, vm) {
 
   const oneTier = {
     maxMc: Infinity,
-    minConf: n(base.minConfidence, 60),
-    spreadMax: n(base.spreadMaxPct, 0.95),
-    depth1pMin: n(base.depthMinUsd1p, 45_000),
-    obScoreMin: n(base.obScoreMin, 0.05),
+    minConf: n(base.minConfidence, 58),
+    spreadMax: n(base.spreadMaxPct, 1.2),
+    depth1pMin: n(base.depthMinUsd1p, 30_000),
+    obScoreMin: n(base.obScoreMin, 0.04),
   };
 
   const list = tiers?.length ? tiers : [oneTier];
@@ -486,48 +559,30 @@ function adaptiveEntryThresholds(core, c, vm) {
 
   const vmBonus = vm >= 0.8 ? 4 : vm >= 0.5 ? 2 : 0;
 
-  const baseMinConf = n(base.minConfidence, n(t.minConf, 60));
+  const baseMinConf = n(base.minConfidence, n(t.minConf, 58));
   const tierMinConf = n(t.minConf, baseMinConf);
-  const minConfidence = Math.max(0, Math.max(baseMinConf, tierMinConf - vmBonus));
 
-  const baseSpread = n(base.spreadMaxPct, n(t.spreadMax, 0.95));
+  const minConfidenceRaw = Math.max(0, Math.max(baseMinConf, tierMinConf - vmBonus));
+  const minConfidence = Math.max(0, minConfidenceRaw - 3);
+
+  const baseSpread = n(base.spreadMaxPct, n(t.spreadMax, 1.2));
   const tierSpread = n(t.spreadMax, baseSpread);
-  const spreadMaxPct = Math.min(baseSpread, tierSpread);
+  const spreadMaxPct = Math.min(baseSpread, tierSpread) + 0.15;
 
-  const baseDepth = n(base.depthMinUsd1p, n(t.depth1pMin, 45_000));
+  const baseDepth = n(base.depthMinUsd1p, n(t.depth1pMin, 30_000));
   const tierDepth = n(t.depth1pMin, baseDepth);
-  const depthMinUsd1p = Math.round(Math.max(baseDepth, tierDepth));
+  const depthMinUsd1p = Math.max(15_000, Math.round(Math.max(baseDepth, tierDepth) * 0.75));
 
-  const baseScore = n(base.obScoreMin, n(t.obScoreMin, 0.05));
+  const baseScore = n(base.obScoreMin, n(t.obScoreMin, 0.04));
   const tierScore = n(t.obScoreMin, baseScore);
-  const obScoreMin = Math.max(baseScore, tierScore);
+  const obScoreMin = Math.max(0.02, Math.max(baseScore, tierScore) * 0.75);
 
-  const thrBase = { minConfidence, spreadMaxPct, depthMinUsd1p, obScoreMin };
-
-  if (typeof core.dynamicEntryThresholds === "function") {
-    const tuned = core.dynamicEntryThresholds(
-      { marketCap: c.marketCap, volume: c.volume, vm },
-      {
-        minConfidence: thrBase.minConfidence,
-        spreadMaxPct: thrBase.spreadMaxPct,
-        depthMinUsd1p: thrBase.depthMinUsd1p,
-        obScoreMin: thrBase.obScoreMin,
-      },
-      core.SETTINGS
-    );
-
-    return {
-      minConfidence: n(tuned.minConfidence, thrBase.minConfidence),
-      spreadMaxPct: n(tuned.spreadMaxPct, thrBase.spreadMaxPct),
-      depthMinUsd1p: Math.round(n(tuned.depthMinUsd1p, thrBase.depthMinUsd1p)),
-      obScoreMin: n(tuned.obScoreMin, thrBase.obScoreMin),
-      liqScore: tuned.liqScore ?? null,
-    };
-  }
-
-  return thrBase;
+  return { minConfidence, spreadMaxPct, depthMinUsd1p, obScoreMin };
 }
 
+// --------------------
+// Consistency + scans + prevStage
+// --------------------
 function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
   const S = stateObj || {};
   const sym = up(symbol);
@@ -537,6 +592,8 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
   const minAgree = Math.max(1, n(entryCfg.minAgree, 3));
 
   const prev = safeObj(S[sym]) || {};
+  const prevStage = up(prev.stage || "");
+
   const scans = n(prev.scans, 0) + 1;
 
   const histPrev = Array.isArray(prev.hist) ? prev.hist : [];
@@ -549,127 +606,60 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
 
   const ok = total >= need && same >= minAgree;
 
-  S[sym] = { ...prev, scans, hist, lastSeenAt: nowTs, stage: st };
+  S[sym] = {
+    ...prev,
+    scans,
+    hist,
+    lastSeenAt: nowTs,
+    stage: st,
+  };
 
-  return { state: S, stageScans: scans, consistency: { ok, ratio, same, total, need, minAgree } };
+  return {
+    state: S,
+    prevStage,
+    stageScans: scans,
+    consistency: { ok, ratio, same, total, need, minAgree },
+  };
 }
 
-// ✅ concurrency limiter
-async function asyncPool(limit, items, worker) {
-  const nLimit = Math.max(1, Number(limit || 8));
-  const arr = Array.isArray(items) ? items : [];
-  const out = new Array(arr.length);
-  let idx = 0;
+function canNotify(stateEntry, nowTs) {
+  const lastAt = n(stateEntry?.lastNotifyAt, 0);
+  if (lastAt > 0 && nowTs - lastAt < NOTIFY_COOLDOWN_MS) return false;
+  return true;
+}
 
-  async function runOne() {
-    while (idx < arr.length) {
-      const i = idx++;
-      out[i] = await worker(arr[i], i);
-    }
-  }
-
-  const runners = Array.from({ length: Math.min(nLimit, arr.length) }, () => runOne());
-  await Promise.all(runners);
-  return out;
+function markNotified(stateObj, sym, nowTs) {
+  if (!stateObj?.[sym]) return;
+  stateObj[sym].lastNotifyAt = nowTs;
 }
 
 // ======================================================
 // MAIN HANDLER
 // ======================================================
 export default async function handler(req, res) {
-  const startedAt = Date.now();
-
   try {
     if (!requireSecret(req, res)) return;
 
-    const mode = getMode(req); // bull / bear
+    const mode = getMode(req); // "bull" or "bear"
+
     const coreMod = await import(`../lib/_core_${mode}.js`);
     const core = coreMod?.default ? coreMod.default : coreMod;
 
-    const fromCron = isVercelCron(req);
-    const force = wantsForce(req);
-    const method = String(req?.method || "GET").toUpperCase();
-
-    // ======================================================
-    // ✅ ABSOLUTE RULE: Alleen CRON of FORCE mag scannen.
-    //    Alles anders retourneert altijd de gecachte latest.
-    // ======================================================
-    if (!fromCron && !force) {
-      const latest = await kv.get(core.keyLatest(mode));
-      const lockInfo = await getScanLockInfo(mode);
-
-      if (latest) {
-        latest.meta = latest.meta || {};
-        latest.meta.served = "cached_latest_no_scan";
-        latest.meta.debug = { method, fromCron, force };
-        latest.meta.scanLock = lockInfo;
-        return send(res, 200, latest);
-      }
-
-      return send(res, 200, {
-        ok: false,
-        mode,
-        error: "no latest yet (wait for cron scan)",
-        meta: {
-          served: "no_scan_no_latest",
-          scanLock: lockInfo,
-          debug: { method, fromCron, force },
-        },
-      });
-    }
-
-    // ======================================================
-    // Vanaf hier alleen cron/force
-    // ======================================================
-
-    let lock;
-
-    if (force) {
-      // Force mag lock altijd overschrijven
-      const now0 = Date.now();
-      const l = await setScanLock(mode, now0);
-      lock = { ok: true, key: l.key, until: l.until, now: l.now, waitMs: 0 };
-    } else {
-      // Cron: probeer lock te krijgen (alleen als vrij)
-      lock = await tryAcquireScanLock(mode);
-
-      if (!lock.ok) {
-        // Lock actief -> geef latest terug, niet scannen
-        const latest = await kv.get(core.keyLatest(mode));
-        if (latest) {
-          latest.meta = latest.meta || {};
-          latest.meta.served = "cron_skipped_locked";
-          latest.meta.scanLock = { active: true, until: lock.until, waitMs: lock.waitMs };
-          latest.meta.debug = { method, fromCron, force };
-          return send(res, 200, latest);
-        }
-
-        return send(res, 200, {
-          ok: false,
-          mode,
-          error: "scan locked and no latest yet",
-          meta: {
-            scanLock: { active: true, until: lock.until, waitMs: lock.waitMs },
-            debug: { method, fromCron, force },
-          },
-        });
-      }
-    }
-
-    // ======================================================
-    // Lock verkregen → scan uitvoeren
-    // ======================================================
     const now = Date.now();
 
     const btcBase = await fetchBtc();
+    // Vervangen door compat‑versies
     const btcState = computeBtcStateCompat(btcBase, core.SETTINGS);
     const btcTune = btcConfidenceAdjustCompat(mode, btcState, btcBase, core.SETTINGS);
     const btc = { ...btcBase, state: btcState, tune: btcTune };
 
     const cap = computeStageCap(mode, btc.state);
+    const allowEntry = cap.cap === false;
 
-    // ✅ coins count: core.SETTINGS.CG_TOP (max 2500)
-    const cg = await fetchCgTop(core.SETTINGS.CG_TOP || 1000);
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.setHeader("cache-control", "no-store");
+
+    const cg = await fetchCgTop(core.SETTINGS.CG_TOP);
 
     const radar = [];
     const buildup = [];
@@ -678,84 +668,27 @@ export default async function handler(req, res) {
     const openTrades = [];
 
     const state = (await kv.get(core.keyState(mode))) || {};
-    await loadObMap(mode);
+    const obMap = await loadObMap(mode);
 
-    // PASS 1: geen OB voor iedereen → alleen ALMOST kandidaten
-    const almostCandidates = [];
+    const noticesByHook = {};
 
     for (const c of cg) {
-      const radarGate = passRadar(core, mode, c);
+      const radarGate = passRadar(core, c);
       if (!radarGate.ok) continue;
 
       const vm = radarGate.vm;
       const sym = up(c.symbol);
+      const priceNow = n(c.price, 0);
 
-      let stageBase = stageFromSwing(core, mode, { ...c, vm });
+      let stageBase = stageFromSwing(mode, { ...c, vm });
 
-      if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
-        stageBase = "BUILDUP";
-      }
+      // OB
+      const ob = await getObForSymbol({ mode, symbol: sym, obMap });
 
-      if (stageBase !== "ALMOST") {
-        const confidenceBase = core.computeConfidence({
-          vm,
-          change24: c.change24,
-          range24: c.range24,
-          obValid: false,
-        });
-        const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
-
-        const upd = updateStateAndConsistency(state, sym, stageBase, core, now);
-
-        const item = {
-          symbol: sym,
-          name: c.name || sym,
-          price: n(c.price, 0),
-          marketCap: n(c.marketCap, 0),
-          volume: n(c.volume, 0),
-          vm: +n(vm, 0).toFixed(6),
-          change1h: +n(c.change1h, 0).toFixed(3),
-          change24: +n(c.change24, 0).toFixed(3),
-          range24: +n(c.range24, 0).toFixed(3),
-
-          confidence,
-          stage: stageBase,
-          stageBase,
-
-          gates: { radar: radarGate.why || "passed", almost: "n/a", entry: "n/a" },
-          consistency: upd.consistency,
-
-          dyn: { radar: radarGate.dynRadar || null, entry: null },
-          ob: {
-            fresh: false,
-            valid: false,
-            spreadPct: null,
-            depthMinUsd1p: null,
-            score: null,
-            pressureDeltaUsd: 0,
-            ts: null,
-            ageSec: null,
-            reason: "skipped (fast path)",
-          },
-        };
-
-        if (stageBase === "BUILDUP") buildup.push(item);
-        else radar.push(item);
-
-        continue;
-      }
-
-      almostCandidates.push({ c, vm, sym, radarGate });
-    }
-
-    // PASS 2: OB batching voor ALMOST
-    const OB_CONCURRENCY = 12;
-
-    const almostProcessed = await asyncPool(OB_CONCURRENCY, almostCandidates, async (x) => {
-      const { c, vm, sym, radarGate } = x;
-
-      const ob = await getObForSymbol({ mode, symbol: sym });
+      const obTs = n(ob?.ts, 0);
+      const obAge = obTs > 0 ? now - obTs : Number.POSITIVE_INFINITY;
       const obFresh = !!ob?.fresh;
+
       const obValid = !!ob?.valid;
 
       const spreadPct = n(ob?.spreadPct, 999);
@@ -768,43 +701,65 @@ export default async function handler(req, res) {
         range24: c.range24,
         obValid: !!obValid,
       });
+
       const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
 
       const thr = adaptiveEntryThresholds(core, c, vm);
 
-      let stage = "ALMOST";
-      let stageBase = "ALMOST";
-      let almostGate = "passed";
+      let almostGate = "n/a";
       let entryGate = "n/a";
+      let stage = stageBase;
 
-      if (cap.cap) {
+      if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
         stage = "BUILDUP";
-        stageBase = "BUILDUP";
         almostGate = `capped: ${cap.capStage}`;
         entryGate = `capped: ${cap.capStage}`;
       } else {
-        const obSamples = await kv.get(core.keyObSamples(mode, sym));
-        const slopeCheck =
-          typeof core.checkObSlopeGate === "function"
-            ? core.checkObSlopeGate({ stage: "almost", mode, obSamples, settings: core.SETTINGS })
-            : { ok: true };
+        let obSamples = null;
 
-        if (!slopeCheck.ok) {
-          stage = "BUILDUP";
-          stageBase = "BUILDUP";
-          almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
-        } else {
+        // ALMOST slope gate (blijft werken, want sampler vult keyObSamples)
+        if (stageBase === "ALMOST") {
+          obSamples = await kv.get(core.keyObSamples(mode, sym));
+
+          const slopeCheck =
+            typeof core.checkObSlopeGate === "function"
+              ? core.checkObSlopeGate({
+                  stage: "almost",
+                  mode,
+                  obSamples,
+                  settings: core.SETTINGS,
+                })
+              : { ok: true };
+
+          if (!slopeCheck.ok) {
+            stageBase = "BUILDUP";
+            stage = "BUILDUP";
+            almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
+          } else {
+            almostGate = "passed";
+          }
+        }
+
+        // ENTRY gate
+        if (stageBase === "ALMOST") {
           if (!ob || ob.ok === false) entryGate = "OB missing";
-          else if (!obFresh) entryGate = "OB stale";
+          else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
           else if (!obValid) entryGate = "OB invalid";
           else if (confidence < n(thr.minConfidence, 0)) entryGate = `Confidence < ${thr.minConfidence}`;
           else if (spreadPct > n(thr.spreadMaxPct, 999)) entryGate = `Spread > ${thr.spreadMaxPct}%`;
           else if (depthMinUsd1p < n(thr.depthMinUsd1p, 0)) entryGate = `Depth1% < $${thr.depthMinUsd1p}`;
           else if (Math.abs(obScore) < n(thr.obScoreMin, 0)) entryGate = `OB score < ${thr.obScoreMin}`;
           else {
+            if (!obSamples) obSamples = await kv.get(core.keyObSamples(mode, sym));
+
             const slopeCheck2 =
               typeof core.checkObSlopeGate === "function"
-                ? core.checkObSlopeGate({ stage: "entry", mode, obSamples, settings: core.SETTINGS })
+                ? core.checkObSlopeGate({
+                    stage: "entry",
+                    mode,
+                    obSamples,
+                    settings: core.SETTINGS,
+                  })
                 : { ok: true };
 
             const pressureDelta = n(ob?.pressureDeltaUsd, 0);
@@ -820,120 +775,401 @@ export default async function handler(req, res) {
         }
       }
 
-      const upd = updateStateAndConsistency(state, sym, stage, core, now);
+      // ======================================================
+      // TRADE ENGINE
+      // ======================================================
+      const tKey = kTrade(mode, sym);
+      const cdKey = kCooldown(mode, sym);
 
-      return {
+      const cooldown = await kv.get(cdKey);
+      const tradeExisting = await kv.get(tKey);
+
+      let tradeInfo = null;
+
+      if (tradeExisting && tradeExisting?.status === "OPEN") {
+        const entryPrice = n(tradeExisting.entryPrice, 0);
+        const barsOpen = n(tradeExisting.barsOpen, 0) + 1;
+
+        const pnl = calcPnlPct(mode, entryPrice, priceNow);
+        const maxPnl = Math.max(n(tradeExisting.maxPnl, 0), pnl);
+
+        const stopPct = stopPctFromRange24(c.range24);
+
+        const hardStopHit =
+          String(mode).toLowerCase() === "bear"
+            ? priceNow >= entryPrice * (1 + stopPct)
+            : priceNow <= entryPrice * (1 - stopPct);
+
+        const obAgainst = obFresh ? isObAgainst(mode, ob) : false;
+        const obInvalid = isObInvalidFresh(obFresh, ob);
+        const badNow = obFresh && (obAgainst || obInvalid);
+        const obBadStreak = badNow ? n(tradeExisting.obBadStreak, 0) + 1 : 0;
+
+        const obBreakHit = obBadStreak >= 2;
+        const timeStopHit = barsOpen >= TIME_STOP_SCANS && maxPnl < TIME_STOP_MAXPNL;
+
+        const drawdown = maxPnl - pnl;
+
+        let trailHit = false;
+        let trailCfg = null;
+
+        if (maxPnl >= TP2_PNL) {
+          trailHit = drawdown >= TRAIL_AFTER_TP2;
+          trailCfg = { level: "TP2", trail: TRAIL_AFTER_TP2, drawdown };
+        } else if (maxPnl >= TP1_PNL) {
+          trailHit = drawdown >= TRAIL_AFTER_TP1;
+          trailCfg = { level: "TP1", trail: TRAIL_AFTER_TP1, drawdown };
+        }
+
+        let exit = null;
+        if (hardStopHit) exit = { reason: "HARD_STOP", stopPct, pnl };
+        else if (trailHit) exit = { reason: "TRAILING_TP", pnl, maxPnl, trailCfg };
+        else if (obBreakHit) exit = { reason: "OB_BREAK_2X", obBadStreak, obFresh, obValid, obAgainst, pnl };
+        else if (timeStopHit) exit = { reason: "TIME_STOP_NO_MOMENTUM", barsOpen, maxPnl, pnl };
+
+        if (exit) {
+          await kv.del(tKey);
+          await kv.set(cdKey, { ts: now, reason: exit.reason }, { ex: REENTRY_COOLDOWN_SEC });
+
+          const tradeId = String(tradeExisting.tradeId || "");
+
+          await logSell(mode, {
+            ts: now,
+            tradeId,
+            symbol: sym,
+            side: String(mode).toLowerCase(),
+            reason: exit.reason,
+            pnlPct: pnl,
+            maxPnlPct: maxPnl,
+            entryPrice,
+            exitPrice: priceNow,
+            barsOpen,
+            extra: exit?.trailCfg ? { trailCfg: exit.trailCfg } : undefined,
+          });
+
+          const givebackPct = Math.max(0, (maxPnl - pnl) * 100);
+
+          await safePushEvent("main", {
+            type: "trade_close",
+            tradeId,
+            mode,
+            symbol: sym,
+            reason: exit.reason,
+            entryPrice,
+            exitPrice: priceNow,
+            pnlPct: pnl * 100,
+            maxPnlPct: maxPnl * 100,
+            givebackPct,
+            barsOpen,
+          });
+
+          const hook = stageWebhook("SELL");
+          const line =
+            `**${sym}** (${mode.toUpperCase()})  ` +
+            `**SELL** • ${exit.reason}  ` +
+            `pnl ${fmtPct(pnl * 100, 2)} • max ${fmtPct(maxPnl * 100, 2)} • ` +
+            `giveback ${fmtPct(givebackPct, 2)} • ` +
+            `price ${fmtUsd(priceNow, 6)}`;
+          pushNotice(noticesByHook, hook, line);
+
+          tradeInfo = { status: "CLOSED", exit, pnl, maxPnl, exitAt: now, barsOpen };
+        } else {
+          const updated = {
+            ...tradeExisting,
+            barsOpen,
+            maxPnl,
+            lastPrice: priceNow,
+            lastSeenAt: now,
+            obBadStreak,
+          };
+
+          if (!updated.holdNotified && barsOpen >= HOLD_AFTER_SCANS) {
+            const hook = stageWebhook("HOLD");
+            const line =
+              `**${sym}** (${mode.toUpperCase()})  ` +
+              `**HOLD** • trade loopt  ` +
+              `pnl ${fmtPct(pnl * 100, 2)} • max ${fmtPct(maxPnl * 100, 2)} • ` +
+              `price ${fmtUsd(priceNow, 6)}`;
+            pushNotice(noticesByHook, hook, line);
+            updated.holdNotified = true;
+          }
+
+          await kv.set(tKey, updated, { ex: TRADE_TTL_SEC });
+
+          tradeInfo = {
+            status: "OPEN",
+            tradeId: String(updated.tradeId || ""),
+            entryPrice,
+            entryAt: n(updated.entryAt, 0),
+            barsOpen,
+            pnl,
+            maxPnl,
+            stopPct,
+            obBadStreak,
+            trail: { tp1: TP1_PNL, tp2: TP2_PNL, dd: maxPnl - pnl },
+          };
+        }
+      }
+
+      if (!tradeInfo) {
+        const inCooldown = !!cooldown;
+        const isEntrySignal = stage === "ENTRY" && allowEntry;
+
+        if (isEntrySignal && !inCooldown && priceNow > 0) {
+          const tradeId = makeTradeId(mode, sym);
+
+          const tradeObj = {
+            status: "OPEN",
+            tradeId,
+            mode,
+            symbol: sym,
+            entryPrice: priceNow,
+            entryAt: now,
+            barsOpen: 0,
+            maxPnl: 0,
+            obBadStreak: 0,
+            holdNotified: false,
+            lastSeenAt: now,
+            lastPrice: priceNow,
+            entryConfidence: confidence,
+            entryVm: vm,
+            entryRange24: c.range24,
+            entryMeta: { entryGate, almostGate, confidence, vm, spreadPct, depthMinUsd1p, obScore },
+          };
+
+          await kv.set(tKey, tradeObj, { ex: TRADE_TTL_SEC });
+
+          await safePushEvent("main", {
+            type: "trade_open",
+            tradeId,
+            mode,
+            symbol: sym,
+            entryPrice: priceNow,
+            confidence,
+            vm,
+            entryGate,
+          });
+
+          const hook = stageWebhook("ENTRY");
+          const line =
+            `**${sym}** (${mode.toUpperCase()})  ` +
+            `**ENTRY** • instap  ` +
+            `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
+            `price ${fmtUsd(priceNow, 6)}`;
+          pushNotice(noticesByHook, hook, line);
+
+          tradeInfo = { status: "OPEN", tradeId, entryPrice: priceNow, entryAt: now, barsOpen: 0, pnl: 0, maxPnl: 0 };
+        }
+      }
+
+      const prevEntry = safeObj(state[sym]) || {};
+      const stFix = updateStateAndConsistency(state, sym, stage, core, now);
+
+      const prevStage = up(stFix.prevStage);
+      const currStage = up(stage);
+
+      if (prevStage && prevStage !== currStage) {
+        await safePushEvent("main", {
+          type: "stage_change",
+          mode,
+          symbol: sym,
+          from: prevStage,
+          to: currStage,
+          reason:
+            currStage === "ENTRY"
+              ? entryGate
+              : currStage === "ALMOST"
+              ? almostGate
+              : "stage_logic",
+          confidence,
+          vm,
+        });
+      }
+
+      const hasOpenTrade = tradeInfo?.status === "OPEN";
+
+      if (!hasOpenTrade && prevStage) {
+        const doNotify = canNotify(prevEntry, now);
+        const isFunnelStage = currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
+
+        if (doNotify && isFunnelStage && prevStage !== currStage) {
+          const hook = stageWebhook(currStage);
+          const line =
+            `**${sym}** (${mode.toUpperCase()})  ` +
+            `${prevStage} → **${currStage}**  ` +
+            `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
+            `1h ${fmtPct(c.change1h, 2)} • 24h ${fmtPct(c.change24, 2)} • ` +
+            `price ${fmtUsd(priceNow, 6)}`;
+          pushNotice(noticesByHook, hook, line);
+          markNotified(state, sym, now);
+        }
+      }
+
+      if (tradeInfo?.status === "OPEN") {
+        openTrades.push({
+          symbol: sym,
+          side: String(mode).toLowerCase(),
+          tradeId: String(tradeInfo.tradeId || ""),
+          entryPrice: n(tradeInfo.entryPrice, 0),
+          entryAt: n(tradeInfo.entryAt, 0),
+          barsOpen: n(tradeInfo.barsOpen, 0),
+          pnlPct: n(tradeInfo.pnl, 0),
+          maxPnlPct: n(tradeInfo.maxPnl, 0),
+          price: priceNow,
+          confidence,
+          vm,
+        });
+      }
+
+      const item = {
+        id: c.id,
         symbol: sym,
-        name: c.name || sym,
-        price: n(c.price, 0),
-        marketCap: n(c.marketCap, 0),
-        volume: n(c.volume, 0),
-        vm: +n(vm, 0).toFixed(6),
-        change1h: +n(c.change1h, 0).toFixed(3),
-        change24: +n(c.change24, 0).toFixed(3),
-        range24: +n(c.range24, 0).toFixed(3),
+        name: c.name,
+        price: priceNow,
+        volume: c.volume,
+        marketCap: c.marketCap,
+        change24: +c.change24.toFixed(4),
+        change1h: +c.change1h.toFixed(4),
+        range24: +c.range24.toFixed(4),
+        vm: +vm.toFixed(6),
+        volAcc: +vm.toFixed(6),
 
+        confidenceBase,
         confidence,
-        stage,
-        stageBase,
+        confidenceBtcAdj: btcTune.adj,
 
-        gates: { radar: radarGate.why || "passed", almost: almostGate, entry: entryGate },
-        consistency: upd.consistency,
+        stage: currStage,
 
-        dyn: {
-          radar: radarGate.dynRadar || null,
-          entry: {
-            minConfidence: thr.minConfidence,
-            spreadMaxPct: +n(thr.spreadMaxPct, 0).toFixed(3),
-            depthMinUsd1p: Math.round(n(thr.depthMinUsd1p, 0)),
-            obScoreMin: +n(thr.obScoreMin, 0).toFixed(4),
-            liqScore: thr.liqScore != null ? +n(thr.liqScore, 0).toFixed(3) : null,
-          },
+        trade: tradeInfo,
+        tradeStatus: pageTradeStatus(tradeInfo),
+
+        stageScans: stFix.stageScans,
+        consistency: stFix.consistency,
+
+        req: {
+          minConfidence: thr.minConfidence,
+          spreadMaxPct: thr.spreadMaxPct,
+          depthMinUsd1p: thr.depthMinUsd1p,
+          obScoreMin: thr.obScoreMin,
         },
 
-        ob: {
-          fresh: !!obFresh,
-          valid: !!obValid,
-          spreadPct: ob?.spreadPct ?? null,
-          depthMinUsd1p: ob?.depthMinUsd1p ?? null,
-          score: ob?.score ?? null,
-          pressureDeltaUsd: ob?.pressureDeltaUsd ?? 0,
-          ts: ob?.ts ?? null,
-          ageSec: ob?.ageSec ?? null,
-          reason: ob?.reason || "",
-        },
+        ob: ob
+          ? {
+              valid: !!ob.valid,
+              fresh: !!ob.fresh,
+              stale: !!ob.stale,
+              ageSec: obTs > 0 ? Math.round(obAge / 1000) : ob.ageSec ?? null,
+              reason: String(ob.reason || ""),
+              score: Number(n(obScore, 0)),
+              spreadPct: Number(n(spreadPct, 999)),
+              depthMinUsd1p: Number(n(depthMinUsd1p, 0)),
+              pressureDeltaUsd: Number(n(ob.pressureDeltaUsd, 0)),
+              ts: obTs || null,
+            }
+          : { status: "none" },
+
+        why: { almostGate, entryGate },
       };
-    });
 
-    for (const item of almostProcessed) {
-      if (!item) continue;
-      if (item.stage === "ENTRY") {
-        entry.push(item);
-        await safePushEvent("scan_entry", { mode, symbol: item.symbol, confidence: item.confidence, btcState: btc.state });
-      } else if (item.stage === "ALMOST") almost.push(item);
-      else if (item.stage === "BUILDUP") buildup.push(item);
+      if (currStage === "ENTRY") entry.push(item);
+      else if (currStage === "ALMOST") almost.push(item);
+      else if (currStage === "BUILDUP") buildup.push(item);
       else radar.push(item);
     }
 
-    const byScore = (a, b) =>
-      (b.confidence - a.confidence) || (b.vm - a.vm) || (Math.abs(b.change24) - Math.abs(a.change24));
+    entry.sort((a, b) => b.confidence - a.confidence || b.vm - a.vm);
+    almost.sort((a, b) => b.confidence - a.confidence || b.vm - a.vm);
+    buildup.sort((a, b) => b.vm - a.vm);
+    radar.sort((a, b) => b.vm - a.vm);
 
-    radar.sort(byScore);
-    buildup.sort(byScore);
-    almost.sort(byScore);
-    entry.sort(byScore);
+    openTrades.sort((a, b) => b.pnlPct - a.pnlPct || b.maxPnlPct - a.maxPnlPct);
 
-    const radarLimit = n(core?.SETTINGS?.RADAR_LIMIT, 60);
-    const outRadar = radar.slice(0, radarLimit);
-    const outBuildup = buildup.slice(0, radarLimit);
-    const outAlmost = almost.slice(0, radarLimit);
-    const outEntry = entry.slice(0, radarLimit);
+    const discord = await flushNotices(noticesByHook);
 
-    const out = {
+    const sellsRaw = (await kv.get(kSells(mode))) || [];
+    const sellsArr = Array.isArray(sellsRaw) ? sellsRaw.slice(-SELLS_KEEP) : [];
+    const recentSells = sellsArr.slice().reverse();
+    const stats = computeStatsFromSells(sellsArr);
+
+    const btcCfg = safeObj(core.SETTINGS?.btc) || {};
+    const neutral24Pct = n(btcCfg.neutral24Pct, 1.0);
+    const fine1hAbsPct = n(btcCfg.fine1hAbsPct, 0.25);
+    const confBoost = n(btcCfg.confBoost, 4);
+
+    const result = {
       ok: true,
+      ts: now,
       mode,
-      ts: Date.now(),
-      tookMs: Date.now() - startedAt,
       btc,
-      cap,
-      funnel: { radar: outRadar, buildup: outBuildup, almost: outAlmost, entry: outEntry },
-      openTrades,
       meta: {
-        served: fromCron ? "cron_scan" : force ? "force_scan_post" : "scan",
-        scanLock: {
-          active: !(fromCron || force),
-          until: lock.until ?? null,
-          waitMs: lock.waitMs ?? 0,
-          bypass: fromCron ? "vercel_cron" : force ? "force_post" : "",
-        },
-        debug: { method, fromCron, force },
-        cgUniverse: {
-          cachedTtlSec: CG_UNIVERSE_CACHE_TTL_SEC,
-          maxLimit: CG_MAX_LIMIT,
-          requested: Number(core.SETTINGS.CG_TOP || 1000),
-          got: cg.length,
-        },
-        perf: {
-          obConcurrency: OB_CONCURRENCY,
-          almostCandidates: almostCandidates.length,
-          obFetched: almostProcessed.length,
-        },
-        counts: {
-          cg: cg.length,
-          radar: radar.length,
-          buildup: buildup.length,
-          almost: almost.length,
-          entry: entry.length,
+        cadence: "30m",
+        btcPolicy:
+          "24h regime + 1h confidence fine-tune; NEUTRAL/opposite => cap to BUILDUP (prep), maar scan+OB blijven lopen",
+        capActive: !!cap.cap,
+        capStage: cap.capStage,
+        capReason: cap.reason,
+        allowEntry,
+        neutralZone: `BTC 24h tussen -${neutral24Pct}% en +${neutral24Pct}%`,
+        fineTune: `BTC 1h abs >= ${fine1hAbsPct}% => confidence +/-${confBoost}`,
+        tradeEngine: {
+          enabled: true,
+          timeStopScans: TIME_STOP_SCANS,
+          timeStopMaxPnlPct: TIME_STOP_MAXPNL * 100,
+          reentryCooldownSec: REENTRY_COOLDOWN_SEC,
+          tradeTtlSec: TRADE_TTL_SEC,
+          sellsLogKey: kSells(mode),
+          exits: [
+            "HARD_STOP(range24)",
+            "TRAILING_TP(maxPnl + drawdown)",
+            "OB_BREAK_2X(fresh)",
+            "TIME_STOP(no momentum)",
+          ],
+          trailing: {
+            tp1Pct: TP1_PNL * 100,
+            tp2Pct: TP2_PNL * 100,
+            trailAfterTp1Pct: TRAIL_AFTER_TP1 * 100,
+            trailAfterTp2Pct: TRAIL_AFTER_TP2 * 100,
+          },
         },
       },
+      counts: {
+        entry: entry.length,
+        almost: almost.length,
+        buildup: buildup.length,
+        radar: radar.length,
+        openTrades: openTrades.length,
+        recentSells: recentSells.length,
+      },
+      funnel: { entry, almost, buildup, radar },
+      trading: {
+        openTrades,
+        recentSells,
+        stats: {
+          ...stats,
+          winrate50Pct: stats.winrate50 * 100,
+          avgPnl50Pct: stats.avgPnl50 * 100,
+        },
+      },
+      obMap: obMap ? { ok: true, size: Object.keys(obMap).length } : { ok: false },
+      discord: {
+        enabled: true,
+        sent: discord.sent,
+        failed: discord.failed,
+        errors: (discord.details || []).slice(0, 5),
+      },
+      note:
+        "Scan logs stage_change + trade_open/close (met tradeId + giveback) events naar cc:events:main:list (voor analyzer).",
     };
 
-    const ttl = n(core?.SETTINGS?.entry?.resultTtlSec, 60 * 45);
-    await kv.set(core.keyLatest(mode), out, { ex: Math.max(60, ttl) });
-    await kv.set(core.keyState(mode), state, { ex: 60 * 60 * 24 * 7 });
+    await kv.set(core.keyLatest(mode), result);
+    await kv.set(core.keyState(mode), state);
 
-    return send(res, 200, out);
+    res.statusCode = 200;
+    return res.end(JSON.stringify(result));
   } catch (e) {
-    return send(res, 200, { ok: false, error: String(e?.message || e) });
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.setHeader("cache-control", "no-store");
+    return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
