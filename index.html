@@ -98,29 +98,40 @@
       </div>
 
       <div class="modalTabs">
-        <button class="tabBtn active" id="tabWhy">Waarom</button>
+        <button class="tabBtn active" id="tabAction">Actie</button>
+        <button class="tabBtn" id="tabWhy">Waarom</button>
         <button class="tabBtn" id="tabLiq">Liquidity</button>
-        <button class="tabBtn" id="tabRisk">Risk</button>
-        <button class="tabBtn" id="tabDebug">Debug</button>
+        <button class="tabBtn" id="tabDebug">Details</button>
       </div>
 
       <div class="modalBody">
 
+        <!-- ACTIE TAB -->
+        <div class="modalBox" id="boxAction">
+          <div class="modalBoxTitle">Wat moet je doen</div>
+          <div class="actionHero">
+            <div class="actionTitle" id="mActionTitle">—</div>
+            <div class="actionSub" id="mActionSub">—</div>
+          </div>
+          <div class="kv" id="mActionKv"></div>
+          <div class="actionNote">
+            Dit is een **template plan**. In BUILDUP/ALMOST is dit vooral “klaarzetten”.
+          </div>
+        </div>
+
+        <!-- WHY TAB -->
         <div class="modalBox" id="boxWhy">
           <div class="modalBoxTitle">Waarom staat hij hier</div>
           <div class="checkList" id="mWhyList"></div>
         </div>
 
+        <!-- LIQUIDITY TAB -->
         <div class="modalBox hidden" id="boxLiq">
           <div class="modalBoxTitle">Liquidity (Orderbook + Depth)</div>
           <div class="checkList" id="mLiqList"></div>
         </div>
 
-        <div class="modalBox hidden" id="boxRisk">
-          <div class="modalBoxTitle">Risk (SL / TP)</div>
-          <div class="kv" id="mRiskKv"></div>
-        </div>
-
+        <!-- DEBUG TAB -->
         <div class="modalBox hidden" id="boxDebug">
           <div class="modalBoxTitle">Debug (coin object)</div>
           <pre class="modalPre" id="mDebug">—</pre>
