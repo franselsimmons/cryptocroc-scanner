@@ -10,12 +10,8 @@ export const config = RUNTIME_CONFIG;
 // ======================================================
 // ✅ 30 MIN SCAN LOCK (ATOMISCH)
 //   - Handmatig verkeer: lock actief (anti-spam)
-//   - Vercel Cron verkeer: BYPASS lock (anders kan "29:xx" timing je scans overslaan)
-//   - Optioneel: ?force=1 bypass lock
-//
-// ✅ FIX:
-//   - Als cron/force bypass gebruikt: lock alsnog SETTEN/REFRESHEN
-//     zodat handmatige refresh niet elke keer opnieuw scant.
+//   - Vercel Cron verkeer: BYPASS lock, MAAR lock wordt WEL gezet/refresh (fix)
+//   - Force: alleen via POST ?force=1 (zodat refresh nooit kan forcen)
 // ======================================================
 const SCAN_INTERVAL_SEC = 30 * 60; // 30 minuten
 
@@ -28,15 +24,18 @@ function send(res, code, obj) {
 
 function isVercelCron(req) {
   const h = req?.headers || {};
-  const v =
-    h["x-vercel-cron"] ||
-    h["x-vercel-cron-job"] ||
-    h["X-Vercel-Cron"] ||
-    h["X-Vercel-Cron-Job"];
-  return String(v || "") !== "";
+  // Node/Vercel headers zijn normaliter lowercase
+  const v = h["x-vercel-cron"] || h["x-vercel-cron-job"];
+  const s = String(v || "").trim().toLowerCase();
+  // ✅ stricter: alleen echte cron waarden
+  return s === "1" || s === "true" || s === "yes" || s === "on";
 }
 
 function wantsForce(req) {
+  // ✅ Force alleen via POST, zodat browser refresh nooit “per ongeluk” force kan triggeren
+  const method = String(req?.method || "GET").toUpperCase();
+  if (method !== "POST") return false;
+
   const q = req?.query || {};
   const f = q.force ?? q.FORCE;
   const s = String(f || "").trim().toLowerCase();
@@ -536,6 +535,28 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
 }
 
 // ======================================================
+// ✅ NEW: async pool (concurrency limiter) voor OB batching
+// ======================================================
+async function asyncPool(limit, items, worker) {
+  const nLimit = Math.max(1, Number(limit || 8));
+  const arr = Array.isArray(items) ? items : [];
+  const out = new Array(arr.length);
+
+  let idx = 0;
+
+  async function runOne() {
+    while (idx < arr.length) {
+      const i = idx++;
+      out[i] = await worker(arr[i], i);
+    }
+  }
+
+  const runners = Array.from({ length: Math.min(nLimit, arr.length) }, () => runOne());
+  await Promise.all(runners);
+  return out;
+}
+
+// ======================================================
 // MAIN HANDLER
 // ======================================================
 export default async function handler(req, res) {
@@ -555,13 +576,14 @@ export default async function handler(req, res) {
     let lock = null;
 
     if (fromCron || force) {
-      const now = Date.now();
-      const l = await setScanLock(mode, now); // ✅ FIX: zet/refresh lock zodat manual niet spamt
+      const now0 = Date.now();
+      const l = await setScanLock(mode, now0);
       lock = { ok: true, key: l.key, until: l.until, now: l.now, waitMs: 0 };
     } else {
       lock = await tryAcquireScanLock(mode);
     }
 
+    // ✅ IMPORTANT: als locked → NOOIT scannen, alleen latest teruggeven (fix “refresh rescans”)
     if (!lock.ok) {
       const latest = await kv.get(core.keyLatest(mode));
       if (latest) {
@@ -586,16 +608,24 @@ export default async function handler(req, res) {
 
     const cap = computeStageCap(mode, btc.state);
 
+    // ✅ 2500 coins als core.SETTINGS.CG_TOP = 2500
     const cg = await fetchCgTop(core.SETTINGS.CG_TOP || 1000);
 
     const radar = [];
     const buildup = [];
     const almost = [];
     const entry = [];
-    const openTrades = []; // placeholder
+    const openTrades = [];
 
     const state = (await kv.get(core.keyState(mode))) || {};
     await loadObMap(mode);
+
+    // ======================================================
+    // ✅ PASS 1: geen OB calls voor iedereen (performance)
+    // - Bepaal stageBase + vm
+    // - Verzamel ALMOST candidates apart voor OB batch
+    // ======================================================
+    const almostCandidates = [];
 
     for (const c of cg) {
       const radarGate = passRadar(core, mode, c);
@@ -606,6 +636,84 @@ export default async function handler(req, res) {
 
       let stageBase = stageFromSwing(core, mode, { ...c, vm });
 
+      // BTC cap kan ALMOST/ENTRY naar BUILDUP drukken zonder OB
+      if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
+        stageBase = "BUILDUP";
+      }
+
+      // Voor RADAR/BUILDUP doen we geen OB fetch (snel)
+      if (stageBase !== "ALMOST") {
+        const confidenceBase = core.computeConfidence({
+          vm,
+          change24: c.change24,
+          range24: c.range24,
+          obValid: false,
+        });
+        const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
+
+        const upd = updateStateAndConsistency(state, sym, stageBase, core, now);
+
+        const item = {
+          symbol: sym,
+          name: c.name || sym,
+          price: n(c.price, 0),
+          marketCap: n(c.marketCap, 0),
+          volume: n(c.volume, 0),
+          vm: +n(vm, 0).toFixed(6),
+          change1h: +n(c.change1h, 0).toFixed(3),
+          change24: +n(c.change24, 0).toFixed(3),
+          range24: +n(c.range24, 0).toFixed(3),
+
+          confidence,
+          stage: stageBase,
+          stageBase,
+
+          gates: {
+            radar: radarGate.why || "passed",
+            almost: "n/a",
+            entry: "n/a",
+          },
+          consistency: upd.consistency,
+
+          dyn: {
+            radar: radarGate.dynRadar || null,
+            entry: null,
+          },
+
+          ob: {
+            fresh: false,
+            valid: false,
+            spreadPct: null,
+            depthMinUsd1p: null,
+            score: null,
+            pressureDeltaUsd: 0,
+            ts: null,
+            ageSec: null,
+            reason: "skipped (fast path)",
+          },
+        };
+
+        if (stageBase === "BUILDUP") buildup.push(item);
+        else radar.push(item);
+
+        continue;
+      }
+
+      // ALMOST → later OB batch
+      almostCandidates.push({ c, vm, sym, radarGate });
+    }
+
+    // ======================================================
+    // ✅ PASS 2: OB batching alleen voor ALMOST candidates
+    // - parallel met concurrency limiter
+    // - hier kan ENTRY worden
+    // ======================================================
+    const OB_CONCURRENCY = 12; // tweak: 8..20 veilig
+
+    const almostProcessed = await asyncPool(OB_CONCURRENCY, almostCandidates, async (x) => {
+      const { c, vm, sym, radarGate } = x;
+
+      // OB fetch (nu pas)
       const ob = await getObForSymbol({ mode, symbol: sym });
       const obFresh = !!ob?.fresh;
       const obValid = !!ob?.valid;
@@ -624,33 +732,30 @@ export default async function handler(req, res) {
 
       const thr = adaptiveEntryThresholds(core, c, vm);
 
-      let stage = stageBase;
-      let almostGate = "n/a";
+      let stage = "ALMOST";
+      let stageBase = "ALMOST";
+      let almostGate = "passed";
       let entryGate = "n/a";
 
-      if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
+      // BTC cap check (double safety)
+      if (cap.cap) {
         stage = "BUILDUP";
         stageBase = "BUILDUP";
         almostGate = `capped: ${cap.capStage}`;
         entryGate = `capped: ${cap.capStage}`;
       } else {
-        if (stageBase === "ALMOST") {
-          const obSamples = await kv.get(core.keyObSamples(mode, sym));
-          const slopeCheck =
-            typeof core.checkObSlopeGate === "function"
-              ? core.checkObSlopeGate({ stage: "almost", mode, obSamples, settings: core.SETTINGS })
-              : { ok: true };
+        const obSamples = await kv.get(core.keyObSamples(mode, sym));
+        const slopeCheck =
+          typeof core.checkObSlopeGate === "function"
+            ? core.checkObSlopeGate({ stage: "almost", mode, obSamples, settings: core.SETTINGS })
+            : { ok: true };
 
-          if (!slopeCheck.ok) {
-            stage = "BUILDUP";
-            stageBase = "BUILDUP";
-            almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
-          } else {
-            almostGate = "passed";
-          }
-        }
-
-        if (stageBase === "ALMOST") {
+        if (!slopeCheck.ok) {
+          stage = "BUILDUP";
+          stageBase = "BUILDUP";
+          almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
+        } else {
+          // ENTRY gate
           if (!ob || ob.ok === false) entryGate = "OB missing";
           else if (!obFresh) entryGate = "OB stale";
           else if (!obValid) entryGate = "OB invalid";
@@ -659,10 +764,10 @@ export default async function handler(req, res) {
           else if (depthMinUsd1p < n(thr.depthMinUsd1p, 0)) entryGate = `Depth1% < $${thr.depthMinUsd1p}`;
           else if (Math.abs(obScore) < n(thr.obScoreMin, 0)) entryGate = `OB score < ${thr.obScoreMin}`;
           else {
-            const obSamples = await kv.get(core.keyObSamples(mode, sym));
+            const obSamples2 = obSamples; // reuse
             const slopeCheck2 =
               typeof core.checkObSlopeGate === "function"
-                ? core.checkObSlopeGate({ stage: "entry", mode, obSamples, settings: core.SETTINGS })
+                ? core.checkObSlopeGate({ stage: "entry", mode, obSamples: obSamples2, settings: core.SETTINGS })
                 : { ok: true };
 
             const pressureDelta = n(ob?.pressureDeltaUsd, 0);
@@ -726,13 +831,21 @@ export default async function handler(req, res) {
         },
       };
 
-      if (stage === "ENTRY") entry.push(item);
-      else if (stage === "ALMOST") almost.push(item);
-      else if (stage === "BUILDUP") buildup.push(item);
-      else radar.push(item);
+      return item;
+    });
 
-      if (stage === "ENTRY") {
-        await safePushEvent("scan_entry", { mode, symbol: sym, confidence, btcState: btc.state });
+    // push processed almost/entry/buildup
+    for (const item of almostProcessed) {
+      if (!item) continue;
+      if (item.stage === "ENTRY") {
+        entry.push(item);
+        await safePushEvent("scan_entry", { mode, symbol: item.symbol, confidence: item.confidence, btcState: btc.state });
+      } else if (item.stage === "ALMOST") {
+        almost.push(item);
+      } else if (item.stage === "BUILDUP") {
+        buildup.push(item);
+      } else {
+        radar.push(item);
       }
     }
 
@@ -771,13 +884,18 @@ export default async function handler(req, res) {
           active: !(fromCron || force),
           until: lock.until ?? null,
           waitMs: lock.waitMs ?? 0,
-          bypass: fromCron ? "vercel_cron" : force ? "force" : "",
+          bypass: fromCron ? "vercel_cron" : force ? "force_post" : "",
         },
         cgUniverse: {
           cachedTtlSec: CG_UNIVERSE_CACHE_TTL_SEC,
           maxLimit: CG_MAX_LIMIT,
           requested: Number(core.SETTINGS.CG_TOP || 1000),
           got: cg.length,
+        },
+        perf: {
+          obConcurrency: OB_CONCURRENCY,
+          almostCandidates: almostCandidates.length,
+          obFetched: almostProcessed.length,
         },
         counts: {
           cg: cg.length,
