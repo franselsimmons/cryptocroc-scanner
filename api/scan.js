@@ -1,3 +1,4 @@
+/* EOF: /api/scan.js */
 import { kv } from "@vercel/kv";
 import { createHash } from "crypto";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
