@@ -1,3 +1,4 @@
+/* EOF: /api/scan.js */
 import { kv } from "@vercel/kv";
 import { createHash } from "crypto";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
@@ -152,7 +153,7 @@ function percentileOf(nums, p) {
   return a[lo] * (1 - w) + a[hi] * w;
 }
 
-async function updateCoinStatsAndGetMetrics({ mode, sym, range24, spreadPct, depth1p, obScore, now }) {
+async function updateCoinStatsAndGetMetrics({ mode, sym, range24, spreadPct, obScore, now }) {
   const key = kCoinStats(mode, sym);
   const prev = (await kv.get(key)) || [];
   const arr = Array.isArray(prev) ? prev : [];
@@ -161,13 +162,11 @@ async function updateCoinStatsAndGetMetrics({ mode, sym, range24, spreadPct, dep
 
   const r = fnum(range24);
   const sp = fnum(spreadPct);
-  const d1 = fnum(depth1p);
   const sc = fnum(obScore);
 
   const row = { ts: now };
   if (r != null) row.range24 = r;
   if (sp != null) row.spreadPct = sp;
-  if (d1 != null) row.depth1p = d1;
   if (sc != null) {
     row.obScore = sc;
     row.obScoreAbs = Math.abs(sc);
@@ -182,7 +181,6 @@ async function updateCoinStatsAndGetMetrics({ mode, sym, range24, spreadPct, dep
 
   const ranges = next.map((x) => x?.range24).filter(Number.isFinite);
   const spreads = next.map((x) => x?.spreadPct).filter(Number.isFinite);
-  const depths = next.map((x) => x?.depth1p).filter(Number.isFinite);
   const scoresAbs = next.map((x) => x?.obScoreAbs).filter(Number.isFinite);
 
   return {
@@ -191,46 +189,11 @@ async function updateCoinStatsAndGetMetrics({ mode, sym, range24, spreadPct, dep
     p80Range24: percentileOf(ranges, 80),
     medSpreadPct: medianOf(spreads),
     p80SpreadPct: percentileOf(spreads, 80),
-    medDepth1p: medianOf(depths),
-    p20Depth1p: percentileOf(depths, 20),
     medObAbs: medianOf(scoresAbs),
     p60ObAbs: percentileOf(scoresAbs, 60),
     p70ObAbs: percentileOf(scoresAbs, 70),
     p80ObAbs: percentileOf(scoresAbs, 80),
   };
-}
-
-// ======================================================
-// ✅ Leaders fetch (context voor universe bias)
-// ======================================================
-async function fetchLeaders() {
-  const ids = [
-    "ethereum",
-    "solana",
-    "binancecoin",
-    "ripple",
-    "cardano",
-    "dogecoin",
-    "avalanche-2",
-    "chainlink",
-    "tron",
-    "toncoin",
-  ];
-
-  const url =
-    "https://api.coingecko.com/api/v3/coins/markets" +
-    `?vs_currency=usd&ids=${encodeURIComponent(ids.join(","))}` +
-    "&order=market_cap_desc&per_page=20&page=1&sparkline=false" +
-    "&price_change_percentage=1h,24h";
-
-  const arr = await fetchJson(url);
-  const out = Array.isArray(arr) ? arr : [];
-  return out.map((c) => ({
-    symbol: up(c?.symbol),
-    name: c?.name,
-    change1h: n(c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0, 0),
-    change24: n(c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0, 0),
-  }));
 }
 
 // ======================================================
@@ -334,16 +297,15 @@ function computeStageCap(mode, btcState) {
 }
 
 // ======================================================
-// ✅ Haal meerdere CoinGecko pagina's op (vanaf pagina 2)
+// ✅ Haal meerdere CoinGecko pagina's op
 // ======================================================
-async function fetchCgTop(limit = 250, startPage = 1) {
+async function fetchCgTop(limit = 1000) {
   const perPage = 250;
-  const pages = Math.max(1, Math.ceil(limit / perPage));
+  const maxPages = 10;
+  const pages = Math.min(maxPages, Math.ceil(limit / perPage));
   let allCoins = [];
 
-  for (let i = 0; i < pages; i++) {
-    const page = startPage + i;
-
+  for (let page = 1; page <= pages; page++) {
     const url =
       `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd` +
       `&order=volume_desc&per_page=${perPage}&page=${page}&sparkline=false` +
@@ -377,10 +339,13 @@ async function fetchCgTop(limit = 250, startPage = 1) {
     allCoins = allCoins.concat(mapped);
 
     if (mapped.length < perPage) break;
-    if (i < pages - 1) await new Promise((r) => setTimeout(r, 200));
+
+    if (page < pages) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
   }
 
-  return allCoins.slice(0, limit);
+  return allCoins;
 }
 
 // ======================================================
@@ -583,11 +548,7 @@ export default async function handler(req, res) {
 
     const cap = computeStageCap(mode, btc.state);
 
-    // ✅ Leaders ophalen voor context
-    const leaders = await fetchLeaders();
-
-    // ✅ CoinGecko vanaf pagina 2
-    const cg = await fetchCgTop(core.SETTINGS.CG_TOP || 250, 2);
+    const cg = await fetchCgTop(core.SETTINGS.CG_TOP || 1000);
 
     const radar = [];
     const buildup = [];
@@ -608,23 +569,12 @@ export default async function handler(req, res) {
       const depthMinUsd1p = n(ob?.depthMinUsd1p, 0);
       const obScore = n(ob?.score, 0);
 
-      // ✅ OB eligibility gate: zonder geldige snapshot nooit ALMOST/ENTRY
-      const obEligible =
-        ob &&
-        ob.ok !== false &&
-        obFresh &&
-        obValid &&
-        Number.isFinite(Number(ob?.spreadPct)) &&
-        Number.isFinite(Number(ob?.depthMinUsd1p)) &&
-        Number.isFinite(Number(ob?.score));
-
-      // ✅ per-coin medians/percentiles (range/spread/obScore) – nu met depth
+      // ✅ per-coin medians/percentiles (range/spread/obScore) – nu met null‑filter
       const coinStats = await updateCoinStatsAndGetMetrics({
         mode,
         sym,
         range24: n(c.range24, 0),
-        spreadPct: Number.isFinite(ob?.spreadPct) ? ob.spreadPct : null,
-        depth1p: Number.isFinite(ob?.depthMinUsd1p) ? ob.depthMinUsd1p : null,
+        spreadPct: Number.isFinite(spreadPct) ? spreadPct : null,
         obScore: Number.isFinite(obScore) ? obScore : null,
         now,
       });
@@ -648,13 +598,6 @@ export default async function handler(req, res) {
       // ✅ stage base (met dezelfde dyn)
       let stageBase = stageFromSwing(mode, { ...c, vm }, usedDyn);
 
-      // ✅ OB eligibility gate: downgrade als OB ontbreekt
-      let obBlockReason = null;
-      if ((stageBase === "ALMOST" || stageBase === "ENTRY") && !obEligible) {
-        obBlockReason = `OB unavailable (${ob?.reason || "missing_snapshot"})`;
-        stageBase = "BUILDUP";
-      }
-
       // ✅ Anomaly detector: range spike vs coin median => downgrade
       const curRange = n(c.range24, 0);
       const medRange = Number.isFinite(coinStats?.medRange24) ? coinStats.medRange24 : null;
@@ -662,44 +605,14 @@ export default async function handler(req, res) {
       const hasStats = n(coinStats?.samples, 0) >= 30; // ~15 uur bij 30m cadence
       const isSpike = hasStats && medRange && medRange > 0 && curRange > 2.2 * medRange && curRange > 10;
 
-      const anomalies = [];
-
+      let anomaly = null;
       if (isSpike) {
-        anomalies.push({ type: "RANGE_SPIKE", curRange, medRange, factor: +(curRange / medRange).toFixed(2) });
-        if (stageBase === "ALMOST" || stageBase === "ENTRY") stageBase = "BUILDUP";
-      }
+        anomaly = { type: "RANGE_SPIKE", curRange, medRange, factor: +(curRange / medRange).toFixed(2) };
 
-      // ✅ Spread spike anomaly
-      const curSpread = Number(ob?.spreadPct);
-      const medSpread = Number.isFinite(coinStats?.medSpreadPct) ? coinStats.medSpreadPct : null;
-
-      const spreadSpike =
-        hasStats &&
-        Number.isFinite(curSpread) &&
-        medSpread &&
-        medSpread > 0 &&
-        curSpread > 2.2 * medSpread &&
-        curSpread > 1.0;
-
-      if (spreadSpike) {
-        anomalies.push({ type: "SPREAD_SPIKE", curSpread, medSpread, factor: +(curSpread / medSpread).toFixed(2) });
-        if (stageBase === "ALMOST" || stageBase === "ENTRY") stageBase = "BUILDUP";
-      }
-
-      // ✅ Depth drop anomaly
-      const curDepth = Number(ob?.depthMinUsd1p);
-      const medDepth = Number.isFinite(coinStats?.medDepth1p) ? coinStats.medDepth1p : null;
-
-      const depthDrop =
-        hasStats &&
-        Number.isFinite(curDepth) &&
-        medDepth &&
-        medDepth > 0 &&
-        curDepth < 0.45 * medDepth; // 55% drop
-
-      if (depthDrop) {
-        anomalies.push({ type: "DEPTH_DROP", curDepth, medDepth, factor: +(curDepth / medDepth).toFixed(2) });
-        if (stageBase === "ALMOST" || stageBase === "ENTRY") stageBase = "BUILDUP";
+        // downgrade only if it wanted to get aggressive
+        if (stageBase === "ALMOST" || stageBase === "ENTRY") {
+          stageBase = "BUILDUP";
+        }
       }
 
       // confidence
@@ -751,11 +664,6 @@ export default async function handler(req, res) {
       let stage = stageBase;
       let almostGate = "n/a";
       let entryGate = "n/a";
-
-      if (obBlockReason) {
-        almostGate = obBlockReason;
-        entryGate = obBlockReason;
-      }
 
       // BTC cap: ALMOST/ENTRY max naar BUILDUP als contra/neutral
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
@@ -810,11 +718,10 @@ export default async function handler(req, res) {
         }
       }
 
-      // Gates tekst bij anomalies
-      if (anomalies.length) {
-        const msg = anomalies.map(a => `${a.type}${a.factor ? ` x${a.factor}` : ""}`).join(", ");
-        if (almostGate === "n/a" || almostGate === "passed") almostGate = `anomaly: ${msg}`;
-        if (entryGate === "n/a" || entryGate === "passed") entryGate = `anomaly: ${msg}`;
+      // Anomaly notitie in gates als die actief is
+      if (anomaly?.type === "RANGE_SPIKE") {
+        if (almostGate === "n/a") almostGate = `anomaly: range spike x${anomaly.factor}`;
+        if (entryGate === "n/a") entryGate = `anomaly: range spike x${anomaly.factor}`;
       }
 
       // consistency/state update (eerst de uiteindelijke stage)
@@ -887,12 +794,10 @@ export default async function handler(req, res) {
           p80Range24: coinStats?.p80Range24 ?? null,
           medSpreadPct: coinStats?.medSpreadPct ?? null,
           p80SpreadPct: coinStats?.p80SpreadPct ?? null,
-          medDepth1p: coinStats?.medDepth1p ?? null,
-          p20Depth1p: coinStats?.p20Depth1p ?? null,
           medObAbs: coinStats?.medObAbs ?? null,
           p70ObAbs: coinStats?.p70ObAbs ?? null,
         },
-        anomalies: anomalies.length ? anomalies : null,
+        anomaly: anomaly || null,
 
         ob: {
           fresh: !!obFresh,
@@ -940,7 +845,6 @@ export default async function handler(req, res) {
       ts: Date.now(),
       tookMs: Date.now() - startedAt,
       btc,
-      leaders, // ✅ toegevoegd
       cap,
       funnel: {
         radar: outRadar,
@@ -958,7 +862,7 @@ export default async function handler(req, res) {
           almost: almost.length,
           entry: entry.length,
         },
-        rationale: DESIGN_RATIONALE,
+        rationale: DESIGN_RATIONALE, // ✅ toegevoegd
       },
     };
 
