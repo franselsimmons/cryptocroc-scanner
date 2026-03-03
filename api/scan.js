@@ -39,7 +39,7 @@ async function tryAcquireScanLock(mode) {
     return { ok: false, key, until, now, waitMs: until - now };
   }
 
-  // Edge case: lock is “stale” maar key bestaat nog (bijv. KV glitch) → force refresh
+  // Edge case: lock is “stale” maar key bestaat nog → force refresh
   await kv.set(key, { until: nextUntil, setAt: now }, { ex: SCAN_INTERVAL_SEC });
   return { ok: true, key, until: nextUntil, now, waitMs: 0 };
 }
@@ -258,39 +258,95 @@ async function fetchCgTop(limit = 1000) {
   return allCoins;
 }
 
+// ======================================================
+// ✅ RADAR gate (NU COIN-ADAPTIEF)
+// ======================================================
 function passRadar(core, mode, c) {
   const R = core?.SETTINGS?.radar || {};
   const vm = core.computeVm(c.volume, c.marketCap);
 
+  // Baseline hard filters
   if (c.marketCap < n(R.mcapMin, 0)) return { ok: false, why: "mcap too low" };
   if (c.marketCap > n(R.mcapMax, Number.MAX_SAFE_INTEGER)) return { ok: false, why: "mcap too high" };
   if (c.volume < n(R.volMin, 0)) return { ok: false, why: "volume too low" };
   if (vm < n(R.vmMin, 0)) return { ok: false, why: "vm too low" };
-  if (Math.abs(c.change24) > n(R.maxAbsChg24, 999)) return { ok: false, why: "chg24 too high" };
-  if (c.range24 > n(R.maxRange24, 999)) return { ok: false, why: "range24 too high" };
 
+  // Coin-adaptieve thresholds op basis van range24 (als core ze aanbiedt)
+  const dyn =
+    typeof core.dynamicRadarThresholds === "function"
+      ? core.dynamicRadarThresholds(c.range24, core.SETTINGS)
+      : null;
+
+  const maxAbsChg24 = n(R.maxAbsChg24, 999);
+  const maxRange24 = dyn ? n(dyn.maxRange24, n(R.maxRange24, 999)) : n(R.maxRange24, 999);
+
+  if (Math.abs(c.change24) > maxAbsChg24) return { ok: false, why: "chg24 too high" };
+  if (c.range24 > maxRange24) return { ok: false, why: "range24 too high" };
+
+  // Direction (coin-adaptief)
   const m = String(mode || "").toLowerCase();
   if (m === "bull") {
-    if (n(c.change1h, 0) < n(R.dir1hMinBull, 0.2)) return { ok: false, why: "dir fail (1h not up)" };
-    if (n(c.change24, 0) < n(R.dir24MinBull, 0.5)) return { ok: false, why: "dir fail (24h not up)" };
+    const dir1hMin = dyn ? n(dyn.dir1hMinBull, n(R.dir1hMinBull, 0.2)) : n(R.dir1hMinBull, 0.2);
+    const dir24Min = dyn ? n(dyn.dir24MinBull, n(R.dir24MinBull, 0.5)) : n(R.dir24MinBull, 0.5);
+    if (n(c.change1h, 0) < dir1hMin) return { ok: false, why: "dir fail (1h not up)" };
+    if (n(c.change24, 0) < dir24Min) return { ok: false, why: "dir fail (24h not up)" };
   } else if (m === "bear") {
-    if (n(c.change1h, 0) > n(R.dir1hMaxBear, -0.2)) return { ok: false, why: "dir fail (1h not down)" };
-    if (n(c.change24, 0) > n(R.dir24MaxBear, -0.5)) return { ok: false, why: "dir fail (24h not down)" };
+    const dir1hMax = dyn ? n(dyn.dir1hMaxBear, n(R.dir1hMaxBear, -0.2)) : n(R.dir1hMaxBear, -0.2);
+    const dir24Max = dyn ? n(dyn.dir24MaxBear, n(R.dir24MaxBear, -0.5)) : n(R.dir24MaxBear, -0.5);
+    if (n(c.change1h, 0) > dir1hMax) return { ok: false, why: "dir fail (1h not down)" };
+    if (n(c.change24, 0) > dir24Max) return { ok: false, why: "dir fail (24h not down)" };
   }
 
-  return { ok: true, vm };
+  return {
+    ok: true,
+    vm,
+    dynRadar: dyn
+      ? {
+          maxRange24: +n(dyn.maxRange24, 0).toFixed(2),
+          dir1h: m === "bull" ? +n(dyn.dir1hMinBull, 0).toFixed(3) : +n(dyn.dir1hMaxBear, 0).toFixed(3),
+          dir24: m === "bull" ? +n(dyn.dir24MinBull, 0).toFixed(3) : +n(dyn.dir24MaxBear, 0).toFixed(3),
+          scale: +n(dyn.scale, 0).toFixed(3),
+        }
+      : null,
+  };
 }
 
-function stageFromSwing(mode, c) {
+// ======================================================
+// Stage logic (NU COIN-ADAPTIEF op range24)
+// ======================================================
+function stageFromSwing(core, mode, c) {
   const vm = c.vm;
   const range = c.range24;
   const ch1h = c.change1h;
 
-  const wantUp = mode === "bull";
-  const inDir = wantUp ? ch1h >= 0.2 : ch1h <= -0.2;
+  // Dynamische direction threshold op basis van range (zelfde helper als radar)
+  const dyn =
+    typeof core.dynamicRadarThresholds === "function"
+      ? core.dynamicRadarThresholds(range, core.SETTINGS)
+      : null;
 
-  if (vm >= 0.24 && range <= 22 && inDir) return "ALMOST";
-  if (vm >= 0.18 && range <= 28) return "BUILDUP";
+  const wantUp = mode === "bull";
+  const dir1h = dyn
+    ? wantUp
+      ? n(dyn.dir1hMinBull, 0.2)
+      : n(dyn.dir1hMaxBear, -0.2)
+    : wantUp
+    ? 0.2
+    : -0.2;
+
+  const inDir = wantUp ? ch1h >= dir1h : ch1h <= dir1h;
+
+  // ALMOST/BUILDUP drempels ook iets adaptief op range (volatiele coins krijgen iets hogere vm-eis)
+  const r = n(range, 0);
+  const s = Math.max(0, Math.min(1, (r - 8) / 22)); // 8..30 → 0..1
+  const vmAlmost = 0.24 + 0.04 * s; // 0.24..0.28
+  const vmBuildup = 0.18 + 0.03 * s; // 0.18..0.21
+
+  const maxRangeAlmost = dyn ? n(dyn.maxRange24, 22) - 2 : 22; // iets strenger dan radar cap
+  const maxRangeBuildup = dyn ? n(dyn.maxRange24, 28) : 28;
+
+  if (vm >= vmAlmost && range <= maxRangeAlmost && inDir) return "ALMOST";
+  if (vm >= vmBuildup && range <= maxRangeBuildup) return "BUILDUP";
   return "RADAR";
 }
 
@@ -328,6 +384,9 @@ function obSnapshotToFlat(ob, sym) {
   };
 }
 
+// ======================================================
+// ENTRY thresholds (tiers + coin-adaptieve OB tuning)
+// ======================================================
 function adaptiveEntryThresholds(core, c, vm) {
   const base = core?.SETTINGS?.entry || {};
   const mc = n(c?.marketCap, 0);
@@ -363,7 +422,31 @@ function adaptiveEntryThresholds(core, c, vm) {
   const tierScore = n(t.obScoreMin, baseScore);
   const obScoreMin = Math.max(baseScore, tierScore);
 
-  return { minConfidence, spreadMaxPct, depthMinUsd1p, obScoreMin };
+  const thrBase = { minConfidence, spreadMaxPct, depthMinUsd1p, obScoreMin };
+
+  // ✅ coin-adaptieve tuning (volume/mcap/vm) als core functie bestaat
+  if (typeof core.dynamicEntryThresholds === "function") {
+    const tuned = core.dynamicEntryThresholds(
+      { marketCap: c.marketCap, volume: c.volume, vm },
+      {
+        minConfidence: thrBase.minConfidence,
+        spreadMaxPct: thrBase.spreadMaxPct,
+        depthMinUsd1p: thrBase.depthMinUsd1p,
+        obScoreMin: thrBase.obScoreMin,
+      },
+      core.SETTINGS
+    );
+
+    return {
+      minConfidence: n(tuned.minConfidence, thrBase.minConfidence),
+      spreadMaxPct: n(tuned.spreadMaxPct, thrBase.spreadMaxPct),
+      depthMinUsd1p: Math.round(n(tuned.depthMinUsd1p, thrBase.depthMinUsd1p)),
+      obScoreMin: n(tuned.obScoreMin, thrBase.obScoreMin),
+      liqScore: tuned.liqScore ?? null,
+    };
+  }
+
+  return thrBase;
 }
 
 function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
@@ -444,7 +527,7 @@ export default async function handler(req, res) {
     const buildup = [];
     const almost = [];
     const entry = [];
-    const openTrades = []; // placeholder (jouw trade engine kan dit later vullen)
+    const openTrades = []; // placeholder
 
     const state = (await kv.get(core.keyState(mode))) || {};
     await loadObMap(mode);
@@ -456,8 +539,8 @@ export default async function handler(req, res) {
       const vm = radarGate.vm;
       const sym = up(c.symbol);
 
-      // base stage op swing/volume/range
-      let stageBase = stageFromSwing(mode, { ...c, vm });
+      // base stage op swing/volume/range (coin-adaptief)
+      let stageBase = stageFromSwing(core, mode, { ...c, vm });
 
       // OB
       const ob = await getObForSymbol({ mode, symbol: sym });
@@ -477,6 +560,7 @@ export default async function handler(req, res) {
       });
       const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
 
+      // ENTRY thresholds (tiers + coin-adaptief)
       const thr = adaptiveEntryThresholds(core, c, vm);
 
       let stage = stageBase;
@@ -536,7 +620,7 @@ export default async function handler(req, res) {
         }
       }
 
-      // consistency/state update (altijd, zodat je history hebt)
+      // consistency/state update
       const upd = updateStateAndConsistency(state, sym, stage, core, now);
 
       const item = {
@@ -554,8 +638,24 @@ export default async function handler(req, res) {
         stage,
         stageBase,
 
-        gates: { radar: radarGate.why || "passed", almost: almostGate, entry: entryGate },
+        gates: {
+          radar: radarGate.why || "passed",
+          almost: almostGate,
+          entry: entryGate,
+        },
         consistency: upd.consistency,
+
+        // debug: laat je zien welke dynamische drempels gebruikt zijn (handig tunen)
+        dyn: {
+          radar: radarGate.dynRadar || null,
+          entry: {
+            minConfidence: thr.minConfidence,
+            spreadMaxPct: +n(thr.spreadMaxPct, 0).toFixed(3),
+            depthMinUsd1p: Math.round(n(thr.depthMinUsd1p, 0)),
+            obScoreMin: +n(thr.obScoreMin, 0).toFixed(4),
+            liqScore: thr.liqScore != null ? +n(thr.liqScore, 0).toFixed(3) : null,
+          },
+        },
 
         ob: {
           fresh: !!obFresh,
