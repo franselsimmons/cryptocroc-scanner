@@ -255,6 +255,14 @@ function btcLine(btc) {
   return `BTC: ${btc.state} | chg24 ${fmtPct(btc.chg24)} | range24 ${fmtPct(btc.range24)}`;
 }
 
+function leadersLine(leaders) {
+  const arr = Array.isArray(leaders) ? leaders.slice(0, 6) : [];
+  if (!arr.length) return "Leaders: —";
+  return "Leaders: " + arr
+    .map(x => `${x.symbol} ${fmtPct(x.change24)}`)
+    .join(" • ");
+}
+
 function flattenFunnel(data) {
   const f = data?.funnel || {};
   return []
@@ -294,7 +302,7 @@ function renderAll(data) {
   const statusLine = el("statusLine");
   if (statusLine) {
     statusLine.textContent =
-      `${btcLine(data.btc)} • Laatste update: ${stamp} • ` +
+      `${btcLine(data.btc)} • ${leadersLine(data.leaders)} • Laatste update: ${stamp} • ` +
       `ENTRY ${counts.entry || 0} • HOLD ${hold.length} • SELL ${sell.length} • ` +
       `ALMOST ${counts.almost || 0} • BUILDUP ${counts.buildup || 0} • RADAR ${counts.radar || 0}`;
   }
@@ -513,8 +521,9 @@ async function openModalMain(c) {
   }
 
   // Anomaly (indien aanwezig)
-  if (c?.anomaly?.type) {
-    addCheck(whyList, false, "Anomaly", `${c.anomaly.type} • x${c.anomaly.factor}`, "warn");
+  if (c?.anomalies?.length) {
+    const msg = c.anomalies.map(a => `${a.type} x${a.factor}`).join(", ");
+    addCheck(whyList, false, "Anomalies", msg, "warn");
   }
 
   // ----- LIQUIDITY TAB -----
