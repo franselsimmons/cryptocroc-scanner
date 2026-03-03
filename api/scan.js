@@ -736,12 +736,9 @@ export default async function handler(req, res) {
         if (entryGate === "n/a" || entryGate === "passed") {
           entryGate = `consistency blocked (${upd.consistency.same}/${upd.consistency.need}, minAgree=${upd.consistency.minAgree})`;
         }
-        // ✅ Fix: corrigeer ook hist, anders “vervuilt” consistency zichzelf
+        // Werk de state bij met de nieuwe stage (anders blijft de oude stage in de historie staan)
         if (state[sym]) {
           state[sym].stage = "BUILDUP";
-          if (Array.isArray(state[sym].hist) && state[sym].hist.length) {
-            state[sym].hist[state[sym].hist.length - 1] = "BUILDUP";
-          }
         }
       }
 
