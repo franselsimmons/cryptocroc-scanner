@@ -4,7 +4,6 @@ import { kv } from "@vercel/kv";
 import scan from "./scan.js";
 import obSampler from "./ob/sampler.js";
 import obMapRefresh from "./ob/map_refresh.js";
-import universe from "./universe.js";   // <-- nieuw
 
 import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
 import { sendDiscord } from "../lib/discord.js";
@@ -16,6 +15,7 @@ export const config = RUNTIME_CONFIG;
 const CRON_LOCK_KEY = "lock:cron";
 const CRON_LOCK_TTL_SEC = 25 * 60;
 
+// heartbeat: UI/diagnose ziet dat cron leeft
 const CRON_HEARTBEAT_KEY = "cron:last";
 const CRON_HEARTBEAT_TTL_SEC = 6 * 60 * 60;
 
@@ -132,7 +132,7 @@ function pickSecret() {
   );
 }
 
-function makeInternalReq({ path, mode, max, radar, symbols, secret, cron = false, method = "GET" }) {
+function makeInternalReq({ path, mode, max, radar, symbols, secret }) {
   const query = {};
   if (mode !== undefined) query.mode = String(mode);
   if (max !== undefined) query.max = String(max);
@@ -140,26 +140,32 @@ function makeInternalReq({ path, mode, max, radar, symbols, secret, cron = false
   if (symbols) query.symbols = String(symbols);
   if (secret) query.secret = String(secret);
 
+  const qs = Object.keys(query)
+    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(query[k])}`)
+    .join("&");
+
+  const url = `${String(path)}${qs ? `?${qs}` : ""}`;
+
   const headers = {};
   if (secret) {
     headers["x-api-key"] = String(secret);
     headers["authorization"] = `Bearer ${secret}`;
   }
-  if (cron) {
-    headers["x-vercel-cron"] = "1";
-  }
 
-  return { method, query, headers, url: path };
+  return { method: "GET", query, headers, url };
 }
 
-// --------------------
-// NIEUW: universe helper (intern aanroepen)
-// --------------------
-async function runUniverse(secret) {
-  const reqUni = makeInternalReq({ path: "/api/universe", secret, cron: true, method: "GET" });
-  const resUni = makeRes();
-  await universe(reqUni, resUni);
-  return safeJson(resUni.body);
+function assertOkSoft(name, parsed, resObj) {
+  if (parsed?.ok === false) {
+    return {
+      ok: false,
+      error: `${name} returned ok:false (status ${resObj?.statusCode || "?"}) :: ${
+        parsed?.error || parsed?.raw || "unknown"
+      }`,
+    };
+  }
+  if (parsed?.error) return { ok: false, error: `${name} error :: ${parsed.error}` };
+  return { ok: true };
 }
 
 // --------------------
@@ -192,34 +198,34 @@ function isVercelCron(req) {
 async function runOneMode(mode, max, radar, symbols, secret) {
   const reqMap = makeInternalReq({ path: "/api/ob/map_refresh", mode, secret });
   const reqOb = makeInternalReq({ path: "/api/ob/sampler", mode, symbols, secret });
-  const reqScan = makeInternalReq({
-    path: "/api/scan",
-    mode,
-    max,
-    radar,
-    secret,
-    cron: true,
-    method: "POST",
-  });
+  const reqScan = makeInternalReq({ path: "/api/scan", mode, max, radar, secret });
 
+  // 1) map_refresh
   const resMap = makeRes();
   await obMapRefresh(reqMap, resMap);
   const mapOut = safeJson(resMap.body);
+  const a1 = assertOkSoft(`obMapRefresh(${mode})`, mapOut, resMap);
 
+  // 2) sampler
   const resOb = makeRes();
   await obSampler(reqOb, resOb);
   const obOut = safeJson(resOb.body);
+  const a2 = assertOkSoft(`obSampler(${mode})`, obOut, resOb);
 
+  // 3) scan
   const resScan = makeRes();
   await scan(reqScan, resScan);
   const scanOut = safeJson(resScan.body);
+  const a3 = assertOkSoft(`scan(${mode})`, scanOut, resScan);
 
-  let discord = { ok: false, skipped: true };
-  if (scanOut?.ok) {
-    discord = await notifyMainDiscord(mode, scanOut);
-  }
+  const ok = a1.ok && a2.ok && a3.ok;
+  const errors = [a1, a2, a3].filter((x) => !x.ok).map((x) => x.error);
 
-  return { ok: true, mode, obMap: mapOut, ob: obOut, scan: scanOut, discord };
+  // discord alleen als scan ok
+  let discord = { ok: false, skipped: true, why: "scan not ok" };
+  if (ok) discord = await notifyMainDiscord(mode, scanOut);
+
+  return { ok, mode, errors, obMap: mapOut, ob: obOut, scan: scanOut, discord };
 }
 
 export default async function handler(req, res) {
@@ -227,57 +233,76 @@ export default async function handler(req, res) {
   let gotLock = false;
 
   try {
-    // ✅ FIX: alleen check op cron header (GEEN POST verplichting meer)
+    // Vercel Cron = toegestaan
     if (!isVercelCron(req)) {
-      res.statusCode = 403;
-      res.setHeader("content-type", "application/json; charset=utf-8");
-      return res.end(
-        JSON.stringify({
-          ok: false,
-          error: "cron endpoint (x-vercel-cron header) only",
-        })
-      );
+      // Handmatig testen → secret verplicht
+      if (!requireSecret(req, res)) return;
     }
 
     gotLock = await acquireLock();
     if (!gotLock) {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      res.setHeader("cache-control", "no-store");
       return res.end(
         JSON.stringify({
           ok: true,
           skipped: true,
           reason: "cron already running (lock active)",
+          ts: Date.now(),
         })
       );
     }
 
+    // eerst query secret, dan ENV secret
     const secretFromQuery = String(req?.query?.secret || "").trim();
     const secret = secretFromQuery || pickSecret();
 
     const mode = normMode(req?.query?.mode);
+
     const max = q(req, "max", "60");
     const radar = q(req, "radar", "200");
     const symbols = q(req, "symbols", "PEPE,SONIC,TURBO");
 
-    // 1️⃣ Universe één keer vullen per cron-run
-    const uniOut = await runUniverse(secret);
-
-    let out;
+    let out = null;
 
     if (mode === "both") {
-      const bull = await runOneMode("bull", max, radar, symbols, secret);
-      const bear = await runOneMode("bear", max, radar, symbols, secret);
-      out = { ok: true, mode: "both", universe: uniOut, bull, bear };
+      const [bullRes, bearRes] = await Promise.allSettled([
+        runOneMode("bull", max, radar, symbols, secret),
+        runOneMode("bear", max, radar, symbols, secret),
+      ]);
+
+      const bull =
+        bullRes.status === "fulfilled"
+          ? bullRes.value
+          : { ok: false, errors: [String(bullRes.reason?.message || bullRes.reason || "bull failed")] };
+
+      const bear =
+        bearRes.status === "fulfilled"
+          ? bearRes.value
+          : { ok: false, errors: [String(bearRes.reason?.message || bearRes.reason || "bear failed")] };
+
+      out = {
+        ok: !!bull.ok && !!bear.ok,
+        ts: Date.now(),
+        mode: "both",
+        params: { max, radar, symbols },
+        bull,
+        bear,
+      };
     } else {
       const one = await runOneMode(mode, max, radar, symbols, secret);
-      out = { ok: true, mode, universe: uniOut, ...one };
+      out = { ok: !!one.ok, ts: Date.now(), mode, params: { max, radar, symbols }, ...one };
     }
 
+    // ALWAYS heartbeat
     await kv.set(
       CRON_HEARTBEAT_KEY,
       {
         ts: Date.now(),
         mode,
-        ok: true,
+        params: { max, radar, symbols },
+        ok: !!out?.ok,
       },
       { ex: CRON_HEARTBEAT_TTL_SEC }
     );
@@ -285,16 +310,24 @@ export default async function handler(req, res) {
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
-
     return res.end(
       JSON.stringify({
         ...out,
         cadence: "30m",
         tookMs: Date.now() - startedAt,
         heartbeatKey: CRON_HEARTBEAT_KEY,
+        note: "Per mode: map_refresh -> obSampler -> scan -> discord. Check cron:last voor heartbeat.",
       })
     );
   } catch (e) {
+    try {
+      await kv.set(
+        CRON_HEARTBEAT_KEY,
+        { ts: Date.now(), ok: false, error: String(e?.message || e) },
+        { ex: CRON_HEARTBEAT_TTL_SEC }
+      );
+    } catch {}
+
     res.statusCode = 500;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
