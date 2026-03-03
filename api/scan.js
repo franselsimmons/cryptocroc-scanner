@@ -536,7 +536,10 @@ export default async function handler(req, res) {
     const fromCron = isVercelCron(req);
     const force = wantsForce(req);
 
-    const lock = fromCron || force ? { ok: true, until: Date.now(), now: Date.now(), waitMs: 0 } : await tryAcquireScanLock(mode);
+    const lock =
+      fromCron || force
+        ? { ok: true, until: Date.now(), now: Date.now(), waitMs: 0 }
+        : await tryAcquireScanLock(mode);
 
     if (!lock.ok) {
       const latest = await kv.get(core.keyLatest(mode));
