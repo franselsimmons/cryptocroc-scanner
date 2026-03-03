@@ -1,150 +1,526 @@
-// ... alle bovenstaande helpers (fetchBtc, fetchCgTop, enz.) blijven ongewijzigd ...
+/* EOF: /api/scan.js */
+import { kv } from "@vercel/kv";
+import { createHash } from "crypto";
+import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
+import { pushEvent } from "../lib/_analytics.js";
+import { getObSnapshot, obMapKey } from "../lib/obStore.js";
+
+export const config = RUNTIME_CONFIG;
+
+// ======================================================
+// ✅ 30 MIN SCAN LOCK (ATOMISCH)
+// ======================================================
+const SCAN_INTERVAL_SEC = 30 * 60; // 30 minuten
+
+function send(res, code, obj) {
+  res.statusCode = code;
+  res.setHeader("content-type", "application/json; charset=utf-8");
+  res.setHeader("cache-control", "no-store");
+  return res.end(JSON.stringify(obj));
+}
+
+async function tryAcquireScanLock(mode) {
+  const key = `scan:lock:${String(mode).toLowerCase()}`;
+  const now = Date.now();
+  const nextUntil = now + SCAN_INTERVAL_SEC * 1000;
+
+  // Atomisch: alleen lock zetten als hij niet bestaat (NX)
+  const ok = await kv.set(key, { until: nextUntil, setAt: now }, { nx: true, ex: SCAN_INTERVAL_SEC });
+
+  if (ok) {
+    return { ok: true, key, until: nextUntil, now, waitMs: 0 };
+  }
+
+  // Lock bestond al → lees huidige
+  const cur = await kv.get(key);
+  const until = Number(cur?.until || 0);
+
+  if (until > now) {
+    return { ok: false, key, until, now, waitMs: until - now };
+  }
+
+  // Edge case: lock is “stale” maar key bestaat nog (bijv. KV glitch) → force refresh
+  await kv.set(key, { until: nextUntil, setAt: now }, { ex: SCAN_INTERVAL_SEC });
+  return { ok: true, key, until: nextUntil, now, waitMs: 0 };
+}
+
+// --------------------
+// Helpers
+// --------------------
+function cgKey(url) {
+  const h = createHash("sha1").update(String(url || "")).digest("hex");
+  return `cg:${h}`;
+}
+
+// ✅ CoinGecko KV cache (anti-429)
+const CG_FRESH_TTL_SEC = 60;
+const CG_STALE_TTL_SEC = 10 * 60;
+
+async function fetchJson(url) {
+  const key = cgKey(url);
+  const staleKey = `${key}:stale`;
+
+  const cached = await kv.get(key);
+  if (cached) return cached;
+
+  const r = await fetch(url, { headers: { accept: "application/json" } });
+  const t = await r.text();
+
+  if (r.status === 429) {
+    const stale = await kv.get(staleKey);
+    if (stale) return stale;
+    throw new Error(`Fetch failed 429: ${t.slice(0, 220)}`);
+  }
+
+  let j = null;
+  try {
+    j = JSON.parse(t);
+  } catch {}
+
+  if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 160)}`);
+
+  await kv.set(key, j, { ex: CG_FRESH_TTL_SEC });
+  await kv.set(staleKey, j, { ex: CG_STALE_TTL_SEC });
+
+  return j;
+}
+
+function n(x, d = 0) {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : d;
+}
+function safeObj(x) {
+  return x && typeof x === "object" ? x : null;
+}
+function up(x) {
+  return String(x || "").toUpperCase();
+}
+
+async function safePushEvent(funnel, data) {
+  try {
+    await pushEvent(funnel, data);
+  } catch {}
+}
+
+// ✅ OB max age (stale gate)
+const OB_MAX_AGE_MS = 120 * 60 * 1000;
+const OB_MAX_AGE_SEC = Math.floor(OB_MAX_AGE_MS / 1000);
+
+// ======================================================
+// ✅ BTC fetch
+// ======================================================
+async function fetchBtc() {
+  const url =
+    "https://api.coingecko.com/api/v3/coins/markets" +
+    "?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1" +
+    "&sparkline=false&price_change_percentage=1h,24h";
+
+  const arr = await fetchJson(url);
+  const b = arr?.[0] || {};
+
+  const chg1h = n(b?.price_change_percentage_1h_in_currency ?? b?.price_change_percentage_1h ?? 0, 0);
+  const chg24 = n(b?.price_change_percentage_24h_in_currency ?? b?.price_change_percentage_24h ?? 0, 0);
+
+  const high = n(b?.high_24h, 0);
+  const low = n(b?.low_24h, 0);
+  const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
+
+  return {
+    chg1h: +chg1h.toFixed(3),
+    chg24: +chg24.toFixed(3),
+    range24: +range24.toFixed(3),
+  };
+}
+
+function normBtcState(x) {
+  const s = String(x || "").toUpperCase().trim();
+  if (s === "BULL" || s === "BEAR" || s === "NEUTRAL") return s;
+  return "NEUTRAL";
+}
+
+function getBtcCfg(SETTINGS) {
+  const b = SETTINGS && SETTINGS.btc ? SETTINGS.btc : {};
+  return {
+    bullMinChg24: Number.isFinite(Number(b.bullMinChg24)) ? Number(b.bullMinChg24) : 1.0,
+    bearMaxChg24: Number.isFinite(Number(b.bearMaxChg24)) ? Number(b.bearMaxChg24) : -1.0,
+    softOpenNeutral: !!b.softOpenNeutral,
+
+    neutral24Pct: Number.isFinite(Number(b.neutral24Pct)) ? Number(b.neutral24Pct) : null,
+    fine1hAbsPct: Number.isFinite(Number(b.fine1hAbsPct)) ? Number(b.fine1hAbsPct) : 0.25,
+    confBoost: Number.isFinite(Number(b.confBoost)) ? Number(b.confBoost) : 4,
+  };
+}
+
+function computeBtcStateCompat(btcBase, SETTINGS) {
+  const cfg = getBtcCfg(SETTINGS);
+  const chg24 = n(btcBase?.chg24, 0);
+
+  if (cfg.neutral24Pct != null) {
+    if (chg24 >= cfg.neutral24Pct) return "BULL";
+    if (chg24 <= -cfg.neutral24Pct) return "BEAR";
+    return "NEUTRAL";
+  }
+
+  if (chg24 >= cfg.bullMinChg24) return "BULL";
+  if (chg24 <= cfg.bearMaxChg24) return "BEAR";
+  return "NEUTRAL";
+}
+
+function btcConfidenceAdjustCompat(mode, btcState, btcBase, SETTINGS) {
+  const cfg = getBtcCfg(SETTINGS);
+  const st = normBtcState(btcState);
+
+  if (st === "NEUTRAL" && cfg.softOpenNeutral) return { adj: 0, why: "BTC NEUTRAL (soft open)" };
+  if (st === "NEUTRAL") return { adj: 0, why: "BTC NEUTRAL" };
+
+  const fine1hAbs = cfg.fine1hAbsPct;
+  const boost = cfg.confBoost;
+
+  const chg1h = n(btcBase?.chg1h, 0);
+  const wantUp = String(mode).toLowerCase() === "bull";
+
+  const pos = chg1h >= fine1hAbs;
+  const neg = chg1h <= -fine1hAbs;
+
+  if (wantUp && pos) return { adj: +boost, why: `BTC 1h aligns (+${boost})` };
+  if (!wantUp && neg) return { adj: +boost, why: `BTC 1h aligns (+${boost})` };
+
+  if (wantUp && neg) return { adj: -boost, why: `BTC 1h contra (-${boost})` };
+  if (!wantUp && pos) return { adj: -boost, why: `BTC 1h contra (-${boost})` };
+
+  return { adj: 0, why: "BTC 1h small/neutral" };
+}
+
+function computeStageCap(mode, btcState) {
+  const st = normBtcState(btcState);
+  const m = String(mode || "").toLowerCase();
+
+  let capStage = "BUILDUP";
+  let allowFull = false;
+
+  if (st === "BULL" && m === "bull") allowFull = true;
+  if (st === "BEAR" && m === "bear") allowFull = true;
+
+  if (allowFull) return { cap: false, capStage: "FULL", reason: `BTC ${st}: ${m} mag door naar ALMOST/ENTRY` };
+  if (st === "NEUTRAL") return { cap: true, capStage, reason: "BTC NEUTRAL: scannen + OB door, maar max BUILDUP" };
+  return { cap: true, capStage, reason: `BTC ${st}: ${m} blijft prep-mode (max BUILDUP)` };
+}
+
+// ======================================================
+// ✅ Haal meerdere CoinGecko pagina's op
+// ======================================================
+async function fetchCgTop(limit = 1000) {
+  const perPage = 250;
+  const maxPages = 10;
+  const pages = Math.min(maxPages, Math.ceil(limit / perPage));
+  let allCoins = [];
+
+  for (let page = 1; page <= pages; page++) {
+    const url =
+      `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd` +
+      `&order=volume_desc&per_page=${perPage}&page=${page}&sparkline=false` +
+      `&price_change_percentage=1h,24h`;
+
+    const arr = await fetchJson(url);
+    if (!arr || !Array.isArray(arr) || arr.length === 0) break;
+
+    const mapped = arr.map((c) => {
+      const price = n(c?.current_price, 0);
+      const high = n(c?.high_24h, 0);
+      const low = n(c?.low_24h, 0);
+      const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
+
+      const change24 = n(c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0, 0);
+      const change1h = n(c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0, 0);
+
+      return {
+        id: c?.id,
+        symbol: up(c?.symbol),
+        name: c?.name,
+        price,
+        volume: n(c?.total_volume, 0),
+        marketCap: n(c?.market_cap, 0),
+        change24,
+        change1h,
+        range24,
+      };
+    });
+
+    allCoins = allCoins.concat(mapped);
+
+    if (mapped.length < perPage) break;
+
+    if (page < pages) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+
+  return allCoins;
+}
+
+function passRadar(core, mode, c) {
+  const R = core?.SETTINGS?.radar || {};
+  const vm = core.computeVm(c.volume, c.marketCap);
+
+  if (c.marketCap < n(R.mcapMin, 0)) return { ok: false, why: "mcap too low" };
+  if (c.marketCap > n(R.mcapMax, Number.MAX_SAFE_INTEGER)) return { ok: false, why: "mcap too high" };
+  if (c.volume < n(R.volMin, 0)) return { ok: false, why: "volume too low" };
+  if (vm < n(R.vmMin, 0)) return { ok: false, why: "vm too low" };
+  if (Math.abs(c.change24) > n(R.maxAbsChg24, 999)) return { ok: false, why: "chg24 too high" };
+  if (c.range24 > n(R.maxRange24, 999)) return { ok: false, why: "range24 too high" };
+
+  const m = String(mode || "").toLowerCase();
+  if (m === "bull") {
+    if (n(c.change1h, 0) < n(R.dir1hMinBull, 0.2)) return { ok: false, why: "dir fail (1h not up)" };
+    if (n(c.change24, 0) < n(R.dir24MinBull, 0.5)) return { ok: false, why: "dir fail (24h not up)" };
+  } else if (m === "bear") {
+    if (n(c.change1h, 0) > n(R.dir1hMaxBear, -0.2)) return { ok: false, why: "dir fail (1h not down)" };
+    if (n(c.change24, 0) > n(R.dir24MaxBear, -0.5)) return { ok: false, why: "dir fail (24h not down)" };
+  }
+
+  return { ok: true, vm };
+}
+
+function stageFromSwing(mode, c) {
+  const vm = c.vm;
+  const range = c.range24;
+  const ch1h = c.change1h;
+
+  const wantUp = mode === "bull";
+  const inDir = wantUp ? ch1h >= 0.2 : ch1h <= -0.2;
+
+  if (vm >= 0.24 && range <= 22 && inDir) return "ALMOST";
+  if (vm >= 0.18 && range <= 28) return "BUILDUP";
+  return "RADAR";
+}
+
+async function loadObMap(mode) {
+  try {
+    const m = await kv.hgetall(obMapKey(mode));
+    return safeObj(m) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getObForSymbol({ mode, symbol }) {
+  const sym = up(symbol);
+  const ob = await getObSnapshot(mode, sym, OB_MAX_AGE_SEC);
+  return obSnapshotToFlat(ob, sym);
+}
+
+function obSnapshotToFlat(ob, sym) {
+  const snap = safeObj(ob?.snap) || null;
+  return {
+    symbol: sym,
+    ok: !!ob?.ok,
+    valid: !!ob?.valid,
+    fresh: !!ob?.fresh,
+    stale: !!ob?.stale,
+    reason: String(ob?.reason || ""),
+    ageSec: ob?.ageSec ?? null,
+
+    ts: n(snap?.ts, 0) || null,
+    spreadPct: Number.isFinite(Number(snap?.spreadPct)) ? Number(snap.spreadPct) : null,
+    depthMinUsd1p: Number.isFinite(Number(snap?.depthMinUsd1p)) ? Number(snap.depthMinUsd1p) : null,
+    pressureDeltaUsd: Number.isFinite(Number(snap?.pressureDeltaUsd)) ? Number(snap.pressureDeltaUsd) : 0,
+    score: Number.isFinite(Number(snap?.score)) ? Number(snap.score) : null,
+  };
+}
+
+function adaptiveEntryThresholds(core, c, vm) {
+  const base = core?.SETTINGS?.entry || {};
+  const mc = n(c?.marketCap, 0);
+
+  const tiers = Array.isArray(base?.adaptiveTiers) ? base.adaptiveTiers : null;
+
+  const oneTier = {
+    maxMc: Infinity,
+    minConf: n(base.minConfidence, 60),
+    spreadMax: n(base.spreadMaxPct, 0.95),
+    depth1pMin: n(base.depthMinUsd1p, 45_000),
+    obScoreMin: n(base.obScoreMin, 0.05),
+  };
+
+  const list = tiers?.length ? tiers : [oneTier];
+  const t = list.find((x) => mc <= n(x.maxMc, Infinity)) || list[list.length - 1];
+
+  const vmBonus = vm >= 0.8 ? 4 : vm >= 0.5 ? 2 : 0;
+
+  const baseMinConf = n(base.minConfidence, n(t.minConf, 60));
+  const tierMinConf = n(t.minConf, baseMinConf);
+  const minConfidence = Math.max(0, Math.max(baseMinConf, tierMinConf - vmBonus));
+
+  const baseSpread = n(base.spreadMaxPct, n(t.spreadMax, 0.95));
+  const tierSpread = n(t.spreadMax, baseSpread);
+  const spreadMaxPct = Math.min(baseSpread, tierSpread);
+
+  const baseDepth = n(base.depthMinUsd1p, n(t.depth1pMin, 45_000));
+  const tierDepth = n(t.depth1pMin, baseDepth);
+  const depthMinUsd1p = Math.round(Math.max(baseDepth, tierDepth));
+
+  const baseScore = n(base.obScoreMin, n(t.obScoreMin, 0.05));
+  const tierScore = n(t.obScoreMin, baseScore);
+  const obScoreMin = Math.max(baseScore, tierScore);
+
+  return { minConfidence, spreadMaxPct, depthMinUsd1p, obScoreMin };
+}
+
+function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
+  const S = stateObj || {};
+  const sym = up(symbol);
+  const entryCfg = core?.SETTINGS?.entry || {};
+
+  const need = Math.max(2, n(entryCfg.samplesNeed, 4));
+  const minAgree = Math.max(1, n(entryCfg.minAgree, 3));
+
+  const prev = safeObj(S[sym]) || {};
+  const prevStage = up(prev.stage || "");
+
+  const scans = n(prev.scans, 0) + 1;
+
+  const histPrev = Array.isArray(prev.hist) ? prev.hist : [];
+  const st = up(stageFinal);
+  const hist = histPrev.concat([st]).slice(-Math.max(need, 12));
+
+  const same = hist.filter((x) => x === st).length;
+  const total = hist.length;
+  const ratio = total > 0 ? same / total : 0;
+
+  const ok = total >= need && same >= minAgree;
+
+  S[sym] = { ...prev, scans, hist, lastSeenAt: nowTs, stage: st };
+
+  return {
+    state: S,
+    prevStage,
+    stageScans: scans,
+    consistency: { ok, ratio, same, total, need, minAgree },
+  };
+}
 
 // ======================================================
 // MAIN HANDLER
 // ======================================================
 export default async function handler(req, res) {
+  const startedAt = Date.now();
+
   try {
     if (!requireSecret(req, res)) return;
 
-    const mode = getMode(req); // "bull" or "bear"
-
+    const mode = getMode(req); // bull / bear
     const coreMod = await import(`../lib/_core_${mode}.js`);
     const core = coreMod?.default ? coreMod.default : coreMod;
 
-    const now = Date.now();
-
-    // =====================
-    // UNIVERSE CACHE (1x CG per cron)
-    // =====================
-    const UNIVERSE_MAX_AGE_MS = 29 * 60 * 1000;
-
-    let universe = await kv.get("universe:latest");
-    const uniTs = Number(universe?.ts || 0);
-    const uniStale = !uniTs || (now - uniTs) > UNIVERSE_MAX_AGE_MS;
-
-    // fallback: als universe ontbreekt/oud is → 1x vullen (handmatige scans blijven werken)
-    if (uniStale) {
-      const freshBtc = await fetchBtc();
-      const freshCoins = await fetchCgTop(core.SETTINGS.CG_TOP);
-      universe = { ts: now, btc: freshBtc, coins: freshCoins, limit: core.SETTINGS.CG_TOP };
-      await kv.set("universe:latest", universe);
+    // ✅ LOCK CHECK: binnen 30 min -> return latest, geen scan
+    const lock = await tryAcquireScanLock(mode);
+    if (!lock.ok) {
+      const latest = await kv.get(core.keyLatest(mode));
+      if (latest) {
+        latest.meta = latest.meta || {};
+        latest.meta.scanLock = { active: true, until: lock.until, waitMs: lock.waitMs };
+        return send(res, 200, latest);
+      }
+      return send(res, 200, {
+        ok: false,
+        mode,
+        error: "scan locked and no latest yet",
+        meta: { scanLock: { active: true, until: lock.until, waitMs: lock.waitMs } },
+      });
     }
 
-    const btcBase = universe.btc;
-    const cg = universe.coins;
+    const now = Date.now();
 
-    // Vervangen door compat‑versies
+    const btcBase = await fetchBtc();
     const btcState = computeBtcStateCompat(btcBase, core.SETTINGS);
     const btcTune = btcConfidenceAdjustCompat(mode, btcState, btcBase, core.SETTINGS);
     const btc = { ...btcBase, state: btcState, tune: btcTune };
 
     const cap = computeStageCap(mode, btc.state);
-    const allowEntry = cap.cap === false;
 
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.setHeader("cache-control", "no-store");
+    const cg = await fetchCgTop(core.SETTINGS.CG_TOP || 1000);
 
-    // cg is al geladen uit universe
     const radar = [];
     const buildup = [];
     const almost = [];
     const entry = [];
-    const openTrades = [];
+    const openTrades = []; // placeholder (jouw trade engine kan dit later vullen)
 
     const state = (await kv.get(core.keyState(mode))) || {};
-    const obMap = await loadObMap(mode);
-
-    const noticesByHook = {};
+    await loadObMap(mode);
 
     for (const c of cg) {
-      const radarGate = passRadar(core, c);
+      const radarGate = passRadar(core, mode, c);
       if (!radarGate.ok) continue;
 
       const vm = radarGate.vm;
       const sym = up(c.symbol);
-      const priceNow = n(c.price, 0);
 
+      // base stage op swing/volume/range
       let stageBase = stageFromSwing(mode, { ...c, vm });
 
       // OB
-      const ob = await getObForSymbol({ mode, symbol: sym, obMap });
-
-      const obTs = n(ob?.ts, 0);
-      const obAge = obTs > 0 ? now - obTs : Number.POSITIVE_INFINITY;
+      const ob = await getObForSymbol({ mode, symbol: sym });
       const obFresh = !!ob?.fresh;
-
       const obValid = !!ob?.valid;
 
       const spreadPct = n(ob?.spreadPct, 999);
       const depthMinUsd1p = n(ob?.depthMinUsd1p, 0);
       const obScore = n(ob?.score, 0);
 
+      // confidence
       const confidenceBase = core.computeConfidence({
         vm,
         change24: c.change24,
         range24: c.range24,
         obValid: !!obValid,
       });
-
       const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
 
       const thr = adaptiveEntryThresholds(core, c, vm);
 
+      let stage = stageBase;
       let almostGate = "n/a";
       let entryGate = "n/a";
-      let stage = stageBase;
 
+      // BTC cap: ALMOST/ENTRY max naar BUILDUP als contra/neutral
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
         stage = "BUILDUP";
+        stageBase = "BUILDUP";
         almostGate = `capped: ${cap.capStage}`;
         entryGate = `capped: ${cap.capStage}`;
       } else {
-        let obSamples = null;
-
-        // ALMOST slope gate
+        // ALMOST gate (optioneel slope check)
         if (stageBase === "ALMOST") {
-          obSamples = await kv.get(core.keyObSamples(mode, sym));
-
+          const obSamples = await kv.get(core.keyObSamples(mode, sym));
           const slopeCheck =
             typeof core.checkObSlopeGate === "function"
-              ? core.checkObSlopeGate({
-                  stage: "almost",
-                  mode,
-                  obSamples,
-                  settings: core.SETTINGS,
-                })
+              ? core.checkObSlopeGate({ stage: "almost", mode, obSamples, settings: core.SETTINGS })
               : { ok: true };
 
           if (!slopeCheck.ok) {
-            stageBase = "BUILDUP";
             stage = "BUILDUP";
+            stageBase = "BUILDUP";
             almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
           } else {
             almostGate = "passed";
           }
         }
 
-        // ENTRY gate
+        // ENTRY gate (alleen als nog ALMOST)
         if (stageBase === "ALMOST") {
           if (!ob || ob.ok === false) entryGate = "OB missing";
-          else if (!obFresh) entryGate = `OB stale (${Math.round(obAge / 1000)}s)`;
+          else if (!obFresh) entryGate = "OB stale";
           else if (!obValid) entryGate = "OB invalid";
           else if (confidence < n(thr.minConfidence, 0)) entryGate = `Confidence < ${thr.minConfidence}`;
           else if (spreadPct > n(thr.spreadMaxPct, 999)) entryGate = `Spread > ${thr.spreadMaxPct}%`;
           else if (depthMinUsd1p < n(thr.depthMinUsd1p, 0)) entryGate = `Depth1% < $${thr.depthMinUsd1p}`;
           else if (Math.abs(obScore) < n(thr.obScoreMin, 0)) entryGate = `OB score < ${thr.obScoreMin}`;
           else {
-            if (!obSamples) obSamples = await kv.get(core.keyObSamples(mode, sym));
-
+            const obSamples = await kv.get(core.keyObSamples(mode, sym));
             const slopeCheck2 =
               typeof core.checkObSlopeGate === "function"
-                ? core.checkObSlopeGate({
-                    stage: "entry",
-                    mode,
-                    obSamples,
-                    settings: core.SETTINGS,
-                  })
+                ? core.checkObSlopeGate({ stage: "entry", mode, obSamples, settings: core.SETTINGS })
                 : { ok: true };
 
             const pressureDelta = n(ob?.pressureDeltaUsd, 0);
@@ -160,401 +536,102 @@ export default async function handler(req, res) {
         }
       }
 
-      // ======================================================
-      // TRADE ENGINE
-      // ======================================================
-      const tKey = kTrade(mode, sym);
-      const cdKey = kCooldown(mode, sym);
-
-      const cooldown = await kv.get(cdKey);
-      const tradeExisting = await kv.get(tKey);
-
-      let tradeInfo = null;
-
-      if (tradeExisting && tradeExisting?.status === "OPEN") {
-        const entryPrice = n(tradeExisting.entryPrice, 0);
-        const barsOpen = n(tradeExisting.barsOpen, 0) + 1;
-
-        const pnl = calcPnlPct(mode, entryPrice, priceNow);
-        const maxPnl = Math.max(n(tradeExisting.maxPnl, 0), pnl);
-
-        const stopPct = stopPctFromRange24(c.range24);
-
-        const hardStopHit =
-          String(mode).toLowerCase() === "bear"
-            ? priceNow >= entryPrice * (1 + stopPct)
-            : priceNow <= entryPrice * (1 - stopPct);
-
-        const obAgainst = obFresh ? isObAgainst(mode, ob) : false;
-        const obInvalid = isObInvalidFresh(obFresh, ob);
-        const badNow = obFresh && (obAgainst || obInvalid);
-        const obBadStreak = badNow ? n(tradeExisting.obBadStreak, 0) + 1 : 0;
-
-        const obBreakHit = obBadStreak >= 2;
-        const timeStopHit = barsOpen >= TIME_STOP_SCANS && maxPnl < TIME_STOP_MAXPNL;
-
-        const drawdown = maxPnl - pnl;
-
-        let trailHit = false;
-        let trailCfg = null;
-
-        if (maxPnl >= TP2_PNL) {
-          trailHit = drawdown >= TRAIL_AFTER_TP2;
-          trailCfg = { level: "TP2", trail: TRAIL_AFTER_TP2, drawdown };
-        } else if (maxPnl >= TP1_PNL) {
-          trailHit = drawdown >= TRAIL_AFTER_TP1;
-          trailCfg = { level: "TP1", trail: TRAIL_AFTER_TP1, drawdown };
-        }
-
-        let exit = null;
-        if (hardStopHit) exit = { reason: "HARD_STOP", stopPct, pnl };
-        else if (trailHit) exit = { reason: "TRAILING_TP", pnl, maxPnl, trailCfg };
-        else if (obBreakHit) exit = { reason: "OB_BREAK_2X", obBadStreak, obFresh, obValid, obAgainst, pnl };
-        else if (timeStopHit) exit = { reason: "TIME_STOP_NO_MOMENTUM", barsOpen, maxPnl, pnl };
-
-        if (exit) {
-          await kv.del(tKey);
-          await kv.set(cdKey, { ts: now, reason: exit.reason }, { ex: REENTRY_COOLDOWN_SEC });
-
-          const tradeId = String(tradeExisting.tradeId || "");
-
-          await logSell(mode, {
-            ts: now,
-            tradeId,
-            symbol: sym,
-            side: String(mode).toLowerCase(),
-            reason: exit.reason,
-            pnlPct: pnl,
-            maxPnlPct: maxPnl,
-            entryPrice,
-            exitPrice: priceNow,
-            barsOpen,
-            extra: exit?.trailCfg ? { trailCfg: exit.trailCfg } : undefined,
-          });
-
-          const givebackPct = Math.max(0, (maxPnl - pnl) * 100);
-
-          await safePushEvent("main", {
-            type: "trade_close",
-            tradeId,
-            mode,
-            symbol: sym,
-            reason: exit.reason,
-            entryPrice,
-            exitPrice: priceNow,
-            pnlPct: pnl * 100,
-            maxPnlPct: maxPnl * 100,
-            givebackPct,
-            barsOpen,
-          });
-
-          const hook = stageWebhook("SELL");
-          const line =
-            `**${sym}** (${mode.toUpperCase()})  ` +
-            `**SELL** • ${exit.reason}  ` +
-            `pnl ${fmtPct(pnl * 100, 2)} • max ${fmtPct(maxPnl * 100, 2)} • ` +
-            `giveback ${fmtPct(givebackPct, 2)} • ` +
-            `price ${fmtUsd(priceNow, 6)}`;
-          pushNotice(noticesByHook, hook, line);
-
-          tradeInfo = { status: "CLOSED", exit, pnl, maxPnl, exitAt: now, barsOpen };
-        } else {
-          const updated = {
-            ...tradeExisting,
-            barsOpen,
-            maxPnl,
-            lastPrice: priceNow,
-            lastSeenAt: now,
-            obBadStreak,
-          };
-
-          if (!updated.holdNotified && barsOpen >= HOLD_AFTER_SCANS) {
-            const hook = stageWebhook("HOLD");
-            const line =
-              `**${sym}** (${mode.toUpperCase()})  ` +
-              `**HOLD** • trade loopt  ` +
-              `pnl ${fmtPct(pnl * 100, 2)} • max ${fmtPct(maxPnl * 100, 2)} • ` +
-              `price ${fmtUsd(priceNow, 6)}`;
-            pushNotice(noticesByHook, hook, line);
-            updated.holdNotified = true;
-          }
-
-          await kv.set(tKey, updated, { ex: TRADE_TTL_SEC });
-
-          tradeInfo = {
-            status: "OPEN",
-            tradeId: String(updated.tradeId || ""),
-            entryPrice,
-            entryAt: n(updated.entryAt, 0),
-            barsOpen,
-            pnl,
-            maxPnl,
-            stopPct,
-            obBadStreak,
-            trail: { tp1: TP1_PNL, tp2: TP2_PNL, dd: maxPnl - pnl },
-          };
-        }
-      }
-
-      if (!tradeInfo) {
-        const inCooldown = !!cooldown;
-        const isEntrySignal = stage === "ENTRY" && allowEntry;
-
-        if (isEntrySignal && !inCooldown && priceNow > 0) {
-          const tradeId = makeTradeId(mode, sym);
-
-          const tradeObj = {
-            status: "OPEN",
-            tradeId,
-            mode,
-            symbol: sym,
-            entryPrice: priceNow,
-            entryAt: now,
-            barsOpen: 0,
-            maxPnl: 0,
-            obBadStreak: 0,
-            holdNotified: false,
-            lastSeenAt: now,
-            lastPrice: priceNow,
-            entryConfidence: confidence,
-            entryVm: vm,
-            entryRange24: c.range24,
-            entryMeta: { entryGate, almostGate, confidence, vm, spreadPct, depthMinUsd1p, obScore },
-          };
-
-          await kv.set(tKey, tradeObj, { ex: TRADE_TTL_SEC });
-
-          await safePushEvent("main", {
-            type: "trade_open",
-            tradeId,
-            mode,
-            symbol: sym,
-            entryPrice: priceNow,
-            confidence,
-            vm,
-            entryGate,
-          });
-
-          const hook = stageWebhook("ENTRY");
-          const line =
-            `**${sym}** (${mode.toUpperCase()})  ` +
-            `**ENTRY** • instap  ` +
-            `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
-            `price ${fmtUsd(priceNow, 6)}`;
-          pushNotice(noticesByHook, hook, line);
-
-          tradeInfo = { status: "OPEN", tradeId, entryPrice: priceNow, entryAt: now, barsOpen: 0, pnl: 0, maxPnl: 0 };
-        }
-      }
-
-      const prevEntry = safeObj(state[sym]) || {};
-      const stFix = updateStateAndConsistency(state, sym, stage, core, now);
-
-      const prevStage = up(stFix.prevStage);
-      const currStage = up(stage);
-
-      if (prevStage && prevStage !== currStage) {
-        await safePushEvent("main", {
-          type: "stage_change",
-          mode,
-          symbol: sym,
-          from: prevStage,
-          to: currStage,
-          reason:
-            currStage === "ENTRY"
-              ? entryGate
-              : currStage === "ALMOST"
-              ? almostGate
-              : "stage_logic",
-          confidence,
-          vm,
-        });
-      }
-
-      const hasOpenTrade = tradeInfo?.status === "OPEN";
-
-      if (!hasOpenTrade && prevStage) {
-        const doNotify = canNotify(prevEntry, now);
-        const isFunnelStage = currStage === "RADAR" || currStage === "BUILDUP" || currStage === "ALMOST";
-
-        if (doNotify && isFunnelStage && prevStage !== currStage) {
-          const hook = stageWebhook(currStage);
-          const line =
-            `**${sym}** (${mode.toUpperCase()})  ` +
-            `${prevStage} → **${currStage}**  ` +
-            `conf ${n(confidence, 0)}/100 • vm ${fmtNum(vm, 2)} • ` +
-            `1h ${fmtPct(c.change1h, 2)} • 24h ${fmtPct(c.change24, 2)} • ` +
-            `price ${fmtUsd(priceNow, 6)}`;
-          pushNotice(noticesByHook, hook, line);
-          markNotified(state, sym, now);
-        }
-      }
-
-      if (tradeInfo?.status === "OPEN") {
-        openTrades.push({
-          symbol: sym,
-          side: String(mode).toLowerCase(),
-          tradeId: String(tradeInfo.tradeId || ""),
-          entryPrice: n(tradeInfo.entryPrice, 0),
-          entryAt: n(tradeInfo.entryAt, 0),
-          barsOpen: n(tradeInfo.barsOpen, 0),
-          pnlPct: n(tradeInfo.pnl, 0),
-          maxPnlPct: n(tradeInfo.maxPnl, 0),
-          price: priceNow,
-          confidence,
-          vm,
-        });
-      }
+      // consistency/state update (altijd, zodat je history hebt)
+      const upd = updateStateAndConsistency(state, sym, stage, core, now);
 
       const item = {
-        id: c.id,
         symbol: sym,
-        name: c.name,
-        price: priceNow,
-        volume: c.volume,
-        marketCap: c.marketCap,
-        change24: +c.change24.toFixed(4),
-        change1h: +c.change1h.toFixed(4),
-        range24: +c.range24.toFixed(4),
-        vm: +vm.toFixed(6),
-        volAcc: +vm.toFixed(6),
+        name: c.name || sym,
+        price: n(c.price, 0),
+        marketCap: n(c.marketCap, 0),
+        volume: n(c.volume, 0),
+        vm: +n(vm, 0).toFixed(6),
+        change1h: +n(c.change1h, 0).toFixed(3),
+        change24: +n(c.change24, 0).toFixed(3),
+        range24: +n(c.range24, 0).toFixed(3),
 
-        confidenceBase,
         confidence,
-        confidenceBtcAdj: btcTune.adj,
+        stage,
+        stageBase,
 
-        stage: currStage,
+        gates: { radar: radarGate.why || "passed", almost: almostGate, entry: entryGate },
+        consistency: upd.consistency,
 
-        trade: tradeInfo,
-        tradeStatus: pageTradeStatus(tradeInfo),
-
-        stageScans: stFix.stageScans,
-        consistency: stFix.consistency,
-
-        req: {
-          minConfidence: thr.minConfidence,
-          spreadMaxPct: thr.spreadMaxPct,
-          depthMinUsd1p: thr.depthMinUsd1p,
-          obScoreMin: thr.obScoreMin,
+        ob: {
+          fresh: !!obFresh,
+          valid: !!obValid,
+          spreadPct: ob?.spreadPct ?? null,
+          depthMinUsd1p: ob?.depthMinUsd1p ?? null,
+          score: ob?.score ?? null,
+          pressureDeltaUsd: ob?.pressureDeltaUsd ?? 0,
+          ts: ob?.ts ?? null,
+          ageSec: ob?.ageSec ?? null,
+          reason: ob?.reason || "",
         },
-
-        ob: ob
-          ? {
-              valid: !!ob.valid,
-              fresh: !!ob.fresh,
-              stale: !!ob.stale,
-              ageSec: obTs > 0 ? Math.round(obAge / 1000) : ob.ageSec ?? null,
-              reason: String(ob.reason || ""),
-              score: Number(n(obScore, 0)),
-              spreadPct: Number(n(spreadPct, 999)),
-              depthMinUsd1p: Number(n(depthMinUsd1p, 0)),
-              pressureDeltaUsd: Number(n(ob.pressureDeltaUsd, 0)),
-              ts: obTs || null,
-            }
-          : { status: "none" },
-
-        why: { almostGate, entryGate },
       };
 
-      if (currStage === "ENTRY") entry.push(item);
-      else if (currStage === "ALMOST") almost.push(item);
-      else if (currStage === "BUILDUP") buildup.push(item);
+      if (stage === "ENTRY") entry.push(item);
+      else if (stage === "ALMOST") almost.push(item);
+      else if (stage === "BUILDUP") buildup.push(item);
       else radar.push(item);
+
+      // optioneel analytics
+      if (stage === "ENTRY") {
+        await safePushEvent("scan_entry", { mode, symbol: sym, confidence, btcState: btc.state });
+      }
     }
 
-    entry.sort((a, b) => b.confidence - a.confidence || b.vm - a.vm);
-    almost.sort((a, b) => b.confidence - a.confidence || b.vm - a.vm);
-    buildup.sort((a, b) => b.vm - a.vm);
-    radar.sort((a, b) => b.vm - a.vm);
+    // Sort (beste bovenaan)
+    const byScore = (a, b) =>
+      (b.confidence - a.confidence) ||
+      (b.vm - a.vm) ||
+      (Math.abs(b.change24) - Math.abs(a.change24));
 
-    openTrades.sort((a, b) => b.pnlPct - a.pnlPct || b.maxPnlPct - a.maxPnlPct);
+    radar.sort(byScore);
+    buildup.sort(byScore);
+    almost.sort(byScore);
+    entry.sort(byScore);
 
-    const discord = await flushNotices(noticesByHook);
+    // Limits uit SETTINGS
+    const radarLimit = n(core?.SETTINGS?.RADAR_LIMIT, 60);
+    const outRadar = radar.slice(0, radarLimit);
+    const outBuildup = buildup.slice(0, radarLimit);
+    const outAlmost = almost.slice(0, radarLimit);
+    const outEntry = entry.slice(0, radarLimit);
 
-    const sellsRaw = (await kv.get(kSells(mode))) || [];
-    const sellsArr = Array.isArray(sellsRaw) ? sellsRaw.slice(-SELLS_KEEP) : [];
-    const recentSells = sellsArr.slice().reverse();
-    const stats = computeStatsFromSells(sellsArr);
-
-    const btcCfg = safeObj(core.SETTINGS?.btc) || {};
-    const neutral24Pct = n(btcCfg.neutral24Pct, 1.0);
-    const fine1hAbsPct = n(btcCfg.fine1hAbsPct, 0.25);
-    const confBoost = n(btcCfg.confBoost, 4);
-
-    const result = {
+    const out = {
       ok: true,
-      ts: now,
       mode,
+      ts: Date.now(),
+      tookMs: Date.now() - startedAt,
       btc,
+      cap,
+      funnel: {
+        radar: outRadar,
+        buildup: outBuildup,
+        almost: outAlmost,
+        entry: outEntry,
+      },
+      openTrades,
       meta: {
-        cadence: "30m",
-        btcPolicy:
-          "24h regime + 1h confidence fine-tune; NEUTRAL/opposite => cap to BUILDUP (prep), maar scan+OB blijven lopen",
-        capActive: !!cap.cap,
-        capStage: cap.capStage,
-        capReason: cap.reason,
-        allowEntry,
-        neutralZone: `BTC 24h tussen -${neutral24Pct}% en +${neutral24Pct}%`,
-        fineTune: `BTC 1h abs >= ${fine1hAbsPct}% => confidence +/-${confBoost}`,
-        tradeEngine: {
-          enabled: true,
-          timeStopScans: TIME_STOP_SCANS,
-          timeStopMaxPnlPct: TIME_STOP_MAXPNL * 100,
-          reentryCooldownSec: REENTRY_COOLDOWN_SEC,
-          tradeTtlSec: TRADE_TTL_SEC,
-          sellsLogKey: kSells(mode),
-          exits: [
-            "HARD_STOP(range24)",
-            "TRAILING_TP(maxPnl + drawdown)",
-            "OB_BREAK_2X(fresh)",
-            "TIME_STOP(no momentum)",
-          ],
-          trailing: {
-            tp1Pct: TP1_PNL * 100,
-            tp2Pct: TP2_PNL * 100,
-            trailAfterTp1Pct: TRAIL_AFTER_TP1 * 100,
-            trailAfterTp2Pct: TRAIL_AFTER_TP2 * 100,
-          },
+        scanLock: { active: false, until: lock.until, waitMs: 0 },
+        counts: {
+          cg: cg.length,
+          radar: radar.length,
+          buildup: buildup.length,
+          almost: almost.length,
+          entry: entry.length,
         },
       },
-      counts: {
-        entry: entry.length,
-        almost: almost.length,
-        buildup: buildup.length,
-        radar: radar.length,
-        openTrades: openTrades.length,
-        recentSells: recentSells.length,
-      },
-      funnel: { entry, almost, buildup, radar },
-      trading: {
-        openTrades,
-        recentSells,
-        stats: {
-          ...stats,
-          winrate50Pct: stats.winrate50 * 100,
-          avgPnl50Pct: stats.avgPnl50 * 100,
-        },
-      },
-      obMap: obMap ? { ok: true, size: Object.keys(obMap).length } : { ok: false },
-      discord: {
-        enabled: true,
-        sent: discord.sent,
-        failed: discord.failed,
-        errors: (discord.details || []).slice(0, 5),
-      },
-      note:
-        "Scan logs stage_change + trade_open/close (met tradeId + giveback) events naar cc:events:main:list (voor analyzer).",
     };
 
-    await kv.set(core.keyLatest(mode), result);
-    await kv.set(core.keyState(mode), state);
+    // ✅ Persist latest + state
+    const ttl = n(core?.SETTINGS?.entry?.resultTtlSec, 60 * 45);
+    await kv.set(core.keyLatest(mode), out, { ex: Math.max(60, ttl) });
+    await kv.set(core.keyState(mode), state, { ex: 60 * 60 * 24 * 7 }); // 7 dagen state history
 
-    res.statusCode = 200;
-    return res.end(JSON.stringify(result));
+    return send(res, 200, out);
   } catch (e) {
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.setHeader("cache-control", "no-store");
-    return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+    return send(res, 200, { ok: false, error: String(e?.message || e) });
   }
 }
