@@ -590,18 +590,37 @@ export default async function handler(req, res) {
     const method = String(req?.method || "GET").toUpperCase();
 
     // ======================================================
+    // ✅ OPTIONEEL: Cron moet via POST (voorkomt spoofing)
+    // ======================================================
+    if (fromCron && method !== "POST") {
+      return send(res, 200, {
+        ok: false,
+        mode,
+        error: "cron must use POST"
+      });
+    }
+
+    // ======================================================
     // ✅ HARD RULE: gewone GET (geen cron, geen force) -> NOOIT scannen
     // ======================================================
     if (!fromCron && !force && method === "GET") {
       const latest = await kv.get(core.keyLatest(mode));
+      const lockInfo = await getScanLockInfo(mode);
+
       if (latest) {
         latest.meta = latest.meta || {};
         latest.meta.served = "cached_latest";
-        latest.meta.scanLock = await getScanLockInfo(mode);
+        latest.meta.scanLock = lockInfo;
         return send(res, 200, latest);
       }
-      // geen latest? dan 1x bootstrappen (maar nog steeds beschermd door lock)
-      // valt door naar scan pad hieronder
+
+      // ✅ NOOIT scannen op GET, ook niet als latest ontbreekt
+      return send(res, 200, {
+        ok: false,
+        mode,
+        error: "no latest yet (wait for cron scan)",
+        meta: { served: "get_no_scan", scanLock: lockInfo },
+      });
     }
 
     // ✅ cron/force: lock wordt altijd gezet/refresh
