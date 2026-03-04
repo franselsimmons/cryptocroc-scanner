@@ -1,4 +1,3 @@
-/* EOF: /api/cron.js */
 import { kv } from "@vercel/kv";
 
 import scan from "./scan.js";
@@ -197,7 +196,17 @@ function isVercelCron(req) {
 
 async function runOneMode(mode, max, radar, symbols, secret) {
   const reqMap = makeInternalReq({ path: "/api/ob/map_refresh", mode, secret });
-  const reqOb = makeInternalReq({ path: "/api/ob/sampler", mode, symbols, secret });
+
+  // sampler met from=map
+  const reqOb = makeInternalReq({ path: "/api/ob/sampler", mode, secret });
+  reqOb.query.from = "map";
+  reqOb.query.limit = "80"; // of dynamisch uit req halen, maar 80 is prima
+  // url opnieuw bouwen
+  const qs = Object.keys(reqOb.query)
+    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(reqOb.query[k])}`)
+    .join("&");
+  reqOb.url = `/api/ob/sampler?${qs}`;
+
   const reqScan = makeInternalReq({ path: "/api/scan", mode, max, radar, secret });
 
   // 1) map_refresh
@@ -301,7 +310,7 @@ export default async function handler(req, res) {
       {
         ts: Date.now(),
         mode,
-        params: { max, radar, symbols },
+        params: { max, radar, symbols }, // symbols wordt nog getoond maar niet gebruikt; kan optioneel weg
         ok: !!out?.ok,
       },
       { ex: CRON_HEARTBEAT_TTL_SEC }
