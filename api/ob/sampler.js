@@ -1,7 +1,6 @@
-// /api/ob/sampler.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, requireSecret } from "../../lib/_runtime.js";
-import { putObSnapshot } from "../../lib/obStore.js";
+import { putObSnapshot, obMapKey } from "../../lib/obStore.js"; // 👈 obMapKey geïmporteerd
 
 export const config = RUNTIME_CONFIG;
 
@@ -125,15 +124,59 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
+    // ========== symbols bron kiezen ==========
+    const from = String(req.query?.from || "").toLowerCase();
+    const limit = Math.max(1, Math.min(120, Number(req.query?.limit || 60)));
+
+    let symbols = [];
+
+    // A) handmatige symbols
     const raw = String(req.query?.symbols || "");
-    const symbols = raw.split(",").map((s) => up(s)).filter(Boolean);
+    const manual = raw.split(",").map((s) => up(s)).filter(Boolean);
+
+    // B) from=map (Bitget coverage)
+    if (from === "map") {
+      const mapKey = obMapKey(mode); // 👈 gebruik obMapKey
+      const blob = await kv.get(mapKey);
+      const map = blob && typeof blob === "object" && blob.map && typeof blob.map === "object" ? blob.map : null;
+
+      if (!map) {
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json; charset=utf-8");
+        res.setHeader("cache-control", "no-store");
+        return res.end(JSON.stringify({ ok: false, error: `No ob map in KV (${mapKey}). Run /api/ob/map_refresh first.` }));
+      }
+
+      const all = Object.keys(map).map(up).filter(Boolean);
+      all.sort(); // stabiele volgorde
+
+      const cursorKey = `ob:cursor:${mode}`;
+      const cur = Number((await kv.get(cursorKey)) || 0);
+      const start = Number.isFinite(cur) ? Math.max(0, cur) : 0;
+
+      // wrap-around batch
+      const batch = [];
+      for (let i = 0; i < Math.min(limit, all.length); i++) {
+        batch.push(all[(start + i) % all.length]);
+      }
+
+      // cursor doorschuiven
+      const nextCur = (start + batch.length) % all.length;
+      await kv.set(cursorKey, nextCur, { ex: 60 * 60 * 24 * 7 });
+
+      symbols = batch;
+    } else {
+      // fallback: handmatig
+      symbols = manual;
+    }
 
     if (!symbols.length) {
       res.statusCode = 400;
       res.setHeader("content-type", "application/json; charset=utf-8");
       res.setHeader("cache-control", "no-store");
-      return res.end(JSON.stringify({ ok: false, error: "Missing ?symbols=PEPE,TURBO" }));
+      return res.end(JSON.stringify({ ok: false, error: "Missing ?symbols=PEPE,TURBO or use ?from=map&limit=80" }));
     }
+    // ========== einde wijziging ==========
 
     const coreMod = await import(`../../lib/_core_${mode}.js`);
     const core = coreMod?.default ? coreMod.default : coreMod;
@@ -163,7 +206,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // 1) snapshot storage (DEZE MOET MATCHEN met getObSnapshot)
+      // 1) snapshot storage
       const put = await putObSnapshot(mode, symbol, snap, ttlSec);
       if (!put.ok) {
         failedCount++;
@@ -211,7 +254,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // ✅ HEARTBEAT: hiermee zie je direct “sampler draaide / schreef X snapshots”
+    // ✅ HEARTBEAT
     await kv.set(
       `ob:sampler:last:${mode}`,
       { ts: Date.now(), ok: true, wrote, failed: failedCount, symbols: symbols.slice(0, 50) },
