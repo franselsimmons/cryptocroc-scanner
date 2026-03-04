@@ -11,40 +11,65 @@ function send(res, code, obj) {
   return res.end(JSON.stringify(obj));
 }
 
+function safeTs(x) {
+  const v = Number(x?.ts || 0);
+  return Number.isFinite(v) ? v : 0;
+}
+
 export default async function handler(req, res) {
   try {
-    const mode = getMode(req); // bull/bear
-    const modeLc = String(mode).toLowerCase().trim();
+    const modeLc = String(getMode(req)).toLowerCase().trim(); // bull/bear
 
-    // 1) primary key (leidend)
-    const kPrimary = `latest:${modeLc}`;
-    let data = await kv.get(kPrimary);
+    // core ophalen (source-of-truth voor key naming)
+    let core = null;
+    try {
+      const coreMod = await import(`../lib/_core_${modeLc}.js`);
+      core = coreMod?.default ? coreMod.default : coreMod;
+    } catch {
+      core = null;
+    }
 
-    // 2) fallback: core.keyLatest(mode) (best-effort)
-    let kCore = null;
-    if (!data) {
-      try {
-        const coreMod = await import(`../lib/_core_${modeLc}.js`);
-        const core = coreMod?.default ? coreMod.default : coreMod;
-        if (core && typeof core.keyLatest === "function") {
-          kCore = core.keyLatest(modeLc);
-          if (kCore && kCore !== kPrimary) {
-            data = await kv.get(kCore);
-          }
-        }
-      } catch {
-        // best-effort fallback
+    // keys
+    const kLegacy = `latest:${modeLc}`; // legacy/backward compatibility
+    const kCore = core && typeof core.keyLatest === "function" ? core.keyLatest(modeLc) : null;
+
+    // 1) core eerst (veilig)
+    let dataCore = null;
+    if (kCore) dataCore = await kv.get(kCore);
+
+    // 2) legacy alleen als core leeg is OF legacy duidelijk nieuwer is
+    let dataLegacy = null;
+    // Alleen opvragen als het zin heeft (scheelt KV calls)
+    if (!dataCore || kLegacy !== kCore) {
+      dataLegacy = await kv.get(kLegacy);
+    }
+
+    let data = dataCore;
+    let source = kCore || null;
+
+    if (!dataCore && dataLegacy) {
+      data = dataLegacy;
+      source = kLegacy;
+    } else if (dataCore && dataLegacy && kLegacy !== kCore) {
+      // kies de nieuwste op basis van ts
+      const tc = safeTs(dataCore);
+      const tl = safeTs(dataLegacy);
+      if (tl > tc) {
+        data = dataLegacy;
+        source = kLegacy;
+      } else {
+        data = dataCore;
+        source = kCore;
       }
     }
 
-    // 3) scan lock info
+    // scan lock info (zodat UI verklaart waarom ts niet verandert)
     const lockKey = `scan:lock:${modeLc}`;
     const lock = await kv.get(lockKey);
     const now = Date.now();
     const until = Number(lock?.until || 0);
     const active = until > now;
 
-    // geen data
     if (!data) {
       return send(res, 200, {
         ok: true,
@@ -62,15 +87,16 @@ export default async function handler(req, res) {
             waitMs: active ? Math.max(0, until - now) : 0,
           },
           debugKeys: {
-            latestPrimary: kPrimary,
             latestCore: kCore,
+            latestLegacy: kLegacy,
+            used: source,
             lockKey,
           },
         },
       });
     }
 
-    // 4) meta inject
+    // inject debug/meta altijd
     data.meta = data.meta || {};
     data.meta.scanLock = {
       active,
@@ -78,8 +104,9 @@ export default async function handler(req, res) {
       waitMs: active ? Math.max(0, until - now) : 0,
     };
     data.meta.debugKeys = {
-      latestPrimary: kPrimary,
       latestCore: kCore,
+      latestLegacy: kLegacy,
+      used: source,
       lockKey,
     };
 
