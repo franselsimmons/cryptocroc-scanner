@@ -8,21 +8,9 @@ import { getObSnapshot, obMapKey } from "../lib/obStore.js";
 export const config = RUNTIME_CONFIG;
 
 // ======================================================
-// ✅ 30 MIN SCAN LOCK (ATOMISCH)  — NIET AAN KOMEN
+// ✅ 30 MIN SCAN LOCK (ATOMISCH)
 // ======================================================
 const SCAN_INTERVAL_SEC = 30 * 60; // 30 minuten
-
-// ======================================================
-// ✅ Universe keuze (ALLEEN COINS SELECTIE, GEEN KEYS/CADENCE)
-// ======================================================
-// 250 coins vanaf pagina 2 (midcaps movers)
-const CG_UNIVERSE_PER_PAGE = 250;
-const CG_UNIVERSE_PAGE_START = 2;
-const CG_UNIVERSE_PAGES = 1; // 1 page = 250 coins
-
-// Leaders context (pagina 1) — alleen voor UI/context, niet voor gating
-const CG_LEADERS_PAGE = 1;
-const CG_LEADERS_LIMIT = 40;
 
 // ======================================================
 // ✅ Design rationale (voor transparantie)
@@ -135,9 +123,9 @@ const OB_MAX_AGE_SEC = Math.floor(OB_MAX_AGE_MS / 1000);
 // ======================================================
 // ✅ Per-coin rolling medians & percentiles (range/spread/obScore)
 // ======================================================
-const COIN_STATS_TTL_SEC = 60 * 60 * 24 * 8; // 8 dagen bewaren
-const COIN_STATS_WINDOW_SEC = 60 * 60 * 24 * 7; // 7 dagen window
-const COIN_STATS_KEEP_MAX = 700; // hard cap (7d @ 15m/30m safe)
+const COIN_STATS_TTL_SEC = 60 * 60 * 24 * 8;       // 8 dagen bewaren
+const COIN_STATS_WINDOW_SEC = 60 * 60 * 24 * 7;    // 7 dagen window
+const COIN_STATS_KEEP_MAX = 700;                   // hard cap (7d @ 15m/30m safe)
 
 function kCoinStats(mode, sym) {
   return `coin:stats:${String(mode).toLowerCase()}:${String(sym).toUpperCase()}`;
@@ -151,6 +139,7 @@ function medianOf(nums) {
   return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
 }
 
+// p in [0..100], e.g. 70 => 70e percentiel
 function percentileOf(nums, p) {
   const a = (Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite);
   if (!a.length) return null;
@@ -183,7 +172,10 @@ async function updateCoinStatsAndGetMetrics({ mode, sym, range24, spreadPct, obS
     row.obScoreAbs = Math.abs(sc);
   }
 
-  const next = arr.filter((x) => Number(x?.ts || 0) >= cutoff).concat([row]).slice(-COIN_STATS_KEEP_MAX);
+  const next = arr
+    .filter((x) => Number(x?.ts || 0) >= cutoff)
+    .concat([row])
+    .slice(-COIN_STATS_KEEP_MAX);
 
   await kv.set(key, next, { ex: COIN_STATS_TTL_SEC });
 
@@ -305,66 +297,55 @@ function computeStageCap(mode, btcState) {
 }
 
 // ======================================================
-// ✅ CoinGecko helpers (universe + leaders) — GEEN KEYS/CADENCE WIJZIGING
+// ✅ Haal meerdere CoinGecko pagina's op
 // ======================================================
-function mapCgCoin(c) {
-  const price = n(c?.current_price, 0);
-  const high = n(c?.high_24h, 0);
-  const low = n(c?.low_24h, 0);
-  const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
+async function fetchCgTop(limit = 1000) {
+  const perPage = 250;
+  const maxPages = 10;
+  const pages = Math.min(maxPages, Math.ceil(limit / perPage));
+  let allCoins = [];
 
-  const change24 = n(c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0, 0);
-  const change1h = n(c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0, 0);
+  for (let page = 1; page <= pages; page++) {
+    const url =
+      `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd` +
+      `&order=volume_desc&per_page=${perPage}&page=${page}&sparkline=false` +
+      `&price_change_percentage=1h,24h`;
 
-  return {
-    id: c?.id,
-    symbol: up(c?.symbol),
-    name: c?.name,
-    price,
-    volume: n(c?.total_volume, 0),
-    marketCap: n(c?.market_cap, 0),
-    change24,
-    change1h,
-    range24,
-  };
-}
+    const arr = await fetchJson(url);
+    if (!arr || !Array.isArray(arr) || arr.length === 0) break;
 
-async function fetchCgPage({ page = 1, perPage = 250 }) {
-  const url =
-    `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd` +
-    `&order=volume_desc&per_page=${perPage}&page=${page}&sparkline=false` +
-    `&price_change_percentage=1h,24h`;
-  const arr = await fetchJson(url);
-  if (!arr || !Array.isArray(arr)) return [];
-  return arr.map(mapCgCoin);
-}
+    const mapped = arr.map((c) => {
+      const price = n(c?.current_price, 0);
+      const high = n(c?.high_24h, 0);
+      const low = n(c?.low_24h, 0);
+      const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
 
-// ✅ Universe: 250 coins vanaf pagina 2
-async function fetchCgUniverse() {
-  const all = [];
-  for (let i = 0; i < CG_UNIVERSE_PAGES; i++) {
-    const page = CG_UNIVERSE_PAGE_START + i;
-    const batch = await fetchCgPage({ page, perPage: CG_UNIVERSE_PER_PAGE });
-    if (!batch.length) break;
-    all.push(...batch);
-    if (i < CG_UNIVERSE_PAGES - 1) await new Promise((r) => setTimeout(r, 200));
+      const change24 = n(c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0, 0);
+      const change1h = n(c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0, 0);
+
+      return {
+        id: c?.id,
+        symbol: up(c?.symbol),
+        name: c?.name,
+        price,
+        volume: n(c?.total_volume, 0),
+        marketCap: n(c?.market_cap, 0),
+        change24,
+        change1h,
+        range24,
+      };
+    });
+
+    allCoins = allCoins.concat(mapped);
+
+    if (mapped.length < perPage) break;
+
+    if (page < pages) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
   }
-  return all;
-}
 
-// ✅ Leaders: pagina 1 (top volume) — alleen context
-async function fetchLeaders() {
-  const arr = await fetchCgPage({ page: CG_LEADERS_PAGE, perPage: Math.min(250, CG_LEADERS_LIMIT) });
-  const leaders = (arr || []).slice(0, CG_LEADERS_LIMIT).map((c) => ({
-    symbol: c.symbol,
-    name: c.name,
-    change24: +n(c.change24, 0).toFixed(3),
-    change1h: +n(c.change1h, 0).toFixed(3),
-    vm: null, // vm berekenen we hieronder (als core beschikbaar is) in handler
-    marketCap: c.marketCap,
-    volume: c.volume,
-  }));
-  return leaders;
+  return allCoins;
 }
 
 // ======================================================
@@ -381,6 +362,7 @@ function passRadar(core, mode, c, dyn) {
   if (vm < n(R.vmMin, 0)) return { ok: false, why: "vm too low" };
   if (Math.abs(c.change24) > n(R.maxAbsChg24, 999)) return { ok: false, why: "chg24 too high" };
 
+  // ✅ gebruik de meegegeven dyn (of fallback naar vaste waarden)
   const maxRange = n(dyn?.maxRange24, n(R.maxRange24, 999));
   if (c.range24 > maxRange) return { ok: false, why: `range24 too high (> ${maxRange.toFixed(2)}%)` };
 
@@ -411,10 +393,13 @@ function stageFromSwing(mode, c, dyn) {
 
   const wantUp = mode === "bull";
 
-  const dir1h = wantUp ? n(dyn?.dir1hMinBull, 0.2) : n(dyn?.dir1hMaxBear, -0.2);
+  const dir1h = wantUp
+    ? n(dyn?.dir1hMinBull, 0.2)
+    : n(dyn?.dir1hMaxBear, -0.2);
+
   const inDir = wantUp ? ch1h >= dir1h : ch1h <= dir1h;
 
-  if (vm >= 0.24 && range <= n(dyn?.maxRange24, 22) && inDir) return "ALMOST";
+  if (vm >= 0.24 && range <= (n(dyn?.maxRange24, 22)) && inDir) return "ALMOST";
   if (vm >= 0.18 && range <= (n(dyn?.maxRange24, 28) + 4)) return "BUILDUP";
   return "RADAR";
 }
@@ -448,35 +433,9 @@ function obSnapshotToFlat(ob, sym) {
     ts: n(snap?.ts, 0) || null,
     spreadPct: Number.isFinite(Number(snap?.spreadPct)) ? Number(snap.spreadPct) : null,
     depthMinUsd1p: Number.isFinite(Number(snap?.depthMinUsd1p)) ? Number(snap.depthMinUsd1p) : null,
-    pressureDeltaUsd: Number.isFinite(Number(snap?.pressureDeltaUsd))
-      ? Number(snap.pressureDeltaUsd)
-      : 0,
+    pressureDeltaUsd: Number.isFinite(Number(snap?.pressureDeltaUsd)) ? Number(snap.pressureDeltaUsd) : 0,
     score: Number.isFinite(Number(snap?.score)) ? Number(snap.score) : null,
   };
-}
-
-// ✅ simpele klant-uitleg: waarom missen we OB info?
-function explainObForHumans(ob) {
-  if (!ob) return "Geen orderbook data beschikbaar (onbekende reden).";
-
-  const reason = String(ob?.reason || "");
-  const stale = !!ob?.stale;
-  const valid = !!ob?.valid;
-  const fresh = !!ob?.fresh;
-
-  if (reason === "missing_snapshot") {
-    return "Geen orderbook info: deze coin heeft (nu) geen beschikbare snapshot op onze exchanges (midcaps hebben dit vaker).";
-  }
-  if (stale) {
-    return "Orderbook info is te oud (stale). We wachten op een nieuwe snapshot.";
-  }
-  if (!valid) {
-    return "Orderbook info is onbetrouwbaar/ongeldig, daarom tonen we geen spread/depth/score.";
-  }
-  if (!fresh) {
-    return "Orderbook info is niet ‘fresh’ genoeg. We tonen het wel, maar instappen is risicovoller.";
-  }
-  return "Orderbook info is beschikbaar.";
 }
 
 function adaptiveEntryThresholds(core, c, vm) {
@@ -526,6 +485,8 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
   const minAgree = Math.max(1, n(entryCfg.minAgree, 3));
 
   const prev = safeObj(S[sym]) || {};
+  const prevStage = up(prev.stage || "");
+
   const scans = n(prev.scans, 0) + 1;
 
   const histPrev = Array.isArray(prev.hist) ? prev.hist : [];
@@ -542,13 +503,14 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
 
   return {
     state: S,
+    prevStage,
     stageScans: scans,
     consistency: { ok, ratio, same, total, need, minAgree },
   };
 }
 
 // ======================================================
-// MAIN HANDLER  — KEYS / LOCK / CADENCE BLIJVEN ZELFDE
+// MAIN HANDLER
 // ======================================================
 export default async function handler(req, res) {
   const startedAt = Date.now();
@@ -579,7 +541,6 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    // BTC blijft exact hetzelfde
     const btcBase = await fetchBtc();
     const btcState = computeBtcStateCompat(btcBase, core.SETTINGS);
     const btcTune = btcConfidenceAdjustCompat(mode, btcState, btcBase, core.SETTINGS);
@@ -587,16 +548,7 @@ export default async function handler(req, res) {
 
     const cap = computeStageCap(mode, btc.state);
 
-    // ✅ Universe: 250 coins vanaf pagina 2
-    const cg = await fetchCgUniverse();
-
-    // ✅ Leaders (pagina 1) alleen context (niet gating)
-    let leaders = await fetchLeaders();
-    // vul vm voor leaders (als core vm nodig is voor UI)
-    leaders = leaders.map((x) => ({
-      ...x,
-      vm: +n(core.computeVm(x.volume, x.marketCap), 0).toFixed(6),
-    }));
+    const cg = await fetchCgTop(core.SETTINGS.CG_TOP || 1000);
 
     const radar = [];
     const buildup = [];
@@ -607,21 +559,9 @@ export default async function handler(req, res) {
     const state = (await kv.get(core.keyState(mode))) || {};
     await loadObMap(mode);
 
-    // ✅ OB quality counters (voor meta)
-    const obQuality = {
-      total: 0,
-      ok: 0,
-      freshValid: 0,
-      stale: 0,
-      invalid: 0,
-      missingSnapshot: 0,
-      missing: 0,
-    };
-
     for (const c of cg) {
+      // OB ophalen (altijd, ook als radar later faalt, voor stats)
       const sym = up(c.symbol);
-
-      // OB ophalen
       const ob = await getObForSymbol({ mode, symbol: sym });
       const obFresh = !!ob?.fresh;
       const obValid = !!ob?.valid;
@@ -629,18 +569,7 @@ export default async function handler(req, res) {
       const depthMinUsd1p = n(ob?.depthMinUsd1p, 0);
       const obScore = n(ob?.score, 0);
 
-      // ✅ update OB quality
-      obQuality.total += 1;
-      if (!ob || ob.ok === false) obQuality.missing += 1;
-      if (String(ob?.reason || "") === "missing_snapshot") obQuality.missingSnapshot += 1;
-      if (obValid) obQuality.ok += 1;
-      if (obValid && obFresh) obQuality.freshValid += 1;
-      if (!!ob?.stale) obQuality.stale += 1;
-      if (!obValid) obQuality.invalid += 1;
-
-      const obExplain = explainObForHumans(ob);
-
-      // ✅ per-coin medians/percentiles (range/spread/obScore)
+      // ✅ per-coin medians/percentiles (range/spread/obScore) – nu met null-filter
       const coinStats = await updateCoinStatsAndGetMetrics({
         mode,
         sym,
@@ -650,31 +579,40 @@ export default async function handler(req, res) {
         now,
       });
 
+      // ✅ Bepaal range voor dynamische drempels (mediaan of fallback)
       const rangeForDyn = Number.isFinite(coinStats?.medRange24) ? coinStats.medRange24 : n(c.range24, 0);
 
-      const dyn =
-        typeof core.dynamicRadarThresholds === "function"
-          ? core.dynamicRadarThresholds(rangeForDyn, core.SETTINGS)
-          : null;
+      // ✅ Dynamische radar thresholds (op basis van gestabiliseerde range)
+      const dyn = typeof core.dynamicRadarThresholds === "function"
+        ? core.dynamicRadarThresholds(rangeForDyn, core.SETTINGS)
+        : null;
 
+      // ✅ Radar gate (met meegegeven dyn)
       const radarGate = passRadar(core, mode, c, dyn);
       if (!radarGate.ok) continue;
 
       const vm = radarGate.vm;
-      const usedDyn = radarGate.dyn || dyn;
+      // gebruik de dyn uit radarGate (kan null zijn)
+      const usedDyn = radarGate.dyn || dyn; // voorkom dat dyn verloren gaat
 
+      // ✅ stage base (met dezelfde dyn)
       let stageBase = stageFromSwing(mode, { ...c, vm }, usedDyn);
 
-      // Anomaly detector
+      // ✅ Anomaly detector: range spike vs coin median => downgrade
       const curRange = n(c.range24, 0);
       const medRange = Number.isFinite(coinStats?.medRange24) ? coinStats.medRange24 : null;
-      const hasStats = n(coinStats?.samples, 0) >= 30;
+
+      const hasStats = n(coinStats?.samples, 0) >= 30; // ~15 uur bij 30m cadence
       const isSpike = hasStats && medRange && medRange > 0 && curRange > 2.2 * medRange && curRange > 10;
 
       let anomaly = null;
       if (isSpike) {
         anomaly = { type: "RANGE_SPIKE", curRange, medRange, factor: +(curRange / medRange).toFixed(2) };
-        if (stageBase === "ALMOST" || stageBase === "ENTRY") stageBase = "BUILDUP";
+
+        // downgrade only if it wanted to get aggressive
+        if (stageBase === "ALMOST" || stageBase === "ENTRY") {
+          stageBase = "BUILDUP";
+        }
       }
 
       // confidence
@@ -686,34 +624,40 @@ export default async function handler(req, res) {
       });
       const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
 
-      // entry thresholds
+      // ✅ entry thresholds: eerst tiers, dan dynamisch (core functie)
       const baseThr = adaptiveEntryThresholds(core, c, vm);
-      let thr =
-        typeof core.dynamicEntryThresholds === "function"
-          ? core.dynamicEntryThresholds({ marketCap: c.marketCap, volume: c.volume, vm }, baseThr, core.SETTINGS)
-          : baseThr;
+      let thr = typeof core.dynamicEntryThresholds === "function"
+        ? core.dynamicEntryThresholds(
+            { marketCap: c.marketCap, volume: c.volume, vm },
+            baseThr,
+            core.SETTINGS
+          )
+        : baseThr;
 
-      // Spread dynamic blend
+      // ✅ Spread aanpassen op basis van coin-historie (p80 spread) – nu blended
       if (thr && Number.isFinite(coinStats?.p80SpreadPct)) {
         const hardMax = Number(core?.SETTINGS?.entry?.dyn?.spreadHardMaxPct ?? 1.6);
         const hardMin = Number(core?.SETTINGS?.entry?.dyn?.spreadHardMinPct ?? 0.55);
 
-        const coinBaseline = coinStats.p80SpreadPct * 1.25;
+        const coinBaseline = coinStats.p80SpreadPct * 1.25; // iets boven "bad typical"
         const base = Number(thr.spreadMaxPct || 0);
 
+        // blend: 70% base, 30% coin
         thr.spreadMaxPct = 0.70 * base + 0.30 * coinBaseline;
         thr.spreadMaxPct = Math.max(hardMin, Math.min(hardMax, thr.spreadMaxPct));
       }
 
-      // OB score dynamic blend
+      // ✅ OB score aanpassen op basis van coin-historie (p70 absolute score)
       if (thr && Number.isFinite(coinStats?.p70ObAbs)) {
         const hardMax = Number(core?.SETTINGS?.entry?.dyn?.obScoreHardMax ?? 0.075);
         const hardMin = Number(core?.SETTINGS?.entry?.dyn?.obScoreHardMin ?? 0.04);
 
         const base = Number(thr.obScoreMin || 0);
-        const coin = Number(coinStats.p70ObAbs || 0) * 0.85;
+        const coin = Number(coinStats.p70ObAbs || 0) * 0.85; // require ~near typical strength
 
+        // blend (can go slightly up/down but respects hard clamps)
         const blended = 0.65 * base + 0.35 * coin;
+
         thr.obScoreMin = Math.max(hardMin, Math.min(hardMax, blended));
       }
 
@@ -721,14 +665,14 @@ export default async function handler(req, res) {
       let almostGate = "n/a";
       let entryGate = "n/a";
 
-      // BTC cap
+      // BTC cap: ALMOST/ENTRY max naar BUILDUP als contra/neutral
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
         stage = "BUILDUP";
         stageBase = "BUILDUP";
         almostGate = `capped: ${cap.capStage}`;
         entryGate = `capped: ${cap.capStage}`;
       } else {
-        // ALMOST slope gate
+        // ALMOST gate (optioneel slope check)
         if (stageBase === "ALMOST") {
           const obSamples = await kv.get(core.keyObSamples(mode, sym));
           const slopeCheck =
@@ -745,7 +689,7 @@ export default async function handler(req, res) {
           }
         }
 
-        // ENTRY gate
+        // ENTRY gate (alleen als nog ALMOST)
         if (stageBase === "ALMOST") {
           if (!ob || ob.ok === false) entryGate = "OB missing";
           else if (!obFresh) entryGate = "OB stale";
@@ -774,14 +718,16 @@ export default async function handler(req, res) {
         }
       }
 
+      // Anomaly notitie in gates als die actief is
       if (anomaly?.type === "RANGE_SPIKE") {
         if (almostGate === "n/a") almostGate = `anomaly: range spike x${anomaly.factor}`;
         if (entryGate === "n/a") entryGate = `anomaly: range spike x${anomaly.factor}`;
       }
 
-      // consistency/state update
+      // consistency/state update (eerst de uiteindelijke stage)
       const upd = updateStateAndConsistency(state, sym, stage, core, now);
 
+      // ✅ Consistency blockade: bij onvoldoende historische overeenstemming geen ALMOST/ENTRY
       if ((stage === "ALMOST" || stage === "ENTRY") && !upd.consistency?.ok) {
         stage = "BUILDUP";
         if (almostGate === "n/a" || almostGate === "passed") {
@@ -790,6 +736,7 @@ export default async function handler(req, res) {
         if (entryGate === "n/a" || entryGate === "passed") {
           entryGate = `consistency blocked (${upd.consistency.same}/${upd.consistency.need}, minAgree=${upd.consistency.minAgree})`;
         }
+        // ✅ Fix: corrigeer ook hist, anders “vervuilt” consistency zichzelf
         if (state[sym]) {
           state[sym].stage = "BUILDUP";
           if (Array.isArray(state[sym].hist) && state[sym].hist.length) {
@@ -797,14 +744,6 @@ export default async function handler(req, res) {
           }
         }
       }
-
-      // ✅ simpele “4 punten” uitleg (midcaps trade-universe risico’s) — voor UI
-      const universeNotes = [
-        "Orderbook kan ontbreken bij midcaps (geen snapshot beschikbaar).",
-        "Spread/Depth kunnen plots verslechteren → vaker BUILDUP/ALMOST zonder ENTRY.",
-        "Fills kunnen slechter zijn door dunne liquidity (meer slippage).",
-        "Leaders (top alts) missen in universe → daarom tonen we leaders apart bovenaan.",
-      ];
 
       const item = {
         symbol: sym,
@@ -824,12 +763,10 @@ export default async function handler(req, res) {
         gates: { radar: radarGate.why || "passed", almost: almostGate, entry: entryGate },
         consistency: upd.consistency,
 
+        // ✅ rationale voor deze coin (design keuze)
         rationale: DESIGN_RATIONALE,
 
-        // ✅ nieuw: simpele uitleg waarom OB/liq data ontbreekt (voor klanten)
-        obExplain,
-        universeNotes,
-
+        // Telemetrie: dynamische radar thresholds
         dyn: usedDyn
           ? {
               maxRange24: +n(usedDyn.maxRange24, 0).toFixed(3),
@@ -841,6 +778,7 @@ export default async function handler(req, res) {
             }
           : null,
 
+        // Telemetrie: gebruikte entry thresholds
         thr: {
           minConfidence: thr.minConfidence,
           spreadMaxPct: +n(thr.spreadMaxPct, 0).toFixed(3),
@@ -849,6 +787,7 @@ export default async function handler(req, res) {
           liqScore: thr.liqScore != null ? +n(thr.liqScore, 0).toFixed(3) : null,
         },
 
+        // Telemetrie: coin historische stats
         coinStats: {
           samples: coinStats?.samples ?? 0,
           medRange24: coinStats?.medRange24 ?? null,
@@ -885,7 +824,9 @@ export default async function handler(req, res) {
 
     // Sort
     const byScore = (a, b) =>
-      b.confidence - a.confidence || b.vm - a.vm || Math.abs(b.change24) - Math.abs(a.change24);
+      (b.confidence - a.confidence) ||
+      (b.vm - a.vm) ||
+      (Math.abs(b.change24) - Math.abs(a.change24));
 
     radar.sort(byScore);
     buildup.sort(byScore);
@@ -905,10 +846,6 @@ export default async function handler(req, res) {
       tookMs: Date.now() - startedAt,
       btc,
       cap,
-
-      // ✅ nieuw: leaders context (UI)
-      leaders,
-
       funnel: {
         radar: outRadar,
         buildup: outBuildup,
@@ -916,7 +853,6 @@ export default async function handler(req, res) {
         entry: outEntry,
       },
       openTrades,
-
       meta: {
         scanLock: { active: false, until: lock.until, waitMs: 0 },
         counts: {
@@ -926,29 +862,10 @@ export default async function handler(req, res) {
           almost: almost.length,
           entry: entry.length,
         },
-
-        // ✅ nieuw: universe info (UI / transparantie)
-        universe: {
-          perPage: CG_UNIVERSE_PER_PAGE,
-          pageStart: CG_UNIVERSE_PAGE_START,
-          pages: CG_UNIVERSE_PAGES,
-          leadersPage: CG_LEADERS_PAGE,
-          leadersLimit: CG_LEADERS_LIMIT,
-          notes: [
-            "We scannen 250 midcaps (page 2) voor grotere bewegingen.",
-            "Leaders (page 1) tonen we apart als markt-context.",
-            "Midcaps hebben vaker missing_snapshot en spread spikes.",
-          ],
-        },
-
-        // ✅ nieuw: OB kwaliteit samenvatting
-        obQuality,
-
-        rationale: DESIGN_RATIONALE,
+        rationale: DESIGN_RATIONALE, // ✅ toegevoegd
       },
     };
 
-    // ✅ KEYS NIET AANGETAST: we gebruiken nog steeds core.keyLatest / core.keyState
     const ttl = n(core?.SETTINGS?.entry?.resultTtlSec, 60 * 45);
     await kv.set(core.keyLatest(mode), out, { ex: Math.max(60, ttl) });
     await kv.set(core.keyState(mode), state, { ex: 60 * 60 * 24 * 7 });
