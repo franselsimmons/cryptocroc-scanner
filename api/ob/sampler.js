@@ -1,6 +1,6 @@
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, requireSecret } from "../../lib/_runtime.js";
-import { putObSnapshot, obMapKey } from "../../lib/obStore.js"; // 👈 obMapKey geïmporteerd
+import { putObSnapshot, obMapKey } from "../../lib/obStore.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -136,7 +136,7 @@ export default async function handler(req, res) {
 
     // B) from=map (Bitget coverage)
     if (from === "map") {
-      const mapKey = obMapKey(mode); // 👈 gebruik obMapKey
+      const mapKey = obMapKey(mode);
       const blob = await kv.get(mapKey);
       const map = blob && typeof blob === "object" && blob.map && typeof blob.map === "object" ? blob.map : null;
 
@@ -149,6 +149,14 @@ export default async function handler(req, res) {
 
       const all = Object.keys(map).map(up).filter(Boolean);
       all.sort(); // stabiele volgorde
+
+      // 👇 Guard: lege map
+      if (!all.length) {
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/json; charset=utf-8");
+        res.setHeader("cache-control", "no-store");
+        return res.end(JSON.stringify({ ok: false, error: `Coverage map is empty (${mapKey})` }));
+      }
 
       const cursorKey = `ob:cursor:${mode}`;
       const cur = Number((await kv.get(cursorKey)) || 0);
