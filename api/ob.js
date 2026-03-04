@@ -11,7 +11,6 @@ function n(x, d = 0) {
 
 export default async function handler(req, res) {
   try {
-    // dit is debug → altijd secret
     if (!requireSecret(req, res)) return;
 
     const mode = String(req.query?.mode || "bull").toLowerCase();
@@ -31,26 +30,20 @@ export default async function handler(req, res) {
     }
 
     const maxAgeSec = Math.max(60, n(req.query?.maxAgeSec, 3 * 3600));
-
     const r = await getObSnapshot(mode, symbol, maxAgeSec);
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
 
-    return res.end(
-      JSON.stringify({
-        ok: true,
-        mode,
-        symbol,
-        keys: {
-          obKey: obKey(mode, symbol),
-          obMapKey: obMapKey(mode),
-        },
-        maxAgeSec,
-        result: r,
-      })
-    );
+    return res.end(JSON.stringify({
+      ok: true,
+      mode,
+      symbol,
+      keys: { obKey: obKey(mode, symbol), obMapKey: obMapKey(mode) },
+      maxAgeSec,
+      result: r,
+    }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json; charset=utf-8");
