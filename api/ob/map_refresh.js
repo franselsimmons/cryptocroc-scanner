@@ -1,9 +1,10 @@
-// api/ob/map_refresh.js
+// /api/ob/map_refresh.js
 import { kv } from "@vercel/kv";
+import { requireSecret } from "../../lib/_runtime.js";
+import { obMapKey } from "../../lib/obStore.js";
 
 export const config = { runtime: "nodejs" };
 
-// We bewaren 1 map per mode (bull/bear), maar de inhoud is hetzelfde (Bitget spot symbols)
 const MAP_TTL_SEC = 60 * 60 * 6; // 6 uur
 
 async function fetchJson(url) {
@@ -16,13 +17,10 @@ async function fetchJson(url) {
 }
 
 function extractUsdtBasesFromBitget(payload) {
-  // Bitget v2 spot symbols zit meestal in payload.data (array)
   const data = Array.isArray(payload?.data) ? payload.data : [];
-
   const bases = new Set();
 
   for (const row of data) {
-    // We proberen meerdere mogelijke velden (Bitget wijzigt dit soms)
     const sym =
       row?.symbol ||
       row?.symbolName ||
@@ -33,21 +31,17 @@ function extractUsdtBasesFromBitget(payload) {
     const s = String(sym || "").toUpperCase().trim();
     if (!s) continue;
 
-    // We willen spot USDT paren, dus iets als "PEPEUSDT"
     if (s.endsWith("USDT") && s.length > 4) {
       const base = s.slice(0, -4);
       if (base) bases.add(base);
     }
   }
-
   return Array.from(bases);
 }
 
 export default async function handler(req, res) {
   try {
-    // secret check
-    const rt = await import("../../lib/_runtime.js");
-    if (!rt.requireSecret(req, res)) return;
+    if (!requireSecret(req, res)) return;
 
     const mode = String(req.query?.mode || "bull").toLowerCase();
     if (mode !== "bull" && mode !== "bear") {
@@ -56,11 +50,9 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "mode must be bull/bear" }));
     }
 
-    // Bitget spot symbols (v2)
     const url = "https://api.bitget.com/api/v2/spot/public/symbols";
     const j = await fetchJson(url);
 
-    // Bitget succes code is vaak "00000"
     const code = String(j?.code || "");
     if (code && code !== "00000") {
       res.statusCode = 200;
@@ -74,34 +66,22 @@ export default async function handler(req, res) {
     }
 
     const bases = extractUsdtBasesFromBitget(j);
-
-    // map: { "PEPE": true, "BTC": true, ... }
     const map = {};
     for (const b of bases) map[b] = true;
 
-    const blob = {
-      ts: Date.now(),
-      size: bases.length,
-      map,
-    };
+    const blob = { ts: Date.now(), size: bases.length, map };
 
-    // zelfde key als jouw scan.js verwacht: ob:map:${mode}
-    await kv.set(`ob:map:${mode}`, blob, { ex: MAP_TTL_SEC });
-    // extra handig (optioneel)
+    await kv.set(obMapKey(mode), blob, { ex: MAP_TTL_SEC });
     await kv.set(`ob:mapts:${mode}`, blob.ts, { ex: MAP_TTL_SEC });
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    return res.end(JSON.stringify({
-      ok: true,
-      mode,
-      ts: blob.ts,
-      size: blob.size,
-      ttlSec: MAP_TTL_SEC,
-    }));
+    res.setHeader("cache-control", "no-store");
+    return res.end(JSON.stringify({ ok: true, mode, ts: blob.ts, size: blob.size, ttlSec: MAP_TTL_SEC }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
+    res.setHeader("cache-control", "no-store");
     return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
   }
 }
