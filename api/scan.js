@@ -1,4 +1,3 @@
-/* EOF: /api/scan.js */
 import { kv } from "@vercel/kv";
 import { createHash } from "crypto";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
@@ -391,15 +390,9 @@ function stageFromSwing(mode, c, dyn) {
   return "RADAR";
 }
 
-async function loadObMap(mode) {
-  try {
-    const m = await kv.hgetall(obMapKey(mode));
-    return safeObj(m) || null;
-  } catch {
-    return null;
-  }
-}
-
+// ======================================================
+// ✅ OB ophalen
+// ======================================================
 async function getObForSymbol({ mode, symbol }) {
   const sym = up(symbol);
   const ob = await getObSnapshot(mode, sym, OB_MAX_AGE_SEC);
@@ -534,6 +527,10 @@ export default async function handler(req, res) {
 
     const cg = await fetchCgTop(core.SETTINGS.CG_TOP || 1000);
 
+    // ✅ OB coverage map laden (geen hgetall, gewoon get)
+    const obMapBlob = await kv.get(obMapKey(mode));
+    const obCoverageMap = obMapBlob && obMapBlob.map ? obMapBlob.map : null;
+
     const radar = [];
     const buildup = [];
     const almost = [];
@@ -541,10 +538,15 @@ export default async function handler(req, res) {
     const openTrades = []; // placeholder
 
     const state = (await kv.get(core.keyState(mode))) || {};
-    await loadObMap(mode);
 
     for (const c of cg) {
       const sym = up(c.symbol);
+
+      // skip coins zonder coverage (geen Bitget USDT pair)
+      if (obCoverageMap && !obCoverageMap[sym]) {
+        continue;
+      }
+
       const ob = await getObForSymbol({ mode, symbol: sym });
       const obFresh = !!ob?.fresh;
       const obValid = !!ob?.valid;
