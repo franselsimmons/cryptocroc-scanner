@@ -14,13 +14,13 @@ function send(res, code, obj) {
 export default async function handler(req, res) {
   try {
     const mode = getMode(req); // bull/bear
-    const modeLc = String(mode).toLowerCase();
+    const modeLc = String(mode).toLowerCase().trim();
 
-    // 1) jouw huidige key (blijft leidend)
+    // 1) primary key (leidend)
     const kPrimary = `latest:${modeLc}`;
     let data = await kv.get(kPrimary);
 
-    // 2) fallback: core.keyLatest(mode) (zonder scan te wijzigen)
+    // 2) fallback: core.keyLatest(mode) (best-effort)
     let kCore = null;
     if (!data) {
       try {
@@ -33,18 +33,18 @@ export default async function handler(req, res) {
           }
         }
       } catch {
-        // geen probleem: fallback is best-effort
+        // best-effort fallback
       }
     }
 
-    // 3) scan lock info (zodat je snapt waarom hij niet update)
+    // 3) scan lock info
     const lockKey = `scan:lock:${modeLc}`;
     const lock = await kv.get(lockKey);
     const now = Date.now();
     const until = Number(lock?.until || 0);
     const active = until > now;
 
-    // als er nog steeds geen data is -> lege response, maar wel debug + lock info
+    // geen data
     if (!data) {
       return send(res, 200, {
         ok: true,
@@ -70,7 +70,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 4) Zorg dat meta altijd lock + debugKeys bevat (handig voor support)
+    // 4) meta inject
     data.meta = data.meta || {};
     data.meta.scanLock = {
       active,
