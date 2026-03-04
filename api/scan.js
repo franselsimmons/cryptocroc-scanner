@@ -53,7 +53,7 @@ async function tryAcquireScanLock(mode) {
     return { ok: false, key, until, now, waitMs: until - now };
   }
 
-  // Edge case: lock is “stale” maar key bestaat nog (bijv. KV glitch) → force refresh
+  // Edge case: lock is “stale” maar key bestaat nog → force refresh
   await kv.set(key, { until: nextUntil, setAt: now }, { ex: SCAN_INTERVAL_SEC });
   return { ok: true, key, until: nextUntil, now, waitMs: 0 };
 }
@@ -123,9 +123,9 @@ const OB_MAX_AGE_SEC = Math.floor(OB_MAX_AGE_MS / 1000);
 // ======================================================
 // ✅ Per-coin rolling medians & percentiles (range/spread/obScore)
 // ======================================================
-const COIN_STATS_TTL_SEC = 60 * 60 * 24 * 8;       // 8 dagen bewaren
-const COIN_STATS_WINDOW_SEC = 60 * 60 * 24 * 7;    // 7 dagen window
-const COIN_STATS_KEEP_MAX = 700;                   // hard cap (7d @ 15m/30m safe)
+const COIN_STATS_TTL_SEC = 60 * 60 * 24 * 8; // 8 dagen bewaren
+const COIN_STATS_WINDOW_SEC = 60 * 60 * 24 * 7; // 7 dagen window
+const COIN_STATS_KEEP_MAX = 700; // hard cap
 
 function kCoinStats(mode, sym) {
   return `coin:stats:${String(mode).toLowerCase()}:${String(sym).toUpperCase()}`;
@@ -139,7 +139,6 @@ function medianOf(nums) {
   return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
 }
 
-// p in [0..100], e.g. 70 => 70e percentiel
 function percentileOf(nums, p) {
   const a = (Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite);
   if (!a.length) return null;
@@ -172,10 +171,7 @@ async function updateCoinStatsAndGetMetrics({ mode, sym, range24, spreadPct, obS
     row.obScoreAbs = Math.abs(sc);
   }
 
-  const next = arr
-    .filter((x) => Number(x?.ts || 0) >= cutoff)
-    .concat([row])
-    .slice(-COIN_STATS_KEEP_MAX);
+  const next = arr.filter((x) => Number(x?.ts || 0) >= cutoff).concat([row]).slice(-COIN_STATS_KEEP_MAX);
 
   await kv.set(key, next, { ex: COIN_STATS_TTL_SEC });
 
@@ -339,30 +335,25 @@ async function fetchCgTop(limit = 1000) {
     allCoins = allCoins.concat(mapped);
 
     if (mapped.length < perPage) break;
-
-    if (page < pages) {
-      await new Promise((r) => setTimeout(r, 200));
-    }
+    if (page < pages) await new Promise((r) => setTimeout(r, 200));
   }
 
   return allCoins;
 }
 
 // ======================================================
-// ✅ passRadar – gebruikt meegegeven dyn (geen eigen aanroep)
+// ✅ passRadar – gebruikt meegegeven dyn
 // ======================================================
 function passRadar(core, mode, c, dyn) {
   const R = core?.SETTINGS?.radar || {};
   const vm = core.computeVm(c.volume, c.marketCap);
 
-  // basis harde filters blijven
   if (c.marketCap < n(R.mcapMin, 0)) return { ok: false, why: "mcap too low" };
   if (c.marketCap > n(R.mcapMax, Number.MAX_SAFE_INTEGER)) return { ok: false, why: "mcap too high" };
   if (c.volume < n(R.volMin, 0)) return { ok: false, why: "volume too low" };
   if (vm < n(R.vmMin, 0)) return { ok: false, why: "vm too low" };
   if (Math.abs(c.change24) > n(R.maxAbsChg24, 999)) return { ok: false, why: "chg24 too high" };
 
-  // ✅ gebruik de meegegeven dyn (of fallback naar vaste waarden)
   const maxRange = n(dyn?.maxRange24, n(R.maxRange24, 999));
   if (c.range24 > maxRange) return { ok: false, why: `range24 too high (> ${maxRange.toFixed(2)}%)` };
 
@@ -384,7 +375,7 @@ function passRadar(core, mode, c, dyn) {
 }
 
 // ======================================================
-// ✅ stageFromSwing – gebruikt dyn voor richting en range
+// ✅ stageFromSwing – gebruikt dyn
 // ======================================================
 function stageFromSwing(mode, c, dyn) {
   const vm = c.vm;
@@ -392,15 +383,11 @@ function stageFromSwing(mode, c, dyn) {
   const ch1h = c.change1h;
 
   const wantUp = mode === "bull";
-
-  const dir1h = wantUp
-    ? n(dyn?.dir1hMinBull, 0.2)
-    : n(dyn?.dir1hMaxBear, -0.2);
-
+  const dir1h = wantUp ? n(dyn?.dir1hMinBull, 0.2) : n(dyn?.dir1hMaxBear, -0.2);
   const inDir = wantUp ? ch1h >= dir1h : ch1h <= dir1h;
 
-  if (vm >= 0.24 && range <= (n(dyn?.maxRange24, 22)) && inDir) return "ALMOST";
-  if (vm >= 0.18 && range <= (n(dyn?.maxRange24, 28) + 4)) return "BUILDUP";
+  if (vm >= 0.24 && range <= n(dyn?.maxRange24, 22) && inDir) return "ALMOST";
+  if (vm >= 0.18 && range <= n(dyn?.maxRange24, 28) + 4) return "BUILDUP";
   return "RADAR";
 }
 
@@ -441,7 +428,6 @@ function obSnapshotToFlat(ob, sym) {
 function adaptiveEntryThresholds(core, c, vm) {
   const base = core?.SETTINGS?.entry || {};
   const mc = n(c?.marketCap, 0);
-
   const tiers = Array.isArray(base?.adaptiveTiers) ? base.adaptiveTiers : null;
 
   const oneTier = {
@@ -485,8 +471,6 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
   const minAgree = Math.max(1, n(entryCfg.minAgree, 3));
 
   const prev = safeObj(S[sym]) || {};
-  const prevStage = up(prev.stage || "");
-
   const scans = n(prev.scans, 0) + 1;
 
   const histPrev = Array.isArray(prev.hist) ? prev.hist : [];
@@ -503,7 +487,6 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
 
   return {
     state: S,
-    prevStage,
     stageScans: scans,
     consistency: { ok, ratio, same, total, need, minAgree },
   };
@@ -518,7 +501,8 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const mode = getMode(req); // bull / bear
+    // ✅ FIX: mode normaliseren zodat keys altijd latest:bull/bear zijn
+    const mode = String(getMode(req)).toLowerCase().trim(); // bull/bear
     const coreMod = await import(`../lib/_core_${mode}.js`);
     const core = coreMod?.default ? coreMod.default : coreMod;
 
@@ -560,7 +544,6 @@ export default async function handler(req, res) {
     await loadObMap(mode);
 
     for (const c of cg) {
-      // OB ophalen (altijd, ook als radar later faalt, voor stats)
       const sym = up(c.symbol);
       const ob = await getObForSymbol({ mode, symbol: sym });
       const obFresh = !!ob?.fresh;
@@ -569,7 +552,6 @@ export default async function handler(req, res) {
       const depthMinUsd1p = n(ob?.depthMinUsd1p, 0);
       const obScore = n(ob?.score, 0);
 
-      // ✅ per-coin medians/percentiles (range/spread/obScore) – nu met null-filter
       const coinStats = await updateCoinStatsAndGetMetrics({
         mode,
         sym,
@@ -579,43 +561,33 @@ export default async function handler(req, res) {
         now,
       });
 
-      // ✅ Bepaal range voor dynamische drempels (mediaan of fallback)
       const rangeForDyn = Number.isFinite(coinStats?.medRange24) ? coinStats.medRange24 : n(c.range24, 0);
 
-      // ✅ Dynamische radar thresholds (op basis van gestabiliseerde range)
-      const dyn = typeof core.dynamicRadarThresholds === "function"
-        ? core.dynamicRadarThresholds(rangeForDyn, core.SETTINGS)
-        : null;
+      const dyn =
+        typeof core.dynamicRadarThresholds === "function"
+          ? core.dynamicRadarThresholds(rangeForDyn, core.SETTINGS)
+          : null;
 
-      // ✅ Radar gate (met meegegeven dyn)
       const radarGate = passRadar(core, mode, c, dyn);
       if (!radarGate.ok) continue;
 
       const vm = radarGate.vm;
-      // gebruik de dyn uit radarGate (kan null zijn)
-      const usedDyn = radarGate.dyn || dyn; // voorkom dat dyn verloren gaat
+      const usedDyn = radarGate.dyn || dyn;
 
-      // ✅ stage base (met dezelfde dyn)
       let stageBase = stageFromSwing(mode, { ...c, vm }, usedDyn);
 
-      // ✅ Anomaly detector: range spike vs coin median => downgrade
       const curRange = n(c.range24, 0);
       const medRange = Number.isFinite(coinStats?.medRange24) ? coinStats.medRange24 : null;
 
-      const hasStats = n(coinStats?.samples, 0) >= 30; // ~15 uur bij 30m cadence
+      const hasStats = n(coinStats?.samples, 0) >= 30;
       const isSpike = hasStats && medRange && medRange > 0 && curRange > 2.2 * medRange && curRange > 10;
 
       let anomaly = null;
       if (isSpike) {
         anomaly = { type: "RANGE_SPIKE", curRange, medRange, factor: +(curRange / medRange).toFixed(2) };
-
-        // downgrade only if it wanted to get aggressive
-        if (stageBase === "ALMOST" || stageBase === "ENTRY") {
-          stageBase = "BUILDUP";
-        }
+        if (stageBase === "ALMOST" || stageBase === "ENTRY") stageBase = "BUILDUP";
       }
 
-      // confidence
       const confidenceBase = core.computeConfidence({
         vm,
         change24: c.change24,
@@ -624,40 +596,31 @@ export default async function handler(req, res) {
       });
       const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
 
-      // ✅ entry thresholds: eerst tiers, dan dynamisch (core functie)
       const baseThr = adaptiveEntryThresholds(core, c, vm);
-      let thr = typeof core.dynamicEntryThresholds === "function"
-        ? core.dynamicEntryThresholds(
-            { marketCap: c.marketCap, volume: c.volume, vm },
-            baseThr,
-            core.SETTINGS
-          )
-        : baseThr;
+      let thr =
+        typeof core.dynamicEntryThresholds === "function"
+          ? core.dynamicEntryThresholds({ marketCap: c.marketCap, volume: c.volume, vm }, baseThr, core.SETTINGS)
+          : baseThr;
 
-      // ✅ Spread aanpassen op basis van coin-historie (p80 spread) – nu blended
       if (thr && Number.isFinite(coinStats?.p80SpreadPct)) {
         const hardMax = Number(core?.SETTINGS?.entry?.dyn?.spreadHardMaxPct ?? 1.6);
         const hardMin = Number(core?.SETTINGS?.entry?.dyn?.spreadHardMinPct ?? 0.55);
 
-        const coinBaseline = coinStats.p80SpreadPct * 1.25; // iets boven "bad typical"
+        const coinBaseline = coinStats.p80SpreadPct * 1.25;
         const base = Number(thr.spreadMaxPct || 0);
 
-        // blend: 70% base, 30% coin
         thr.spreadMaxPct = 0.70 * base + 0.30 * coinBaseline;
         thr.spreadMaxPct = Math.max(hardMin, Math.min(hardMax, thr.spreadMaxPct));
       }
 
-      // ✅ OB score aanpassen op basis van coin-historie (p70 absolute score)
       if (thr && Number.isFinite(coinStats?.p70ObAbs)) {
         const hardMax = Number(core?.SETTINGS?.entry?.dyn?.obScoreHardMax ?? 0.075);
         const hardMin = Number(core?.SETTINGS?.entry?.dyn?.obScoreHardMin ?? 0.04);
 
         const base = Number(thr.obScoreMin || 0);
-        const coin = Number(coinStats.p70ObAbs || 0) * 0.85; // require ~near typical strength
+        const coin = Number(coinStats.p70ObAbs || 0) * 0.85;
 
-        // blend (can go slightly up/down but respects hard clamps)
         const blended = 0.65 * base + 0.35 * coin;
-
         thr.obScoreMin = Math.max(hardMin, Math.min(hardMax, blended));
       }
 
@@ -665,14 +628,12 @@ export default async function handler(req, res) {
       let almostGate = "n/a";
       let entryGate = "n/a";
 
-      // BTC cap: ALMOST/ENTRY max naar BUILDUP als contra/neutral
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
         stage = "BUILDUP";
         stageBase = "BUILDUP";
         almostGate = `capped: ${cap.capStage}`;
         entryGate = `capped: ${cap.capStage}`;
       } else {
-        // ALMOST gate (optioneel slope check)
         if (stageBase === "ALMOST") {
           const obSamples = await kv.get(core.keyObSamples(mode, sym));
           const slopeCheck =
@@ -689,7 +650,6 @@ export default async function handler(req, res) {
           }
         }
 
-        // ENTRY gate (alleen als nog ALMOST)
         if (stageBase === "ALMOST") {
           if (!ob || ob.ok === false) entryGate = "OB missing";
           else if (!obFresh) entryGate = "OB stale";
@@ -718,16 +678,13 @@ export default async function handler(req, res) {
         }
       }
 
-      // Anomaly notitie in gates als die actief is
       if (anomaly?.type === "RANGE_SPIKE") {
         if (almostGate === "n/a") almostGate = `anomaly: range spike x${anomaly.factor}`;
         if (entryGate === "n/a") entryGate = `anomaly: range spike x${anomaly.factor}`;
       }
 
-      // consistency/state update (eerst de uiteindelijke stage)
       const upd = updateStateAndConsistency(state, sym, stage, core, now);
 
-      // ✅ Consistency blockade: bij onvoldoende historische overeenstemming geen ALMOST/ENTRY
       if ((stage === "ALMOST" || stage === "ENTRY") && !upd.consistency?.ok) {
         stage = "BUILDUP";
         if (almostGate === "n/a" || almostGate === "passed") {
@@ -736,7 +693,6 @@ export default async function handler(req, res) {
         if (entryGate === "n/a" || entryGate === "passed") {
           entryGate = `consistency blocked (${upd.consistency.same}/${upd.consistency.need}, minAgree=${upd.consistency.minAgree})`;
         }
-        // ✅ Fix: corrigeer ook hist, anders “vervuilt” consistency zichzelf
         if (state[sym]) {
           state[sym].stage = "BUILDUP";
           if (Array.isArray(state[sym].hist) && state[sym].hist.length) {
@@ -763,10 +719,8 @@ export default async function handler(req, res) {
         gates: { radar: radarGate.why || "passed", almost: almostGate, entry: entryGate },
         consistency: upd.consistency,
 
-        // ✅ rationale voor deze coin (design keuze)
         rationale: DESIGN_RATIONALE,
 
-        // Telemetrie: dynamische radar thresholds
         dyn: usedDyn
           ? {
               maxRange24: +n(usedDyn.maxRange24, 0).toFixed(3),
@@ -778,7 +732,6 @@ export default async function handler(req, res) {
             }
           : null,
 
-        // Telemetrie: gebruikte entry thresholds
         thr: {
           minConfidence: thr.minConfidence,
           spreadMaxPct: +n(thr.spreadMaxPct, 0).toFixed(3),
@@ -787,7 +740,6 @@ export default async function handler(req, res) {
           liqScore: thr.liqScore != null ? +n(thr.liqScore, 0).toFixed(3) : null,
         },
 
-        // Telemetrie: coin historische stats
         coinStats: {
           samples: coinStats?.samples ?? 0,
           medRange24: coinStats?.medRange24 ?? null,
@@ -822,11 +774,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // Sort
-    const byScore = (a, b) =>
-      (b.confidence - a.confidence) ||
-      (b.vm - a.vm) ||
-      (Math.abs(b.change24) - Math.abs(a.change24));
+    const byScore = (a, b) => (b.confidence - a.confidence) || (b.vm - a.vm) || (Math.abs(b.change24) - Math.abs(a.change24));
 
     radar.sort(byScore);
     buildup.sort(byScore);
@@ -846,23 +794,12 @@ export default async function handler(req, res) {
       tookMs: Date.now() - startedAt,
       btc,
       cap,
-      funnel: {
-        radar: outRadar,
-        buildup: outBuildup,
-        almost: outAlmost,
-        entry: outEntry,
-      },
+      funnel: { radar: outRadar, buildup: outBuildup, almost: outAlmost, entry: outEntry },
       openTrades,
       meta: {
         scanLock: { active: false, until: lock.until, waitMs: 0 },
-        counts: {
-          cg: cg.length,
-          radar: radar.length,
-          buildup: buildup.length,
-          almost: almost.length,
-          entry: entry.length,
-        },
-        rationale: DESIGN_RATIONALE, // ✅ toegevoegd
+        counts: { cg: cg.length, radar: radar.length, buildup: buildup.length, almost: almost.length, entry: entry.length },
+        rationale: DESIGN_RATIONALE,
       },
     };
 
