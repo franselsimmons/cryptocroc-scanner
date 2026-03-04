@@ -5,14 +5,10 @@ import { putObSnapshot } from "../../lib/obStore.js";
 
 export const config = RUNTIME_CONFIG;
 
-// --------------------
-// Helpers
-// --------------------
 function n(x, d = 0) {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
 }
-
 function up(x) {
   return String(x || "").trim().toUpperCase();
 }
@@ -20,19 +16,13 @@ function up(x) {
 function parseSide(raw) {
   const arr = Array.isArray(raw) ? raw : [];
   return arr
-    .map((x) => ({
-      p: n(x?.[0], 0),
-      q: n(x?.[1], 0),
-    }))
+    .map((x) => ({ p: n(x?.[0], 0), q: n(x?.[1], 0) }))
     .filter((r) => r.p > 0 && r.q > 0);
 }
 
-// depth binnen +-1% van mid (dit is wat je “Depth 1%” eigenlijk hoort te zijn)
 function depthUsdWithinPct(side, mid, pct) {
   const list = Array.isArray(side) ? side : [];
   if (!(mid > 0)) return { usd: 0, largestUsd: 0 };
-
-  const band = mid * (pct / 100);
 
   let usd = 0;
   let largestUsd = 0;
@@ -43,7 +33,7 @@ function depthUsdWithinPct(side, mid, pct) {
     if (levelUsd > largestUsd) largestUsd = levelUsd;
   }
 
-  return { usd, largestUsd, band };
+  return { usd, largestUsd };
 }
 
 function computeFromDepth(depth) {
@@ -51,8 +41,6 @@ function computeFromDepth(depth) {
   const asks = parseSide(depth?.asks);
   if (!bids.length || !asks.length) return null;
 
-  // Bitget geeft bids meestal hoog→laag en asks laag→hoog, maar we vertrouwen dat niet blind.
-  // Pak beste bid = hoogste price, beste ask = laagste price.
   const bestBid = bids.reduce((m, x) => (x.p > m ? x.p : m), 0);
   const bestAsk = asks.reduce((m, x) => (m === 0 ? x.p : Math.min(m, x.p)), 0);
   if (!(bestBid > 0) || !(bestAsk > 0) || !(bestAsk > bestBid)) return null;
@@ -60,9 +48,7 @@ function computeFromDepth(depth) {
   const mid = (bestBid + bestAsk) / 2;
   const spreadPct = ((bestAsk - bestBid) / mid) * 100;
 
-  // Neem alleen levels binnen 1% van mid
   const bandPct = 1.0;
-
   const bidsInBand = bids.filter((x) => x.p >= mid * (1 - bandPct / 100));
   const asksInBand = asks.filter((x) => x.p <= mid * (1 + bandPct / 100));
 
@@ -75,11 +61,9 @@ function computeFromDepth(depth) {
   const depthMinUsd1p = Math.min(bidUsd1p, askUsd1p);
   const pressureDeltaUsd = bidUsd1p - askUsd1p;
 
-  // score: -1..+1 (koopdruk vs verkoopdruk)
   const denom = bidUsd1p + askUsd1p;
   const score = denom > 0 ? pressureDeltaUsd / denom : 0;
 
-  // Largest Order Ratio (LOR): grootste order (usd) / totale depth (usd) binnen 1%
   const largestUsd = Math.max(bidBand.largestUsd, askBand.largestUsd);
   const lor = denom > 0 ? largestUsd / denom : 0;
 
@@ -87,16 +71,12 @@ function computeFromDepth(depth) {
     ts: Date.now(),
     mid,
     spreadPct,
-    // depth metrics
     bidUsd1p,
     askUsd1p,
     depthMinUsd1p,
-    // pressure
     pressureDeltaUsd,
     score,
-    // anti “één dikke order”
     lor,
-    // extra: hoeveel levels we gebruikten (handig debug)
     levels: { bids1p: bidsInBand.length, asks1p: asksInBand.length },
   };
 }
@@ -112,47 +92,28 @@ async function fetchBitgetOrderbook(symbol) {
 
   let r, txt, j;
   try {
-    r = await fetch(url, {
-      headers: { accept: "application/json" },
-      signal: ac.signal,
-    });
+    r = await fetch(url, { headers: { accept: "application/json" }, signal: ac.signal });
     txt = await r.text();
-    try {
-      j = JSON.parse(txt);
-    } catch {
-      j = null;
-    }
+    try { j = JSON.parse(txt); } catch { j = null; }
   } catch (e) {
     clearTimeout(t);
-    return {
-      ok: false,
-      status: 0,
-      msg: "fetch_failed",
-      preview: String(e?.message || e).slice(0, 200),
-      url,
-    };
+    return { ok: false, status: 0, msg: "fetch_failed", preview: String(e?.message || e).slice(0, 200), url, pair };
   } finally {
     clearTimeout(t);
   }
 
   if (!r?.ok || !j || String(j.code) !== "00000") {
-    return {
-      ok: false,
-      status: r?.status || 0,
-      msg: j?.msg || "bitget_failed",
-      preview: String(txt || "").slice(0, 200),
-      url,
-      code: j?.code,
-    };
+    return { ok: false, status: r?.status || 0, msg: j?.msg || "bitget_failed", preview: String(txt || "").slice(0, 200), url, pair, code: j?.code };
   }
 
   return { ok: true, depth: j.data, url, pair };
 }
 
-// --------------------
-// Handler
-// --------------------
 export default async function handler(req, res) {
+  const startedAt = Date.now();
+  let wrote = 0;
+  let failedCount = 0;
+
   try {
     if (!requireSecret(req, res)) return;
 
@@ -165,10 +126,7 @@ export default async function handler(req, res) {
     }
 
     const raw = String(req.query?.symbols || "");
-    const symbols = raw
-      .split(",")
-      .map((s) => up(s))
-      .filter(Boolean);
+    const symbols = raw.split(",").map((s) => up(s)).filter(Boolean);
 
     if (!symbols.length) {
       res.statusCode = 400;
@@ -177,7 +135,6 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "Missing ?symbols=PEPE,TURBO" }));
     }
 
-    // core nodig voor keyObSamples (slope gate in scan)
     const coreMod = await import(`../../lib/_core_${mode}.js`);
     const core = coreMod?.default ? coreMod.default : coreMod;
 
@@ -191,34 +148,31 @@ export default async function handler(req, res) {
     const processed = [];
     const failed = [];
 
-    // bewust SEQUENTIEEL: Bitget rate limits + stabieler op Vercel
     for (const symbol of symbols) {
       const live = await fetchBitgetOrderbook(symbol);
       if (!live.ok) {
+        failedCount++;
         failed.push({ symbol, step: "fetch", ...live });
         continue;
       }
 
       const snap = computeFromDepth(live.depth);
       if (!snap) {
+        failedCount++;
         failed.push({ symbol, step: "compute", ok: false, msg: "compute_failed", pair: live.pair, url: live.url });
         continue;
       }
 
-      // 1) snapshot voor scan + /api/orderbook endpoint
+      // 1) snapshot storage (DEZE MOET MATCHEN met getObSnapshot)
       const put = await putObSnapshot(mode, symbol, snap, ttlSec);
       if (!put.ok) {
-        failed.push({
-          symbol,
-          step: "put_snapshot",
-          ok: false,
-          msg: "put_snapshot_failed",
-          why: put.why,
-        });
+        failedCount++;
+        failed.push({ symbol, step: "put_snapshot", ok: false, msg: "put_snapshot_failed", why: put.why });
         continue;
       }
+      wrote++;
 
-      // 2) samples voor slope gate (scan gebruikt deze)
+      // 2) samples voor slope gate
       const sKey = core.keyObSamples(mode, symbol);
       const prev = (await kv.get(sKey)) || [];
       const arr = Array.isArray(prev) ? prev : [];
@@ -226,25 +180,25 @@ export default async function handler(req, res) {
       const cutoff = Date.now() - windowSec * 1000;
       const next = arr
         .filter((x) => Number(x?.ts || 0) >= cutoff)
-        .concat([
-          {
-            ts: snap.ts,
-            spreadPct: snap.spreadPct,
-            depthMinUsd1p: snap.depthMinUsd1p,
-            pressureDeltaUsd: snap.pressureDeltaUsd,
-            score: snap.score,
-            // extra (kan later handig zijn)
-            lor: snap.lor,
-            bidUsd1p: snap.bidUsd1p,
-            askUsd1p: snap.askUsd1p,
-          },
-        ])
+        .concat([{
+          ts: snap.ts,
+          spreadPct: snap.spreadPct,
+          depthMinUsd1p: snap.depthMinUsd1p,
+          pressureDeltaUsd: snap.pressureDeltaUsd,
+          score: snap.score,
+          lor: snap.lor,
+          bidUsd1p: snap.bidUsd1p,
+          askUsd1p: snap.askUsd1p,
+        }])
         .slice(-keep);
 
       await kv.set(sKey, next, { ex: ttlSec });
 
+      // extra debug per sym
+      await kv.set(`ob:samples:last:${mode}:${up(symbol)}`, { ts: snap.ts, key: sKey, count: next.length }, { ex: ttlSec });
+
       processed.push({
-        symbol,
+        symbol: up(symbol),
         pair: live.pair,
         spreadPct: snap.spreadPct,
         depthMinUsd1p: snap.depthMinUsd1p,
@@ -257,26 +211,36 @@ export default async function handler(req, res) {
       });
     }
 
+    // ✅ HEARTBEAT: hiermee zie je direct “sampler draaide / schreef X snapshots”
+    await kv.set(
+      `ob:sampler:last:${mode}`,
+      { ts: Date.now(), ok: true, wrote, failed: failedCount, symbols: symbols.slice(0, 50) },
+      { ex: 60 * 60 }
+    );
+
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
-    return res.end(
-      JSON.stringify({
-        ok: true,
-        mode,
-        count: processed.length,
-        processed,
-        failed: failed.slice(0, 20),
-        windowSec,
-        need,
-        keep,
-        ttlSec,
-        ts: Date.now(),
-        note:
-          "Depth1% = USD depth binnen +-1% van mid. Dit voorkomt dat Depth altijd 0 of raar wordt door top-10-only.",
-      })
-    );
+    return res.end(JSON.stringify({
+      ok: true,
+      mode,
+      count: processed.length,
+      wrote,
+      failedCount,
+      processed,
+      failed: failed.slice(0, 20),
+      windowSec,
+      need,
+      keep,
+      ttlSec,
+      tookMs: Date.now() - startedAt,
+    }));
   } catch (e) {
+    try {
+      const mode = String(req.query?.mode || "bull").toLowerCase();
+      await kv.set(`ob:sampler:last:${mode}`, { ts: Date.now(), ok: false, error: String(e?.message || e) }, { ex: 60 * 60 });
+    } catch {}
+
     res.statusCode = 500;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("cache-control", "no-store");
