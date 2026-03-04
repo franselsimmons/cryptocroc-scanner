@@ -531,6 +531,15 @@ export default async function handler(req, res) {
     const obMapBlob = await kv.get(obMapKey(mode));
     const obCoverageMap = obMapBlob && obMapBlob.map ? obMapBlob.map : null;
 
+    // 👇 NIEUW: fail‑closed als map ontbreekt of ongeldig is
+    if (!obCoverageMap || typeof obCoverageMap !== "object") {
+      return send(res, 200, {
+        ok: false,
+        mode,
+        error: `No OB coverage map in KV (${obMapKey(mode)}). Run /api/ob/map_refresh first.`,
+      });
+    }
+
     const radar = [];
     const buildup = [];
     const almost = [];
@@ -543,7 +552,7 @@ export default async function handler(req, res) {
       const sym = up(c.symbol);
 
       // skip coins zonder coverage (geen Bitget USDT pair)
-      if (obCoverageMap && !obCoverageMap[sym]) {
+      if (!obCoverageMap[sym]) {
         continue;
       }
 
