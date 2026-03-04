@@ -569,7 +569,7 @@ export default async function handler(req, res) {
       const depthMinUsd1p = n(ob?.depthMinUsd1p, 0);
       const obScore = n(ob?.score, 0);
 
-      // ✅ per-coin medians/percentiles (range/spread/obScore) – nu met null‑filter
+      // ✅ per-coin medians/percentiles (range/spread/obScore) – nu met null-filter
       const coinStats = await updateCoinStatsAndGetMetrics({
         mode,
         sym,
