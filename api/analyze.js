@@ -1,4 +1,5 @@
 // /api/analyze.js
+import { kv } from "@vercel/kv";
 import { readEvents } from "../lib/_analytics.js";
 import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
 
@@ -6,8 +7,6 @@ export const config = RUNTIME_CONFIG;
 
 function n(x, d = 0) { const v = Number(x); return Number.isFinite(v) ? v : d; }
 function safeArr(x) { return Array.isArray(x) ? x : []; }
-function up(x) { return String(x || "").toUpperCase(); }
-
 function esc(s) {
   return String(s ?? "")
     .replaceAll("&", "&amp;")
@@ -16,8 +15,7 @@ function esc(s) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
-
-function topN(map, k = 8) {
+function topN(map, k = 12) {
   const arr = Object.entries(map || {}).map(([key, count]) => ({ key, count: n(count, 0) }));
   arr.sort((a, b) => b.count - a.count);
   return arr.slice(0, k);
@@ -25,26 +23,37 @@ function topN(map, k = 8) {
 function inc(map, key) {
   const k = String(key || "Unknown");
   map[k] = (map[k] || 0) + 1;
+  return map;
+}
+function fmtDate(ms) {
+  const d = new Date(Number(ms || 0));
+  if (!Number.isFinite(d.getTime())) return "n/a";
+  return d.toLocaleString("nl-NL", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
 }
 
-function analyzeEvents(events, mode) {
-  const ev = safeArr(events).filter(e => String(e?.mode || "").toLowerCase() === String(mode || "").toLowerCase());
+function analyzeEvents(events, mode, sinceMs) {
+  const ev = safeArr(events)
+    .filter(e => String(e?.mode || "") === String(mode || "bull"))
+    .filter(e => n(e?.ts, 0) >= sinceMs);
 
   const stageChanges = ev.filter(e => e.type === "stage_change");
   const tradeOpen = ev.filter(e => e.type === "trade_open");
   const tradeClose = ev.filter(e => e.type === "trade_close");
 
   const flow = {};
-  const stuckReason = { RADAR: {}, BUILDUP: {}, ALMOST: {}, ENTRY: {} };
+  const reasonsTo = { RADAR: {}, BUILDUP: {}, ALMOST: {}, ENTRY: {} };
 
   for (const e of stageChanges) {
-    const from = up(e.from || "");
-    const to = up(e.to || "");
+    const from = String(e.from || "").toUpperCase();
+    const to = String(e.to || "").toUpperCase();
     if (!from || !to) continue;
     inc(flow, `${from}→${to}`);
 
     const reason = String(e.reason || "n/a");
-    if (stuckReason[to]) inc(stuckReason[to], reason);
+    if (reasonsTo[to]) inc(reasonsTo[to], reason);
   }
 
   const openById = {};
@@ -59,8 +68,8 @@ function analyzeEvents(events, mode) {
   let givebackSum = 0;
   let givebackN = 0;
 
-  const earlyExit = [];
   const lateExit = [];
+  const earlyExit = [];
 
   for (const c of tradeClose) {
     const id = String(c.tradeId || "");
@@ -79,7 +88,7 @@ function analyzeEvents(events, mode) {
       tradeId: id,
       symbol: String(c.symbol || o?.symbol || "?"),
       mode,
-      entryGate: String(o?.entryGate || o?.gate || "-"),
+      entryGate: String(o?.entryGate || "-"),
       confidence: n(o?.confidence, 0),
       vm: n(o?.vm, 0),
       pnlPct: pnl,
@@ -87,8 +96,6 @@ function analyzeEvents(events, mode) {
       givebackPct: giveback,
       reason: String(c.reason || ""),
       barsOpen: n(c.barsOpen, 0),
-      entryPrice: n(c.entryPrice, 0),
-      exitPrice: n(c.exitPrice, 0),
     };
 
     trades.push(item);
@@ -101,103 +108,68 @@ function analyzeEvents(events, mode) {
 
   const avgGiveback = givebackN ? givebackSum / givebackN : 0;
 
-  // suggestions
+  // Kritische suggesties (SELL tuning)
   const suggestions = [];
-  const topAlmost = topN(stuckReason.ALMOST, 3);
-  const topEntry = topN(stuckReason.ENTRY, 3);
-
-  const reasonStr = (x) => String(x || "").toLowerCase();
-  if (topAlmost.some(x => reasonStr(x.key).includes("stale")) || topEntry.some(x => reasonStr(x.key).includes("stale"))) {
-    suggestions.push({
-      what: "Orderbook is vaak te oud (stale) bij ALMOST/ENTRY",
-      do: "OB sampler vaker laten lopen of OB_MAX_AGE_MS iets verhogen.",
-      why: "Anders stopt de funnel vóór ENTRY.",
-    });
-  }
 
   if (avgGiveback >= 1.5) {
     suggestions.push({
-      what: "Veel giveback (winst was hoger, maar je eindigt lager)",
-      do: "Trailing strakker maken of TP1/TP2 aanpassen.",
-      why: "Je pakt winst, maar geeft terug vóór SELL.",
+      what: "Veel giveback (je had meer winst, eindigt lager)",
+      do: "Trailing strakker NA TP1 of TP1 iets eerder nemen. Als je maxPnL bijhoudt: sneller trailen na TP1.",
+      why: `avg giveback ${avgGiveback.toFixed(2)}% (>= 1.50%)`,
     });
   }
-
   if ((exitReasons["TIME_STOP_NO_MOMENTUM"] || 0) >= 5) {
     suggestions.push({
       what: "Veel TIME_STOP exits",
-      do: "ENTRY strenger op momentum of TIME_STOP_SCANS hoger.",
-      why: "Je gaat erin, maar er komt geen follow-through.",
+      do: "ENTRY strenger op momentum OF TIME_STOP_SCANS hoger (meer tijd geven).",
+      why: `TIME_STOP_NO_MOMENTUM = ${exitReasons["TIME_STOP_NO_MOMENTUM"]}`,
     });
   }
-
   if ((exitReasons["HARD_STOP"] || 0) >= 5) {
     suggestions.push({
       what: "Veel HARD_STOP exits",
-      do: "Stop iets ruimer of ENTRY alleen bij lagere range24.",
-      why: "Stop is te gevoelig voor normale volatiliteit.",
+      do: "StopPctFromRange24 iets ruimer OF ENTRY alleen bij lagere range24.",
+      why: `HARD_STOP = ${exitReasons["HARD_STOP"]}`,
     });
   }
 
   return {
+    sinceMs,
     counts: {
       events: ev.length,
       stageChanges: stageChanges.length,
       tradeOpen: tradeOpen.length,
       tradeClose: tradeClose.length,
     },
-    flowTop: topN(flow, 12),
-    stuckTop: {
-      RADAR: topN(stuckReason.RADAR, 8),
-      BUILDUP: topN(stuckReason.BUILDUP, 8),
-      ALMOST: topN(stuckReason.ALMOST, 8),
-      ENTRY: topN(stuckReason.ENTRY, 8),
+    flowTop: topN(flow, 14),
+    reasonsToTop: {
+      RADAR: topN(reasonsTo.RADAR, 10),
+      BUILDUP: topN(reasonsTo.BUILDUP, 10),
+      ALMOST: topN(reasonsTo.ALMOST, 10),
+      ENTRY: topN(reasonsTo.ENTRY, 10),
     },
     trades: {
-      exitReasonsTop: topN(exitReasons, 10),
+      exitReasonsTop: topN(exitReasons, 12),
       avgGivebackPct: Number(avgGiveback.toFixed(3)),
-      lateExitSamples: lateExit.slice(0, 10),
-      earlyExitSamples: earlyExit.slice(0, 10),
-      lastTrades: trades.slice(0, 30),
+      lateExitSamples: lateExit.slice(0, 12),
+      earlyExitSamples: earlyExit.slice(0, 12),
+      lastTrades: trades.slice(0, 25),
     },
     suggestions,
   };
 }
 
-function resetBlockScript() {
-  return `
-<script>
-  function resetAnalyze() {
-    try {
-      const url = new URL(window.location.href);
-      url.search = "";
-      const prefixes = ["analyze:", "analyzeMain:", "an:"];
-      const keysToRemove = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (!k) continue;
-        if (prefixes.some(p => k.startsWith(p))) keysToRemove.push(k);
-      }
-      keysToRemove.forEach(k => localStorage.removeItem(k));
-      window.location.href = url.pathname;
-    } catch (e) {
-      alert("Reset failed: " + (e && e.message ? e.message : String(e)));
-    }
-  }
-</script>`;
-}
-
 function htmlPage(mode, data) {
-  const list = (arr) => (arr || []).map(x => `<li><b>${esc(x.key)}</b> — ${n(x.count,0)}</li>`).join("") || "<li>n/a</li>";
+  const list = (arr) => (arr || []).map(x => `<li><b>${esc(x.key)}</b> — ${n(x.count,0)}</li>`).join("") || "<li class='muted'>n/a</li>";
 
   const rowTrade = (t) => `
     <tr>
       <td><b>${esc(t.symbol)}</b></td>
-      <td class="mono">${esc(t.reason)}</td>
+      <td>${esc(t.reason)}</td>
       <td>${n(t.pnlPct,0).toFixed(2)}%</td>
       <td>${n(t.maxPnlPct,0).toFixed(2)}%</td>
       <td>${n(t.givebackPct,0).toFixed(2)}%</td>
-      <td class="mono">${esc(t.entryGate || "-")}</td>
+      <td>${esc(t.entryGate || "-")}</td>
       <td>${n(t.confidence,0)}</td>
       <td>${n(t.vm,0).toFixed(2)}</td>
       <td>${n(t.barsOpen,0)}</td>
@@ -210,7 +182,7 @@ function htmlPage(mode, data) {
       <div><b>Doe:</b> ${esc(s.do)}</div>
       <div class="muted"><b>Waarom:</b> ${esc(s.why)}</div>
     </div>
-  `).join("");
+  `).join("") || `<div class="muted">Nog te weinig data. Laat cron langer lopen.</div>`;
 
   return `<!doctype html>
 <html>
@@ -227,30 +199,28 @@ function htmlPage(mode, data) {
     .box{background:#0c1320;border:1px solid #1f2a3a;border-radius:12px;padding:10px}
     ul{margin:0;padding-left:18px}
     table{width:100%;border-collapse:collapse;font-size:13px}
-    th,td{padding:8px;border-bottom:1px solid #1f2a3a;text-align:left;vertical-align:top}
+    th,td{padding:8px;border-bottom:1px solid #1f2a3a;text-align:left}
     .pill{display:inline-flex;align-items:center;background:#0a1b2b;border:1px solid #15334e;padding:6px 10px;border-radius:999px;font-size:13px;color:#e6edf3}
-    .row{display:flex;gap:8px;flex-wrap:wrap}
-    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;white-space:nowrap}
-    .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0 0 0}
-    .btn{cursor:pointer;border-radius:10px;border:1px solid #2b3a50;background:#0a1b2b;color:#e6edf3;padding:10px 12px}
-    .btn:hover{border-color:#3a5273}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+    .btn{cursor:pointer;border:1px solid #2a3a52;background:#0c1320;color:#e6edf3;border-radius:12px;padding:10px 12px;font-size:13px}
+    .btn:hover{border-color:#3b516f}
+    code{background:#0c1320;border:1px solid #1f2a3a;padding:2px 6px;border-radius:8px}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>Analyze (${esc(mode)}) — radar → entry → sell</h1>
-
-    <div class="bar">
-      <button class="btn" onclick="resetAnalyze()">Reset analyse</button>
-      <span class="muted">Reset alleen deze analyse pagina (filters/URL/localStorage). Events blijven.</span>
+    <div class="row">
+      <h1>Analyze (${esc(mode)}) — events + trade outcomes</h1>
+      <button class="btn" id="resetBtn">Reset Analysis</button>
     </div>
 
-    <div class="row" style="margin-top:10px">
-      <span class="pill">events: ${n(data.counts.events,0)}</span>
-      <span class="pill">stage_changes: ${n(data.counts.stageChanges,0)}</span>
-      <span class="pill">trade_open: ${n(data.counts.tradeOpen,0)}</span>
-      <span class="pill">trade_close: ${n(data.counts.tradeClose,0)}</span>
-      <span class="pill">avg giveback: ${n(data.trades.avgGivebackPct,0).toFixed(2)}%</span>
+    <div class="muted">
+      Since: <b>${data.sinceMs ? fmtDate(data.sinceMs) : "n/a"}</b>
+      &nbsp;•&nbsp; events: <b>${n(data.counts.events,0)}</b>
+      &nbsp;•&nbsp; stage_changes: <b>${n(data.counts.stageChanges,0)}</b>
+      &nbsp;•&nbsp; trade_open: <b>${n(data.counts.tradeOpen,0)}</b>
+      &nbsp;•&nbsp; trade_close: <b>${n(data.counts.tradeClose,0)}</b>
+      &nbsp;•&nbsp; avg giveback: <b>${n(data.trades.avgGivebackPct,0).toFixed(2)}%</b>
     </div>
 
     <div class="grid">
@@ -259,27 +229,27 @@ function htmlPage(mode, data) {
         <ul>${list(data.flowTop)}</ul>
       </div>
       <div class="box">
+        <h3>Top reasons → ENTRY</h3>
+        <ul>${list(data.reasonsToTop.ENTRY)}</ul>
+      </div>
+      <div class="box">
         <h3>Trade exit reasons</h3>
         <ul>${list(data.trades.exitReasonsTop)}</ul>
       </div>
       <div class="box">
-        <h3>Top redenen — ALMOST</h3>
-        <ul>${list(data.stuckTop.ALMOST)}</ul>
-      </div>
-      <div class="box">
-        <h3>Top redenen — ENTRY</h3>
-        <ul>${list(data.stuckTop.ENTRY)}</ul>
+        <h3>Top reasons → ALMOST</h3>
+        <ul>${list(data.reasonsToTop.ALMOST)}</ul>
       </div>
     </div>
 
     <div class="box" style="margin-top:12px">
-      <h3>SELL timing: te laat (giveback)</h3>
+      <h3>Timing: te laat (giveback)</h3>
       <div class="muted">Giveback hoog = winst was hoger, maar je eindigt lager.</div>
       <div style="overflow:auto;margin-top:8px">
         <table>
           <thead>
             <tr>
-              <th>Coin</th><th>Reason</th><th>PnL</th><th>Max</th><th>Giveback</th><th>Entry gate</th><th>Conf</th><th>VM</th><th>Bars</th>
+              <th>Coin</th><th>Reason</th><th>PnL</th><th>Max</th><th>Giveback</th><th>Gate</th><th>Conf</th><th>VM</th><th>Bars</th>
             </tr>
           </thead>
           <tbody>
@@ -290,13 +260,13 @@ function htmlPage(mode, data) {
     </div>
 
     <div class="box" style="margin-top:12px">
-      <h3>SELL timing: mogelijk te vroeg</h3>
-      <div class="muted">Veel TRAILING_TP bij lage maxPnL = trailing te strak.</div>
+      <h3>Timing: mogelijk te vroeg</h3>
+      <div class="muted">Veel TRAILING_TP bij lage maxPnL = te vroeg/te strak.</div>
       <div style="overflow:auto;margin-top:8px">
         <table>
           <thead>
             <tr>
-              <th>Coin</th><th>Reason</th><th>PnL</th><th>Max</th><th>Giveback</th><th>Entry gate</th><th>Conf</th><th>VM</th><th>Bars</th>
+              <th>Coin</th><th>Reason</th><th>PnL</th><th>Max</th><th>Giveback</th><th>Gate</th><th>Conf</th><th>VM</th><th>Bars</th>
             </tr>
           </thead>
           <tbody>
@@ -307,31 +277,37 @@ function htmlPage(mode, data) {
     </div>
 
     <div class="box" style="margin-top:12px">
-      <h3>Last trades (ENTRY → SELL)</h3>
-      <div style="overflow:auto;margin-top:8px">
-        <table>
-          <thead>
-            <tr>
-              <th>Coin</th><th>Reason</th><th>PnL</th><th>Max</th><th>Giveback</th><th>Entry gate</th><th>Conf</th><th>VM</th><th>Bars</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${(data.trades.lastTrades || []).map(rowTrade).join("") || `<tr><td colspan="9" class="muted">n/a</td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="box" style="margin-top:12px">
-      <h3>Concrete suggesties</h3>
-      ${sug || `<div class="muted">Nog te weinig data. Laat cron een tijdje lopen.</div>`}
+      <h3>Concrete suggesties (SELL tuning)</h3>
+      ${sug}
     </div>
 
     <div class="muted" style="margin-top:10px">
       Tip: <code>?format=json</code> voor ruwe analyse.
     </div>
   </div>
-  ${resetBlockScript()}
+
+  <script>
+    (function(){
+      const btn = document.getElementById("resetBtn");
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        btn.textContent = "Resetting...";
+        try {
+          const url = new URL(window.location.href);
+          const secret = url.searchParams.get("secret") || "";
+          const r = await fetch("/api/analyze-reset" + (secret ? ("?secret=" + encodeURIComponent(secret)) : ""), { method: "POST" });
+          const j = await r.json();
+          if (j && j.ok) window.location.reload();
+          else alert("Reset failed: " + (j && j.error ? j.error : "unknown"));
+        } catch (e) {
+          alert("Reset failed: " + String(e && e.message ? e.message : e));
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Reset Analysis";
+        }
+      });
+    })();
+  </script>
 </body>
 </html>`;
 }
@@ -342,10 +318,15 @@ export default async function handler(req, res) {
 
     const mode = String(req.query?.mode || "bull").toLowerCase();
     const format = String(req.query?.format || "html").toLowerCase();
-    const limit = Math.max(200, Math.min(5000, Number(req.query?.limit || 2000)));
+    const limit = Math.max(200, Math.min(12000, Number(req.query?.limit || 4000)));
 
-    const events = await readEvents("main", limit);
-    const data = analyzeEvents(events, mode);
+    const [events, sessionStartMsRaw] = await Promise.all([
+      readEvents("main", limit),
+      kv.get("analyze:sessionStartMs"),
+    ]);
+
+    const sinceMs = n(sessionStartMsRaw, 0) || (Date.now() - 7 * 24 * 3600 * 1000);
+    const data = analyzeEvents(events, mode, sinceMs);
 
     if (format === "json") {
       res.statusCode = 200;
