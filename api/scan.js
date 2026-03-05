@@ -6,7 +6,7 @@ import { getObSnapshot, obMapKey } from "../lib/obStore.js";
 export const config = RUNTIME_CONFIG;
 
 // ======================================================
-// ✅ 30 MIN SCAN LOCK (ATOMISCH) – NU BOUNDARY‑BASED
+// ✅ 30 MIN SCAN LOCK (ATOMISCH) – NU BOUNDARY-BASED
 // ======================================================
 async function tryAcquireScanLock(mode) {
   const key = `scan:lock:${String(mode).toLowerCase()}`;
@@ -91,7 +91,7 @@ const TIER_CFG = {
     requirePressureAlign: true, // bull => pressureDelta>=0, bear => <=0
   },
 
-  // Sample‑based gate thresholds
+  // Sample-based gate thresholds
   samples: {
     minForSpoof: 3,
     minForAbsorption: 4,
@@ -492,7 +492,7 @@ export default async function handler(req, res) {
     const obMapBlob = await kv.get(obMapKey(mode));
     const obCoverageMap = obMapBlob && obMapBlob.map ? obMapBlob.map : null;
 
-    // 👇 NIEUW: fail‑closed als map ontbreekt of ongeldig is
+    // 👇 NIEUW: fail-closed als map ontbreekt of ongeldig is
     if (!obCoverageMap || typeof obCoverageMap !== "object") {
       return send(res, 200, {
         ok: false,
@@ -558,7 +558,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // OB is ok -> extraheer basis OB‑waarden
+      // OB is ok -> extraheer basis OB-waarden
       const obFresh = !!ob?.fresh;
       const obValid = !!ob?.valid;
       const spreadPct = n(ob?.spreadPct, 999);
@@ -876,7 +876,10 @@ export default async function handler(req, res) {
       }
     }
 
-    const byScore = (a, b) => (b.confidence - a.confidence) || (b.vm - a.vm) || (Math.abs(b.change24) - Math.abs(a.change24));
+    const byScore = (a, b) =>
+      (b.confidence - a.confidence) ||
+      (b.vm - a.vm) ||
+      (Math.abs(b.change24) - Math.abs(a.change24));
 
     radar.sort(byScore);
     buildup.sort(byScore);
