@@ -1,4 +1,3 @@
-// /api/universe.js
 import { kv } from "@vercel/kv";
 import { createHash } from "crypto";
 import { RUNTIME_CONFIG, requireSecret } from "../lib/_runtime.js";
@@ -38,16 +37,32 @@ function up(x) {
 }
 
 // --------------------
-// Lock (atomisch)
+// Lock (atomisch) – NU BOUNDARY‑BASED
 // --------------------
 async function tryAcquireUniverseLock() {
   const now = Date.now();
-  const nextUntil = now + SCAN_INTERVAL_SEC * 1000;
+
+  // ✅ lock loopt altijd tot de volgende :00 of :30
+  const d = new Date(now);
+  const m = d.getMinutes();
+
+  const next = new Date(d);
+  next.setSeconds(0, 0);
+
+  if (m < 30) {
+    next.setMinutes(30);
+  } else {
+    next.setMinutes(0);
+    next.setHours(d.getHours() + 1);
+  }
+
+  const nextUntil = next.getTime();
+  const ttlSec = Math.max(60, Math.ceil((nextUntil - now) / 1000));
 
   const ok = await kv.set(
     K_LOCK_UNIVERSE,
     { until: nextUntil, setAt: now },
-    { nx: true, ex: SCAN_INTERVAL_SEC }
+    { nx: true, ex: ttlSec }
   );
 
   if (ok) return { ok: true, until: nextUntil, now, waitMs: 0 };
@@ -58,7 +73,7 @@ async function tryAcquireUniverseLock() {
   if (until > now) return { ok: false, until, now, waitMs: until - now };
 
   // stale → refresh
-  await kv.set(K_LOCK_UNIVERSE, { until: nextUntil, setAt: now }, { ex: SCAN_INTERVAL_SEC });
+  await kv.set(K_LOCK_UNIVERSE, { until: nextUntil, setAt: now }, { ex: ttlSec });
   return { ok: true, until: nextUntil, now, waitMs: 0 };
 }
 
