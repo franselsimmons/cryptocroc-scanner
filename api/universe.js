@@ -6,18 +6,18 @@ import { RUNTIME_CONFIG, requireSecret } from "../lib/_runtime.js";
 export const config = RUNTIME_CONFIG;
 
 // ======================================================
-// ✅ Universe scan settings
+// Universe scan settings
 // ======================================================
 const UNIVERSE_PAGES = 6;         // 6 * 250 = 1500 coins
 const PER_PAGE = 250;
-const UNIVERSE_TTL_SEC = 60 * 45; // 45 min cache (past bij jouw 30m cadence)
+const UNIVERSE_TTL_SEC = 60 * 45; // 45 min cache (past bij 30m cadence)
 
-// ✅ 30 min lock (shared for both bull/bear)
+// 30 min lock (shared for both bull/bear)
 const SCAN_INTERVAL_SEC = 30 * 60;
 
 // KV keys (100% vast)
-const K_UNIVERSE_LATEST = "universe:latest";
-const K_LOCK_UNIVERSE = "scan:lock:universe";
+export const K_UNIVERSE_LATEST = "universe:latest";
+export const K_LOCK_UNIVERSE = "scan:lock:universe";
 
 // --------------------
 // Helpers
@@ -63,7 +63,7 @@ async function tryAcquireUniverseLock() {
 }
 
 // --------------------
-// CoinGecko cache
+// CoinGecko cache (per URL)
 // --------------------
 function cgKey(url) {
   const h = createHash("sha1").update(String(url || "")).digest("hex");
@@ -82,7 +82,7 @@ async function fetchJson(url) {
 
   const headers = { accept: "application/json" };
 
-  // ✅ Demo key support (zet dit in Vercel env: CG_DEMO_API_KEY)
+  // Demo key support (Vercel env: CG_DEMO_API_KEY or CG_API_KEY)
   const demoKey = process.env.CG_DEMO_API_KEY || process.env.CG_API_KEY || "";
   if (demoKey) headers["x-cg-demo-api-key"] = demoKey;
 
@@ -108,7 +108,7 @@ async function fetchJson(url) {
 }
 
 // --------------------
-// Fetch 6 pages
+// Fetch universe (6 pages)
 // --------------------
 async function fetchUniverseCoins(pages = UNIVERSE_PAGES) {
   const maxPages = Math.max(1, Math.min(10, Number(pages) || UNIVERSE_PAGES));
@@ -153,10 +153,36 @@ async function fetchUniverseCoins(pages = UNIVERSE_PAGES) {
     all = all.concat(mapped);
 
     if (mapped.length < PER_PAGE) break;
-    if (page < maxPages) await new Promise((r) => setTimeout(r, 200));
+    if (page < maxPages) await new Promise((r) => setTimeout(r, 220));
   }
 
   return all;
+}
+
+// --------------------
+// Fetch BTC (apart maar via dezelfde cache)
+// --------------------
+async function fetchBtc() {
+  const url =
+    "https://api.coingecko.com/api/v3/coins/markets" +
+    "?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1" +
+    "&sparkline=false&price_change_percentage=1h,24h";
+
+  const arr = await fetchJson(url);
+  const b = arr?.[0] || {};
+
+  const chg1h = n(b?.price_change_percentage_1h_in_currency ?? b?.price_change_percentage_1h ?? 0, 0);
+  const chg24 = n(b?.price_change_percentage_24h_in_currency ?? b?.price_change_percentage_24h ?? 0, 0);
+
+  const high = n(b?.high_24h, 0);
+  const low = n(b?.low_24h, 0);
+  const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
+
+  return {
+    chg1h: +chg1h.toFixed(3),
+    chg24: +chg24.toFixed(3),
+    range24: +range24.toFixed(3),
+  };
 }
 
 // ======================================================
@@ -183,7 +209,11 @@ export default async function handler(req, res) {
       });
     }
 
-    const coins = await fetchUniverseCoins(UNIVERSE_PAGES);
+    // Haal zowel coins als BTC parallel op
+    const [coins, btc] = await Promise.all([
+      fetchUniverseCoins(UNIVERSE_PAGES),
+      fetchBtc(),
+    ]);
 
     const out = {
       ok: true,
@@ -191,7 +221,8 @@ export default async function handler(req, res) {
       pages: UNIVERSE_PAGES,
       perPage: PER_PAGE,
       count: coins.length,
-      coins, // <- bull/bear scan leest dit
+      btc,                    // ✅ toegevoegd voor scan.js
+      coins,
       meta: {
         key: K_UNIVERSE_LATEST,
         lock: { key: K_LOCK_UNIVERSE, active: false, until: lock.until, waitMs: 0 },
