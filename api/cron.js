@@ -1,5 +1,6 @@
 import { kv } from "@vercel/kv";
 
+import universe from "./universe.js";
 import scan from "./scan.js";
 import obSampler from "./ob/sampler.js";
 import obMapRefresh from "./ob/map_refresh.js";
@@ -195,6 +196,7 @@ function isVercelCron(req) {
 }
 
 async function runOneMode(mode, max, radar, symbols, secret) {
+  // Opmerking: universe wordt niet meer hier aangeroepen, maar één keer in de hoofdhandler
   const reqMap = makeInternalReq({ path: "/api/ob/map_refresh", mode, secret });
 
   // sampler met from=map
@@ -267,6 +269,13 @@ export default async function handler(req, res) {
     const secretFromQuery = String(req?.query?.secret || "").trim();
     const secret = secretFromQuery || pickSecret();
 
+    // ✅ 0) universe 1x per cron-run (heeft eigen 30m lock)
+    const reqUni = makeInternalReq({ path: "/api/universe", secret });
+    const resUni = makeRes();
+    await universe(reqUni, resUni);
+    const uniOut = safeJson(resUni.body);
+    const uniAssert = assertOkSoft("universe()", uniOut, resUni);
+
     const mode = normMode(req?.query?.mode);
 
     const max = q(req, "max", "60");
@@ -292,16 +301,24 @@ export default async function handler(req, res) {
           : { ok: false, errors: [String(bearRes.reason?.message || bearRes.reason || "bear failed")] };
 
       out = {
-        ok: !!bull.ok && !!bear.ok,
+        ok: uniAssert.ok && !!bull.ok && !!bear.ok,
         ts: Date.now(),
         mode: "both",
         params: { max, radar, symbols },
+        universe: uniOut, // universe resultaat
         bull,
         bear,
       };
     } else {
       const one = await runOneMode(mode, max, radar, symbols, secret);
-      out = { ok: !!one.ok, ts: Date.now(), mode, params: { max, radar, symbols }, ...one };
+      out = {
+        ok: uniAssert.ok && !!one.ok,
+        ts: Date.now(),
+        mode,
+        params: { max, radar, symbols },
+        universe: uniOut,
+        ...one,
+      };
     }
 
     // ALWAYS heartbeat
@@ -310,7 +327,7 @@ export default async function handler(req, res) {
       {
         ts: Date.now(),
         mode,
-        params: { max, radar, symbols }, // symbols wordt nog getoond maar niet gebruikt; kan optioneel weg
+        params: { max, radar, symbols },
         ok: !!out?.ok,
       },
       { ex: CRON_HEARTBEAT_TTL_SEC }
@@ -325,7 +342,7 @@ export default async function handler(req, res) {
         cadence: "30m",
         tookMs: Date.now() - startedAt,
         heartbeatKey: CRON_HEARTBEAT_KEY,
-        note: "Per mode: map_refresh -> obSampler -> scan -> discord. Check cron:last voor heartbeat.",
+        note: "Eén universe-run, daarna bull/bear scans (map_refresh → sampler → scan → discord).",
       })
     );
   } catch (e) {
