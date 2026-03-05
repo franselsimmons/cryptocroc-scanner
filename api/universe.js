@@ -9,7 +9,7 @@ export const config = RUNTIME_CONFIG;
 // ======================================================
 const UNIVERSE_PAGES = 6;         // 6 * 250 = 1500 coins
 const PER_PAGE = 250;
-const UNIVERSE_TTL_SEC = 60 * 45; // 45 min cache (past bij 30m cadence)
+const UNIVERSE_TTL_SEC = 60 * 35; // 35 min cache (past beter bij 30m lock)
 
 // 30 min lock (shared for both bull/bear)
 const SCAN_INTERVAL_SEC = 30 * 60;
@@ -37,12 +37,12 @@ function up(x) {
 }
 
 // --------------------
-// Lock (atomisch) – NU BOUNDARY‑BASED
+// Lock (atomisch) – boundary-based
 // --------------------
 async function tryAcquireUniverseLock() {
   const now = Date.now();
 
-  // ✅ lock loopt altijd tot de volgende :00 of :30
+  // lock loopt altijd tot de volgende :00 of :30
   const d = new Date(now);
   const m = d.getMinutes();
 
