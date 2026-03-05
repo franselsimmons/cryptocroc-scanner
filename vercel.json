@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron?mode=both&max=60&radar=200&symbols=PEPE,SONIC,TURBO",
-      "schedule": "*/30 * * * *"
+      "schedule": "0,30 * * * *"
     },
     { "path": "/api/moon/cron?mode=bull", "schedule": "*/5 * * * *" },
     { "path": "/api/moon/cron?mode=bear", "schedule": "*/5 * * * *" },
