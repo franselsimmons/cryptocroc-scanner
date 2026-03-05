@@ -1,5 +1,4 @@
 import { kv } from "@vercel/kv";
-import { createHash } from "crypto";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
 import { pushEvent } from "../lib/_analytics.js";
 import { getObSnapshot, obMapKey } from "../lib/obStore.js";
@@ -10,6 +9,12 @@ export const config = RUNTIME_CONFIG;
 // ✅ 30 MIN SCAN LOCK (ATOMISCH)
 // ======================================================
 const SCAN_INTERVAL_SEC = 30 * 60; // 30 minuten
+
+// ======================================================
+// ✅ Universe keys (gelijk aan universe.js)
+// ======================================================
+const K_UNIVERSE_LATEST = "universe:latest";
+const K_LOCK_UNIVERSE = "scan:lock:universe";
 
 // ======================================================
 // ✅ Design rationale (voor transparantie)
@@ -95,44 +100,6 @@ async function tryAcquireScanLock(mode) {
 // --------------------
 // Helpers
 // --------------------
-function cgKey(url) {
-  const h = createHash("sha1").update(String(url || "")).digest("hex");
-  return `cg:${h}`;
-}
-
-// ✅ CoinGecko KV cache (anti-429)
-const CG_FRESH_TTL_SEC = 60;
-const CG_STALE_TTL_SEC = 10 * 60;
-
-async function fetchJson(url) {
-  const key = cgKey(url);
-  const staleKey = `${key}:stale`;
-
-  const cached = await kv.get(key);
-  if (cached) return cached;
-
-  const r = await fetch(url, { headers: { accept: "application/json" } });
-  const t = await r.text();
-
-  if (r.status === 429) {
-    const stale = await kv.get(staleKey);
-    if (stale) return stale;
-    throw new Error(`Fetch failed 429: ${t.slice(0, 220)}`);
-  }
-
-  let j = null;
-  try {
-    j = JSON.parse(t);
-  } catch {}
-
-  if (!r.ok) throw new Error(`Fetch failed ${r.status}: ${t.slice(0, 160)}`);
-
-  await kv.set(key, j, { ex: CG_FRESH_TTL_SEC });
-  await kv.set(staleKey, j, { ex: CG_STALE_TTL_SEC });
-
-  return j;
-}
-
 function n(x, d = 0) {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
@@ -227,31 +194,8 @@ async function updateCoinStatsAndGetMetrics({ mode, sym, range24, spreadPct, obS
 }
 
 // ======================================================
-// ✅ BTC fetch
+// ✅ BTC state / compat (geen fetch meer, alleen rekenen)
 // ======================================================
-async function fetchBtc() {
-  const url =
-    "https://api.coingecko.com/api/v3/coins/markets" +
-    "?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1" +
-    "&sparkline=false&price_change_percentage=1h,24h";
-
-  const arr = await fetchJson(url);
-  const b = arr?.[0] || {};
-
-  const chg1h = n(b?.price_change_percentage_1h_in_currency ?? b?.price_change_percentage_1h ?? 0, 0);
-  const chg24 = n(b?.price_change_percentage_24h_in_currency ?? b?.price_change_percentage_24h ?? 0, 0);
-
-  const high = n(b?.high_24h, 0);
-  const low = n(b?.low_24h, 0);
-  const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
-
-  return {
-    chg1h: +chg1h.toFixed(3),
-    chg24: +chg24.toFixed(3),
-    range24: +range24.toFixed(3),
-  };
-}
-
 function normBtcState(x) {
   const s = String(x || "").toUpperCase().trim();
   if (s === "BULL" || s === "BEAR" || s === "NEUTRAL") return s;
@@ -324,105 +268,6 @@ function computeStageCap(mode, btcState) {
   if (allowFull) return { cap: false, capStage: "FULL", reason: `BTC ${st}: ${m} mag door naar ALMOST/ENTRY` };
   if (st === "NEUTRAL") return { cap: true, capStage, reason: "BTC NEUTRAL: scannen + OB door, maar max BUILDUP" };
   return { cap: true, capStage, reason: `BTC ${st}: ${m} blijft prep-mode (max BUILDUP)` };
-}
-
-// ======================================================
-// ✅ Haal meerdere CoinGecko pagina's op
-// ======================================================
-async function fetchCgTop(limit = 1000) {
-  const perPage = 250;
-  const maxPages = 10;
-  const pages = Math.min(maxPages, Math.ceil(limit / perPage));
-  let allCoins = [];
-
-  for (let page = 1; page <= pages; page++) {
-    const url =
-      `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd` +
-      `&order=volume_desc&per_page=${perPage}&page=${page}&sparkline=false` +
-      `&price_change_percentage=1h,24h`;
-
-    const arr = await fetchJson(url);
-    if (!arr || !Array.isArray(arr) || arr.length === 0) break;
-
-    const mapped = arr.map((c) => {
-      const price = n(c?.current_price, 0);
-      const high = n(c?.high_24h, 0);
-      const low = n(c?.low_24h, 0);
-      const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
-
-      const change24 = n(c?.price_change_percentage_24h_in_currency ?? c?.price_change_percentage_24h ?? 0, 0);
-      const change1h = n(c?.price_change_percentage_1h_in_currency ?? c?.price_change_percentage_1h ?? 0, 0);
-
-      return {
-        id: c?.id,
-        symbol: up(c?.symbol),
-        name: c?.name,
-        price,
-        volume: n(c?.total_volume, 0),
-        marketCap: n(c?.market_cap, 0),
-        change24,
-        change1h,
-        range24,
-      };
-    });
-
-    allCoins = allCoins.concat(mapped);
-
-    if (mapped.length < perPage) break;
-    if (page < pages) await new Promise((r) => setTimeout(r, 200));
-  }
-
-  return allCoins;
-}
-
-// ======================================================
-// ✅ passRadar – gebruikt meegegeven dyn
-// ======================================================
-function passRadar(core, mode, c, dyn) {
-  const R = core?.SETTINGS?.radar || {};
-  const vm = core.computeVm(c.volume, c.marketCap);
-
-  if (c.marketCap < n(R.mcapMin, 0)) return { ok: false, why: "mcap too low" };
-  if (c.marketCap > n(R.mcapMax, Number.MAX_SAFE_INTEGER)) return { ok: false, why: "mcap too high" };
-  if (c.volume < n(R.volMin, 0)) return { ok: false, why: "volume too low" };
-  if (vm < n(R.vmMin, 0)) return { ok: false, why: "vm too low" };
-  if (Math.abs(c.change24) > n(R.maxAbsChg24, 999)) return { ok: false, why: "chg24 too high" };
-
-  const maxRange = n(dyn?.maxRange24, n(R.maxRange24, 999));
-  if (c.range24 > maxRange) return { ok: false, why: `range24 too high (> ${maxRange.toFixed(2)}%)` };
-
-  const m = String(mode || "").toLowerCase();
-
-  if (m === "bull") {
-    const dir1hMin = n(dyn?.dir1hMinBull, n(R.dir1hMinBull, 0.2));
-    const dir24Min = n(dyn?.dir24MinBull, n(R.dir24MinBull, 0.5));
-    if (n(c.change1h, 0) < dir1hMin) return { ok: false, why: `dir fail 1h (< ${dir1hMin.toFixed(2)}%)` };
-    if (n(c.change24, 0) < dir24Min) return { ok: false, why: `dir fail 24h (< ${dir24Min.toFixed(2)}%)` };
-  } else if (m === "bear") {
-    const dir1hMax = n(dyn?.dir1hMaxBear, n(R.dir1hMaxBear, -0.2));
-    const dir24Max = n(dyn?.dir24MaxBear, n(R.dir24MaxBear, -0.5));
-    if (n(c.change1h, 0) > dir1hMax) return { ok: false, why: `dir fail 1h (> ${dir1hMax.toFixed(2)}%)` };
-    if (n(c.change24, 0) > dir24Max) return { ok: false, why: `dir fail 24h (> ${dir24Max.toFixed(2)}%)` };
-  }
-
-  return { ok: true, vm, dyn };
-}
-
-// ======================================================
-// ✅ stageFromSwing – gebruikt dyn
-// ======================================================
-function stageFromSwing(mode, c, dyn) {
-  const vm = c.vm;
-  const range = c.range24;
-  const ch1h = c.change1h;
-
-  const wantUp = mode === "bull";
-  const dir1h = wantUp ? n(dyn?.dir1hMinBull, 0.2) : n(dyn?.dir1hMaxBear, -0.2);
-  const inDir = wantUp ? ch1h >= dir1h : ch1h <= dir1h;
-
-  if (vm >= 0.24 && range <= n(dyn?.maxRange24, 22) && inDir) return "ALMOST";
-  if (vm >= 0.18 && range <= n(dyn?.maxRange24, 28) + 4) return "BUILDUP";
-  return "RADAR";
 }
 
 // ======================================================
@@ -605,14 +450,31 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    const btcBase = await fetchBtc();
+    // ✅ 1) Universe uit KV (wordt 1x per 30m gevuld door /api/universe)
+    const uni = await kv.get(K_UNIVERSE_LATEST);
+    if (!uni?.ok || !Array.isArray(uni?.coins) || uni.coins.length === 0) {
+      return send(res, 200, {
+        ok: false,
+        mode,
+        error: `Universe missing/empty in KV (${K_UNIVERSE_LATEST}). Run /api/universe (cron) first.`,
+        meta: {
+          universe: { key: K_UNIVERSE_LATEST, has: !!uni, count: Array.isArray(uni?.coins) ? uni.coins.length : 0 },
+          universeLockKey: K_LOCK_UNIVERSE,
+        },
+      });
+    }
+
+    // ✅ 2) BTC komt uit universe (geen aparte fetch)
+    const btcBase = uni?.btc || { chg1h: 0, chg24: 0, range24: 0 };
     const btcState = computeBtcStateCompat(btcBase, core.SETTINGS);
     const btcTune = btcConfidenceAdjustCompat(mode, btcState, btcBase, core.SETTINGS);
     const btc = { ...btcBase, state: btcState, tune: btcTune };
 
     const cap = computeStageCap(mode, btc.state);
 
-    const cg = await fetchCgTop(core.SETTINGS.CG_TOP || 1000);
+    // ✅ 3) Slice tot gewenste aantal (core.SETTINGS.CG_TOP staat nu op 1500)
+    const cgTop = Number(core?.SETTINGS?.CG_TOP ?? 1500);
+    const cg = uni.coins.slice(0, Math.max(1, cgTop));
 
     // ✅ OB coverage map laden (geen hgetall, gewoon get)
     const obMapBlob = await kv.get(obMapKey(mode));
@@ -1028,6 +890,14 @@ export default async function handler(req, res) {
         scanLock: { active: false, until: lock.until, waitMs: 0 },
         counts: { cg: cg.length, radar: radar.length, buildup: buildup.length, almost: almost.length, entry: entry.length },
         rationale: DESIGN_RATIONALE,
+        universe: {
+          key: K_UNIVERSE_LATEST,
+          ts: uni.ts || null,
+          pages: uni.pages || null,
+          perPage: uni.perPage || null,
+          count: uni.count || (Array.isArray(uni.coins) ? uni.coins.length : 0),
+          lockKey: K_LOCK_UNIVERSE,
+        },
       },
     };
 
@@ -1039,4 +909,51 @@ export default async function handler(req, res) {
   } catch (e) {
     return send(res, 200, { ok: false, error: String(e?.message || e) });
   }
+}
+
+// ======================================================
+// ✅ Hulpfuncties die in de loop gebruikt worden (moesten na import)
+// ======================================================
+function passRadar(core, mode, c, dyn) {
+  const R = core?.SETTINGS?.radar || {};
+  const vm = core.computeVm(c.volume, c.marketCap);
+
+  if (c.marketCap < n(R.mcapMin, 0)) return { ok: false, why: "mcap too low" };
+  if (c.marketCap > n(R.mcapMax, Number.MAX_SAFE_INTEGER)) return { ok: false, why: "mcap too high" };
+  if (c.volume < n(R.volMin, 0)) return { ok: false, why: "volume too low" };
+  if (vm < n(R.vmMin, 0)) return { ok: false, why: "vm too low" };
+  if (Math.abs(c.change24) > n(R.maxAbsChg24, 999)) return { ok: false, why: "chg24 too high" };
+
+  const maxRange = n(dyn?.maxRange24, n(R.maxRange24, 999));
+  if (c.range24 > maxRange) return { ok: false, why: `range24 too high (> ${maxRange.toFixed(2)}%)` };
+
+  const m = String(mode || "").toLowerCase();
+
+  if (m === "bull") {
+    const dir1hMin = n(dyn?.dir1hMinBull, n(R.dir1hMinBull, 0.2));
+    const dir24Min = n(dyn?.dir24MinBull, n(R.dir24MinBull, 0.5));
+    if (n(c.change1h, 0) < dir1hMin) return { ok: false, why: `dir fail 1h (< ${dir1hMin.toFixed(2)}%)` };
+    if (n(c.change24, 0) < dir24Min) return { ok: false, why: `dir fail 24h (< ${dir24Min.toFixed(2)}%)` };
+  } else if (m === "bear") {
+    const dir1hMax = n(dyn?.dir1hMaxBear, n(R.dir1hMaxBear, -0.2));
+    const dir24Max = n(dyn?.dir24MaxBear, n(R.dir24MaxBear, -0.5));
+    if (n(c.change1h, 0) > dir1hMax) return { ok: false, why: `dir fail 1h (> ${dir1hMax.toFixed(2)}%)` };
+    if (n(c.change24, 0) > dir24Max) return { ok: false, why: `dir fail 24h (> ${dir24Max.toFixed(2)}%)` };
+  }
+
+  return { ok: true, vm, dyn };
+}
+
+function stageFromSwing(mode, c, dyn) {
+  const vm = c.vm;
+  const range = c.range24;
+  const ch1h = c.change1h;
+
+  const wantUp = mode === "bull";
+  const dir1h = wantUp ? n(dyn?.dir1hMinBull, 0.2) : n(dyn?.dir1hMaxBear, -0.2);
+  const inDir = wantUp ? ch1h >= dir1h : ch1h <= dir1h;
+
+  if (vm >= 0.24 && range <= n(dyn?.maxRange24, 22) && inDir) return "ALMOST";
+  if (vm >= 0.18 && range <= n(dyn?.maxRange24, 28) + 4) return "BUILDUP";
+  return "RADAR";
 }
