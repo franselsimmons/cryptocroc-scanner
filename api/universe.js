@@ -7,12 +7,9 @@ export const config = RUNTIME_CONFIG;
 // ======================================================
 // Universe scan settings
 // ======================================================
-const UNIVERSE_PAGES = 6;         // 6 * 250 = 1500 coins
+const UNIVERSE_PAGES = 6;          // 6 * 250 = 1500 coins (blijft zoals jij wilde)
 const PER_PAGE = 250;
-const UNIVERSE_TTL_SEC = 60 * 35; // 35 min cache (past beter bij 30m lock)
-
-// 30 min lock (shared for both bull/bear)
-const SCAN_INTERVAL_SEC = 30 * 60;
+const UNIVERSE_TTL_SEC = 60 * 35;  // 35 min cache (past beter bij 30m lock)
 
 // KV keys (100% vast)
 export const K_UNIVERSE_LATEST = "universe:latest";
@@ -85,8 +82,9 @@ function cgKey(url) {
   return `cg:${h}`;
 }
 
-const CG_FRESH_TTL_SEC = 60;
-const CG_STALE_TTL_SEC = 10 * 60;
+// ✅ Belangrijk: maak stale lang genoeg om 429 periodes te overleven
+const CG_FRESH_TTL_SEC = 90;          // iets ruimer
+const CG_STALE_TTL_SEC = 6 * 60 * 60; // 6 uur
 
 async function fetchJson(url) {
   const key = cgKey(url);
@@ -123,7 +121,7 @@ async function fetchJson(url) {
 }
 
 // --------------------
-// Fetch universe (6 pages)
+// Fetch universe (pages) – ✅ fail-open per page
 // --------------------
 async function fetchUniverseCoins(pages = UNIVERSE_PAGES) {
   const maxPages = Math.max(1, Math.min(10, Number(pages) || UNIVERSE_PAGES));
@@ -135,7 +133,14 @@ async function fetchUniverseCoins(pages = UNIVERSE_PAGES) {
       `&order=volume_desc&per_page=${PER_PAGE}&page=${page}` +
       `&sparkline=false&price_change_percentage=1h,24h`;
 
-    const arr = await fetchJson(url);
+    let arr;
+    try {
+      arr = await fetchJson(url);
+    } catch {
+      // ✅ FAIL-OPEN: stop loop, maar return wat we al hebben
+      break;
+    }
+
     if (!Array.isArray(arr) || arr.length === 0) break;
 
     const mapped = arr.map((c) => {
@@ -168,35 +173,30 @@ async function fetchUniverseCoins(pages = UNIVERSE_PAGES) {
     all = all.concat(mapped);
 
     if (mapped.length < PER_PAGE) break;
-    if (page < maxPages) await new Promise((r) => setTimeout(r, 220));
+
+    // ✅ meer ademruimte om 429 te vermijden
+    if (page < maxPages) await new Promise((r) => setTimeout(r, 1200));
   }
 
   return all;
 }
 
 // --------------------
-// Fetch BTC (apart maar via dezelfde cache)
+// BTC uit coins halen (geen extra CoinGecko call)
 // --------------------
-async function fetchBtc() {
-  const url =
-    "https://api.coingecko.com/api/v3/coins/markets" +
-    "?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1" +
-    "&sparkline=false&price_change_percentage=1h,24h";
+function btcFromCoins(coins) {
+  const a = Array.isArray(coins) ? coins : [];
+  const b = a.find((x) => String(x?.id || "") === "bitcoin") || null;
 
-  const arr = await fetchJson(url);
-  const b = arr?.[0] || {};
-
-  const chg1h = n(b?.price_change_percentage_1h_in_currency ?? b?.price_change_percentage_1h ?? 0, 0);
-  const chg24 = n(b?.price_change_percentage_24h_in_currency ?? b?.price_change_percentage_24h ?? 0, 0);
-
-  const high = n(b?.high_24h, 0);
-  const low = n(b?.low_24h, 0);
-  const range24 = low > 0 ? ((high - low) / low) * 100 : 0;
+  if (!b) {
+    return { chg1h: 0, chg24: 0, range24: 0, source: "missing" };
+  }
 
   return {
-    chg1h: +chg1h.toFixed(3),
-    chg24: +chg24.toFixed(3),
-    range24: +range24.toFixed(3),
+    chg1h: +n(b.change1h, 0).toFixed(3),
+    chg24: +n(b.change24, 0).toFixed(3),
+    range24: +n(b.range24, 0).toFixed(3),
+    source: "coins",
   };
 }
 
@@ -228,11 +228,23 @@ export default async function handler(req, res) {
       }
     }
 
-    // Haal zowel coins als BTC parallel op
-    const [coins, btc] = await Promise.all([
-      fetchUniverseCoins(UNIVERSE_PAGES),
-      fetchBtc(),
-    ]);
+    const coins = await fetchUniverseCoins(UNIVERSE_PAGES);
+    const btc = btcFromCoins(coins);
+
+    // ✅ Als coins leeg zijn, probeer stale universe te returnen (zodat scan niet hard faalt)
+    if (!coins.length) {
+      const latest = await kv.get(K_UNIVERSE_LATEST);
+      if (latest?.ok && Array.isArray(latest?.coins) && latest.coins.length) {
+        return send(res, 200, {
+          ok: true,
+          skipped: true,
+          reason: "coingecko failed; served previous universe",
+          ts: Date.now(),
+          universe: { ts: latest.ts, pages: latest.pages, perPage: latest.perPage, count: latest.count },
+          meta: { tookMs: Date.now() - startedAt },
+        });
+      }
+    }
 
     const out = {
       ok: true,
@@ -240,7 +252,7 @@ export default async function handler(req, res) {
       pages: UNIVERSE_PAGES,
       perPage: PER_PAGE,
       count: coins.length,
-      btc,                    // ✅ toegevoegd voor scan.js
+      btc,      // ✅ voor scan.js
       coins,
       meta: {
         key: K_UNIVERSE_LATEST,
@@ -248,7 +260,10 @@ export default async function handler(req, res) {
       },
     };
 
-    await kv.set(K_UNIVERSE_LATEST, out, { ex: UNIVERSE_TTL_SEC });
+    // ✅ Ook partial coins opslaan (als je 1-2 pages hebt, is het nog steeds bruikbaar)
+    if (coins.length > 0) {
+      await kv.set(K_UNIVERSE_LATEST, out, { ex: UNIVERSE_TTL_SEC });
+    }
 
     return send(res, 200, { ...out, tookMs: Date.now() - startedAt });
   } catch (e) {
