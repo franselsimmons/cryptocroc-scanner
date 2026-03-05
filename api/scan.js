@@ -19,6 +19,41 @@ const DESIGN_RATIONALE = [
   "OB gates zijn goed, maar spread/score zijn coin-dependent → daarom percentiles.",
 ].join(" ");
 
+// ======================================================
+// ✅ Tier gating config (single place to tune)
+// ======================================================
+const TIER_CFG = {
+  // Basic OB sanity for anything above RADAR
+  buildup: {
+    spreadMaxPct: 1.40,
+    depthMinUsd1p: 18_000,
+    obScoreAbsMin: 0.00, // buildup doesn't require imbalance, just sanity
+  },
+
+  // Medium filters
+  almost: {
+    spreadMaxPct: 1.10,
+    depthMinUsd1p: 28_000,
+    obScoreAbsMin: 0.030, // require some imbalance
+    requireWall: false,   // optional: set true if you want wall presence
+  },
+
+  // Hard filters
+  entry: {
+    spreadMaxPct: 0.95,
+    depthMinUsd1p: 45_000,
+    obScoreAbsMin: 0.045,
+    requireWall: false,
+    requirePressureAlign: true, // bull => pressureDelta>=0, bear => <=0
+  },
+
+  // Sample‑based gate thresholds
+  samples: {
+    minForSpoof: 3,
+    minForAbsorption: 4,
+  },
+};
+
 // ---------- hulpfunctie voor null-safe getallen ----------
 function fnum(x) {
   const v = Number(x);
@@ -485,6 +520,58 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
   };
 }
 
+// ---------- toegevoegde helpers voor spoof en absorption ----------
+function spoofRiskFromSamples(samples) {
+  const a = Array.isArray(samples) ? samples : [];
+  if (a.length < TIER_CFG.samples.minForSpoof) return { ok: true, risk: 0, why: "not_enough_samples" };
+
+  const s2 = a[a.length - 1];
+  const s1 = a[a.length - 2];
+
+  const lorNow = Number(s2?.lor || 0);
+  const lorPrev = Number(s1?.lor || 0);
+
+  const wallNow = lorNow >= 0.22;
+  const wallPrev = lorPrev >= 0.22;
+
+  const toggledOff = wallPrev && !wallNow;
+
+  const scoreNow = Number(s2?.score || 0);
+  const scorePrev = Number(s1?.score || 0);
+  const scoreFlip = Math.sign(scorePrev) !== Math.sign(scoreNow);
+
+  const spreadNow = Number(s2?.spreadPct || 999);
+  const spreadPrev = Number(s1?.spreadPct || 999);
+  const spreadWorse = spreadNow > spreadPrev * 1.05;
+
+  const risk = (toggledOff ? 1 : 0) + (scoreFlip ? 1 : 0) + (spreadWorse ? 1 : 0);
+
+  return { ok: risk <= 1, risk, why: risk >= 2 ? "spoof_like_wall_behavior" : "ok" };
+}
+
+function absorptionFromSamples(samples, mode) {
+  const a = Array.isArray(samples) ? samples : [];
+  if (a.length < TIER_CFG.samples.minForAbsorption) return { ok: true, why: "not_enough_samples" };
+
+  // Gebruik de centrale instelling voor het aantal samples
+  const last = a.slice(-TIER_CFG.samples.minForAbsorption);
+
+  const scores = last.map((x) => Number(x?.score || 0));
+  const depths = last.map((x) => Number(x?.depthMinUsd1p || 0));
+
+  const avgScore = scores.reduce((p, c) => p + c, 0) / scores.length;
+  const avgDepth = depths.reduce((p, c) => p + c, 0) / depths.length;
+
+  const wantUp = String(mode) === "bull";
+  const aligned = wantUp ? avgScore > 0.03 : avgScore < -0.03;
+
+  // Absorption proxy: deep liquidity but weak/non-aligned pressure
+  const absorption = avgDepth > 40_000 && !aligned;
+
+  return absorption ? { ok: false, why: "liquidity_absorption_proxy" } : { ok: true, why: "ok" };
+}
+// ----------------------------------------------------------------
+
 // ======================================================
 // MAIN HANDLER
 // ======================================================
@@ -552,17 +639,105 @@ export default async function handler(req, res) {
       const sym = up(c.symbol);
 
       // skip coins zonder coverage (geen Bitget USDT pair)
-      if (!obCoverageMap[sym]) {
+      if (!obCoverageMap[sym]) continue;
+
+      // 1) Radar gate eerst (mcap/vol/vm/range/direction)
+      const dyn = typeof core.dynamicRadarThresholds === "function"
+        ? core.dynamicRadarThresholds(n(c.range24, 0), core.SETTINGS)
+        : null;
+
+      const radarGate = passRadar(core, mode, c, dyn);
+      if (!radarGate.ok) continue;
+
+      const vm = radarGate.vm;
+      const usedDyn = radarGate.dyn || dyn;
+
+      // 2) HARD OB gate: no fresh+valid OB => RADAR only
+      const ob = await getObForSymbol({ mode, symbol: sym });
+      if (!ob?.ok || !ob?.valid || !ob?.fresh) {
+        radar.push({
+          symbol: sym,
+          name: c.name || sym,
+          price: n(c.price, 0),
+          marketCap: n(c.marketCap, 0),
+          volume: n(c.volume, 0),
+          vm: +n(vm, 0).toFixed(6),
+          change1h: +n(c.change1h, 0).toFixed(3),
+          change24: +n(c.change24, 0).toFixed(3),
+          range24: +n(c.range24, 0).toFixed(3),
+
+          confidence: 0,
+          stage: "RADAR",
+          stageBase: "RADAR",
+          gates: {
+            radar: "passed",
+            almost: "blocked: missing/invalid/stale orderbook",
+            entry: "blocked: missing/invalid/stale orderbook",
+          },
+          ob: {
+            fresh: !!ob?.fresh,
+            valid: !!ob?.valid,
+            reason: ob?.reason || "no_ob",
+            ageSec: ob?.ageSec ?? null,
+          },
+        });
         continue;
       }
 
-      const ob = await getObForSymbol({ mode, symbol: sym });
+      // OB is ok -> extraheer basis OB‑waarden
       const obFresh = !!ob?.fresh;
       const obValid = !!ob?.valid;
       const spreadPct = n(ob?.spreadPct, 999);
       const depthMinUsd1p = n(ob?.depthMinUsd1p, 0);
       const obScore = n(ob?.score, 0);
+      const obScoreAbs = Math.abs(obScore);
 
+      // ======================================================
+      // Tier baseline: BUILDUP sanity check (als die faalt -> RADAR)
+      // ======================================================
+      const B = TIER_CFG.buildup;
+      const A = TIER_CFG.almost;
+      const E = TIER_CFG.entry;
+
+      const buildupOk =
+        spreadPct <= B.spreadMaxPct &&
+        depthMinUsd1p >= B.depthMinUsd1p &&
+        obScoreAbs >= B.obScoreAbsMin;
+
+      if (!buildupOk) {
+        radar.push({
+          symbol: sym,
+          name: c.name || sym,
+          price: n(c.price, 0),
+          marketCap: n(c.marketCap, 0),
+          volume: n(c.volume, 0),
+          vm: +n(vm, 0).toFixed(6),
+          change1h: +n(c.change1h, 0).toFixed(3),
+          change24: +n(c.change24, 0).toFixed(3),
+          range24: +n(c.range24, 0).toFixed(3),
+
+          confidence: 0,
+          stage: "RADAR",
+          stageBase: "RADAR",
+          gates: {
+            radar: "passed",
+            almost: "blocked: OB sanity failed for BUILDUP",
+            entry: "blocked: OB sanity failed for BUILDUP",
+          },
+          ob: {
+            fresh: obFresh,
+            valid: obValid,
+            spreadPct,
+            depthMinUsd1p,
+            score: obScore,
+          },
+        });
+        continue;
+      }
+
+      // Vanaf hier: coin voldoet aan BUILDUP-eisen en heeft een geldig OB
+
+      // Coin stats (voor thresholds en anomaly)
       const coinStats = await updateCoinStatsAndGetMetrics({
         mode,
         sym,
@@ -572,24 +747,12 @@ export default async function handler(req, res) {
         now,
       });
 
-      const rangeForDyn = Number.isFinite(coinStats?.medRange24) ? coinStats.medRange24 : n(c.range24, 0);
-
-      const dyn =
-        typeof core.dynamicRadarThresholds === "function"
-          ? core.dynamicRadarThresholds(rangeForDyn, core.SETTINGS)
-          : null;
-
-      const radarGate = passRadar(core, mode, c, dyn);
-      if (!radarGate.ok) continue;
-
-      const vm = radarGate.vm;
-      const usedDyn = radarGate.dyn || dyn;
-
+      // Bepaal initiële stage op basis van swing (gebruik usedDyn)
       let stageBase = stageFromSwing(mode, { ...c, vm }, usedDyn);
 
+      // Spike detectie
       const curRange = n(c.range24, 0);
       const medRange = Number.isFinite(coinStats?.medRange24) ? coinStats.medRange24 : null;
-
       const hasStats = n(coinStats?.samples, 0) >= 30;
       const isSpike = hasStats && medRange && medRange > 0 && curRange > 2.2 * medRange && curRange > 10;
 
@@ -599,6 +762,7 @@ export default async function handler(req, res) {
         if (stageBase === "ALMOST" || stageBase === "ENTRY") stageBase = "BUILDUP";
       }
 
+      // Confidence
       const confidenceBase = core.computeConfidence({
         vm,
         change24: c.change24,
@@ -607,19 +771,19 @@ export default async function handler(req, res) {
       });
       const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
 
+      // Thresholds (adaptief, maar spread/depth/obScore worden nu door tiers overschreven)
       const baseThr = adaptiveEntryThresholds(core, c, vm);
       let thr =
         typeof core.dynamicEntryThresholds === "function"
           ? core.dynamicEntryThresholds({ marketCap: c.marketCap, volume: c.volume, vm }, baseThr, core.SETTINGS)
           : baseThr;
 
+      // Dynamische aanpassingen op basis van percentiles (optioneel)
       if (thr && Number.isFinite(coinStats?.p80SpreadPct)) {
         const hardMax = Number(core?.SETTINGS?.entry?.dyn?.spreadHardMaxPct ?? 1.6);
         const hardMin = Number(core?.SETTINGS?.entry?.dyn?.spreadHardMinPct ?? 0.55);
-
         const coinBaseline = coinStats.p80SpreadPct * 1.25;
         const base = Number(thr.spreadMaxPct || 0);
-
         thr.spreadMaxPct = 0.70 * base + 0.30 * coinBaseline;
         thr.spreadMaxPct = Math.max(hardMin, Math.min(hardMax, thr.spreadMaxPct));
       }
@@ -627,10 +791,8 @@ export default async function handler(req, res) {
       if (thr && Number.isFinite(coinStats?.p70ObAbs)) {
         const hardMax = Number(core?.SETTINGS?.entry?.dyn?.obScoreHardMax ?? 0.075);
         const hardMin = Number(core?.SETTINGS?.entry?.dyn?.obScoreHardMin ?? 0.04);
-
         const base = Number(thr.obScoreMin || 0);
         const coin = Number(coinStats.p70ObAbs || 0) * 0.85;
-
         const blended = 0.65 * base + 0.35 * coin;
         thr.obScoreMin = Math.max(hardMin, Math.min(hardMax, blended));
       }
@@ -639,61 +801,115 @@ export default async function handler(req, res) {
       let almostGate = "n/a";
       let entryGate = "n/a";
 
+      // BTC cap check
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
         stage = "BUILDUP";
         stageBase = "BUILDUP";
         almostGate = `capped: ${cap.capStage}`;
         entryGate = `capped: ${cap.capStage}`;
       } else {
+        // ======================================================
+        // ALMOST gate (medium filters + slope + spoof)
+        // ======================================================
         if (stageBase === "ALMOST") {
-          const obSamples = await kv.get(core.keyObSamples(mode, sym));
-          const slopeCheck =
-            typeof core.checkObSlopeGate === "function"
-              ? core.checkObSlopeGate({ stage: "almost", mode, obSamples, settings: core.SETTINGS })
-              : { ok: true };
-
-          if (!slopeCheck.ok) {
+          // Tier baseline checks (ALMOST)
+          if (spreadPct > A.spreadMaxPct) {
             stage = "BUILDUP";
             stageBase = "BUILDUP";
-            almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
+            almostGate = `blocked: spread>${A.spreadMaxPct}%`;
+          } else if (depthMinUsd1p < A.depthMinUsd1p) {
+            stage = "BUILDUP";
+            stageBase = "BUILDUP";
+            almostGate = `blocked: depth1%<${A.depthMinUsd1p}`;
+          } else if (obScoreAbs < A.obScoreAbsMin) {
+            stage = "BUILDUP";
+            stageBase = "BUILDUP";
+            almostGate = `blocked: |obScore|<${A.obScoreAbsMin}`;
           } else {
-            almostGate = "passed";
+            // slope gate
+            const obSamples = await kv.get(core.keyObSamples(mode, sym));
+            const slopeCheck =
+              typeof core.checkObSlopeGate === "function"
+                ? core.checkObSlopeGate({ stage: "almost", mode, obSamples, settings: core.SETTINGS })
+                : { ok: true };
+
+            if (!slopeCheck.ok) {
+              stage = "BUILDUP";
+              stageBase = "BUILDUP";
+              almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
+            } else {
+              // spoof gate
+              const spoof = spoofRiskFromSamples(obSamples);
+              if (!spoof.ok) {
+                stage = "BUILDUP";
+                stageBase = "BUILDUP";
+                almostGate = `blocked: spoof risk (${spoof.why})`;
+              } else {
+                almostGate = "passed";
+              }
+            }
           }
         }
 
-        if (stageBase === "ALMOST") {
-          if (!ob || ob.ok === false) entryGate = "OB missing";
-          else if (!obFresh) entryGate = "OB stale";
-          else if (!obValid) entryGate = "OB invalid";
-          else if (confidence < n(thr.minConfidence, 0)) entryGate = `Confidence < ${thr.minConfidence}`;
-          else if (spreadPct > n(thr.spreadMaxPct, 999)) entryGate = `Spread > ${thr.spreadMaxPct}%`;
-          else if (depthMinUsd1p < n(thr.depthMinUsd1p, 0)) entryGate = `Depth1% < $${thr.depthMinUsd1p}`;
-          else if (Math.abs(obScore) < n(thr.obScoreMin, 0)) entryGate = `OB score < ${thr.obScoreMin}`;
-          else {
-            const obSamples = await kv.get(core.keyObSamples(mode, sym));
+        // ======================================================
+        // ENTRY gate (hard filters + slope + pressure + absorption)
+        // ======================================================
+        // Gebruik de huidige stage (na ALMOST gate) in plaats van stageBase
+        if (stage === "ALMOST") {
+          // Eerst confidence check (adaptief)
+          if (confidence < n(thr.minConfidence, 0)) {
+            entryGate = `Confidence < ${thr.minConfidence}`;
+          }
+          // Daarna tier harde grenzen
+          else if (spreadPct > E.spreadMaxPct) {
+            entryGate = `blocked: spread>${E.spreadMaxPct}%`;
+          } else if (depthMinUsd1p < E.depthMinUsd1p) {
+            entryGate = `blocked: depth1%<${E.depthMinUsd1p}`;
+          } else if (obScoreAbs < E.obScoreAbsMin) {
+            entryGate = `blocked: |obScore|<${E.obScoreAbsMin}`;
+          } else {
+            // Nu de geavanceerde checks
+            const obSamples2 = await kv.get(core.keyObSamples(mode, sym));
+            // slope gate at entry (met correcte parameter `obSamples`)
             const slopeCheck2 =
               typeof core.checkObSlopeGate === "function"
-                ? core.checkObSlopeGate({ stage: "entry", mode, obSamples, settings: core.SETTINGS })
+                ? core.checkObSlopeGate({ stage: "entry", mode, obSamples: obSamples2, settings: core.SETTINGS })
                 : { ok: true };
 
-            const pressureDelta = n(ob?.pressureDeltaUsd, 0);
-            const pressureOk = mode === "bull" ? pressureDelta >= 0 : pressureDelta <= 0;
+            if (!slopeCheck2.ok) {
+              entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
+            } else {
+              // pressure align (indien vereist)
+              if (E.requirePressureAlign) {
+                const pressureDelta = n(ob?.pressureDeltaUsd, 0);
+                const pressureOk = mode === "bull" ? pressureDelta >= 0 : pressureDelta <= 0;
+                if (!pressureOk) {
+                  entryGate = "blocked: pressure contra";
+                }
+              }
 
-            if (!slopeCheck2.ok) entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
-            else if (!pressureOk) entryGate = "Pressure contra";
-            else {
-              stage = "ENTRY";
-              entryGate = "passed";
+              if (entryGate === "n/a" || entryGate === "passed") {
+                // absorption gate
+                const absorb = absorptionFromSamples(obSamples2, mode);
+                if (!absorb.ok) {
+                  entryGate = `blocked: ${absorb.why}`;
+                } else {
+                  stage = "ENTRY";
+                  entryGate = "passed";
+                }
+              }
             }
           }
         }
       }
 
+      // Anomaly gate (range spike) overschrijft eventuele gates
       if (anomaly?.type === "RANGE_SPIKE") {
         if (almostGate === "n/a") almostGate = `anomaly: range spike x${anomaly.factor}`;
         if (entryGate === "n/a") entryGate = `anomaly: range spike x${anomaly.factor}`;
       }
 
+      // Consistency check
       const upd = updateStateAndConsistency(state, sym, stage, core, now);
 
       if ((stage === "ALMOST" || stage === "ENTRY") && !upd.consistency?.ok) {
@@ -712,6 +928,7 @@ export default async function handler(req, res) {
         }
       }
 
+      // Bouw item
       const item = {
         symbol: sym,
         name: c.name || sym,
@@ -763,8 +980,8 @@ export default async function handler(req, res) {
         anomaly: anomaly || null,
 
         ob: {
-          fresh: !!obFresh,
-          valid: !!obValid,
+          fresh: obFresh,
+          valid: obValid,
           spreadPct: ob?.spreadPct ?? null,
           depthMinUsd1p: ob?.depthMinUsd1p ?? null,
           score: ob?.score ?? null,
