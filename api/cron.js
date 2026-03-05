@@ -1,3 +1,4 @@
+// /api/cron.js
 import { kv } from "@vercel/kv";
 
 import universe from "./universe.js";
@@ -13,7 +14,8 @@ export const config = RUNTIME_CONFIG;
 
 // ================== CONSTANTS ==================
 const CRON_LOCK_KEY = "lock:cron";
-const CRON_LOCK_TTL_SEC = 25 * 60;
+// kort houden zodat het nooit “vast” blijft hangen
+const CRON_LOCK_TTL_SEC = 6 * 60;
 
 // heartbeat: UI/diagnose ziet dat cron leeft
 const CRON_HEARTBEAT_KEY = "cron:last";
@@ -169,14 +171,34 @@ function assertOkSoft(name, parsed, resObj) {
 }
 
 // --------------------
-// KV lock
+// KV lock (stale-safe)
 // --------------------
 async function acquireLock() {
-  const ok = await kv.set(CRON_LOCK_KEY, String(Date.now()), {
-    nx: true,
-    ex: CRON_LOCK_TTL_SEC,
-  });
-  return !!ok;
+  const now = Date.now();
+  const until = now + CRON_LOCK_TTL_SEC * 1000;
+
+  const ok = await kv.set(
+    CRON_LOCK_KEY,
+    { until, setAt: now },
+    { nx: true, ex: CRON_LOCK_TTL_SEC }
+  );
+
+  if (ok) return { ok: true, until, waitMs: 0 };
+
+  const cur = await kv.get(CRON_LOCK_KEY);
+  const curUntil = Number(cur?.until || 0);
+
+  // stale -> overnemen
+  if (curUntil > 0 && curUntil < now) {
+    await kv.set(CRON_LOCK_KEY, { until, setAt: now }, { ex: CRON_LOCK_TTL_SEC });
+    return { ok: true, until, waitMs: 0 };
+  }
+
+  return {
+    ok: false,
+    until: curUntil || null,
+    waitMs: curUntil > now ? curUntil - now : null,
+  };
 }
 
 async function releaseLock() {
@@ -196,13 +218,13 @@ function isVercelCron(req) {
 }
 
 async function runOneMode(mode, max, radar, symbols, secret) {
-  // Opmerking: universe wordt niet meer hier aangeroepen, maar één keer in de hoofdhandler
   const reqMap = makeInternalReq({ path: "/api/ob/map_refresh", mode, secret });
 
   // sampler met from=map
   const reqOb = makeInternalReq({ path: "/api/ob/sampler", mode, secret });
   reqOb.query.from = "map";
-  reqOb.query.limit = "80"; // of dynamisch uit req halen, maar 80 is prima
+  reqOb.query.limit = "80";
+
   // url opnieuw bouwen
   const qs = Object.keys(reqOb.query)
     .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(reqOb.query[k])}`)
@@ -250,7 +272,9 @@ export default async function handler(req, res) {
       if (!requireSecret(req, res)) return;
     }
 
-    gotLock = await acquireLock();
+    const cronLock = await acquireLock();
+    gotLock = !!cronLock.ok;
+
     if (!gotLock) {
       res.statusCode = 200;
       res.setHeader("content-type", "application/json; charset=utf-8");
@@ -261,6 +285,7 @@ export default async function handler(req, res) {
           skipped: true,
           reason: "cron already running (lock active)",
           ts: Date.now(),
+          lock: { key: CRON_LOCK_KEY, until: cronLock.until, waitMs: cronLock.waitMs },
         })
       );
     }
@@ -277,7 +302,6 @@ export default async function handler(req, res) {
     const uniAssert = assertOkSoft("universe()", uniOut, resUni);
 
     const mode = normMode(req?.query?.mode);
-
     const max = q(req, "max", "60");
     const radar = q(req, "radar", "200");
     const symbols = q(req, "symbols", "PEPE,SONIC,TURBO");
@@ -305,7 +329,7 @@ export default async function handler(req, res) {
         ts: Date.now(),
         mode: "both",
         params: { max, radar, symbols },
-        universe: uniOut, // universe resultaat
+        universe: uniOut,
         bull,
         bear,
       };
@@ -342,7 +366,8 @@ export default async function handler(req, res) {
         cadence: "30m",
         tookMs: Date.now() - startedAt,
         heartbeatKey: CRON_HEARTBEAT_KEY,
-        note: "Eén universe-run, daarna bull/bear scans (map_refresh → sampler → scan → discord).",
+        lock: { key: CRON_LOCK_KEY, ttlSec: CRON_LOCK_TTL_SEC },
+        note: "Eén universe-run, daarna bull/bear (map_refresh → sampler → scan → discord).",
       })
     );
   } catch (e) {
