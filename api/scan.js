@@ -6,9 +6,48 @@ import { getObSnapshot, obMapKey } from "../lib/obStore.js";
 export const config = RUNTIME_CONFIG;
 
 // ======================================================
-// ✅ 30 MIN SCAN LOCK (ATOMISCH)
+// ✅ 30 MIN SCAN LOCK (ATOMISCH) – NU BOUNDARY‑BASED
 // ======================================================
-const SCAN_INTERVAL_SEC = 30 * 60; // 30 minuten
+async function tryAcquireScanLock(mode) {
+  const key = `scan:lock:${String(mode).toLowerCase()}`;
+  const now = Date.now();
+
+  // ✅ lock loopt altijd tot de volgende :00 of :30
+  const d = new Date(now);
+  const m = d.getMinutes();
+
+  const next = new Date(d);
+  next.setSeconds(0, 0);
+
+  if (m < 30) {
+    next.setMinutes(30);
+  } else {
+    next.setMinutes(0);
+    next.setHours(d.getHours() + 1);
+  }
+
+  const nextUntil = next.getTime();
+  const ttlSec = Math.max(60, Math.ceil((nextUntil - now) / 1000)); // minimaal 60s
+
+  // Atomisch: alleen lock zetten als hij niet bestaat (NX)
+  const ok = await kv.set(key, { until: nextUntil, setAt: now }, { nx: true, ex: ttlSec });
+
+  if (ok) {
+    return { ok: true, key, until: nextUntil, now, waitMs: 0 };
+  }
+
+  // Lock bestond al → lees huidige
+  const cur = await kv.get(key);
+  const until = Number(cur?.until || 0);
+
+  if (until > now) {
+    return { ok: false, key, until, now, waitMs: until - now };
+  }
+
+  // stale → refresh tot volgende boundary
+  await kv.set(key, { until: nextUntil, setAt: now }, { ex: ttlSec });
+  return { ok: true, key, until: nextUntil, now, waitMs: 0 };
+}
 
 // ======================================================
 // ✅ Universe keys (gelijk aan universe.js)
@@ -70,31 +109,6 @@ function send(res, code, obj) {
   res.setHeader("content-type", "application/json; charset=utf-8");
   res.setHeader("cache-control", "no-store");
   return res.end(JSON.stringify(obj));
-}
-
-async function tryAcquireScanLock(mode) {
-  const key = `scan:lock:${String(mode).toLowerCase()}`;
-  const now = Date.now();
-  const nextUntil = now + SCAN_INTERVAL_SEC * 1000;
-
-  // Atomisch: alleen lock zetten als hij niet bestaat (NX)
-  const ok = await kv.set(key, { until: nextUntil, setAt: now }, { nx: true, ex: SCAN_INTERVAL_SEC });
-
-  if (ok) {
-    return { ok: true, key, until: nextUntil, now, waitMs: 0 };
-  }
-
-  // Lock bestond al → lees huidige
-  const cur = await kv.get(key);
-  const until = Number(cur?.until || 0);
-
-  if (until > now) {
-    return { ok: false, key, until, now, waitMs: until - now };
-  }
-
-  // Edge case: lock is “stale” maar key bestaat nog → force refresh
-  await kv.set(key, { until: nextUntil, setAt: now }, { ex: SCAN_INTERVAL_SEC });
-  return { ok: true, key, until: nextUntil, now, waitMs: 0 };
 }
 
 // --------------------
