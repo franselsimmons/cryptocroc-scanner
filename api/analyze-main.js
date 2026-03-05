@@ -7,27 +7,23 @@ export const config = RUNTIME_CONFIG;
 
 function safeArr(x) { return Array.isArray(x) ? x : []; }
 function n(x, d = 0) { const v = Number(x); return Number.isFinite(v) ? v : d; }
-function up(x) { return String(x || "").toUpperCase(); }
-
-function escapeHtml(s) {
-  return String(s || "")
+function esc(s) {
+  return String(s ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
-
 function fmtDate(ms) {
   const d = new Date(Number(ms || 0));
   if (!Number.isFinite(d.getTime())) return "n/a";
   return d.toLocaleString("nl-NL", {
     year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit"
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
   });
 }
-
-function topN(map, k = 8) {
+function topN(map, k = 12) {
   const arr = Object.entries(map || {}).map(([key, count]) => ({ key, count: n(count, 0) }));
   arr.sort((a, b) => b.count - a.count);
   return arr.slice(0, k);
@@ -40,87 +36,12 @@ function inc(map, key) {
 
 function flattenCoins(latest) {
   const f = latest?.funnel || {};
-  // preserve existing stage field if present, but also add _stage from bucket
   return [
-    ...safeArr(f.entry).map((c) => ({ ...c, _stage: "ENTRY" })),
-    ...safeArr(f.almost).map((c) => ({ ...c, _stage: "ALMOST" })),
-    ...safeArr(f.buildup).map((c) => ({ ...c, _stage: "BUILDUP" })),
-    ...safeArr(f.radar).map((c) => ({ ...c, _stage: "RADAR" })),
+    ...safeArr(f.radar).map((c) => ({ ...c, _bucket: "RADAR" })),
+    ...safeArr(f.buildup).map((c) => ({ ...c, _bucket: "BUILDUP" })),
+    ...safeArr(f.almost).map((c) => ({ ...c, _bucket: "ALMOST" })),
+    ...safeArr(f.entry).map((c) => ({ ...c, _bucket: "ENTRY" })),
   ];
-}
-
-function gateStr(x) {
-  const s = String(x ?? "").trim();
-  return s || "n/a";
-}
-
-function summarizeLatest(latest) {
-  const coins = flattenCoins(latest);
-  const stageMap = { RADAR: 0, BUILDUP: 0, ALMOST: 0, ENTRY: 0 };
-
-  const gateRadar = {};
-  const gateAlmost = {};
-  const gateEntry = {};
-
-  const obReasonMap = {};
-  const obFreshMap = {};
-  const obValidMap = {};
-
-  for (const c of coins) {
-    const st = up(c?._stage || "RADAR");
-    stageMap[st] = (stageMap[st] || 0) + 1;
-
-    // gates from scan.js output
-    const g = c?.gates || {};
-    const gr = gateStr(g?.radar);
-    const ga = gateStr(g?.almost);
-    const ge = gateStr(g?.entry);
-
-    if (gr) inc(gateRadar, gr);
-    if (ga && ga !== "n/a") inc(gateAlmost, ga);
-    if (ge && ge !== "n/a") inc(gateEntry, ge);
-
-    // ob summary
-    const ob = c?.ob || {};
-    const reason = String(ob?.reason || "");
-    if (reason) inc(obReasonMap, reason);
-
-    inc(obFreshMap, String(!!ob?.fresh));
-    inc(obValidMap, String(!!ob?.valid));
-  }
-
-  // simple suggestion: biggest bottleneck across almost/entry
-  const topAlmost = topN(gateAlmost, 6);
-  const topEntry = topN(gateEntry, 6);
-  const topRadar = topN(gateRadar, 6);
-
-  const suggestion = [];
-  const lower = (s) => String(s || "").toLowerCase();
-
-  const anySpread = topAlmost.concat(topEntry).some(x => lower(x.key).includes("spread>"));
-  const anyDepth = topAlmost.concat(topEntry).some(x => lower(x.key).includes("depth"));
-  const anyObScore = topAlmost.concat(topEntry).some(x => lower(x.key).includes("obscore") || lower(x.key).includes("|obscore|"));
-  const anyConsistency = topAlmost.concat(topEntry).some(x => lower(x.key).includes("consistency"));
-  const anySpoof = topAlmost.some(x => lower(x.key).includes("spoof"));
-
-  if (anySpread) suggestion.push("Many coins fail on spread. Consider relaxing spreadMaxPct slightly for ALMOST (or improve OB sampling quality).");
-  if (anyDepth) suggestion.push("Many coins fail on depthMinUsd1p. Consider lowering the depth threshold or filtering to higher-liquidity coins earlier.");
-  if (anyObScore) suggestion.push("Many coins fail on |obScore|. Consider lowering obScoreAbsMin slightly or improving score signal stability.");
-  if (anyConsistency) suggestion.push("Consistency blocks many promotions. Consider adjusting samplesNeed/minAgree or scan cadence.");
-  if (anySpoof) suggestion.push("Spoof risk blocks coins at ALMOST. Consider raising minForSpoof or loosening spoof risk scoring if too strict.");
-
-  return {
-    ts: latest?.ts || null,
-    btc: latest?.btc || null,
-    stageMap,
-    topRadarGate: topRadar,
-    topAlmostGate: topAlmost,
-    topEntryGate: topEntry,
-    topObReason: topN(obReasonMap, 8),
-    obFresh: topN(obFreshMap, 4),
-    obValid: topN(obValidMap, 4),
-    suggestion,
-  };
 }
 
 function summarizeFlow(events, sinceMs) {
@@ -128,106 +49,149 @@ function summarizeFlow(events, sinceMs) {
     .filter((e) => e?.type === "stage_change")
     .filter((e) => n(e?.ts, 0) >= sinceMs);
 
-  const flow = {
-    RADAR_TO_BUILDUP: 0,
-    BUILDUP_TO_ALMOST: 0,
-    ALMOST_TO_ENTRY: 0,
-    OTHER: 0,
-  };
-
-  const reasons = { BUILDUP: {}, ALMOST: {}, ENTRY: {}, RADAR: {} };
+  const flow = {};
+  const reasonsTo = { RADAR: {}, BUILDUP: {}, ALMOST: {}, ENTRY: {} };
 
   for (const e of changes) {
-    const from = up(e?.from || "");
-    const to = up(e?.to || "");
+    const from = String(e?.from || "").toUpperCase();
+    const to = String(e?.to || "").toUpperCase();
     const r = String(e?.reason || "unknown");
 
-    if (from === "RADAR" && to === "BUILDUP") flow.RADAR_TO_BUILDUP++;
-    else if (from === "BUILDUP" && to === "ALMOST") flow.BUILDUP_TO_ALMOST++;
-    else if (from === "ALMOST" && to === "ENTRY") flow.ALMOST_TO_ENTRY++;
-    else flow.OTHER++;
-
-    if (to && reasons[to]) inc(reasons[to], r);
+    if (from && to) inc(flow, `${from}→${to}`);
+    if (to && reasonsTo[to]) inc(reasonsTo[to], r);
   }
 
   return {
     sinceMs,
     changesCount: changes.length,
-    flow,
-    topReasons: {
-      BUILDUP: topN(reasons.BUILDUP, 8),
-      ALMOST: topN(reasons.ALMOST, 8),
-      ENTRY: topN(reasons.ENTRY, 8),
-      RADAR: topN(reasons.RADAR, 8),
+    flowTop: topN(flow, 12),
+    topReasonsTo: {
+      RADAR: topN(reasonsTo.RADAR, 10),
+      BUILDUP: topN(reasonsTo.BUILDUP, 10),
+      ALMOST: topN(reasonsTo.ALMOST, 10),
+      ENTRY: topN(reasonsTo.ENTRY, 10),
     },
   };
 }
 
-function coinsByStage(latest) {
-  const coins = flattenCoins(latest);
-  const out = { RADAR: [], BUILDUP: [], ALMOST: [], ENTRY: [] };
+function summarizeSnapshot(latest) {
+  const coins = flattenCoins(latest || {});
+  const stageCounts = { RADAR: 0, BUILDUP: 0, ALMOST: 0, ENTRY: 0 };
+
+  // Gate blockers from snapshot (strings in c.gates)
+  const gateReasons = { radar: {}, almost: {}, entry: {} };
+
   for (const c of coins) {
-    const st = up(c?._stage || "RADAR");
-    if (!out[st]) out[st] = [];
-    out[st].push(c);
+    const st = String(c?._bucket || "RADAR");
+    if (stageCounts[st] != null) stageCounts[st]++;
+
+    const g = c?.gates || {};
+    if (g.radar) inc(gateReasons.radar, String(g.radar));
+    if (g.almost && String(g.almost) !== "n/a") inc(gateReasons.almost, String(g.almost));
+    if (g.entry && String(g.entry) !== "n/a") inc(gateReasons.entry, String(g.entry));
   }
-  return out;
+
+  return {
+    ts: latest?.ts || null,
+    btc: latest?.btc || null,
+    stageCounts,
+    gateTop: {
+      radar: topN(gateReasons.radar, 10),
+      almost: topN(gateReasons.almost, 12),
+      entry: topN(gateReasons.entry, 12),
+    },
+    // Diagnostics (als scan dit meegeeft)
+    diagnostics: latest?.meta?.diagnostics || null,
+  };
 }
 
-function sortCoins(arr) {
-  const a = safeArr(arr).slice();
-  a.sort((x, y) => (n(y?.confidence, 0) - n(x?.confidence, 0)) || (n(y?.vm, 0) - n(x?.vm, 0)));
-  return a;
+function renderCounters(title, counters) {
+  const items = topN(counters || {}, 14)
+    .map((x) => `<li><b>${esc(x.key)}</b> — ${x.count}</li>`)
+    .join("") || `<li class="muted">n/a</li>`;
+
+  return `
+    <div class="box">
+      <h4>${esc(title)}</h4>
+      <ul>${items}</ul>
+    </div>
+  `;
 }
 
-function rowCoin(c) {
-  const sym = escapeHtml(c?.symbol || "?");
-  const name = escapeHtml(c?.name || "");
-  const g = c?.gates || {};
+function coinRow(c) {
   const ob = c?.ob || {};
   const thr = c?.thr || {};
-  const cs = c?.coinStats || {};
+  const dyn = c?.dyn || {};
+  const gates = c?.gates || {};
+  const cons = c?.consistency || {};
   const an = c?.anomaly || null;
+
+  const kv = (k, v) => `
+    <div class="kv"><span>${esc(k)}</span><b>${esc(v)}</b></div>
+  `;
 
   return `
     <tr>
-      <td><b>${sym}</b><div class="muted">${name}</div></td>
-      <td>${escapeHtml(String(c?._stage || c?.stage || ""))}</td>
+      <td>
+        <b>${esc(c?.symbol || "?")}</b>
+        <div class="muted">${esc(c?.name || "")}</div>
+      </td>
+      <td>${esc(c?.stage || c?._bucket || "-")}</td>
       <td>${n(c?.confidence, 0)}</td>
-      <td>${n(c?.vm, 0).toFixed(4)}</td>
-
-      <td class="mono">${escapeHtml(gateStr(g?.radar))}</td>
-      <td class="mono">${escapeHtml(gateStr(g?.almost))}</td>
-      <td class="mono">${escapeHtml(gateStr(g?.entry))}</td>
-
-      <td>${n(ob?.spreadPct, NaN)}</td>
-      <td>${n(ob?.depthMinUsd1p, NaN)}</td>
-      <td>${n(ob?.score, NaN)}</td>
-      <td>${n(ob?.pressureDeltaUsd, 0)}</td>
-      <td>${escapeHtml(String(!!ob?.fresh))}/${escapeHtml(String(!!ob?.valid))}</td>
-
-      <td>${n(thr?.minConfidence, NaN)}</td>
-      <td>${n(thr?.spreadMaxPct, NaN)}</td>
-      <td>${n(thr?.depthMinUsd1p, NaN)}</td>
-      <td>${n(thr?.obScoreMin, NaN)}</td>
-
-      <td>${n(cs?.samples, 0)}</td>
-      <td>${Number.isFinite(Number(cs?.medSpreadPct)) ? n(cs.medSpreadPct,0).toFixed(3) : ""}</td>
-      <td>${Number.isFinite(Number(cs?.p80SpreadPct)) ? n(cs.p80SpreadPct,0).toFixed(3) : ""}</td>
-      <td>${Number.isFinite(Number(cs?.p70ObAbs)) ? n(cs.p70ObAbs,0).toFixed(5) : ""}</td>
-
-      <td class="mono">${an ? escapeHtml(`${an.type || "ANOM"} ${an.factor ? "x"+an.factor : ""}`) : ""}</td>
+      <td>${n(c?.vm, 0).toFixed(3)}</td>
+      <td>
+        ${kv("spreadPct", ob.spreadPct != null ? n(ob.spreadPct, 0).toFixed(3) : "-")}
+        ${kv("depthMinUsd1p", ob.depthMinUsd1p != null ? n(ob.depthMinUsd1p, 0).toFixed(0) : "-")}
+        ${kv("score", ob.score != null ? n(ob.score, 0).toFixed(5) : "-")}
+        ${kv("pressureDeltaUsd", ob.pressureDeltaUsd != null ? n(ob.pressureDeltaUsd, 0).toFixed(0) : "-")}
+        ${kv("fresh", ob.fresh === true ? "true" : ob.fresh === false ? "false" : "-")}
+        ${kv("valid", ob.valid === true ? "true" : ob.valid === false ? "false" : "-")}
+        ${kv("ageSec", ob.ageSec != null ? n(ob.ageSec, 0).toFixed(0) : "-")}
+        ${kv("reason", ob.reason || "-")}
+      </td>
+      <td>
+        ${kv("minConfidence", thr.minConfidence != null ? n(thr.minConfidence, 0) : "-")}
+        ${kv("spreadMaxPct", thr.spreadMaxPct != null ? n(thr.spreadMaxPct, 0).toFixed(3) : "-")}
+        ${kv("depthMinUsd1p", thr.depthMinUsd1p != null ? n(thr.depthMinUsd1p, 0) : "-")}
+        ${kv("obScoreMin", thr.obScoreMin != null ? n(thr.obScoreMin, 0).toFixed(5) : "-")}
+        ${kv("liqScore", thr.liqScore != null ? n(thr.liqScore, 0).toFixed(3) : "-")}
+      </td>
+      <td>
+        ${kv("maxRange24", dyn.maxRange24 != null ? n(dyn.maxRange24, 0).toFixed(3) : "-")}
+        ${kv("dir1hMinBull", dyn.dir1hMinBull != null ? n(dyn.dir1hMinBull, 0).toFixed(3) : "-")}
+        ${kv("dir24MinBull", dyn.dir24MinBull != null ? n(dyn.dir24MinBull, 0).toFixed(3) : "-")}
+        ${kv("dir1hMaxBear", dyn.dir1hMaxBear != null ? n(dyn.dir1hMaxBear, 0).toFixed(3) : "-")}
+        ${kv("dir24MaxBear", dyn.dir24MaxBear != null ? n(dyn.dir24MaxBear, 0).toFixed(3) : "-")}
+        ${kv("scale", dyn.scale != null ? n(dyn.scale, 0).toFixed(3) : "-")}
+      </td>
+      <td>
+        ${kv("radar", gates.radar || "-")}
+        ${kv("almost", gates.almost || "-")}
+        ${kv("entry", gates.entry || "-")}
+      </td>
+      <td>
+        ${kv("cons.ok", cons.ok === true ? "true" : cons.ok === false ? "false" : "-")}
+        ${kv("cons.same/need", (cons.same != null && cons.need != null) ? `${cons.same}/${cons.need}` : "-")}
+        ${kv("cons.minAgree", cons.minAgree != null ? cons.minAgree : "-")}
+        ${an ? kv("anomaly", `${an.type || "?"}`) : kv("anomaly", "-")}
+      </td>
     </tr>
   `;
 }
 
-function tableCoins(title, coins) {
-  const rows = sortCoins(coins).map(rowCoin).join("") || `<tr><td colspan="21" class="muted">n/a</td></tr>`;
+function stageTable(title, arr, diagBlockHtml) {
   return `
-    <div class="box" style="margin-top:12px">
-      <h3>${escapeHtml(title)} (${safeArr(coins).length})</h3>
-      <div class="muted">Per coin: gates + OB + thresholds + coinStats. Dit is je “alles in elke tabel”.</div>
-      <div style="overflow:auto;margin-top:8px">
+    <div class="stage">
+      <div class="stageHead">
+        <div>
+          <h3>${esc(title)}</h3>
+          <div class="muted">Coins in this table: <b>${arr.length}</b></div>
+        </div>
+      </div>
+
+      ${diagBlockHtml || ""}
+
+      <div style="overflow:auto;margin-top:10px">
         <table>
           <thead>
             <tr>
@@ -235,220 +199,192 @@ function tableCoins(title, coins) {
               <th>Stage</th>
               <th>Conf</th>
               <th>VM</th>
-
-              <th>Gate: radar</th>
-              <th>Gate: almost</th>
-              <th>Gate: entry</th>
-
-              <th>OB spread%</th>
-              <th>OB depth1%</th>
-              <th>OB score</th>
-              <th>OB pressureΔ</th>
-              <th>OB fresh/valid</th>
-
-              <th>thr minConf</th>
-              <th>thr spreadMax</th>
-              <th>thr depthMin</th>
-              <th>thr obScoreMin</th>
-
-              <th>stats n</th>
-              <th>stats medSpread</th>
-              <th>stats p80Spread</th>
-              <th>stats p70ObAbs</th>
-
-              <th>anomaly</th>
+              <th>OB values</th>
+              <th>Thresholds</th>
+              <th>Dyn</th>
+              <th>Gates</th>
+              <th>Consistency/Anomaly</th>
             </tr>
           </thead>
-          <tbody>${rows}</tbody>
+          <tbody>
+            ${arr.map(coinRow).join("") || `<tr><td colspan="9" class="muted">n/a</td></tr>`}
+          </tbody>
         </table>
       </div>
     </div>
   `;
 }
 
-function listItems(arr) {
-  const li = (arr || []).map((x) => `<li><b>${escapeHtml(x.key)}</b> — ${n(x.count, 0)}</li>`).join("");
-  return li || "<li>n/a</li>";
-}
+function modeCard(mode, latest, sessionStartMs) {
+  const sum = summarizeSnapshot(latest || {});
+  const coins = flattenCoins(latest || {});
+  const by = {
+    RADAR: coins.filter(x => x._bucket === "RADAR"),
+    BUILDUP: coins.filter(x => x._bucket === "BUILDUP"),
+    ALMOST: coins.filter(x => x._bucket === "ALMOST"),
+    ENTRY: coins.filter(x => x._bucket === "ENTRY"),
+  };
 
-function resetBlockScript() {
-  return `
-<script>
-  function resetAnalyze() {
-    try {
-      // remove query params
-      const url = new URL(window.location.href);
-      url.search = "";
+  // Diagnostics layout (requires scan meta.diagnostics[mode])
+  const diag = sum.diagnostics && sum.diagnostics[mode] ? sum.diagnostics[mode] : null;
 
-      // remove analysis UI state only (prefixes)
-      const prefixes = ["analyze:", "analyzeMain:", "an:"];
-      const keysToRemove = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (!k) continue;
-        if (prefixes.some(p => k.startsWith(p))) keysToRemove.push(k);
-      }
-      keysToRemove.forEach(k => localStorage.removeItem(k));
+  const diagForStage = (st) => {
+    if (!diag) return `<div class="muted">No diagnostics counters yet (scan must provide latest.meta.diagnostics).</div>`;
+    const map =
+      st === "RADAR" ? diag.radarRejectReasons :
+      st === "BUILDUP" ? diag.buildupRejectReasons :
+      st === "ALMOST" ? diag.almostRejectReasons :
+      st === "ENTRY" ? diag.entryRejectReasons :
+      null;
 
-      // reload clean
-      window.location.href = url.pathname;
-    } catch (e) {
-      alert("Reset failed: " + (e && e.message ? e.message : String(e)));
-    }
-  }
-</script>`;
-}
-
-function htmlPage({ bullLatest, bearLatest, events }) {
-  const bull = bullLatest || {};
-  const bear = bearLatest || {};
-
-  const bullSum = summarizeLatest(bull);
-  const bearSum = summarizeLatest(bear);
-
-  const now = Date.now();
-  const flow24h = summarizeFlow(events, now - 24 * 3600 * 1000);
-  const flow7d = summarizeFlow(events, now - 7 * 24 * 3600 * 1000);
-
-  const bullStages = coinsByStage(bull);
-  const bearStages = coinsByStage(bear);
-
-  const card = (title, sum, mode) => `
-    <div class="card">
-      <h2>${escapeHtml(title)}</h2>
-      <div class="muted">Latest scan: <b>${sum.ts ? fmtDate(sum.ts) : "n/a"}</b></div>
-      <div class="pills">
-        <span class="pill">mode: ${escapeHtml(mode)}</span>
-        <span class="pill">BTC: ${escapeHtml(sum?.btc?.state || "-")}</span>
-      </div>
-
+    return `
       <div class="grid">
-        <div class="box">
-          <h3>Stage counts</h3>
-          <ul>
-            <li>RADAR: <b>${sum.stageMap.RADAR || 0}</b></li>
-            <li>BUILDUP: <b>${sum.stageMap.BUILDUP || 0}</b></li>
-            <li>ALMOST: <b>${sum.stageMap.ALMOST || 0}</b></li>
-            <li>ENTRY: <b>${sum.stageMap.ENTRY || 0}</b></li>
-          </ul>
-        </div>
+        ${renderCounters(`Fail counters — ${st}`, map)}
+        ${renderCounters("OB fail counters", diag.obRejectReasons)}
+      </div>
+    `;
+  };
 
-        <div class="box">
-          <h3>Top RADAR gates</h3>
-          <ul>${listItems(sum.topRadarGate)}</ul>
-        </div>
-
-        <div class="box">
-          <h3>Top ALMOST gates</h3>
-          <ul>${listItems(sum.topAlmostGate)}</ul>
-        </div>
-
-        <div class="box">
-          <h3>Top ENTRY gates</h3>
-          <ul>${listItems(sum.topEntryGate)}</ul>
-        </div>
-
-        <div class="box">
-          <h3>Top OB reasons</h3>
-          <ul>${listItems(sum.topObReason)}</ul>
-        </div>
-
-        <div class="box">
-          <h3>Best suggestions</h3>
-          <ul>${(sum.suggestion || []).map(s => `<li>${escapeHtml(s)}</li>`).join("") || "<li>n/a</li>"}</ul>
+  return `
+    <div class="card">
+      <div class="cardTop">
+        <div>
+          <h2>${esc(mode.toUpperCase())}</h2>
+          <div class="muted">
+            Latest scan: <b>${sum.ts ? fmtDate(sum.ts) : "n/a"}</b> —
+            BTC: <b>${esc(sum?.btc?.state || "-")}</b> —
+            Session: <b>${sessionStartMs ? fmtDate(sessionStartMs) : "n/a"}</b>
+          </div>
+          <div class="pills">
+            <span class="pill">RADAR: ${n(sum.stageCounts.RADAR, 0)}</span>
+            <span class="pill">BUILDUP: ${n(sum.stageCounts.BUILDUP, 0)}</span>
+            <span class="pill">ALMOST: ${n(sum.stageCounts.ALMOST, 0)}</span>
+            <span class="pill">ENTRY: ${n(sum.stageCounts.ENTRY, 0)}</span>
+          </div>
         </div>
       </div>
+
+      <div class="grid" style="margin-top:10px">
+        ${renderCounters("Snapshot top radar gates", Object.fromEntries(sum.gateTop.radar.map(x => [x.key, x.count])))}
+        ${renderCounters("Snapshot top almost gates", Object.fromEntries(sum.gateTop.almost.map(x => [x.key, x.count])))}
+        ${renderCounters("Snapshot top entry gates", Object.fromEntries(sum.gateTop.entry.map(x => [x.key, x.count])))}
+        <div class="box">
+          <h4>How to tune</h4>
+          <div class="muted">
+            Gebruik fail counters per stage (diagnostics) om precies te zien welke filter de bottleneck is.
+            Snapshot gates zijn handig, maar missen coins die vroeg worden weg-ge-continue’d.
+          </div>
+        </div>
+      </div>
+
+      ${stageTable("RADAR", by.RADAR, diagForStage("RADAR"))}
+      ${stageTable("BUILDUP", by.BUILDUP, diagForStage("BUILDUP"))}
+      ${stageTable("ALMOST", by.ALMOST, diagForStage("ALMOST"))}
+      ${stageTable("ENTRY", by.ENTRY, diagForStage("ENTRY"))}
     </div>
   `;
+}
+
+function htmlPage({ bullLatest, bearLatest, events, sessionStartMs }) {
+  const flow = summarizeFlow(events, sessionStartMs || (Date.now() - 24 * 3600 * 1000));
+  const list = (arr) => (arr || []).map(x => `<li><b>${esc(x.key)}</b> — ${n(x.count,0)}</li>`).join("") || "<li class='muted'>n/a</li>";
 
   return `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Analyze MAIN</title>
+  <title>Analyze Main</title>
   <style>
     body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto;margin:0;background:#0b0f14;color:#e6edf3}
-    .wrap{max-width:1250px;margin:0 auto;padding:18px}
-    h1{margin:0 0 8px 0;font-size:20px}
+    .wrap{max-width:1500px;margin:0 auto;padding:16px}
+    h1{margin:0 0 10px 0;font-size:20px}
     .muted{color:#9fb0c3;font-size:13px}
-    .row{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}
-    .card{flex:1;min-width:360px;background:#111826;border:1px solid #1f2a3a;border-radius:14px;padding:14px}
-    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}
-    .box{background:#0c1320;border:1px solid #1f2a3a;border-radius:12px;padding:10px}
-    h2{margin:0 0 6px 0;font-size:16px}
-    h3{margin:0 0 8px 0;font-size:14px}
-    ul{margin:0;padding-left:18px}
-    .pills{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 0 0}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .card{flex:1;min-width:420px;background:#111826;border:1px solid #1f2a3a;border-radius:14px;padding:14px}
+    .cardTop{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+    .btn{cursor:pointer;border:1px solid #2a3a52;background:#0c1320;color:#e6edf3;border-radius:12px;padding:10px 12px;font-size:13px}
+    .btn:hover{border-color:#3b516f}
     .pill{display:inline-flex;align-items:center;background:#0a1b2b;border:1px solid #15334e;padding:6px 10px;border-radius:999px;font-size:13px;color:#e6edf3}
-    .flow{margin-top:14px;background:#0c1320;border:1px solid #1f2a3a;border-radius:14px;padding:12px}
+    .pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+    .flow{background:#0c1320;border:1px solid #1f2a3a;border-radius:14px;padding:12px;margin-bottom:12px}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px}
+    .box{background:#0c1320;border:1px solid #1f2a3a;border-radius:12px;padding:10px}
+    ul{margin:0;padding-left:18px}
     table{width:100%;border-collapse:collapse;font-size:13px}
-    th,td{padding:8px;border-bottom:1px solid #1f2a3a;text-align:left;vertical-align:top}
-    th{position:sticky;top:0;background:#0b0f14}
-    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;white-space:nowrap}
-    .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0 0 0}
-    .btn{cursor:pointer;border-radius:10px;border:1px solid #2b3a50;background:#0a1b2b;color:#e6edf3;padding:10px 12px}
-    .btn:hover{border-color:#3a5273}
+    th,td{padding:10px;border-bottom:1px solid #1f2a3a;text-align:left;vertical-align:top}
+    th{position:sticky;top:0;background:#0e1624}
+    .stage{margin-top:14px;padding-top:12px;border-top:1px dashed #233248}
+    .stageHead{display:flex;align-items:flex-start;justify-content:space-between}
+    .kv{display:flex;gap:8px;align-items:baseline;justify-content:space-between;border-bottom:1px dashed rgba(255,255,255,0.08);padding:2px 0}
+    .kv span{color:#9fb0c3}
+    code{background:#0c1320;border:1px solid #1f2a3a;padding:2px 6px;border-radius:8px}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>Analyze MAIN — “each filter / each table / each coin”</h1>
-
-    <div class="bar">
-      <button class="btn" onclick="resetAnalyze()">Reset analyse</button>
-      <span class="muted">Reset alleen deze analyse pagina (filters/URL/localStorage). Backend data blijft hetzelfde.</span>
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <div>
+        <h1>Main Analyze — per stage tables + fail counters</h1>
+        <div class="muted">
+          Session start: <b>${sessionStartMs ? fmtDate(sessionStartMs) : "n/a"}</b>
+          &nbsp;•&nbsp; Reset = alleen analyse window (geen scan reset)
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" id="resetBtn">Reset Analysis</button>
+      </div>
     </div>
 
     <div class="flow">
-      <h2>Funnel flow (events)</h2>
-      <div class="muted">Scan logt stage_change events. Hier zie je doorstroom + bottlenecks.</div>
-
-      <h3>Laatste 24 uur</h3>
-      <ul>
-        <li>RADAR → BUILDUP: <b>${flow24h.flow.RADAR_TO_BUILDUP}</b></li>
-        <li>BUILDUP → ALMOST: <b>${flow24h.flow.BUILDUP_TO_ALMOST}</b></li>
-        <li>ALMOST → ENTRY: <b>${flow24h.flow.ALMOST_TO_ENTRY}</b></li>
-        <li>Events totaal: <b>${flow24h.changesCount}</b></li>
-      </ul>
-
-      <h3>Laatste 7 dagen</h3>
-      <ul>
-        <li>RADAR → BUILDUP: <b>${flow7d.flow.RADAR_TO_BUILDUP}</b></li>
-        <li>BUILDUP → ALMOST: <b>${flow7d.flow.BUILDUP_TO_ALMOST}</b></li>
-        <li>ALMOST → ENTRY: <b>${flow7d.flow.ALMOST_TO_ENTRY}</b></li>
-        <li>Events totaal: <b>${flow7d.changesCount}</b></li>
-      </ul>
-
-      <h3>Top redenen (7 dagen)</h3>
+      <h2 style="margin:0 0 6px 0;font-size:16px">Funnel flow (events) — since session start</h2>
       <div class="grid">
-        <div class="box"><h3>To BUILDUP</h3><ul>${listItems(flow7d.topReasons.BUILDUP)}</ul></div>
-        <div class="box"><h3>To ALMOST</h3><ul>${listItems(flow7d.topReasons.ALMOST)}</ul></div>
-        <div class="box"><h3>To ENTRY</h3><ul>${listItems(flow7d.topReasons.ENTRY)}</ul></div>
-        <div class="box"><h3>To RADAR</h3><ul>${listItems(flow7d.topReasons.RADAR)}</ul></div>
+        <div class="box">
+          <h3 style="margin:0 0 8px 0;font-size:14px">Top transitions</h3>
+          <ul>${list(flow.flowTop)}</ul>
+          <div class="muted" style="margin-top:8px">stage_change events: <b>${flow.changesCount}</b></div>
+        </div>
+        <div class="box">
+          <h3 style="margin:0 0 8px 0;font-size:14px">Top reasons (to ALMOST / ENTRY)</h3>
+          <div class="grid">
+            <div class="box"><h4 style="margin:0 0 6px 0;font-size:13px">To ALMOST</h4><ul>${list(flow.topReasonsTo.ALMOST)}</ul></div>
+            <div class="box"><h4 style="margin:0 0 6px 0;font-size:13px">To ENTRY</h4><ul>${list(flow.topReasonsTo.ENTRY)}</ul></div>
+          </div>
+        </div>
+      </div>
+      <div class="muted" style="margin-top:8px">
+        Tip: voor echte filter bottlenecks heb je scan diagnostics nodig: <code>latest.meta.diagnostics</code>.
       </div>
     </div>
 
     <div class="row">
-      ${card("LONG (bull)", bullSum, "bull")}
-      ${card("SHORT (bear)", bearSum, "bear")}
-    </div>
-
-    ${tableCoins("BULL — RADAR", bullStages.RADAR)}
-    ${tableCoins("BULL — BUILDUP", bullStages.BUILDUP)}
-    ${tableCoins("BULL — ALMOST", bullStages.ALMOST)}
-    ${tableCoins("BULL — ENTRY", bullStages.ENTRY)}
-
-    ${tableCoins("BEAR — RADAR", bearStages.RADAR)}
-    ${tableCoins("BEAR — BUILDUP", bearStages.BUILDUP)}
-    ${tableCoins("BEAR — ALMOST", bearStages.ALMOST)}
-    ${tableCoins("BEAR — ENTRY", bearStages.ENTRY)}
-
-    <div class="muted" style="margin-top:10px">
-      Tip: <code>?format=json</code> voor ruwe data.
+      ${modeCard("bull", bullLatest || {}, sessionStartMs)}
+      ${modeCard("bear", bearLatest || {}, sessionStartMs)}
     </div>
   </div>
-  ${resetBlockScript()}
+
+  <script>
+    (function(){
+      const btn = document.getElementById("resetBtn");
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        btn.textContent = "Resetting...";
+        try {
+          const url = new URL(window.location.href);
+          const secret = url.searchParams.get("secret") || "";
+          const r = await fetch("/api/analyze-reset" + (secret ? ("?secret=" + encodeURIComponent(secret)) : ""), { method: "POST" });
+          const j = await r.json();
+          if (j && j.ok) window.location.reload();
+          else alert("Reset failed: " + (j && j.error ? j.error : "unknown"));
+        } catch (e) {
+          alert("Reset failed: " + String(e && e.message ? e.message : e));
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Reset Analysis";
+        }
+      });
+    })();
+  </script>
 </body>
 </html>`;
 }
@@ -459,17 +395,16 @@ export default async function handler(req, res) {
 
     const format = String(req.query?.format || "html").toLowerCase();
 
-    const [bullLatest, bearLatest, events] = await Promise.all([
+    const [bullLatest, bearLatest, events, sessionStartMs] = await Promise.all([
       kv.get("latest:bull"),
       kv.get("latest:bear"),
-      readEvents("main", 5000),
+      readEvents("main", 8000),
+      kv.get("analyze:sessionStartMs"),
     ]);
 
-    if (format === "json") {
-      const now = Date.now();
-      const flow24h = summarizeFlow(events, now - 24 * 3600 * 1000);
-      const flow7d = summarizeFlow(events, now - 7 * 24 * 3600 * 1000);
+    const sess = n(sessionStartMs, 0);
 
+    if (format === "json") {
       res.statusCode = 200;
       res.setHeader("content-type", "application/json; charset=utf-8");
       res.setHeader("cache-control", "no-store");
@@ -477,13 +412,10 @@ export default async function handler(req, res) {
         ok: true,
         ts: Date.now(),
         view: "analyze-main",
+        sessionStartMs: sess,
         latest: { bull: bullLatest || null, bear: bearLatest || null },
         derived: {
-          bull: summarizeLatest(bullLatest || {}),
-          bear: summarizeLatest(bearLatest || {}),
-          flow24h,
-          flow7d,
-          eventsCount: safeArr(events).length,
+          flowSinceSession: summarizeFlow(events, sess || (Date.now() - 24 * 3600 * 1000)),
         },
       }));
     }
@@ -491,7 +423,7 @@ export default async function handler(req, res) {
     res.statusCode = 200;
     res.setHeader("content-type", "text/html; charset=utf-8");
     res.setHeader("cache-control", "no-store");
-    return res.end(htmlPage({ bullLatest, bearLatest, events }));
+    return res.end(htmlPage({ bullLatest, bearLatest, events, sessionStartMs: sess }));
   } catch (e) {
     res.statusCode = 200;
     res.setHeader("content-type", "application/json; charset=utf-8");
