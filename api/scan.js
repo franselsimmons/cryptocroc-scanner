@@ -449,17 +449,15 @@ export default async function handler(req, res) {
     const lock = await tryAcquireScanLock(mode);
     if (!lock.ok) {
       const latest = await kv.get(core.keyLatest(mode));
-      if (latest) {
+
+      // ✅ FAIL-OPEN: lock actief maar geen latest => lock droppen en toch scannen
+      if (!latest) {
+        await kv.del(`scan:lock:${String(mode).toLowerCase()}`);
+      } else {
         latest.meta = latest.meta || {};
         latest.meta.scanLock = { active: true, until: lock.until, waitMs: lock.waitMs };
         return send(res, 200, latest);
       }
-      return send(res, 200, {
-        ok: false,
-        mode,
-        error: "scan locked and no latest yet",
-        meta: { scanLock: { active: true, until: lock.until, waitMs: lock.waitMs } },
-      });
     }
 
     const now = Date.now();
