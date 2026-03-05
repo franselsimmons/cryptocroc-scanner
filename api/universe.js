@@ -210,18 +210,22 @@ export default async function handler(req, res) {
     if (!requireSecret(req, res)) return;
 
     const lock = await tryAcquireUniverseLock();
+
+    // ✅ FAIL-OPEN: lock actief maar er is nog geen universe => toch draaien
     if (!lock.ok) {
       const latest = await kv.get(K_UNIVERSE_LATEST);
-      return send(res, 200, {
-        ok: true,
-        skipped: true,
-        reason: "universe lock active",
-        ts: Date.now(),
-        lock: { key: K_LOCK_UNIVERSE, active: true, until: lock.until, waitMs: lock.waitMs },
-        universe: latest
-          ? { ts: latest.ts, pages: latest.pages, perPage: latest.perPage, count: latest.count }
-          : null,
-      });
+      if (!latest) {
+        await kv.del(K_LOCK_UNIVERSE); // lock droppen
+      } else {
+        return send(res, 200, {
+          ok: true,
+          skipped: true,
+          reason: "universe lock active",
+          ts: Date.now(),
+          lock: { key: K_LOCK_UNIVERSE, active: true, until: lock.until, waitMs: lock.waitMs },
+          universe: { ts: latest.ts, pages: latest.pages, perPage: latest.perPage, count: latest.count },
+        });
+      }
     }
 
     // Haal zowel coins als BTC parallel op
