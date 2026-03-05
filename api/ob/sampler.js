@@ -66,6 +66,20 @@ function computeFromDepth(depth) {
   const largestUsd = Math.max(bidBand.largestUsd, askBand.largestUsd);
   const lor = denom > 0 ? largestUsd / denom : 0;
 
+  // ----- toegevoegde wall‑ en imbalance‑velden -----
+  const bidLargestUsd = bidBand.largestUsd;
+  const askLargestUsd = askBand.largestUsd;
+
+  const scoreAbs = Math.abs(score);
+
+  // Wall detection thresholds (tune if needed)
+  const WALL_LOR_MIN = 0.22;   // 22% of total liquidity in band
+  const WALL_USD_MIN = 12_000; // absolute wall size
+
+  const bidWall = bidLargestUsd >= WALL_USD_MIN && (denom > 0 ? bidLargestUsd / denom : 0) >= WALL_LOR_MIN;
+  const askWall = askLargestUsd >= WALL_USD_MIN && (denom > 0 ? askLargestUsd / denom : 0) >= WALL_LOR_MIN;
+  // -------------------------------------------------
+
   return {
     ts: Date.now(),
     mid,
@@ -75,7 +89,14 @@ function computeFromDepth(depth) {
     depthMinUsd1p,
     pressureDeltaUsd,
     score,
+    // ----- toegevoegd -----
+    scoreAbs,
     lor,
+    bidLargestUsd,
+    askLargestUsd,
+    bidWall,
+    askWall,
+    // ----------------------
     levels: { bids1p: bidsInBand.length, asks1p: asksInBand.length },
   };
 }
@@ -150,7 +171,7 @@ export default async function handler(req, res) {
       const all = Object.keys(map).map(up).filter(Boolean);
       all.sort(); // stabiele volgorde
 
-      // 👇 Guard: lege map
+      // Guard: lege map
       if (!all.length) {
         res.statusCode = 200;
         res.setHeader("content-type", "application/json; charset=utf-8");
