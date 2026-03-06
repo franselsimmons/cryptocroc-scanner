@@ -128,8 +128,37 @@ function up(x) {
 async function safePushEvent(funnel, data) {
   try {
     await pushEvent(funnel, data);
-  } catch {}
+  } catch (e) {
+    console.error("pushEvent failed:", funnel, e?.message || e);
+  }
 }
+
+// ---------- helpers voor reject en stage change ----------
+function makeReject(reason, stageTried, rejectCode, extra = {}) {
+  return {
+    type: "scan_reject",
+    stageTried: String(stageTried || "").toUpperCase(),
+    rejectCode: String(rejectCode || "UNKNOWN"),
+    reason: String(reason || "unknown"),
+    ...extra,
+  };
+}
+
+async function pushStageChange({ mode, symbol, from, to, reason, item }) {
+  if (!from || !to || String(from).toUpperCase() === String(to).toUpperCase()) return;
+
+  await safePushEvent("scan_transition", {
+    type: "stage_change",
+    mode,
+    symbol,
+    from: String(from).toUpperCase(),
+    to: String(to).toUpperCase(),
+    reason: String(reason || "stage_update"),
+    ts: Date.now(),
+    item: item || null,
+  });
+}
+// ---------------------------------------------------------
 
 // ---------- toegevoegde helper voor TP/SL ----------
 function calcTradePlan({ mode, price, spreadPct, range24, obScore }) {
@@ -573,13 +602,73 @@ export default async function handler(req, res) {
       // Oude stage bewaren vóór eventuele wijzigingen (voor change detection)
       const prevStageBeforeScan = up(state?.[sym]?.stage || "");
 
+      // Helper voor reject events binnen deze coin
+      const pushReject = async (stageTried, rejectCode, reason, extra = {}) => {
+        await safePushEvent("scan_reject", {
+          mode,
+          symbol: sym,
+          ts: Date.now(),
+          ...makeReject(reason, stageTried, rejectCode, extra),
+        });
+      };
+
       // 1) Radar gate eerst (mcap/vol/vm/range/direction)
       const dyn = typeof core.dynamicRadarThresholds === "function"
         ? core.dynamicRadarThresholds(n(c.range24, 0), core.SETTINGS)
         : null;
 
       const radarGate = passRadar(core, mode, c, dyn);
-      if (!radarGate.ok) continue;
+      if (!radarGate.ok) {
+        let rejectCode = "RADAR_FAIL";
+
+        if (radarGate.why === "mcap too low") rejectCode = "RADAR_MCAP_LOW";
+        else if (radarGate.why === "mcap too high") rejectCode = "RADAR_MCAP_HIGH";
+        else if (radarGate.why === "volume too low") rejectCode = "RADAR_VOL_LOW";
+        else if (radarGate.why === "vm too low") rejectCode = "RADAR_VM_LOW";
+        else if (radarGate.why === "chg24 too high") rejectCode = "RADAR_CHG24_HIGH";
+        else if (String(radarGate.why).startsWith("range24 too high")) rejectCode = "RADAR_RANGE_HIGH";
+        else if (String(radarGate.why).startsWith("dir fail 1h")) rejectCode = "RADAR_DIR_1H_FAIL";
+        else if (String(radarGate.why).startsWith("dir fail 24h")) rejectCode = "RADAR_DIR_24H_FAIL";
+
+        await pushReject("RADAR", rejectCode, radarGate.why, {
+          marketCap: n(c.marketCap, 0),
+          volume: n(c.volume, 0),
+          vm: n(core.computeVm(c.volume, c.marketCap), 0),
+          change1h: n(c.change1h, 0),
+          change24: n(c.change24, 0),
+          range24: n(c.range24, 0),
+        });
+
+        // 🔁 Transition naar RADAR als de vorige stage anders was
+        if (prevStageBeforeScan && prevStageBeforeScan !== "RADAR") {
+          await pushStageChange({
+            mode,
+            symbol: sym,
+            from: prevStageBeforeScan,
+            to: "RADAR",
+            reason: radarGate.why || "radar failed",
+            item: {
+              symbol: sym,
+              stage: "RADAR",
+              confidence: 0,
+              tradePlan: null,
+              gates: { radar: radarGate.why || "failed" },
+            },
+          });
+        }
+
+        // 📝 State bijwerken naar RADAR met historie
+        const prev = safeObj(state[sym]) || {};
+        const histPrev = Array.isArray(prev.hist) ? prev.hist : [];
+        state[sym] = {
+          ...prev,
+          stage: "RADAR",
+          lastSeenAt: now,
+          hist: histPrev.concat(["RADAR"]).slice(-12),
+        };
+
+        continue;
+      }
 
       const vm = radarGate.vm;
       const usedDyn = radarGate.dyn || dyn;
@@ -587,6 +676,44 @@ export default async function handler(req, res) {
       // 2) HARD OB gate: no fresh+valid OB => RADAR only
       const ob = await getObForSymbol({ mode, symbol: sym });
       if (!ob?.ok || !ob?.valid || !ob?.fresh) {
+        await pushReject("BUILDUP", "OB_MISSING_INVALID_STALE", ob?.reason || "no_ob", {
+          obFresh: !!ob?.fresh,
+          obValid: !!ob?.valid,
+          obAgeSec: ob?.ageSec ?? null,
+        });
+
+        // 🔁 Transition naar RADAR
+        if (prevStageBeforeScan && prevStageBeforeScan !== "RADAR") {
+          await pushStageChange({
+            mode,
+            symbol: sym,
+            from: prevStageBeforeScan,
+            to: "RADAR",
+            reason: ob?.reason || "missing/invalid/stale orderbook",
+            item: {
+              symbol: sym,
+              stage: "RADAR",
+              confidence: 0,
+              tradePlan: null,
+              gates: {
+                radar: "passed",
+                almost: "blocked: missing/invalid/stale orderbook",
+                entry: "blocked: missing/invalid/stale orderbook",
+              },
+            },
+          });
+        }
+
+        // 📝 State bijwerken naar RADAR
+        const prev = safeObj(state[sym]) || {};
+        const histPrev = Array.isArray(prev.hist) ? prev.hist : [];
+        state[sym] = {
+          ...prev,
+          stage: "RADAR",
+          lastSeenAt: now,
+          hist: histPrev.concat(["RADAR"]).slice(-12),
+        };
+
         radar.push({
           symbol: sym,
           name: c.name || sym,
@@ -637,6 +764,49 @@ export default async function handler(req, res) {
         obScoreAbs >= B.obScoreAbsMin;
 
       if (!buildupOk) {
+        let rejectCode = "BUILDUP_OB_SANITY_FAIL";
+        if (spreadPct > B.spreadMaxPct) rejectCode = "BUILDUP_SPREAD_FAIL";
+        else if (depthMinUsd1p < B.depthMinUsd1p) rejectCode = "BUILDUP_DEPTH_FAIL";
+        else if (obScoreAbs < B.obScoreAbsMin) rejectCode = "BUILDUP_OBSCORE_FAIL";
+
+        await pushReject("BUILDUP", rejectCode, "OB sanity failed for BUILDUP", {
+          spreadPct,
+          depthMinUsd1p,
+          obScoreAbs,
+        });
+
+        // 🔁 Transition naar RADAR
+        if (prevStageBeforeScan && prevStageBeforeScan !== "RADAR") {
+          await pushStageChange({
+            mode,
+            symbol: sym,
+            from: prevStageBeforeScan,
+            to: "RADAR",
+            reason: "OB sanity failed for BUILDUP",
+            item: {
+              symbol: sym,
+              stage: "RADAR",
+              confidence: 0,
+              tradePlan: null,
+              gates: {
+                radar: "passed",
+                almost: "blocked: OB sanity failed for BUILDUP",
+                entry: "blocked: OB sanity failed for BUILDUP",
+              },
+            },
+          });
+        }
+
+        // 📝 State bijwerken naar RADAR
+        const prev = safeObj(state[sym]) || {};
+        const histPrev = Array.isArray(prev.hist) ? prev.hist : [];
+        state[sym] = {
+          ...prev,
+          stage: "RADAR",
+          lastSeenAt: now,
+          hist: histPrev.concat(["RADAR"]).slice(-12),
+        };
+
         radar.push({
           symbol: sym,
           name: c.name || sym,
@@ -761,14 +931,26 @@ export default async function handler(req, res) {
         if (stageBase === "ALMOST") {
           // Tier baseline checks (ALMOST)
           if (spreadPct > A.spreadMaxPct) {
+            await pushReject("ALMOST", "ALMOST_SPREAD_FAIL", `spread>${A.spreadMaxPct}%`, {
+              spreadPct,
+              limit: A.spreadMaxPct,
+            });
             stage = "BUILDUP";
             stageBase = "BUILDUP";
             almostGate = `blocked: spread>${A.spreadMaxPct}%`;
           } else if (depthMinUsd1p < A.depthMinUsd1p) {
+            await pushReject("ALMOST", "ALMOST_DEPTH_FAIL", `depth1%<${A.depthMinUsd1p}`, {
+              depthMinUsd1p,
+              limit: A.depthMinUsd1p,
+            });
             stage = "BUILDUP";
             stageBase = "BUILDUP";
             almostGate = `blocked: depth1%<${A.depthMinUsd1p}`;
           } else if (obScoreAbs < A.obScoreAbsMin) {
+            await pushReject("ALMOST", "ALMOST_OBSCORE_FAIL", `|obScore|<${A.obScoreAbsMin}`, {
+              obScoreAbs,
+              limit: A.obScoreAbsMin,
+            });
             stage = "BUILDUP";
             stageBase = "BUILDUP";
             almostGate = `blocked: |obScore|<${A.obScoreAbsMin}`;
@@ -781,6 +963,7 @@ export default async function handler(req, res) {
                 : { ok: true };
 
             if (!slopeCheck.ok) {
+              await pushReject("ALMOST", "ALMOST_SLOPE_FAIL", slopeCheck.reason || "OB slope failed in ALMOST");
               stage = "BUILDUP";
               stageBase = "BUILDUP";
               almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
@@ -788,6 +971,9 @@ export default async function handler(req, res) {
               // spoof gate
               const spoof = spoofRiskFromSamples(obSamples);
               if (!spoof.ok) {
+                await pushReject("ALMOST", "ALMOST_SPOOF_FAIL", `spoof risk (${spoof.why})`, {
+                  spoofRisk: spoof.risk ?? null,
+                });
                 stage = "BUILDUP";
                 stageBase = "BUILDUP";
                 almostGate = `blocked: spoof risk (${spoof.why})`;
@@ -805,14 +991,30 @@ export default async function handler(req, res) {
         if (stage === "ALMOST") {
           // Eerst confidence check (adaptief)
           if (confidence < n(thr.minConfidence, 0)) {
+            await pushReject("ENTRY", "ENTRY_CONFIDENCE_FAIL", `Confidence < ${thr.minConfidence}`, {
+              confidence,
+              minConfidence: n(thr.minConfidence, 0),
+            });
             entryGate = `Confidence < ${thr.minConfidence}`;
           }
           // Daarna tier harde grenzen
           else if (spreadPct > E.spreadMaxPct) {
+            await pushReject("ENTRY", "ENTRY_SPREAD_FAIL", `spread>${E.spreadMaxPct}%`, {
+              spreadPct,
+              limit: E.spreadMaxPct,
+            });
             entryGate = `blocked: spread>${E.spreadMaxPct}%`;
           } else if (depthMinUsd1p < E.depthMinUsd1p) {
+            await pushReject("ENTRY", "ENTRY_DEPTH_FAIL", `depth1%<${E.depthMinUsd1p}`, {
+              depthMinUsd1p,
+              limit: E.depthMinUsd1p,
+            });
             entryGate = `blocked: depth1%<${E.depthMinUsd1p}`;
           } else if (obScoreAbs < E.obScoreAbsMin) {
+            await pushReject("ENTRY", "ENTRY_OBSCORE_FAIL", `|obScore|<${E.obScoreAbsMin}`, {
+              obScoreAbs,
+              limit: E.obScoreAbsMin,
+            });
             entryGate = `blocked: |obScore|<${E.obScoreAbsMin}`;
           } else {
             // Nu de geavanceerde checks
@@ -824,6 +1026,7 @@ export default async function handler(req, res) {
                 : { ok: true };
 
             if (!slopeCheck2.ok) {
+              await pushReject("ENTRY", "ENTRY_SLOPE_FAIL", slopeCheck2.reason || "OB slope failed at ENTRY");
               entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
             } else {
               // pressure align (indien vereist)
@@ -831,6 +1034,9 @@ export default async function handler(req, res) {
                 const pressureDelta = n(ob?.pressureDeltaUsd, 0);
                 const pressureOk = mode === "bull" ? pressureDelta >= 0 : pressureDelta <= 0;
                 if (!pressureOk) {
+                  await pushReject("ENTRY", "ENTRY_PRESSURE_FAIL", "blocked: pressure contra", {
+                    pressureDeltaUsd: n(ob?.pressureDeltaUsd, 0),
+                  });
                   entryGate = "blocked: pressure contra";
                 }
               }
@@ -839,6 +1045,7 @@ export default async function handler(req, res) {
                 // absorption gate
                 const absorb = absorptionFromSamples(obSamples2, mode);
                 if (!absorb.ok) {
+                  await pushReject("ENTRY", "ENTRY_ABSORPTION_FAIL", `blocked: ${absorb.why}`);
                   entryGate = `blocked: ${absorb.why}`;
                 } else {
                   stage = "ENTRY";
@@ -852,6 +1059,11 @@ export default async function handler(req, res) {
 
       // Anomaly gate (range spike) overschrijft eventuele gates
       if (anomaly?.type === "RANGE_SPIKE") {
+        await pushReject(stageBase === "ENTRY" ? "ENTRY" : "ALMOST", "ANOMALY_RANGE_SPIKE", `range spike x${anomaly.factor}`, {
+          curRange,
+          medRange,
+          factor: anomaly.factor,
+        });
         if (almostGate === "n/a") almostGate = `anomaly: range spike x${anomaly.factor}`;
         if (entryGate === "n/a") entryGate = `anomaly: range spike x${anomaly.factor}`;
       }
@@ -860,6 +1072,12 @@ export default async function handler(req, res) {
       const upd = updateStateAndConsistency(state, sym, stage, core, now);
 
       if ((stage === "ALMOST" || stage === "ENTRY") && !upd.consistency?.ok) {
+        await pushReject(stage, "CONSISTENCY_FAIL", `consistency fail (${upd.consistency.same}/${upd.consistency.need}, minAgree=${upd.consistency.minAgree})`, {
+          same: upd.consistency.same,
+          need: upd.consistency.need,
+          minAgree: upd.consistency.minAgree,
+        });
+
         // Soepeler: ENTRY zonder consistency wordt ALMOST, ALMOST wordt BUILDUP
         if (stage === "ENTRY") {
           stage = "ALMOST";
@@ -964,6 +1182,27 @@ export default async function handler(req, res) {
           prevStage: prevStageBeforeScan || null,
           changed: true,
         };
+
+        await pushStageChange({
+          mode,
+          symbol: sym,
+          from: prevStageBeforeScan || "NONE",
+          to: stage,
+          reason:
+            entryGate !== "n/a" && entryGate !== "passed" ? entryGate :
+            almostGate !== "n/a" && almostGate !== "passed" ? almostGate :
+            stage === "ENTRY" ? "entry passed" :
+            stage === "ALMOST" ? "almost passed" :
+            stage === "BUILDUP" ? "buildup accepted" :
+            "stage update",
+          item: {
+            symbol: item.symbol,
+            stage: item.stage,
+            confidence: item.confidence,
+            tradePlan: item.tradePlan,
+            gates: item.gates,
+          },
+        });
 
         if (stage === "ENTRY") {
           await safePushEvent("scan_entry", eventItem);
