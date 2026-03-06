@@ -982,7 +982,8 @@ function stageFromSwing(mode, c, dyn) {
   const dir1h = wantUp ? n(dyn?.dir1hMinBull, 0.2) : n(dyn?.dir1hMaxBear, -0.2);
   const inDir = wantUp ? ch1h >= dir1h : ch1h <= dir1h;
 
-  if (vm >= 0.24 && range <= n(dyn?.maxRange24, 22) && inDir) return "ALMOST";
-  if (vm >= 0.18 && range <= n(dyn?.maxRange24, 28) + 4) return "BUILDUP";
+  // Iets lagere drempels zodat meer coins in aanmerking komen voor ALMOST en BUILDUP
+  if (vm >= 0.20 && range <= n(dyn?.maxRange24, 24) && inDir) return "ALMOST";
+  if (vm >= 0.15 && range <= n(dyn?.maxRange24, 30) + 4) return "BUILDUP";
   return "RADAR";
 }
