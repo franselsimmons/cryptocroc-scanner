@@ -149,17 +149,17 @@ function calcTradePlan({ mode, price, spreadPct, range24, obScore }) {
   const range = Math.max(0, Number(range24 || 0));
   const scoreAbs = Math.abs(Number(obScore || 0));
 
-  // adaptieve SL
+  // adaptieve SL (aangepast: strakker)
   const slPctBase = Math.max(
-    1.2,
-    Math.min(3.2, 0.30 * range + 1.10 * spread + 0.80)
+    1.0,
+    Math.min(2.8, 0.22 * range + 0.90 * spread + 0.70)
   );
 
-  // adaptieve TP obv OB-score
+  // adaptieve TP obv OB-score (aangepast: iets hogere RR)
   const rrBase =
-    scoreAbs >= 0.10 ? 2.3 :
-    scoreAbs >= 0.07 ? 2.0 :
-    scoreAbs >= 0.05 ? 1.8 : 1.6;
+    scoreAbs >= 0.10 ? 2.4 :
+    scoreAbs >= 0.07 ? 2.1 :
+    scoreAbs >= 0.05 ? 1.9 : 1.7;
 
   const tpPctBase = slPctBase * rrBase;
 
@@ -570,6 +570,9 @@ export default async function handler(req, res) {
       // skip coins zonder coverage (geen Bitget USDT pair)
       if (!obCoverageMap[sym]) continue;
 
+      // Oude stage bewaren vóór eventuele wijzigingen (voor change detection)
+      const prevStageBeforeScan = up(state?.[sym]?.stage || "");
+
       // 1) Radar gate eerst (mcap/vol/vm/range/direction)
       const dyn = typeof core.dynamicRadarThresholds === "function"
         ? core.dynamicRadarThresholds(n(c.range24, 0), core.SETTINGS)
@@ -948,20 +951,28 @@ export default async function handler(req, res) {
         },
       };
 
+      // Voeg item toe aan de juiste lijst (altijd)
       if (stage === "ENTRY") entry.push(item);
       else if (stage === "ALMOST") almost.push(item);
       else if (stage === "BUILDUP") buildup.push(item);
       else radar.push(item);
 
-      // Stuur events naar analytics (en Discord) per stadium
-      if (stage === "ENTRY") {
-        await safePushEvent("scan_entry", item);
-      } else if (stage === "ALMOST") {
-        await safePushEvent("scan_almost", item);
-      } else if (stage === "BUILDUP") {
-        await safePushEvent("scan_buildup", item);
-      } else if (stage === "RADAR") {
-        await safePushEvent("scan_radar", item);
+      // Stuur alleen een event (en Discord) als de stage daadwerkelijk is veranderd
+      if (prevStageBeforeScan !== stage) {
+        const eventItem = {
+          ...item,
+          prevStage: prevStageBeforeScan || null,
+          changed: true,
+        };
+
+        if (stage === "ENTRY") {
+          await safePushEvent("scan_entry", eventItem);
+        } else if (stage === "ALMOST") {
+          await safePushEvent("scan_almost", eventItem);
+        } else if (stage === "BUILDUP") {
+          await safePushEvent("scan_buildup", eventItem);
+        }
+        // RADAR sturen we niet naar Discord om spam te voorkomen
       }
     }
 
