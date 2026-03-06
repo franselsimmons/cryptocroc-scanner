@@ -69,32 +69,32 @@ const DESIGN_RATIONALE = [
 const TIER_CFG = {
   // Basic OB sanity for anything above RADAR
   buildup: {
-    spreadMaxPct: 1.40,
-    depthMinUsd1p: 18_000,
+    spreadMaxPct: 1.60,
+    depthMinUsd1p: 14_000,
     obScoreAbsMin: 0.00, // buildup doesn't require imbalance, just sanity
   },
 
   // Medium filters
   almost: {
-    spreadMaxPct: 1.10,
-    depthMinUsd1p: 28_000,
-    obScoreAbsMin: 0.030, // require some imbalance
+    spreadMaxPct: 1.25,
+    depthMinUsd1p: 22_000,
+    obScoreAbsMin: 0.025, // require some imbalance
     requireWall: false,   // optional: set true if you want wall presence
   },
 
   // Hard filters
   entry: {
-    spreadMaxPct: 0.95,
-    depthMinUsd1p: 45_000,
-    obScoreAbsMin: 0.045,
+    spreadMaxPct: 1.10,
+    depthMinUsd1p: 32_000,
+    obScoreAbsMin: 0.040,
     requireWall: false,
-    requirePressureAlign: true, // bull => pressureDelta>=0, bear => <=0
+    requirePressureAlign: false, // bull => pressureDelta>=0, bear => <=0
   },
 
   // Sample-based gate thresholds
   samples: {
     minForSpoof: 3,
-    minForAbsorption: 4,
+    minForAbsorption: 3,
   },
 };
 
@@ -405,7 +405,7 @@ function spoofRiskFromSamples(samples) {
 
   const risk = (toggledOff ? 1 : 0) + (scoreFlip ? 1 : 0) + (spreadWorse ? 1 : 0);
 
-  return { ok: risk <= 1, risk, why: risk >= 2 ? "spoof_like_wall_behavior" : "ok" };
+  return { ok: risk <= 2, risk, why: risk >= 3 ? "spoof_like_wall_behavior" : "ok" };
 }
 
 function absorptionFromSamples(samples, mode) {
@@ -425,7 +425,7 @@ function absorptionFromSamples(samples, mode) {
   const aligned = wantUp ? avgScore > 0.03 : avgScore < -0.03;
 
   // Absorption proxy: deep liquidity but weak/non-aligned pressure
-  const absorption = avgDepth > 40_000 && !aligned;
+  const absorption = avgDepth > 55_000 && !aligned;
 
   return absorption ? { ok: false, why: "liquidity_absorption_proxy" } : { ok: true, why: "ok" };
 }
@@ -675,12 +675,18 @@ export default async function handler(req, res) {
       let almostGate = "n/a";
       let entryGate = "n/a";
 
-      // BTC cap check
+      // BTC cap check (zachter gemaakt)
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
-        stage = "BUILDUP";
-        stageBase = "BUILDUP";
-        almostGate = `capped: ${cap.capStage}`;
-        entryGate = `capped: ${cap.capStage}`;
+        if (stageBase === "ENTRY") {
+          stage = "ALMOST";
+          entryGate = `soft-capped: ${cap.capStage}`;
+          if (almostGate === "n/a") almostGate = "passed";
+        } else {
+          stage = "BUILDUP";
+          stageBase = "BUILDUP";
+          almostGate = `capped: ${cap.capStage}`;
+          entryGate = `capped: ${cap.capStage}`;
+        }
       } else {
         // ======================================================
         // ALMOST gate (medium filters + slope + spoof)
@@ -783,21 +789,29 @@ export default async function handler(req, res) {
         if (entryGate === "n/a") entryGate = `anomaly: range spike x${anomaly.factor}`;
       }
 
-      // Consistency check
+      // Consistency check (zachter gemaakt)
       const upd = updateStateAndConsistency(state, sym, stage, core, now);
 
       if ((stage === "ALMOST" || stage === "ENTRY") && !upd.consistency?.ok) {
-        stage = "BUILDUP";
-        if (almostGate === "n/a" || almostGate === "passed") {
-          almostGate = `consistency blocked (${upd.consistency.same}/${upd.consistency.need}, minAgree=${upd.consistency.minAgree})`;
-        }
-        if (entryGate === "n/a" || entryGate === "passed") {
-          entryGate = `consistency blocked (${upd.consistency.same}/${upd.consistency.need}, minAgree=${upd.consistency.minAgree})`;
+        // Soepeler: ENTRY zonder consistency wordt ALMOST, ALMOST wordt BUILDUP
+        if (stage === "ENTRY") {
+          stage = "ALMOST";
+          if (entryGate === "n/a" || entryGate === "passed") {
+            entryGate = `consistency degraded (${upd.consistency.same}/${upd.consistency.need})`;
+          }
+        } else {
+          stage = "BUILDUP";
+          if (almostGate === "n/a" || almostGate === "passed") {
+            almostGate = `consistency blocked (${upd.consistency.same}/${upd.consistency.need}, minAgree=${upd.consistency.minAgree})`;
+          }
+          if (entryGate === "n/a" || entryGate === "passed") {
+            entryGate = `consistency blocked (${upd.consistency.same}/${upd.consistency.need}, minAgree=${upd.consistency.minAgree})`;
+          }
         }
         if (state[sym]) {
-          state[sym].stage = "BUILDUP";
+          state[sym].stage = stage;
           if (Array.isArray(state[sym].hist) && state[sym].hist.length) {
-            state[sym].hist[state[sym].hist.length - 1] = "BUILDUP";
+            state[sym].hist[state[sym].hist.length - 1] = stage;
           }
         }
       }
