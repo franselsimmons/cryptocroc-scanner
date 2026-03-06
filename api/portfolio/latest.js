@@ -54,12 +54,14 @@ function buildOpen(latest, mode) {
         obScore: n(coin?.ob?.score, 0),
         spreadPct: n(coin?.ob?.spreadPct, 0),
         depthMinUsd1p: n(coin?.ob?.depthMinUsd1p, 0),
-        entryGate: String(coin?.why?.entryGate || ""),
-        almostGate: String(coin?.why?.almostGate || ""),
+        // GECORRIGEERD: gebruik gates i.p.v. why
+        entryGate: String(coin?.gates?.entry || ""),
+        almostGate: String(coin?.gates?.almost || ""),
       },
       liveMeta: {
         stage: String(coin?.stage || ""),
-        obStatus: String(coin?.ob?.status || ""),
+        // GECORRIGEERD: obStatus opbouwen uit beschikbare velden
+        obStatus: (coin?.ob?.fresh ? 'fresh' : 'stale') + ' / ' + (coin?.ob?.valid ? 'valid' : 'invalid') + (coin?.ob?.reason ? ` (${coin.ob.reason})` : ''),
         obReason: String(coin?.ob?.reason || ""),
       },
     };
