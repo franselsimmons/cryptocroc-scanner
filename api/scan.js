@@ -131,6 +131,61 @@ async function safePushEvent(funnel, data) {
   } catch {}
 }
 
+// ---------- toegevoegde helper voor TP/SL ----------
+function calcTradePlan({ mode, price, spreadPct, range24, obScore }) {
+  const p = Number(price || 0);
+  if (!(p > 0)) {
+    return {
+      entry: null,
+      tp: null,
+      sl: null,
+      rr: null,
+      tpPct: null,
+      slPct: null,
+    };
+  }
+
+  const spread = Math.max(0, Number(spreadPct || 0));
+  const range = Math.max(0, Number(range24 || 0));
+  const scoreAbs = Math.abs(Number(obScore || 0));
+
+  // adaptieve SL
+  const slPctBase = Math.max(
+    1.2,
+    Math.min(3.2, 0.30 * range + 1.10 * spread + 0.80)
+  );
+
+  // adaptieve TP obv OB-score
+  const rrBase =
+    scoreAbs >= 0.10 ? 2.3 :
+    scoreAbs >= 0.07 ? 2.0 :
+    scoreAbs >= 0.05 ? 1.8 : 1.6;
+
+  const tpPctBase = slPctBase * rrBase;
+
+  let entry = p;
+  let tp = null;
+  let sl = null;
+
+  if (String(mode).toLowerCase() === "bull") {
+    tp = p * (1 + tpPctBase / 100);
+    sl = p * (1 - slPctBase / 100);
+  } else {
+    tp = p * (1 - tpPctBase / 100);
+    sl = p * (1 + slPctBase / 100);
+  }
+
+  return {
+    entry: +entry.toFixed(8),
+    tp: +tp.toFixed(8),
+    sl: +sl.toFixed(8),
+    rr: +rrBase.toFixed(2),
+    tpPct: +tpPctBase.toFixed(2),
+    slPct: +slPctBase.toFixed(2),
+  };
+}
+// ----------------------------------------------------------------
+
 // ✅ OB max age (stale gate)
 const OB_MAX_AGE_MS = 120 * 60 * 1000;
 const OB_MAX_AGE_SEC = Math.floor(OB_MAX_AGE_MS / 1000);
@@ -675,6 +730,15 @@ export default async function handler(req, res) {
       let almostGate = "n/a";
       let entryGate = "n/a";
 
+      // tradePlan berekenen op basis van huidige stand
+      const tradePlan = calcTradePlan({
+        mode,
+        price: n(c.price, 0),
+        spreadPct,
+        range24: n(c.range24, 0),
+        obScore,
+      });
+
       // BTC cap check (zachter gemaakt)
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
         if (stageBase === "ENTRY") {
@@ -828,6 +892,10 @@ export default async function handler(req, res) {
         change24: +n(c.change24, 0).toFixed(3),
         range24: +n(c.range24, 0).toFixed(3),
 
+        mode,
+        btcState: btc.state,
+        tradePlan,
+
         confidence,
         stage,
         stageBase,
@@ -885,8 +953,15 @@ export default async function handler(req, res) {
       else if (stage === "BUILDUP") buildup.push(item);
       else radar.push(item);
 
+      // Stuur events naar analytics (en Discord) per stadium
       if (stage === "ENTRY") {
-        await safePushEvent("scan_entry", { mode, symbol: sym, confidence, btcState: btc.state });
+        await safePushEvent("scan_entry", item);
+      } else if (stage === "ALMOST") {
+        await safePushEvent("scan_almost", item);
+      } else if (stage === "BUILDUP") {
+        await safePushEvent("scan_buildup", item);
+      } else if (stage === "RADAR") {
+        await safePushEvent("scan_radar", item);
       }
     }
 
