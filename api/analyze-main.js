@@ -1,4 +1,3 @@
-// /api/analyze-main.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, requireSecret } from "../lib/_runtime.js";
 import { readEvents } from "../lib/_analytics.js";
@@ -74,35 +73,78 @@ function summarizeFlow(events, sinceMs) {
   };
 }
 
-function summarizeSnapshot(latest) {
-  const coins = flattenCoins(latest || {});
-  const stageCounts = { RADAR: 0, BUILDUP: 0, ALMOST: 0, ENTRY: 0 };
+/**
+ * Nieuwe functie: reject analyse uit scan_reject events
+ */
+function summarizeRejects(events, sinceMs, mode) {
+  const rejects = safeArr(events)
+    .filter((e) => e?.type === "scan_reject")
+    .filter((e) => n(e?.ts, 0) >= sinceMs)
+    .filter((e) => !mode || e?.mode === mode);
 
-  // Gate blockers from snapshot (strings in c.gates)
-  const gateReasons = { radar: {}, almost: {}, entry: {} };
+  const byStage = { RADAR: {}, BUILDUP: {}, ALMOST: {}, ENTRY: {} };
+  const byCode = {};
 
-  for (const c of coins) {
-    const st = String(c?._bucket || "RADAR");
-    if (stageCounts[st] != null) stageCounts[st]++;
-
-    const g = c?.gates || {};
-    if (g.radar) inc(gateReasons.radar, String(g.radar));
-    if (g.almost && String(g.almost) !== "n/a") inc(gateReasons.almost, String(g.almost));
-    if (g.entry && String(g.entry) !== "n/a") inc(gateReasons.entry, String(g.entry));
+  for (const e of rejects) {
+    const stage = String(e?.stageTried || "").toUpperCase();
+    const code = String(e?.rejectCode || "UNKNOWN");
+    if (byStage[stage]) inc(byStage[stage], code);
+    inc(byCode, code);
   }
 
   return {
-    ts: latest?.ts || null,
-    btc: latest?.btc || null,
-    stageCounts,
-    gateTop: {
-      radar: topN(gateReasons.radar, 10),
-      almost: topN(gateReasons.almost, 12),
-      entry: topN(gateReasons.entry, 12),
+    totalRejects: rejects.length,
+    byStage: {
+      RADAR: topN(byStage.RADAR, 15),
+      BUILDUP: topN(byStage.BUILDUP, 15),
+      ALMOST: topN(byStage.ALMOST, 15),
+      ENTRY: topN(byStage.ENTRY, 15),
     },
-    // Diagnostics (als scan dit meegeeft)
-    diagnostics: latest?.meta?.diagnostics || null,
+    byCode: topN(byCode, 20),
   };
+}
+
+/**
+ * Segmentatie op basis van huidige snapshot
+ */
+function summarizeSegments(latest) {
+  const coins = flattenCoins(latest || {});
+  const segments = {
+    mcap: { "<25M": 0, "25-75M": 0, "75-200M": 0, "200-500M": 0, ">500M": 0 },
+    spread: { "<0.25": 0, "0.25-0.50": 0, "0.50-1.00": 0, "1.00-1.50": 0, ">1.50": 0 },
+    obScore: { "<0.03": 0, "0.03-0.05": 0, "0.05-0.08": 0, ">0.08": 0 },
+    vm: { "<0.12": 0, "0.12-0.18": 0, "0.18-0.25": 0, ">0.25": 0 },
+  };
+
+  for (const c of coins) {
+    const mcap = n(c.marketCap, 0) / 1e6; // miljoenen
+    if (mcap < 25) segments.mcap["<25M"]++;
+    else if (mcap < 75) segments.mcap["25-75M"]++;
+    else if (mcap < 200) segments.mcap["75-200M"]++;
+    else if (mcap < 500) segments.mcap["200-500M"]++;
+    else segments.mcap[">500M"]++;
+
+    const sp = n(c.ob?.spreadPct, 0);
+    if (sp < 0.25) segments.spread["<0.25"]++;
+    else if (sp < 0.5) segments.spread["0.25-0.50"]++;
+    else if (sp < 1.0) segments.spread["0.50-1.00"]++;
+    else if (sp < 1.5) segments.spread["1.00-1.50"]++;
+    else segments.spread[">1.50"]++;
+
+    const ob = n(c.ob?.score, 0);
+    if (ob < 0.03) segments.obScore["<0.03"]++;
+    else if (ob < 0.05) segments.obScore["0.03-0.05"]++;
+    else if (ob < 0.08) segments.obScore["0.05-0.08"]++;
+    else segments.obScore[">0.08"]++;
+
+    const vm = n(c.vm, 0);
+    if (vm < 0.12) segments.vm["<0.12"]++;
+    else if (vm < 0.18) segments.vm["0.12-0.18"]++;
+    else if (vm < 0.25) segments.vm["0.18-0.25"]++;
+    else segments.vm[">0.25"]++;
+  }
+
+  return segments;
 }
 
 function renderCounters(title, counters) {
@@ -114,6 +156,15 @@ function renderCounters(title, counters) {
     <div class="box">
       <h4>${esc(title)}</h4>
       <ul>${items}</ul>
+    </div>
+  `;
+}
+
+function renderSegmentBox(title, segMap) {
+  return `
+    <div class="box">
+      <h4>${esc(title)}</h4>
+      <ul>${Object.entries(segMap).map(([k, v]) => `<li><b>${k}</b> — ${v}</li>`).join("")}</ul>
     </div>
   `;
 }
@@ -131,7 +182,7 @@ function coinRow(c) {
   `;
 
   return `
-    <tr>
+    <tr class="coin-row" data-symbol="${esc(c?.symbol || "")}">
       <td>
         <b>${esc(c?.symbol || "?")}</b>
         <div class="muted">${esc(c?.name || "")}</div>
@@ -192,7 +243,7 @@ function stageTable(title, arr, diagBlockHtml) {
       ${diagBlockHtml || ""}
 
       <div style="overflow:auto;margin-top:10px">
-        <table>
+        <table class="coin-table">
           <thead>
             <tr>
               <th>Coin</th>
@@ -215,7 +266,7 @@ function stageTable(title, arr, diagBlockHtml) {
   `;
 }
 
-function modeCard(mode, latest, sessionStartMs) {
+function modeCard(mode, latest, sessionStartMs, events) {
   const sum = summarizeSnapshot(latest || {});
   const coins = flattenCoins(latest || {});
   const by = {
@@ -225,7 +276,7 @@ function modeCard(mode, latest, sessionStartMs) {
     ENTRY: coins.filter(x => x._bucket === "ENTRY"),
   };
 
-  // Diagnostics layout (requires scan meta.diagnostics[mode])
+  // Diagnostics (als scan die meegeeft)
   const diag = sum.diagnostics && sum.diagnostics[mode] ? sum.diagnostics[mode] : null;
 
   const diagForStage = (st) => {
@@ -245,6 +296,9 @@ function modeCard(mode, latest, sessionStartMs) {
     `;
   };
 
+  // Reject analyse voor deze mode
+  const rejectSum = summarizeRejects(events, sessionStartMs, mode);
+
   return `
     <div class="card">
       <div class="cardTop">
@@ -252,8 +306,7 @@ function modeCard(mode, latest, sessionStartMs) {
           <h2>${esc(mode.toUpperCase())}</h2>
           <div class="muted">
             Latest scan: <b>${sum.ts ? fmtDate(sum.ts) : "n/a"}</b> —
-            BTC: <b>${esc(sum?.btc?.state || "-")}</b> —
-            Session: <b>${sessionStartMs ? fmtDate(sessionStartMs) : "n/a"}</b>
+            BTC: <b>${esc(sum?.btc?.state || "-")}</b>
           </div>
           <div class="pills">
             <span class="pill">RADAR: ${n(sum.stageCounts.RADAR, 0)}</span>
@@ -261,6 +314,23 @@ function modeCard(mode, latest, sessionStartMs) {
             <span class="pill">ALMOST: ${n(sum.stageCounts.ALMOST, 0)}</span>
             <span class="pill">ENTRY: ${n(sum.stageCounts.ENTRY, 0)}</span>
           </div>
+        </div>
+      </div>
+
+      <!-- Reject summary voor deze mode -->
+      <div class="grid" style="margin-top:10px">
+        <div class="box">
+          <h4>Rejects (sinds sessie)</h4>
+          <div>Totaal: <b>${rejectSum.totalRejects}</b></div>
+          <h5>Per code</h5>
+          <ul>${rejectSum.byCode.map(x => `<li><b>${esc(x.key)}</b> — ${x.count}</li>`).join("") || "<li class='muted'>geen</li>"}</ul>
+        </div>
+        <div class="box">
+          <h4>Per stage</h4>
+          <div><b>RADAR</b> <ul>${rejectSum.byStage.RADAR.map(x => `<li>${esc(x.key)} — ${x.count}</li>`).join("") || "<li class='muted'>-</li>"}</ul></div>
+          <div><b>BUILDUP</b> <ul>${rejectSum.byStage.BUILDUP.map(x => `<li>${esc(x.key)} — ${x.count}</li>`).join("") || "<li class='muted'>-</li>"}</ul></div>
+          <div><b>ALMOST</b> <ul>${rejectSum.byStage.ALMOST.map(x => `<li>${esc(x.key)} — ${x.count}</li>`).join("") || "<li class='muted'>-</li>"}</ul></div>
+          <div><b>ENTRY</b> <ul>${rejectSum.byStage.ENTRY.map(x => `<li>${esc(x.key)} — ${x.count}</li>`).join("") || "<li class='muted'>-</li>"}</ul></div>
         </div>
       </div>
 
@@ -285,9 +355,42 @@ function modeCard(mode, latest, sessionStartMs) {
   `;
 }
 
+function summarizeSnapshot(latest) {
+  const coins = flattenCoins(latest || {});
+  const stageCounts = { RADAR: 0, BUILDUP: 0, ALMOST: 0, ENTRY: 0 };
+
+  const gateReasons = { radar: {}, almost: {}, entry: {} };
+
+  for (const c of coins) {
+    const st = String(c?._bucket || "RADAR");
+    if (stageCounts[st] != null) stageCounts[st]++;
+
+    const g = c?.gates || {};
+    if (g.radar) inc(gateReasons.radar, String(g.radar));
+    if (g.almost && String(g.almost) !== "n/a") inc(gateReasons.almost, String(g.almost));
+    if (g.entry && String(g.entry) !== "n/a") inc(gateReasons.entry, String(g.entry));
+  }
+
+  return {
+    ts: latest?.ts || null,
+    btc: latest?.btc || null,
+    stageCounts,
+    gateTop: {
+      radar: topN(gateReasons.radar, 10),
+      almost: topN(gateReasons.almost, 12),
+      entry: topN(gateReasons.entry, 12),
+    },
+    diagnostics: latest?.meta?.diagnostics || null,
+  };
+}
+
 function htmlPage({ bullLatest, bearLatest, events, sessionStartMs }) {
   const flow = summarizeFlow(events, sessionStartMs || (Date.now() - 24 * 3600 * 1000));
   const list = (arr) => (arr || []).map(x => `<li><b>${esc(x.key)}</b> — ${n(x.count,0)}</li>`).join("") || "<li class='muted'>n/a</li>";
+
+  // Segmenten (beide modes samen, of apart? we doen apart in de modeCard, maar hier een totaaloverzicht)
+  const allCoins = flattenCoins(bullLatest || {}).concat(flattenCoins(bearLatest || {}));
+  const segments = summarizeSegments({ funnel: { radar: allCoins, buildup: [], almost: [], entry: [] } }); // vereenvoudigd
 
   return `<!doctype html>
 <html>
@@ -319,13 +422,16 @@ function htmlPage({ bullLatest, bearLatest, events, sessionStartMs }) {
     .kv{display:flex;gap:8px;align-items:baseline;justify-content:space-between;border-bottom:1px dashed rgba(255,255,255,0.08);padding:2px 0}
     .kv span{color:#9fb0c3}
     code{background:#0c1320;border:1px solid #1f2a3a;padding:2px 6px;border-radius:8px}
+    .search-box{margin:12px 0;display:flex;gap:8px;align-items:center}
+    .search-box input{flex:1;padding:8px;border-radius:8px;border:1px solid #2a3a52;background:#0c1320;color:#e6edf3}
+    .hidden{display:none !important}
   </style>
 </head>
 <body>
   <div class="wrap">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap">
       <div>
-        <h1>Main Analyze — per stage tables + fail counters</h1>
+        <h1>Main Analyze — per stage tables + fail counters + segmenten + coin zoeken</h1>
         <div class="muted">
           Session start: <b>${sessionStartMs ? fmtDate(sessionStartMs) : "n/a"}</b>
           &nbsp;•&nbsp; Reset = alleen analyse window (geen scan reset)
@@ -334,6 +440,12 @@ function htmlPage({ bullLatest, bearLatest, events, sessionStartMs }) {
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn" id="resetBtn">Reset Analysis</button>
       </div>
+    </div>
+
+    <!-- Zoekvak voor coins (filtert alle tabellen) -->
+    <div class="search-box">
+      <input type="text" id="coinSearch" placeholder="Zoek op symbool (bv. BTC, ETH...)">
+      <button class="btn" id="clearSearch">Wis</button>
     </div>
 
     <div class="flow">
@@ -353,13 +465,24 @@ function htmlPage({ bullLatest, bearLatest, events, sessionStartMs }) {
         </div>
       </div>
       <div class="muted" style="margin-top:8px">
-        Tip: voor echte filter bottlenecks heb je scan diagnostics nodig: <code>latest.meta.diagnostics</code>.
+        Tip: voor echte filter bottlenecks heb je scan diagnostics nodig: <code>latest.meta.diagnostics</code> en <code>scan_reject</code> events.
+      </div>
+    </div>
+
+    <!-- Segmenten overzicht (beide modes samen) -->
+    <div class="flow">
+      <h2 style="margin:0 0 6px 0;font-size:16px">Segmenten (alle coins)</h2>
+      <div class="grid" style="grid-template-columns:repeat(4,1fr)">
+        ${renderSegmentBox("Market Cap (M)", segments.mcap)}
+        ${renderSegmentBox("Spread %", segments.spread)}
+        ${renderSegmentBox("OB Score", segments.obScore)}
+        ${renderSegmentBox("VM", segments.vm)}
       </div>
     </div>
 
     <div class="row">
-      ${modeCard("bull", bullLatest || {}, sessionStartMs)}
-      ${modeCard("bear", bearLatest || {}, sessionStartMs)}
+      ${modeCard("bull", bullLatest || {}, sessionStartMs, events)}
+      ${modeCard("bear", bearLatest || {}, sessionStartMs, events)}
     </div>
   </div>
 
@@ -383,6 +506,29 @@ function htmlPage({ bullLatest, bearLatest, events, sessionStartMs }) {
           btn.textContent = "Reset Analysis";
         }
       });
+
+      // Coin zoeken (filtert rijen op data-symbol)
+      const searchInput = document.getElementById("coinSearch");
+      const clearBtn = document.getElementById("clearSearch");
+      
+      function filterCoins() {
+        const term = searchInput.value.trim().toUpperCase();
+        const rows = document.querySelectorAll(".coin-row");
+        for (const row of rows) {
+          const sym = row.getAttribute("data-symbol")?.toUpperCase() || "";
+          if (!term || sym.includes(term)) {
+            row.classList.remove("hidden");
+          } else {
+            row.classList.add("hidden");
+          }
+        }
+      }
+
+      searchInput.addEventListener("input", filterCoins);
+      clearBtn.addEventListener("click", () => {
+        searchInput.value = "";
+        filterCoins();
+      });
     })();
   </script>
 </body>
@@ -398,7 +544,7 @@ export default async function handler(req, res) {
     const [bullLatest, bearLatest, events, sessionStartMs] = await Promise.all([
       kv.get("latest:bull"),
       kv.get("latest:bear"),
-      readEvents("main", 8000),
+      readEvents("main", 8000),  // haal events op (inclusief scan_reject als die bestaan)
       kv.get("analyze:sessionStartMs"),
     ]);
 
@@ -416,6 +562,7 @@ export default async function handler(req, res) {
         latest: { bull: bullLatest || null, bear: bearLatest || null },
         derived: {
           flowSinceSession: summarizeFlow(events, sess || (Date.now() - 24 * 3600 * 1000)),
+          rejectsSinceSession: summarizeRejects(events, sess || (Date.now() - 24 * 3600 * 1000)),
         },
       }));
     }
