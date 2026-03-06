@@ -74,7 +74,7 @@ function summarizeFlow(events, sinceMs) {
 }
 
 /**
- * Nieuwe functie: reject analyse uit scan_reject events
+ * Reject analyse uit scan_reject events
  */
 function summarizeRejects(events, sinceMs, mode) {
   const rejects = safeArr(events)
@@ -105,10 +105,9 @@ function summarizeRejects(events, sinceMs, mode) {
 }
 
 /**
- * Segmentatie op basis van huidige snapshot
+ * Segmentatie op basis van een array van coins (in plaats van een funnel-object)
  */
-function summarizeSegments(latest) {
-  const coins = flattenCoins(latest || {});
+function summarizeSegmentsFromCoins(coins) {
   const segments = {
     mcap: { "<25M": 0, "25-75M": 0, "75-200M": 0, "200-500M": 0, ">500M": 0 },
     spread: { "<0.25": 0, "0.25-0.50": 0, "0.50-1.00": 0, "1.00-1.50": 0, ">1.50": 0 },
@@ -276,7 +275,6 @@ function modeCard(mode, latest, sessionStartMs, events) {
     ENTRY: coins.filter(x => x._bucket === "ENTRY"),
   };
 
-  // Diagnostics (als scan die meegeeft)
   const diag = sum.diagnostics && sum.diagnostics[mode] ? sum.diagnostics[mode] : null;
 
   const diagForStage = (st) => {
@@ -296,7 +294,6 @@ function modeCard(mode, latest, sessionStartMs, events) {
     `;
   };
 
-  // Reject analyse voor deze mode
   const rejectSum = summarizeRejects(events, sessionStartMs, mode);
 
   return `
@@ -388,9 +385,9 @@ function htmlPage({ bullLatest, bearLatest, events, sessionStartMs }) {
   const flow = summarizeFlow(events, sessionStartMs || (Date.now() - 24 * 3600 * 1000));
   const list = (arr) => (arr || []).map(x => `<li><b>${esc(x.key)}</b> — ${n(x.count,0)}</li>`).join("") || "<li class='muted'>n/a</li>";
 
-  // Segmenten (beide modes samen, of apart? we doen apart in de modeCard, maar hier een totaaloverzicht)
+  // Segmenten over alle coins (beide modes)
   const allCoins = flattenCoins(bullLatest || {}).concat(flattenCoins(bearLatest || {}));
-  const segments = summarizeSegments({ funnel: { radar: allCoins, buildup: [], almost: [], entry: [] } }); // vereenvoudigd
+  const segments = summarizeSegmentsFromCoins(allCoins);
 
   return `<!doctype html>
 <html>
@@ -469,7 +466,7 @@ function htmlPage({ bullLatest, bearLatest, events, sessionStartMs }) {
       </div>
     </div>
 
-    <!-- Segmenten overzicht (beide modes samen) -->
+    <!-- Segmenten overzicht (alle coins) -->
     <div class="flow">
       <h2 style="margin:0 0 6px 0;font-size:16px">Segmenten (alle coins)</h2>
       <div class="grid" style="grid-template-columns:repeat(4,1fr)">
@@ -541,12 +538,26 @@ export default async function handler(req, res) {
 
     const format = String(req.query?.format || "html").toLowerCase();
 
-    const [bullLatest, bearLatest, events, sessionStartMs] = await Promise.all([
+    // Lees meerdere event streams in plaats van alleen "main"
+    const [bullLatest, bearLatest, radarEvents, buildupEvents, almostEvents, entryEvents, rejectEvents, sessionStartMs] = await Promise.all([
       kv.get("latest:bull"),
       kv.get("latest:bear"),
-      readEvents("main", 8000),  // haal events op (inclusief scan_reject als die bestaan)
+      readEvents("scan_radar", 3000),
+      readEvents("scan_buildup", 3000),
+      readEvents("scan_almost", 3000),
+      readEvents("scan_entry", 3000),
+      readEvents("scan_reject", 8000),
       kv.get("analyze:sessionStartMs"),
     ]);
+
+    // Combineer alle events
+    const events = [
+      ...safeArr(radarEvents),
+      ...safeArr(buildupEvents),
+      ...safeArr(almostEvents),
+      ...safeArr(entryEvents),
+      ...safeArr(rejectEvents),
+    ];
 
     const sess = n(sessionStartMs, 0);
 
