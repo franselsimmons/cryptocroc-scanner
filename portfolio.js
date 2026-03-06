@@ -1,4 +1,3 @@
-// /portfolio.js
 const el = (id) => document.getElementById(id);
 
 const API = "/api/portfolio/latest";
