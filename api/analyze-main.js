@@ -538,24 +538,26 @@ export default async function handler(req, res) {
 
     const format = String(req.query?.format || "html").toLowerCase();
 
-    // Lees meerdere event streams in plaats van alleen "main"
-    const [bullLatest, bearLatest, radarEvents, buildupEvents, almostEvents, entryEvents, rejectEvents, sessionStartMs] = await Promise.all([
+    // ** BELANGRIJK: nu wordt scan_transition ook uitgelezen **
+    const [bullLatest, bearLatest, radarEvents, buildupEvents, almostEvents, entryEvents, transitionEvents, rejectEvents, sessionStartMs] = await Promise.all([
       kv.get("latest:bull"),
       kv.get("latest:bear"),
       readEvents("scan_radar", 3000),
       readEvents("scan_buildup", 3000),
       readEvents("scan_almost", 3000),
       readEvents("scan_entry", 3000),
+      readEvents("scan_transition", 8000),   // toegevoegd
       readEvents("scan_reject", 8000),
       kv.get("analyze:sessionStartMs"),
     ]);
 
-    // Combineer alle events
+    // Alle events samenvoegen (inclusief transitionEvents)
     const events = [
       ...safeArr(radarEvents),
       ...safeArr(buildupEvents),
       ...safeArr(almostEvents),
       ...safeArr(entryEvents),
+      ...safeArr(transitionEvents),
       ...safeArr(rejectEvents),
     ];
 
