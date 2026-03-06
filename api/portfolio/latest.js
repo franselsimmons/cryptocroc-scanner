@@ -1,4 +1,3 @@
-// /api/portfolio/latest.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG } from "../../lib/_runtime.js";
 
@@ -41,6 +40,13 @@ function buildOpen(latest, mode) {
       lastPrice: n(t?.price, 0),
       pnlPct: n(t?.pnlPct, 0) * 100,
       maxPnlPct: n(t?.maxPnlPct, 0) * 100,
+
+      // Extra metadata voor analyse
+      tradePlan: coin?.tradePlan || null,
+      stage: coin?.stage || "",
+      confidence: n(coin?.confidence, 0),
+      gates: coin?.gates || {},
+      ob: coin?.ob || {},
 
       entryMeta: {
         confidence: n(coin?.confidence ?? t?.confidence, 0),
