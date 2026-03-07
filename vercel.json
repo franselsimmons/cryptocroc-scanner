@@ -4,7 +4,9 @@
       "path": "/api/cron?mode=both&max=60&radar=200&symbols=PEPE,SONIC,TURBO",
       "schedule": "0,30 * * * *"
     },
-    { "path": "/api/moon/cron", "schedule": "*/10 * * * *" }
-    { "path": "/api/track", "schedule": "*/10 * * * *" }
+    {
+      "path": "/api/moon/cron",
+      "schedule": "*/10 * * * *"
+    }
   ]
 }
