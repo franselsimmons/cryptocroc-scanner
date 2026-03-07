@@ -622,6 +622,12 @@ export default async function handler(req, res) {
       // Oude stage bewaren vóór eventuele wijzigingen (voor change detection)
       const prevStageBeforeScan = up(state?.[sym]?.stage || "");
 
+      // Huidige state (voor entryTradePlan e.d.)
+      const currentState = safeObj(state[sym]) || {};
+
+      // Bepaal of de coin in een open elite-positie zat (voor de vroege branches)
+      const wasEliteOpen = prevStageBeforeScan === "ENTRY" || prevStageBeforeScan === "HOLD";
+
       // Helper voor reject events binnen deze coin
       const pushReject = async (stageTried, rejectCode, reason, extra = {}) => {
         await safePushEvent("scan_reject", {
@@ -659,33 +665,106 @@ export default async function handler(req, res) {
           range24: n(c.range24, 0),
         });
 
-        // 🔁 Transition naar RADAR als de vorige stage anders was
-        if (prevStageBeforeScan && prevStageBeforeScan !== "RADAR") {
+        // Bepaal of dit een exit (SELL) of gewone RADAR moet worden
+        const vm = radarGate.vm;
+        const usedDyn = radarGate.dyn || dyn;
+        const finalStage = wasEliteOpen ? "SELL" : "RADAR";
+        const finalReason = wasEliteOpen ? "entry/hold invalidated before TP/SL (radar gate)" : (radarGate.why || "radar failed");
+        const finalTradePlan = wasEliteOpen ? (currentState.entryTradePlan || null) : null;
+
+        // Item voor deze coin (basis)
+        const item = {
+          symbol: sym,
+          name: c.name || sym,
+          price: n(c.price, 0),
+          marketCap: n(c.marketCap, 0),
+          volume: n(c.volume, 0),
+          vm: +n(vm, 0).toFixed(6),
+          change1h: +n(c.change1h, 0).toFixed(3),
+          change24: +n(c.change24, 0).toFixed(3),
+          range24: +n(c.range24, 0).toFixed(3),
+
+          mode,
+          btcState: btc.state,
+          tradePlan: finalTradePlan,
+
+          confidence: 0,
+          stage: finalStage,
+          stageBase: "RADAR",
+
+          gates: { radar: radarGate.why || "failed", almost: "n/a", entry: "n/a" },
+          consistency: null,
+
+          rationale: DESIGN_RATIONALE,
+          dyn: usedDyn
+            ? {
+                maxRange24: +n(usedDyn.maxRange24, 0).toFixed(3),
+                dir1hMinBull: +n(usedDyn.dir1hMinBull, 0).toFixed(3),
+                dir24MinBull: +n(usedDyn.dir24MinBull, 0).toFixed(3),
+                dir1hMaxBear: +n(usedDyn.dir1hMaxBear, 0).toFixed(3),
+                dir24MaxBear: +n(usedDyn.dir24MaxBear, 0).toFixed(3),
+                scale: +n(usedDyn.scale, 0).toFixed(3),
+              }
+            : null,
+          thr: null,
+          coinStats: null,
+          anomaly: null,
+          ob: null,
+        };
+
+        // State bijwerken – hier moet history worden toegevoegd (niet vervangen)
+        const newHist = Array.isArray(currentState.hist)
+          ? currentState.hist.concat([finalStage]).slice(-12)
+          : [finalStage];
+
+        if (finalStage === "SELL") {
+          state[sym] = {
+            ...currentState,
+            stage: finalStage,
+            entryActive: false,
+            entryTradePlan: null,
+            lastSeenAt: now,
+            hist: newHist,
+          };
+        } else {
+          state[sym] = {
+            ...currentState,
+            stage: finalStage,
+            entryActive: false,
+            entryTradePlan: null, // opruimen ook voor RADAR
+            lastSeenAt: now,
+            hist: newHist,
+          };
+        }
+
+        // Toevoegen aan juiste array
+        if (finalStage === "SELL") sell.push(item);
+        else radar.push(item);
+
+        // Stage change event (alleen als stage veranderd is)
+        if (prevStageBeforeScan !== finalStage) {
           await pushStageChange({
             mode,
             symbol: sym,
-            from: prevStageBeforeScan,
-            to: "RADAR",
-            reason: radarGate.why || "radar failed",
+            from: prevStageBeforeScan || "NONE",
+            to: finalStage,
+            reason: finalReason,
             item: {
               symbol: sym,
-              stage: "RADAR",
+              stage: finalStage,
               confidence: 0,
-              tradePlan: null,
-              gates: { radar: radarGate.why || "failed" },
+              tradePlan: finalTradePlan,
+              gates: item.gates,
             },
           });
-        }
 
-        // 📝 State bijwerken naar RADAR met historie
-        const prev = safeObj(state[sym]) || {};
-        const histPrev = Array.isArray(prev.hist) ? prev.hist : [];
-        state[sym] = {
-          ...prev,
-          stage: "RADAR",
-          lastSeenAt: now,
-          hist: histPrev.concat(["RADAR"]).slice(-12),
-        };
+          // Discord funnel event
+          if (finalStage === "SELL") {
+            await safePushEvent("scan_sell", { ...item, prevStage: prevStageBeforeScan || null, changed: true, reason: finalReason });
+          } else {
+            await safePushEvent("scan_radar", { ...item, prevStage: prevStageBeforeScan || null, changed: true, reason: finalReason });
+          }
+        }
 
         continue;
       }
@@ -702,39 +781,11 @@ export default async function handler(req, res) {
           obAgeSec: ob?.ageSec ?? null,
         });
 
-        // 🔁 Transition naar RADAR
-        if (prevStageBeforeScan && prevStageBeforeScan !== "RADAR") {
-          await pushStageChange({
-            mode,
-            symbol: sym,
-            from: prevStageBeforeScan,
-            to: "RADAR",
-            reason: ob?.reason || "missing/invalid/stale orderbook",
-            item: {
-              symbol: sym,
-              stage: "RADAR",
-              confidence: 0,
-              tradePlan: null,
-              gates: {
-                radar: "passed",
-                almost: "blocked: missing/invalid/stale orderbook",
-                entry: "blocked: missing/invalid/stale orderbook",
-              },
-            },
-          });
-        }
+        const finalStage = wasEliteOpen ? "SELL" : "RADAR";
+        const finalReason = wasEliteOpen ? "entry/hold invalidated before TP/SL (OB missing/invalid/stale)" : (ob?.reason || "no_ob");
+        const finalTradePlan = wasEliteOpen ? (currentState.entryTradePlan || null) : null;
 
-        // 📝 State bijwerken naar RADAR
-        const prev = safeObj(state[sym]) || {};
-        const histPrev = Array.isArray(prev.hist) ? prev.hist : [];
-        state[sym] = {
-          ...prev,
-          stage: "RADAR",
-          lastSeenAt: now,
-          hist: histPrev.concat(["RADAR"]).slice(-12),
-        };
-
-        radar.push({
+        const item = {
           symbol: sym,
           name: c.name || sym,
           price: n(c.price, 0),
@@ -745,21 +796,90 @@ export default async function handler(req, res) {
           change24: +n(c.change24, 0).toFixed(3),
           range24: +n(c.range24, 0).toFixed(3),
 
+          mode,
+          btcState: btc.state,
+          tradePlan: finalTradePlan,
+
           confidence: 0,
-          stage: "RADAR",
+          stage: finalStage,
           stageBase: "RADAR",
-          gates: {
-            radar: "passed",
-            almost: "blocked: missing/invalid/stale orderbook",
-            entry: "blocked: missing/invalid/stale orderbook",
-          },
+
+          gates: { radar: "passed", almost: "blocked: missing/invalid/stale orderbook", entry: "blocked: missing/invalid/stale orderbook" },
+          consistency: null,
+
+          rationale: DESIGN_RATIONALE,
+          dyn: usedDyn
+            ? {
+                maxRange24: +n(usedDyn.maxRange24, 0).toFixed(3),
+                dir1hMinBull: +n(usedDyn.dir1hMinBull, 0).toFixed(3),
+                dir24MinBull: +n(usedDyn.dir24MinBull, 0).toFixed(3),
+                dir1hMaxBear: +n(usedDyn.dir1hMaxBear, 0).toFixed(3),
+                dir24MaxBear: +n(usedDyn.dir24MaxBear, 0).toFixed(3),
+                scale: +n(usedDyn.scale, 0).toFixed(3),
+              }
+            : null,
+          thr: null,
+          coinStats: null,
+          anomaly: null,
           ob: {
             fresh: !!ob?.fresh,
             valid: !!ob?.valid,
             reason: ob?.reason || "no_ob",
             ageSec: ob?.ageSec ?? null,
           },
-        });
+        };
+
+        // State bijwerken – toevoegen aan history
+        const newHist = Array.isArray(currentState.hist)
+          ? currentState.hist.concat([finalStage]).slice(-12)
+          : [finalStage];
+
+        if (finalStage === "SELL") {
+          state[sym] = {
+            ...currentState,
+            stage: finalStage,
+            entryActive: false,
+            entryTradePlan: null,
+            lastSeenAt: now,
+            hist: newHist,
+          };
+        } else {
+          state[sym] = {
+            ...currentState,
+            stage: finalStage,
+            entryActive: false,
+            entryTradePlan: null,
+            lastSeenAt: now,
+            hist: newHist,
+          };
+        }
+
+        if (finalStage === "SELL") sell.push(item);
+        else radar.push(item);
+
+        if (prevStageBeforeScan !== finalStage) {
+          await pushStageChange({
+            mode,
+            symbol: sym,
+            from: prevStageBeforeScan || "NONE",
+            to: finalStage,
+            reason: finalReason,
+            item: {
+              symbol: sym,
+              stage: finalStage,
+              confidence: 0,
+              tradePlan: finalTradePlan,
+              gates: item.gates,
+            },
+          });
+
+          if (finalStage === "SELL") {
+            await safePushEvent("scan_sell", { ...item, prevStage: prevStageBeforeScan || null, changed: true, reason: finalReason });
+          } else {
+            await safePushEvent("scan_radar", { ...item, prevStage: prevStageBeforeScan || null, changed: true, reason: finalReason });
+          }
+        }
+
         continue;
       }
 
@@ -795,39 +915,11 @@ export default async function handler(req, res) {
           obScoreAbs,
         });
 
-        // 🔁 Transition naar RADAR
-        if (prevStageBeforeScan && prevStageBeforeScan !== "RADAR") {
-          await pushStageChange({
-            mode,
-            symbol: sym,
-            from: prevStageBeforeScan,
-            to: "RADAR",
-            reason: "OB sanity failed for BUILDUP",
-            item: {
-              symbol: sym,
-              stage: "RADAR",
-              confidence: 0,
-              tradePlan: null,
-              gates: {
-                radar: "passed",
-                almost: "blocked: OB sanity failed for BUILDUP",
-                entry: "blocked: OB sanity failed for BUILDUP",
-              },
-            },
-          });
-        }
+        const finalStage = wasEliteOpen ? "SELL" : "RADAR";
+        const finalReason = wasEliteOpen ? "entry/hold invalidated before TP/SL (BUILDUP sanity fail)" : "OB sanity failed for BUILDUP";
+        const finalTradePlan = wasEliteOpen ? (currentState.entryTradePlan || null) : null;
 
-        // 📝 State bijwerken naar RADAR
-        const prev = safeObj(state[sym]) || {};
-        const histPrev = Array.isArray(prev.hist) ? prev.hist : [];
-        state[sym] = {
-          ...prev,
-          stage: "RADAR",
-          lastSeenAt: now,
-          hist: histPrev.concat(["RADAR"]).slice(-12),
-        };
-
-        radar.push({
+        const item = {
           symbol: sym,
           name: c.name || sym,
           price: n(c.price, 0),
@@ -838,14 +930,31 @@ export default async function handler(req, res) {
           change24: +n(c.change24, 0).toFixed(3),
           range24: +n(c.range24, 0).toFixed(3),
 
+          mode,
+          btcState: btc.state,
+          tradePlan: finalTradePlan,
+
           confidence: 0,
-          stage: "RADAR",
+          stage: finalStage,
           stageBase: "RADAR",
-          gates: {
-            radar: "passed",
-            almost: "blocked: OB sanity failed for BUILDUP",
-            entry: "blocked: OB sanity failed for BUILDUP",
-          },
+
+          gates: { radar: "passed", almost: "blocked: OB sanity failed for BUILDUP", entry: "blocked: OB sanity failed for BUILDUP" },
+          consistency: null,
+
+          rationale: DESIGN_RATIONALE,
+          dyn: usedDyn
+            ? {
+                maxRange24: +n(usedDyn.maxRange24, 0).toFixed(3),
+                dir1hMinBull: +n(usedDyn.dir1hMinBull, 0).toFixed(3),
+                dir24MinBull: +n(usedDyn.dir24MinBull, 0).toFixed(3),
+                dir1hMaxBear: +n(usedDyn.dir1hMaxBear, 0).toFixed(3),
+                dir24MaxBear: +n(usedDyn.dir24MaxBear, 0).toFixed(3),
+                scale: +n(usedDyn.scale, 0).toFixed(3),
+              }
+            : null,
+          thr: null,
+          coinStats: null,
+          anomaly: null,
           ob: {
             fresh: obFresh,
             valid: obValid,
@@ -853,7 +962,59 @@ export default async function handler(req, res) {
             depthMinUsd1p,
             score: obScore,
           },
-        });
+        };
+
+        // State bijwerken – toevoegen aan history
+        const newHist = Array.isArray(currentState.hist)
+          ? currentState.hist.concat([finalStage]).slice(-12)
+          : [finalStage];
+
+        if (finalStage === "SELL") {
+          state[sym] = {
+            ...currentState,
+            stage: finalStage,
+            entryActive: false,
+            entryTradePlan: null,
+            lastSeenAt: now,
+            hist: newHist,
+          };
+        } else {
+          state[sym] = {
+            ...currentState,
+            stage: finalStage,
+            entryActive: false,
+            entryTradePlan: null,
+            lastSeenAt: now,
+            hist: newHist,
+          };
+        }
+
+        if (finalStage === "SELL") sell.push(item);
+        else radar.push(item);
+
+        if (prevStageBeforeScan !== finalStage) {
+          await pushStageChange({
+            mode,
+            symbol: sym,
+            from: prevStageBeforeScan || "NONE",
+            to: finalStage,
+            reason: finalReason,
+            item: {
+              symbol: sym,
+              stage: finalStage,
+              confidence: 0,
+              tradePlan: finalTradePlan,
+              gates: item.gates,
+            },
+          });
+
+          if (finalStage === "SELL") {
+            await safePushEvent("scan_sell", { ...item, prevStage: prevStageBeforeScan || null, changed: true, reason: finalReason });
+          } else {
+            await safePushEvent("scan_radar", { ...item, prevStage: prevStageBeforeScan || null, changed: true, reason: finalReason });
+          }
+        }
+
         continue;
       }
 
@@ -1088,8 +1249,11 @@ export default async function handler(req, res) {
         if (entryGate === "n/a") entryGate = `anomaly: range spike x${anomaly.factor}`;
       }
 
-      // Consistency check (zachter gemaakt)
-      const upd = updateStateAndConsistency(state, sym, stage, core, now);
+      // ======================================================
+      // Consistency check (zachter gemaakt) – herzien zodat na downgrade consistency null wordt
+      // ======================================================
+      let upd = updateStateAndConsistency(state, sym, stage, core, now);
+      let stageConsistency = upd.consistency;
 
       if ((stage === "ALMOST" || stage === "ENTRY") && !upd.consistency?.ok) {
         await pushReject(stage, "CONSISTENCY_FAIL", `consistency fail (${upd.consistency.same}/${upd.consistency.need}, minAgree=${upd.consistency.minAgree})`, {
@@ -1113,17 +1277,21 @@ export default async function handler(req, res) {
             entryGate = `consistency blocked (${upd.consistency.same}/${upd.consistency.need}, minAgree=${upd.consistency.minAgree})`;
           }
         }
+
         if (state[sym]) {
           state[sym].stage = stage;
           if (Array.isArray(state[sym].hist) && state[sym].hist.length) {
             state[sym].hist[state[sym].hist.length - 1] = stage;
           }
         }
+
+        // Na downgrade is de consistency niet meer van toepassing
+        stageConsistency = null;
       }
 
       // ================== NIEUWE ELITE LOGICA (HOLD/SELL) ==================
       // Bepaal of de coin in een open elite-positie zat
-      const wasEliteOpen = prevStageBeforeScan === "ENTRY" || prevStageBeforeScan === "HOLD";
+      const wasEliteOpenNow = prevStageBeforeScan === "ENTRY" || prevStageBeforeScan === "HOLD";
 
       // Reden voor stage-change (gebaseerd op oorspronkelijke stage)
       const stageChangeReason =
@@ -1136,19 +1304,27 @@ export default async function handler(req, res) {
 
       let finalStage = stage; // start met de stage uit de gates
       let finalReason = stageChangeReason;
+      let finalConsistency = stageConsistency; // gebruik de (mogelijk aangepaste) consistency
 
+      // Pas finalStage, finalReason en finalConsistency aan op basis van elite-logica
       if (stage === "ENTRY") {
-        if (wasEliteOpen) {
+        if (wasEliteOpenNow) {
           finalStage = "HOLD";
           finalReason = "position remains valid";
+          finalConsistency = null; // HOLD heeft geen consistency
         } else {
           finalStage = "ENTRY";
           finalReason = "new entry signal";
+          finalConsistency = stageConsistency; // blijft zoals berekend
         }
-      } else if (wasEliteOpen) {
+      } else if (wasEliteOpenNow) {
         // Was in ENTRY/HOLD, maar nu niet meer → exit
         finalStage = "SELL";
         finalReason = "entry/hold invalidated before TP/SL";
+        finalConsistency = null; // SELL heeft geen consistency
+      } else {
+        // Geen elite-wijziging, behoud de oorspronkelijke consistency
+        finalConsistency = stageConsistency;
       }
 
       // Tradeplan: voor HOLD/SELL gebruiken we het opgeslagen plan uit de entry (indien aanwezig)
@@ -1159,11 +1335,11 @@ export default async function handler(req, res) {
 
       // State bijwerken met de definitieve stage en extra elite-velden
       // Hierbij zorgen we dat de history NIET dubbel wordt aangepast.
-      const currentState = safeObj(state[sym]) || {};
+      const currentStateNow = safeObj(state[sym]) || {};
 
       if (finalStage === "ENTRY") {
         state[sym] = {
-          ...currentState,
+          ...currentStateNow,
           stage: finalStage,
           entryActive: true,
           entryPrice: n(c.price, 0),
@@ -1171,37 +1347,36 @@ export default async function handler(req, res) {
           entryTradePlan: finalTradePlan, // bewaar het tradeplan voor later
           lastSeenAt: now,
           // Vervang de laatste history-entry door de nieuwe stage (geen dubbele toevoeging)
-          hist: Array.isArray(currentState.hist) && currentState.hist.length
+          hist: Array.isArray(currentStateNow.hist) && currentStateNow.hist.length
             ? [
-                ...currentState.hist.slice(0, -1),
+                ...currentStateNow.hist.slice(0, -1),
                 finalStage,
               ].slice(-12)
             : [finalStage],
         };
       } else if (finalStage === "HOLD") {
         state[sym] = {
-          ...currentState,
+          ...currentStateNow,
           stage: finalStage,
           entryActive: true, // blijft actief
           lastSeenAt: now,
-          // Vervang de laatste entry
-          hist: Array.isArray(currentState.hist) && currentState.hist.length
+          hist: Array.isArray(currentStateNow.hist) && currentStateNow.hist.length
             ? [
-                ...currentState.hist.slice(0, -1),
+                ...currentStateNow.hist.slice(0, -1),
                 finalStage,
               ].slice(-12)
             : [finalStage],
         };
       } else if (finalStage === "SELL") {
         state[sym] = {
-          ...currentState,
+          ...currentStateNow,
           stage: finalStage,
           entryActive: false, // positie gesloten
+          entryTradePlan: null, // opruimen
           lastSeenAt: now,
-          // Vervang de laatste entry
-          hist: Array.isArray(currentState.hist) && currentState.hist.length
+          hist: Array.isArray(currentStateNow.hist) && currentStateNow.hist.length
             ? [
-                ...currentState.hist.slice(0, -1),
+                ...currentStateNow.hist.slice(0, -1),
                 finalStage,
               ].slice(-12)
             : [finalStage],
@@ -1238,7 +1413,7 @@ export default async function handler(req, res) {
         stageBase,
 
         gates: { radar: radarGate.why || "passed", almost: almostGate, entry: entryGate },
-        consistency: upd.consistency,
+        consistency: finalConsistency, // gebruik de definitieve consistency
 
         rationale: DESIGN_RATIONALE,
 
