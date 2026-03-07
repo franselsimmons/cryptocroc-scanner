@@ -1248,25 +1248,24 @@ export default async function handler(req, res) {
     const outAlmost = almost.slice(0, radarLimit);
     const outEntry = entry.slice(0, radarLimit);
 
-    // ✅ Oude output-structuur hersteld voor maximale compatibiliteit
+    // ✅ Volledig compatibele output-structuur (oude shape)
     const out = {
       ok: true,
       mode,
       ts: Date.now(),
+      tookMs: Date.now() - startedAt,
       btc,
       cap,
       funnel: { radar: outRadar, buildup: outBuildup, almost: outAlmost, entry: outEntry },
       openTrades, // lege array (placeholder)
       meta: {
-        scanLock: lock.ok
-          ? { active: true, until: lock.until, waitMs: 0 }
-          : { active: false, until: 0, waitMs: 0 },
+        scanLock: { active: false, until: lock.until, waitMs: 0 },
         counts: {
           cg: cg.length,
-          radar: outRadar.length,
-          buildup: outBuildup.length,
-          almost: outAlmost.length,
-          entry: outEntry.length,
+          radar: radar.length,
+          buildup: buildup.length,
+          almost: almost.length,
+          entry: entry.length,
         },
         rationale: DESIGN_RATIONALE,
         universe: {
