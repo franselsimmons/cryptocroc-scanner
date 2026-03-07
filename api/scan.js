@@ -602,11 +602,14 @@ export default async function handler(req, res) {
       });
     }
 
+    // ========== NIEUWE ARRAYS ==========
     const radar = [];
     const buildup = [];
     const almost = [];
     const entry = [];
-    const openTrades = []; // placeholder (ongebruikt, maar nodig voor output)
+    const hold = [];
+    const sell = [];
+    const openTrades = []; // placeholder
 
     const state = (await kv.get(core.keyState(mode))) || {};
 
@@ -1118,6 +1121,75 @@ export default async function handler(req, res) {
         }
       }
 
+      // ================== NIEUWE ELITE LOGICA (HOLD/SELL) ==================
+      // Bepaal of de coin in een open elite-positie zat
+      const wasEliteOpen = prevStageBeforeScan === "ENTRY" || prevStageBeforeScan === "HOLD";
+
+      // Reden voor stage-change (gebaseerd op oorspronkelijke stage)
+      const stageChangeReason =
+        entryGate !== "n/a" && entryGate !== "passed" ? entryGate :
+        almostGate !== "n/a" && almostGate !== "passed" ? almostGate :
+        stage === "ENTRY" ? "entry passed" :
+        stage === "ALMOST" ? "almost passed" :
+        stage === "BUILDUP" ? "buildup accepted" :
+        "stage update";
+
+      let finalStage = stage; // start met de stage uit de gates
+
+      if (stage === "ENTRY") {
+        if (wasEliteOpen) {
+          finalStage = "HOLD"; // blijft in positie
+        } else {
+          finalStage = "ENTRY"; // nieuw entry-signaal
+        }
+      } else if (wasEliteOpen) {
+        // Was in ENTRY/HOLD, maar nu niet meer → exit
+        finalStage = "SELL";
+      }
+
+      // State bijwerken met de definitieve stage en extra elite-velden
+      if (finalStage === "ENTRY") {
+        state[sym] = {
+          ...(safeObj(state[sym]) || {}),
+          stage: finalStage,
+          entryActive: true,
+          entryPrice: n(c.price, 0),
+          entryTs: now,
+          lastSeenAt: now,
+          hist: Array.isArray(state[sym]?.hist)
+            ? state[sym].hist.slice(-11).concat([finalStage])
+            : [finalStage],
+        };
+      } else if (finalStage === "HOLD") {
+        state[sym] = {
+          ...(safeObj(state[sym]) || {}),
+          stage: finalStage,
+          entryActive: true, // blijft actief
+          lastSeenAt: now,
+          hist: Array.isArray(state[sym]?.hist)
+            ? state[sym].hist.slice(-11).concat([finalStage])
+            : [finalStage],
+        };
+      } else if (finalStage === "SELL") {
+        state[sym] = {
+          ...(safeObj(state[sym]) || {}),
+          stage: finalStage,
+          entryActive: false, // positie gesloten
+          lastSeenAt: now,
+          hist: Array.isArray(state[sym]?.hist)
+            ? state[sym].hist.slice(-11).concat([finalStage])
+            : [finalStage],
+        };
+      } else {
+        // Voor RADAR, BUILDUP, ALMOST: zorg dat entryActive uit staat
+        if (state[sym]) {
+          state[sym].entryActive = false;
+        }
+      }
+
+      // Gebruik finalStage voor de rest van de loop
+      stage = finalStage;
+
       // Bouw item
       const item = {
         symbol: sym,
@@ -1186,13 +1258,15 @@ export default async function handler(req, res) {
         },
       };
 
-      // Voeg item toe aan de juiste lijst (altijd)
+      // Voeg item toe aan de juiste lijst (op basis van finalStage)
       if (stage === "ENTRY") entry.push(item);
+      else if (stage === "HOLD") hold.push(item);
+      else if (stage === "SELL") sell.push(item);
       else if (stage === "ALMOST") almost.push(item);
       else if (stage === "BUILDUP") buildup.push(item);
       else radar.push(item);
 
-      // Stuur alleen een event (en Discord) als de stage daadwerkelijk is veranderd
+      // Stuur events alleen als de stage daadwerkelijk is veranderd
       if (prevStageBeforeScan !== stage) {
         const eventItem = {
           ...item,
@@ -1205,13 +1279,7 @@ export default async function handler(req, res) {
           symbol: sym,
           from: prevStageBeforeScan || "NONE",
           to: stage,
-          reason:
-            entryGate !== "n/a" && entryGate !== "passed" ? entryGate :
-            almostGate !== "n/a" && almostGate !== "passed" ? almostGate :
-            stage === "ENTRY" ? "entry passed" :
-            stage === "ALMOST" ? "almost passed" :
-            stage === "BUILDUP" ? "buildup accepted" :
-            "stage update",
+          reason: stageChangeReason,
           item: {
             symbol: item.symbol,
             stage: item.stage,
@@ -1221,14 +1289,20 @@ export default async function handler(req, res) {
           },
         });
 
+        // Stuur funnel-specifiek event naar Discord
         if (stage === "ENTRY") {
           await safePushEvent("scan_entry", eventItem);
+        } else if (stage === "HOLD") {
+          await safePushEvent("scan_hold", eventItem);
+        } else if (stage === "SELL") {
+          await safePushEvent("scan_sell", eventItem);
         } else if (stage === "ALMOST") {
           await safePushEvent("scan_almost", eventItem);
         } else if (stage === "BUILDUP") {
           await safePushEvent("scan_buildup", eventItem);
+        } else if (stage === "RADAR") {
+          await safePushEvent("scan_radar", eventItem);
         }
-        // RADAR sturen we niet naar Discord om spam te voorkomen
       }
     }
 
@@ -1241,14 +1315,18 @@ export default async function handler(req, res) {
     buildup.sort(byScore);
     almost.sort(byScore);
     entry.sort(byScore);
+    hold.sort(byScore);
+    sell.sort(byScore);
 
     const radarLimit = n(core?.SETTINGS?.RADAR_LIMIT, 60);
     const outRadar = radar.slice(0, radarLimit);
     const outBuildup = buildup.slice(0, radarLimit);
     const outAlmost = almost.slice(0, radarLimit);
     const outEntry = entry.slice(0, radarLimit);
+    const outHold = hold.slice(0, radarLimit);
+    const outSell = sell.slice(0, radarLimit);
 
-    // ✅ Volledig compatibele output-structuur (oude shape)
+    // ✅ Volledig compatibele output-structuur (uitgebreid met hold/sell)
     const out = {
       ok: true,
       mode,
@@ -1256,7 +1334,14 @@ export default async function handler(req, res) {
       tookMs: Date.now() - startedAt,
       btc,
       cap,
-      funnel: { radar: outRadar, buildup: outBuildup, almost: outAlmost, entry: outEntry },
+      funnel: {
+        radar: outRadar,
+        buildup: outBuildup,
+        almost: outAlmost,
+        entry: outEntry,
+        hold: outHold,
+        sell: outSell,
+      },
       openTrades, // lege array (placeholder)
       meta: {
         scanLock: { active: false, until: lock.until, waitMs: 0 },
@@ -1266,6 +1351,8 @@ export default async function handler(req, res) {
           buildup: buildup.length,
           almost: almost.length,
           entry: entry.length,
+          hold: hold.length,
+          sell: sell.length,
         },
         rationale: DESIGN_RATIONALE,
         universe: {
@@ -1283,7 +1370,7 @@ export default async function handler(req, res) {
     const ttl = n(core?.SETTINGS?.entry?.resultTtlSec, 60 * 45);
     await kv.set(core.keyLatest(mode), out, { ex: Math.max(60, ttl) });
     await kv.set(core.keyState(mode), state, { ex: 60 * 60 * 24 * 7 });
-    
+
     return send(res, 200, out);
   } catch (err) {
     console.error("Fatal error in scan handler:", err);
