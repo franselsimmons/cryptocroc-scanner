@@ -164,6 +164,8 @@ function actionForStage(c, data) {
   }
 
   if (stage === "ENTRY") return { label: "INSTAPPEN", sub: "Alle checks zijn groen", tone: "ok" };
+  if (stage === "HOLD") return { label: "VASTHOUDEN", sub: "Positie blijft geldig", tone: "ok" };
+  if (stage === "SELL") return { label: "SLUITEN", sub: "Signaal is ongeldig geworden", tone: "no" };
   if (stage === "ALMOST") return { label: "KLAARZETTEN", sub: "Bijna klaar, mist nog 1–2 checks", tone: "warn" };
   if (stage === "BUILDUP") return { label: "WATCHLIST", sub: "Interessant, maar nog niet bevestigd", tone: "warn" };
   return { label: "SKIP", sub: "Te vroeg / te noisy", tone: "no" };
@@ -347,6 +349,14 @@ function pickHold(data) {
 }
 
 function pickSellFromLog(data) {
+  // Eerst echte sell-stage uit backend gebruiken
+  const fromFunnel = Array.isArray(data?.funnel?.sell) ? data.funnel.sell.slice(0, 50) : [];
+  if (fromFunnel.length) {
+    fromFunnel.sort((a, b) => (Number(b?.ts || 0) - Number(a?.ts || 0)));
+    return fromFunnel;
+  }
+
+  // Fallback naar trading log
   const arr = data?.trading?.recentSells || [];
   const sell = Array.isArray(arr) ? arr.slice(0, 50) : [];
   sell.sort((a, b) => Number(b?.ts || 0) - Number(a?.ts || 0));
