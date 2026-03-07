@@ -1,4 +1,3 @@
-// /api/moon-reset.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, requireSecret, keyMoonReset } from "../lib/_moon_core.js";
 
