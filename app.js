@@ -684,9 +684,17 @@ async function openModalMain(c) {
   const entryPx = Number(c?.price || 0);
 
   if (risk && entryPx > 0) {
-    const slPct = ((risk.sl - entryPx) / entryPx) * 100;
-    const tpPct = ((risk.tp - entryPx) / entryPx) * 100;
+    const isBear = String(MODE).toLowerCase() === "bear";
 
+    let slPct = ((risk.sl - entryPx) / entryPx) * 100;
+    let tpPct = ((risk.tp - entryPx) / entryPx) * 100;
+
+    // Voor bear UI-presentatie tekens omdraaien
+    if (isBear) {
+      slPct = -slPct;
+      tpPct = -tpPct;
+    }
+    
     setKV(el("mActionKv"), [
       ["Plan", act.label === "INSTAPPEN" ? "Instappen volgens plan" : "Nog niet instappen, wel klaarzetten"],
       ["Entry", `$${safe(entryPx, 6)}`],
