@@ -192,7 +192,7 @@ function validateSamples(mode, samplesFresh) {
   const stableOk = stab.ok;
 
   const last = lastN[lastN.length - 1];
-  // Gebruik nu de neutralere thresholds van MOON.obSampler
+  // Gebruik de neutralere thresholds van MOON.obSampler
   const spreadOk = Number(last.spreadPct || 999) <= Number(MOON?.obSampler?.spreadMaxPct ?? 0.95);
   const lorOk = Number(last.lor || 1) <= Number(MOON?.obSampler?.largestOrderRatioMax ?? 0.65);
 
