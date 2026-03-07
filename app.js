@@ -335,6 +335,11 @@ function flattenFunnel(data) {
 }
 
 function pickHold(data) {
+  // Als backend al een aparte hold-lijst meegeeft, gebruik die
+  const fromFunnel = Array.isArray(data?.funnel?.hold) ? data.funnel.hold : [];
+  if (fromFunnel.length) return fromFunnel;
+
+  // Fallback: filter alle coins met trade.status === "OPEN"
   const all = flattenFunnel(data);
   const hold = all.filter((c) => c?.trade?.status === "OPEN");
   hold.sort((a, b) => (Number(b?.trade?.pnl) || 0) - (Number(a?.trade?.pnl) || 0));
@@ -536,6 +541,9 @@ function explainNoOb(j) {
   if (j?.stale) {
     return "Orderboek-data is te oud (stale). We willen alleen verse data gebruiken.";
   }
+  if (j?.fresh === false) {
+    return "Orderboek-data is niet vers genoeg. We wachten op een verse snapshot.";
+  }
   if (j?.valid === false && reason) {
     return `Orderboek is niet bruikbaar: ${reason}.`;
   }
@@ -563,7 +571,8 @@ function liquiditySummary(j, c) {
     };
   }
 
-  if (!obx.valid || obx.stale || obx.reason === "missing_snapshot") {
+  // Hard fail: geen bruikbare snapshot (niet valid, niet fresh, stale, of expliciete missing_snapshot)
+  if (!obx.valid || !obx.fresh || obx.stale || obx.reason === "missing_snapshot") {
     return {
       ok: false,
       title: "Niet instappen (geen betrouwbare liquiditeit)",
