@@ -1,4 +1,3 @@
-// /api/moon/ob-sampler.js
 import { kv } from "@vercel/kv";
 import {
   RUNTIME_CONFIG,
@@ -193,8 +192,9 @@ function validateSamples(mode, samplesFresh) {
   const stableOk = stab.ok;
 
   const last = lastN[lastN.length - 1];
-  const spreadOk = Number(last.spreadPct || 999) <= Number(MOON?.elite?.spreadMaxPct ?? 1.1);
-  const lorOk = Number(last.lor || 1) <= Number(MOON?.elite?.largestOrderRatioMax ?? 0.65);
+  // Gebruik nu de neutralere thresholds van MOON.obSampler
+  const spreadOk = Number(last.spreadPct || 999) <= Number(MOON?.obSampler?.spreadMaxPct ?? 0.95);
+  const lorOk = Number(last.lor || 1) <= Number(MOON?.obSampler?.largestOrderRatioMax ?? 0.65);
 
   const valid = !!(agree >= (MOON?.elite?.minAgree || 1) && slopeOk && stableOk && spreadOk && lorOk);
 
@@ -244,6 +244,7 @@ async function processCandidate(mode, symbol) {
     stable: !!v.stable,
     stabilityStd: v.stabilityStd ?? null,
     windowN: v.windowN ?? null,
+    sampledAt: sample.ts,
     ob: {
       ts: sample.ts,
       mid: sample.mid,
@@ -305,10 +306,10 @@ export default async function handler(req, res) {
     for (const t of tasks) {
       const mode = t.mode;
 
-      const elite = (t.data?.funnel?.elite || []).slice(0, 10);
-      const almost = (t.data?.funnel?.almost || []).slice(0, 14);
-      const buildup = (t.data?.funnel?.buildup || []).slice(0, 12);
-      const radar = (t.data?.funnel?.radar || []).slice(0, 18);
+      const elite = (t.data?.funnel?.elite || []).slice(0, 12);
+      const almost = (t.data?.funnel?.almost || []).slice(0, 24);
+      const buildup = (t.data?.funnel?.buildup || []).slice(0, 24);
+      const radar = (t.data?.funnel?.radar || []).slice(0, 48);
 
       const candidates = uniqSymbols([
         ...elite.map((x) => x?.symbol),
@@ -339,7 +340,7 @@ export default async function handler(req, res) {
       totalTried,
       totalOk,
       totalValid,
-      note: "MOON OB: consensus + slope + stability + spread + LOR. Warms up from radar/buildup/almost/elite.",
+      note: "MOON OB: consensus + slope + stability + spread + LOR (sampler thresholds: spread ≤ 0.95, lor ≤ 0.65).",
       sampleErrors: sampleErrors.slice(0, 30),
     }));
   } catch (e) {
