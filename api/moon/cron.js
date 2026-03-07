@@ -1,4 +1,5 @@
 import { requireSecret, RUNTIME_CONFIG } from "../../lib/_moon_core.js";
+import { runMoonAll } from "../../lib/_moon_run_all.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -6,34 +7,39 @@ const fetchFn = globalThis.fetch;
 
 export default async function handler(req, res) {
   try {
-    // Deze functie accepteert nu ook de Authorization: Bearer header
     if (!requireSecret(req, res)) return;
 
     const base = process.env.BASE_URL || `https://${req.headers.host}`;
     const token = String(process.env.CRON_SECRET || "");
-    const t = Date.now();
 
-    // Roep je bestaande run-all aan met token in de query (interne call)
-    const runRes = await fetchFn(`${base}/api/moon/run-all?token=${encodeURIComponent(token)}&_t=${t}`);
-    const runText = await runRes.text();
-
-    let runJson = null;
-    try {
-      runJson = JSON.parse(runText);
-    } catch {
-      runJson = { raw: runText.slice(0, 400) };
+    if (!token) {
+      res.statusCode = 500;
+      res.setHeader("content-type", "application/json");
+      return res.end(JSON.stringify({ ok: false, error: "Missing CRON_SECRET env var" }));
     }
 
-    res.statusCode = runRes.ok ? 200 : 500;
+    const result = await runMoonAll({
+      base,
+      token,
+      fetchFn,
+      sleepMs: 2000,
+      maxMs: 25_000,
+    });
+
+    res.statusCode = 200;
     res.setHeader("content-type", "application/json");
     return res.end(JSON.stringify({
-      ok: runRes.ok,
+      ok: true,
       cron: true,
-      result: runJson,
+      result,
     }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    return res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+    return res.end(JSON.stringify({
+      ok: false,
+      cron: true,
+      error: String(e?.message || e),
+    }));
   }
 }
