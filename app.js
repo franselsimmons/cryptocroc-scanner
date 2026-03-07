@@ -94,31 +94,58 @@ function computeFallbackRisk(c, mode) {
 // pak risico uit backend als aanwezig, anders fallback
 function getRisk(c, mode) {
   const price = Number(c?.price || 0);
-  const hasBackend =
-    Number.isFinite(Number(c?.sl)) &&
-    Number.isFinite(Number(c?.tp)) &&
-    Number(c?.sl) !== 0 &&
-    Number(c?.tp) !== 0;
 
-  if (hasBackend) {
-    const sl = Number(c.sl);
-    const tp = Number(c.tp);
+  // Nieuw backend-formaat: tradePlan
+  const plan = c?.tradePlan || null;
+  const hasBackendPlan =
+    Number.isFinite(Number(plan?.sl)) &&
+    Number.isFinite(Number(plan?.tp)) &&
+    Number(plan?.sl) !== 0 &&
+    Number(plan?.tp) !== 0;
 
-    // atrPct kan bij jou fractie zijn (c.atrPct), daarom defensief:
+  if (hasBackendPlan) {
+    const sl = Number(plan.sl);
+    const tp = Number(plan.tp);
+
     let atrPct = null;
     if (Number.isFinite(Number(c?.atrPct))) {
-      // als atrPct < 1 aannemen fractie, anders al percentage
       const v = Number(c.atrPct);
       atrPct = v < 1 ? v * 100 : v;
     }
-
-    const rr = price > 0 ? Math.abs((tp - price) / (price - sl || 1e-9)) : null;
 
     return {
       atrPct: atrPct ?? null,
       sl,
       tp,
-      rr: rr ?? null,
+      rr: Number.isFinite(Number(plan?.rr))
+        ? Number(plan.rr)
+        : (price > 0 ? Math.abs((tp - price) / (price - sl || 1e-9)) : null),
+      source: "backend",
+    };
+  }
+
+  // Oude compatibiliteit: als sl/tp ooit nog top-level staan
+  const hasLegacy =
+    Number.isFinite(Number(c?.sl)) &&
+    Number.isFinite(Number(c?.tp)) &&
+    Number(c?.sl) !== 0 &&
+    Number(c?.tp) !== 0;
+
+  if (hasLegacy) {
+    const sl = Number(c.sl);
+    const tp = Number(c.tp);
+
+    let atrPct = null;
+    if (Number.isFinite(Number(c?.atrPct))) {
+      const v = Number(c.atrPct);
+      atrPct = v < 1 ? v * 100 : v;
+    }
+
+    return {
+      atrPct: atrPct ?? null,
+      sl,
+      tp,
+      rr: price > 0 ? Math.abs((tp - price) / (price - sl || 1e-9)) : null,
       source: "backend",
     };
   }
@@ -430,7 +457,73 @@ function setKV(container, rows) {
 }
 
 // ==================== Retail-friendly liquidity summary ====================
-// Belangrijk: altijd vertellen WAAROM info ontbreekt (missing_snapshot / stale / validating / fetch error)
+// Helper: normaliseer orderboek-data uit verschillende formaten
+function normalizeObPayload(j, c = null) {
+  const src = j || {};
+  const nested = src?.ob && typeof src.ob === "object" ? src.ob : null;
+  const coinOb = c?.ob && typeof c.ob === "object" ? c.ob : null;
+
+  const pickNum = (...vals) => {
+    for (const v of vals) {
+      const n = Number(v);
+      if (Number.isFinite(n)) return n;
+    }
+    return null;
+  };
+
+  const pickBool = (...vals) => {
+    for (const v of vals) {
+      if (typeof v === "boolean") return v;
+    }
+    return false;
+  };
+
+  const pickStr = (...vals) => {
+    for (const v of vals) {
+      const s = String(v || "").trim();
+      if (s) return s;
+    }
+    return "";
+  };
+
+  return {
+    status: src?.status || null,
+    valid: pickBool(src?.valid, nested?.valid, coinOb?.valid),
+    fresh: pickBool(src?.fresh, nested?.fresh, coinOb?.fresh),
+    stale: pickBool(src?.stale, nested?.stale, coinOb?.stale),
+    reason: pickStr(src?.reason, nested?.reason, coinOb?.reason),
+
+    spreadPct: pickNum(
+      src?.spreadPct,
+      nested?.spreadPct,
+      src?.ob?.spreadPct,
+      coinOb?.spreadPct
+    ),
+    depthMinUsd1p: pickNum(
+      src?.depthMinUsd1p,
+      nested?.depthMinUsd1p,
+      src?.ob?.depthMinUsd1p,
+      coinOb?.depthMinUsd1p
+    ),
+    score: pickNum(
+      src?.score,
+      nested?.score,
+      src?.ob?.score,
+      coinOb?.score
+    ),
+    pressureDeltaUsd: pickNum(
+      src?.pressureDeltaUsd,
+      nested?.pressureDeltaUsd,
+      coinOb?.pressureDeltaUsd
+    ),
+    ageSec: pickNum(
+      src?.ageSec,
+      nested?.ageSec,
+      coinOb?.ageSec
+    ),
+  };
+}
+
 function explainNoOb(j) {
   const reason = String(j?.reason || "").trim();
 
@@ -443,37 +536,39 @@ function explainNoOb(j) {
   if (j?.stale) {
     return "Orderboek-data is te oud (stale). We willen alleen verse data gebruiken.";
   }
-  if (reason) {
+  if (j?.valid === false && reason) {
     return `Orderboek is niet bruikbaar: ${reason}.`;
+  }
+  if (reason) {
+    return reason;
   }
   return "Orderboek-data ontbreekt of kon niet worden opgehaald.";
 }
 
 function liquiditySummary(j, c) {
-  // thresholds uit c.thr (server berekend)
+  const obx = normalizeObPayload(j, c);
+
   const reqSpread = Number(c?.thr?.spreadMaxPct ?? 0.95);
   const reqDepth = Number(c?.thr?.depthMinUsd1p ?? 45000);
   const reqScore = Number(c?.thr?.obScoreMin ?? 0.05);
 
-  // validating/geen object
-  if (!j || j.status === "validating") {
+  if (!j || obx.status === "validating") {
     return {
       ok: false,
       title: "Liquiditeit wordt gecontroleerd",
       text: "Nog geen orderboek data beschikbaar. Even wachten.",
-      why: explainNoOb(j),
+      why: explainNoOb(obx),
       tone: "warn",
       details: [],
     };
   }
 
-  // hard fail: geen bruikbare snapshot
-  if (!j.valid || j.stale || String(j.reason || "") === "missing_snapshot") {
+  if (!obx.valid || obx.stale || obx.reason === "missing_snapshot") {
     return {
       ok: false,
       title: "Niet instappen (geen betrouwbare liquiditeit)",
       text: "We kunnen deze coin nu niet veilig traden omdat het orderboek ontbreekt of te oud is.",
-      why: explainNoOb(j),
+      why: explainNoOb(obx),
       tone: "no",
       details: [
         ["Max spread", `${safe(reqSpread, 3)}%`],
@@ -483,16 +578,14 @@ function liquiditySummary(j, c) {
     };
   }
 
-  // metric checks
-  const spread = Number(j.ob?.spreadPct);
-  const depth = Number(j.ob?.depthMinUsd1p);
-  const score = Number(j.ob?.score);
+  const spread = Number(obx.spreadPct);
+  const depth = Number(obx.depthMinUsd1p);
+  const score = Number(obx.score);
 
   const spreadOk = Number.isFinite(spread) ? spread <= reqSpread : false;
   const depthOk = Number.isFinite(depth) ? depth >= reqDepth : false;
   const scoreOk = Number.isFinite(score) ? Math.abs(score) >= reqScore : false;
 
-  // score/spreaddata kan soms ontbreken -> uitleggen
   const missingParts = [];
   if (!Number.isFinite(spread)) missingParts.push("spread");
   if (!Number.isFinite(depth)) missingParts.push("depth");
@@ -506,15 +599,14 @@ function liquiditySummary(j, c) {
       why: `Ontbreekt: ${missingParts.join(", ")}.`,
       tone: "warn",
       details: [
-        ["Spread", "—"],
-        ["Depth 1%", "—"],
-        ["OB score", "—"],
+        ["Spread", Number.isFinite(spread) ? `${safe(spread, 3)}%` : "—"],
+        ["Depth 1%", Number.isFinite(depth) ? `$${Math.round(depth).toLocaleString()}` : "—"],
+        ["OB score", Number.isFinite(score) ? safe(score, 5) : "—"],
       ],
     };
   }
 
   if (!spreadOk || !depthOk || !scoreOk) {
-    // simpele klant-uitleg wat het betekent
     const reasons = [];
     if (!spreadOk) reasons.push("Spread is te hoog → je koopt/verkopt slechter");
     if (!depthOk) reasons.push("Depth is te laag → prijs kan snel wegspringen");
@@ -527,7 +619,7 @@ function liquiditySummary(j, c) {
       why: reasons.join(" • "),
       tone: "warn",
       details: [
-        ["Spread", `${safe(spread, 2)}% (max ${safe(reqSpread, 3)}%)`],
+        ["Spread", `${safe(spread, 3)}% (max ${safe(reqSpread, 3)}%)`],
         ["Depth 1%", `$${Math.round(depth).toLocaleString()} (min $${Math.round(reqDepth).toLocaleString()})`],
         ["OB score", `${safe(score, 5)} (min ${safe(reqScore, 5)})`],
       ],
@@ -541,7 +633,7 @@ function liquiditySummary(j, c) {
     why: "Alles binnen de limieten.",
     tone: "ok",
     details: [
-      ["Spread", `${safe(spread, 2)}% (max ${safe(reqSpread, 3)}%)`],
+      ["Spread", `${safe(spread, 3)}% (max ${safe(reqSpread, 3)}%)`],
       ["Depth 1%", `$${Math.round(depth).toLocaleString()} (min $${Math.round(reqDepth).toLocaleString()})`],
       ["OB score", `${safe(score, 5)} (min ${safe(reqScore, 5)})`],
     ],
@@ -659,7 +751,9 @@ async function openModalMain(c) {
       const j = await r.json();
       if (liqList) liqList.innerHTML = "";
 
-      const sum = liquiditySummary(j, c);
+      // Voeg eventuele data uit c.ob toe voor de zekerheid
+      const mergedOb = { ...(c?.ob || {}), ...(j || {}) };
+      const sum = liquiditySummary(mergedOb, c);
 
       // 1) hoofdregel: wat moet klant doen
       addCheck(
