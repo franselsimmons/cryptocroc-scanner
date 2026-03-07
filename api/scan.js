@@ -606,7 +606,7 @@ export default async function handler(req, res) {
     const buildup = [];
     const almost = [];
     const entry = [];
-    const openTrades = []; // placeholder
+    const openTrades = []; // placeholder (ongebruikt, maar nodig voor output)
 
     const state = (await kv.get(core.keyState(mode))) || {};
 
@@ -1248,25 +1248,35 @@ export default async function handler(req, res) {
     const outAlmost = almost.slice(0, radarLimit);
     const outEntry = entry.slice(0, radarLimit);
 
+    // ✅ Oude output-structuur hersteld voor maximale compatibiliteit
     const out = {
       ok: true,
       mode,
       ts: Date.now(),
-      tookMs: Date.now() - startedAt,
       btc,
       cap,
       funnel: { radar: outRadar, buildup: outBuildup, almost: outAlmost, entry: outEntry },
-      stats: {
-        totalCoins: cg.length,
-        withObCoverage: cg.filter(c => obCoverageMap[up(c.symbol)]).length,
-        radar: outRadar.length,
-        buildup: outBuildup.length,
-        almost: outAlmost.length,
-        entry: outEntry.length,
-      },
+      openTrades, // lege array (placeholder)
       meta: {
-        designRationale: DESIGN_RATIONALE,
-        scanLock: lock.ok ? { acquired: true, until: lock.until } : null,
+        scanLock: lock.ok
+          ? { active: true, until: lock.until, waitMs: 0 }
+          : { active: false, until: 0, waitMs: 0 },
+        counts: {
+          cg: cg.length,
+          radar: outRadar.length,
+          buildup: outBuildup.length,
+          almost: outAlmost.length,
+          entry: outEntry.length,
+        },
+        rationale: DESIGN_RATIONALE,
+        universe: {
+          key: K_UNIVERSE_LATEST,
+          ts: uni.ts || null,
+          pages: uni.pages || null,
+          perPage: uni.perPage || null,
+          count: uni.count || (Array.isArray(uni.coins) ? uni.coins.length : 0),
+          lockKey: K_LOCK_UNIVERSE,
+        },
       },
     };
 
@@ -1277,7 +1287,8 @@ export default async function handler(req, res) {
     return send(res, 200, out);
   } catch (err) {
     console.error("Fatal error in scan handler:", err);
-    return send(res, 500, { ok: false, error: "Internal server error", message: err.message });
+    // ✅ Oude foutafhandeling: 200 met ok:false
+    return send(res, 200, { ok: false, error: "Internal server error", message: err.message });
   }
 }
 
