@@ -1280,9 +1280,10 @@ export default async function handler(req, res) {
     };
 
     // Bewaar de scan resultaten (latest)
-    await kv.set(core.keyLatest(mode), out, { ex: 60 * 30 }); // 30 minuten
-    await kv.set(core.keyState(mode), state, { ex: 60 * 60 * 24 * 7 }); // 7 dagen
-
+    const ttl = n(core?.SETTINGS?.entry?.resultTtlSec, 60 * 45);
+    await kv.set(core.keyLatest(mode), out, { ex: Math.max(60, ttl) });
+    await kv.set(core.keyState(mode), state, { ex: 60 * 60 * 24 * 7 });
+    
     return send(res, 200, out);
   } catch (err) {
     console.error("Fatal error in scan handler:", err);
