@@ -1,4 +1,3 @@
-// /api/moon/dashboard.js
 import { kv } from "@vercel/kv";
 import { requireSecret } from "../../lib/_moon_core.js";
 
