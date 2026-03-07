@@ -5,7 +5,7 @@
       "schedule": "0,30 * * * *"
     },
     {
-      "path": "/api/moon/cron",
+      "path": "/api/moon/cron?token=cc_9F3k2M7pQ1xR8vT6nD4zL0sH5aB2cE",
       "schedule": "*/10 * * * *"
     }
   ]
