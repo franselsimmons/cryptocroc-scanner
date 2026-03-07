@@ -354,7 +354,7 @@ function buildCopyBlockMoon({ mode, summary, suggestions, trades }) {
       buildup: MOON.buildup,
       almost: MOON.almost,
       elite: MOON.elite,
-      tiers: MOON.tiers, // toegevoegd
+      tiers: MOON.tiers,
       riskWhere: {
         file: "/lib/_moon_core.js",
         sltpFunc: "computeMoonRisk",
