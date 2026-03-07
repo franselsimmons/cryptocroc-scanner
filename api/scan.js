@@ -923,7 +923,7 @@ export default async function handler(req, res) {
       let almostGate = "n/a";
       let entryGate = "n/a";
 
-      // tradePlan berekenen op basis van huidige stand
+      // tradePlan berekenen op basis van huidige stand (wordt later overschreven voor HOLD/SELL)
       const tradePlan = calcTradePlan({
         mode,
         price: n(c.price, 0),
@@ -1135,59 +1135,86 @@ export default async function handler(req, res) {
         "stage update";
 
       let finalStage = stage; // start met de stage uit de gates
+      let finalReason = stageChangeReason;
 
       if (stage === "ENTRY") {
         if (wasEliteOpen) {
-          finalStage = "HOLD"; // blijft in positie
+          finalStage = "HOLD";
+          finalReason = "position remains valid";
         } else {
-          finalStage = "ENTRY"; // nieuw entry-signaal
+          finalStage = "ENTRY";
+          finalReason = "new entry signal";
         }
       } else if (wasEliteOpen) {
         // Was in ENTRY/HOLD, maar nu niet meer → exit
         finalStage = "SELL";
+        finalReason = "entry/hold invalidated before TP/SL";
+      }
+
+      // Tradeplan: voor HOLD/SELL gebruiken we het opgeslagen plan uit de entry (indien aanwezig)
+      let finalTradePlan = tradePlan;
+      if (finalStage === "HOLD" || finalStage === "SELL") {
+        finalTradePlan = state[sym]?.entryTradePlan || tradePlan;
       }
 
       // State bijwerken met de definitieve stage en extra elite-velden
+      // Hierbij zorgen we dat de history NIET dubbel wordt aangepast.
+      const currentState = safeObj(state[sym]) || {};
+
       if (finalStage === "ENTRY") {
         state[sym] = {
-          ...(safeObj(state[sym]) || {}),
+          ...currentState,
           stage: finalStage,
           entryActive: true,
           entryPrice: n(c.price, 0),
           entryTs: now,
+          entryTradePlan: finalTradePlan, // bewaar het tradeplan voor later
           lastSeenAt: now,
-          hist: Array.isArray(state[sym]?.hist)
-            ? state[sym].hist.slice(-11).concat([finalStage])
+          // Vervang de laatste history-entry door de nieuwe stage (geen dubbele toevoeging)
+          hist: Array.isArray(currentState.hist) && currentState.hist.length
+            ? [
+                ...currentState.hist.slice(0, -1),
+                finalStage,
+              ].slice(-12)
             : [finalStage],
         };
       } else if (finalStage === "HOLD") {
         state[sym] = {
-          ...(safeObj(state[sym]) || {}),
+          ...currentState,
           stage: finalStage,
           entryActive: true, // blijft actief
           lastSeenAt: now,
-          hist: Array.isArray(state[sym]?.hist)
-            ? state[sym].hist.slice(-11).concat([finalStage])
+          // Vervang de laatste entry
+          hist: Array.isArray(currentState.hist) && currentState.hist.length
+            ? [
+                ...currentState.hist.slice(0, -1),
+                finalStage,
+              ].slice(-12)
             : [finalStage],
         };
       } else if (finalStage === "SELL") {
         state[sym] = {
-          ...(safeObj(state[sym]) || {}),
+          ...currentState,
           stage: finalStage,
           entryActive: false, // positie gesloten
           lastSeenAt: now,
-          hist: Array.isArray(state[sym]?.hist)
-            ? state[sym].hist.slice(-11).concat([finalStage])
+          // Vervang de laatste entry
+          hist: Array.isArray(currentState.hist) && currentState.hist.length
+            ? [
+                ...currentState.hist.slice(0, -1),
+                finalStage,
+              ].slice(-12)
             : [finalStage],
         };
       } else {
-        // Voor RADAR, BUILDUP, ALMOST: zorg dat entryActive uit staat
+        // Voor RADAR, BUILDUP, ALMOST: zorg dat entryActive uit staat en history blijft zoals hij is
         if (state[sym]) {
           state[sym].entryActive = false;
+          // history hoeft niet aangepast, want updateStateAndConsistency heeft hem al toegevoegd
         }
       }
 
-      // Gebruik finalStage voor de rest van de loop
+      // Gebruik finalStage en finalTradePlan voor de rest van de loop
       stage = finalStage;
 
       // Bouw item
@@ -1204,7 +1231,7 @@ export default async function handler(req, res) {
 
         mode,
         btcState: btc.state,
-        tradePlan,
+        tradePlan: finalTradePlan,
 
         confidence,
         stage,
@@ -1272,6 +1299,8 @@ export default async function handler(req, res) {
           ...item,
           prevStage: prevStageBeforeScan || null,
           changed: true,
+          tradePlan: finalTradePlan,
+          reason: finalReason,
         };
 
         await pushStageChange({
@@ -1279,12 +1308,12 @@ export default async function handler(req, res) {
           symbol: sym,
           from: prevStageBeforeScan || "NONE",
           to: stage,
-          reason: stageChangeReason,
+          reason: finalReason,
           item: {
             symbol: item.symbol,
             stage: item.stage,
             confidence: item.confidence,
-            tradePlan: item.tradePlan,
+            tradePlan: finalTradePlan,
             gates: item.gates,
           },
         });
