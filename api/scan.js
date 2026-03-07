@@ -74,12 +74,12 @@ const TIER_CFG = {
     obScoreAbsMin: 0.00, // buildup doesn't require imbalance, just sanity
   },
 
-  // Medium filters
+  // Medium filters (versoepeld)
   almost: {
-    spreadMaxPct: 1.25,
-    depthMinUsd1p: 22_000,
-    obScoreAbsMin: 0.025, // require some imbalance
-    requireWall: false,   // optional: set true if you want wall presence
+    spreadMaxPct: 1.35,
+    depthMinUsd1p: 18_000,
+    obScoreAbsMin: 0.020,
+    requireWall: false,
   },
 
   // Hard filters
@@ -516,6 +516,23 @@ function absorptionFromSamples(samples, mode) {
 // ----------------------------------------------------------------
 
 // ======================================================
+// ✅ stageFromSwing (versoepeld)
+// ======================================================
+function stageFromSwing(mode, c, dyn) {
+  const vm = c.vm;
+  const range = c.range24;
+  const ch1h = c.change1h;
+
+  const wantUp = mode === "bull";
+  const dir1h = wantUp ? n(dyn?.dir1hMinBull, 0.2) : n(dyn?.dir1hMaxBear, -0.2);
+  const inDir = wantUp ? ch1h >= dir1h : ch1h <= dir1h;
+
+  if (vm >= 0.17 && range <= n(dyn?.maxRange24, 26) && inDir) return "ALMOST";
+  if (vm >= 0.13 && range <= n(dyn?.maxRange24, 30) + 5) return "BUILDUP";
+  return "RADAR";
+}
+
+// ======================================================
 // MAIN HANDLER
 // ======================================================
 export default async function handler(req, res) {
@@ -849,7 +866,7 @@ export default async function handler(req, res) {
         now,
       });
 
-      // Bepaal initiële stage op basis van swing (gebruik usedDyn)
+      // Bepaal initiële stage op basis van swing (gebruik usedDyn) – nu met versoepelde drempels
       let stageBase = stageFromSwing(mode, { ...c, vm }, usedDyn);
 
       // Spike detectie
@@ -929,7 +946,7 @@ export default async function handler(req, res) {
         // ALMOST gate (medium filters + slope + spoof)
         // ======================================================
         if (stageBase === "ALMOST") {
-          // Tier baseline checks (ALMOST)
+          // Tier baseline checks (ALMOST) – nu met versoepelde drempels
           if (spreadPct > A.spreadMaxPct) {
             await pushReject("ALMOST", "ALMOST_SPREAD_FAIL", `spread>${A.spreadMaxPct}%`, {
               spreadPct,
@@ -1239,76 +1256,56 @@ export default async function handler(req, res) {
       btc,
       cap,
       funnel: { radar: outRadar, buildup: outBuildup, almost: outAlmost, entry: outEntry },
-      openTrades,
+      stats: {
+        totalCoins: cg.length,
+        withObCoverage: cg.filter(c => obCoverageMap[up(c.symbol)]).length,
+        radar: outRadar.length,
+        buildup: outBuildup.length,
+        almost: outAlmost.length,
+        entry: outEntry.length,
+      },
       meta: {
-        scanLock: { active: false, until: lock.until, waitMs: 0 },
-        counts: { cg: cg.length, radar: radar.length, buildup: buildup.length, almost: almost.length, entry: entry.length },
-        rationale: DESIGN_RATIONALE,
-        universe: {
-          key: K_UNIVERSE_LATEST,
-          ts: uni.ts || null,
-          pages: uni.pages || null,
-          perPage: uni.perPage || null,
-          count: uni.count || (Array.isArray(uni.coins) ? uni.coins.length : 0),
-          lockKey: K_LOCK_UNIVERSE,
-        },
+        designRationale: DESIGN_RATIONALE,
+        scanLock: lock.ok ? { acquired: true, until: lock.until } : null,
       },
     };
 
-    const ttl = n(core?.SETTINGS?.entry?.resultTtlSec, 60 * 45);
-    await kv.set(core.keyLatest(mode), out, { ex: Math.max(60, ttl) });
-    await kv.set(core.keyState(mode), state, { ex: 60 * 60 * 24 * 7 });
+    // Bewaar de scan resultaten (latest)
+    await kv.set(core.keyLatest(mode), out, { ex: 60 * 30 }); // 30 minuten
+    await kv.set(core.keyState(mode), state, { ex: 60 * 60 * 24 * 7 }); // 7 dagen
 
     return send(res, 200, out);
-  } catch (e) {
-    return send(res, 200, { ok: false, error: String(e?.message || e) });
+  } catch (err) {
+    console.error("Fatal error in scan handler:", err);
+    return send(res, 500, { ok: false, error: "Internal server error", message: err.message });
   }
 }
 
 // ======================================================
-// ✅ Hulpfuncties die in de loop gebruikt worden (moesten na import)
+// Helper: passRadar (toegevoegd omdat deze ontbrak)
 // ======================================================
 function passRadar(core, mode, c, dyn) {
-  const R = core?.SETTINGS?.radar || {};
   const vm = core.computeVm(c.volume, c.marketCap);
+  const radarCfg = core.SETTINGS.radar;
+  const wantUp = mode === "bull";
 
-  if (c.marketCap < n(R.mcapMin, 0)) return { ok: false, why: "mcap too low" };
-  if (c.marketCap > n(R.mcapMax, Number.MAX_SAFE_INTEGER)) return { ok: false, why: "mcap too high" };
-  if (c.volume < n(R.volMin, 0)) return { ok: false, why: "volume too low" };
-  if (vm < n(R.vmMin, 0)) return { ok: false, why: "vm too low" };
-  if (Math.abs(c.change24) > n(R.maxAbsChg24, 999)) return { ok: false, why: "chg24 too high" };
+  if (c.marketCap < radarCfg.mcapMin) return { ok: false, why: "mcap too low", vm };
+  if (c.marketCap > radarCfg.mcapMax) return { ok: false, why: "mcap too high", vm };
+  if (c.volume < radarCfg.volMin) return { ok: false, why: "volume too low", vm };
+  if (vm < radarCfg.vmMin) return { ok: false, why: "vm too low", vm };
+  if (Math.abs(c.change24) > radarCfg.maxAbsChg24) return { ok: false, why: "chg24 too high", vm };
+  if (c.range24 > (dyn?.maxRange24 ?? radarCfg.maxRange24)) return { ok: false, why: `range24 too high (${c.range24} > ${dyn?.maxRange24 ?? radarCfg.maxRange24})`, vm };
 
-  const maxRange = n(dyn?.maxRange24, n(R.maxRange24, 999));
-  if (c.range24 > maxRange) return { ok: false, why: `range24 too high (> ${maxRange.toFixed(2)}%)` };
+  const dir1h = wantUp ? (dyn?.dir1hMinBull ?? radarCfg.dir1hMinBull) : (dyn?.dir1hMaxBear ?? radarCfg.dir1hMaxBear);
+  const dir24 = wantUp ? (dyn?.dir24MinBull ?? radarCfg.dir24MinBull) : (dyn?.dir24MaxBear ?? radarCfg.dir24MaxBear);
 
-  const m = String(mode || "").toLowerCase();
-
-  if (m === "bull") {
-    const dir1hMin = n(dyn?.dir1hMinBull, n(R.dir1hMinBull, 0.2));
-    const dir24Min = n(dyn?.dir24MinBull, n(R.dir24MinBull, 0.5));
-    if (n(c.change1h, 0) < dir1hMin) return { ok: false, why: `dir fail 1h (< ${dir1hMin.toFixed(2)}%)` };
-    if (n(c.change24, 0) < dir24Min) return { ok: false, why: `dir fail 24h (< ${dir24Min.toFixed(2)}%)` };
-  } else if (m === "bear") {
-    const dir1hMax = n(dyn?.dir1hMaxBear, n(R.dir1hMaxBear, -0.2));
-    const dir24Max = n(dyn?.dir24MaxBear, n(R.dir24MaxBear, -0.5));
-    if (n(c.change1h, 0) > dir1hMax) return { ok: false, why: `dir fail 1h (> ${dir1hMax.toFixed(2)}%)` };
-    if (n(c.change24, 0) > dir24Max) return { ok: false, why: `dir fail 24h (> ${dir24Max.toFixed(2)}%)` };
+  if (wantUp) {
+    if (c.change1h < dir1h) return { ok: false, why: `dir fail 1h (${c.change1h} < ${dir1h})`, vm, dyn };
+    if (c.change24 < dir24) return { ok: false, why: `dir fail 24h (${c.change24} < ${dir24})`, vm, dyn };
+  } else {
+    if (c.change1h > dir1h) return { ok: false, why: `dir fail 1h (${c.change1h} > ${dir1h})`, vm, dyn };
+    if (c.change24 > dir24) return { ok: false, why: `dir fail 24h (${c.change24} > ${dir24})`, vm, dyn };
   }
 
-  return { ok: true, vm, dyn };
-}
-
-function stageFromSwing(mode, c, dyn) {
-  const vm = c.vm;
-  const range = c.range24;
-  const ch1h = c.change1h;
-
-  const wantUp = mode === "bull";
-  const dir1h = wantUp ? n(dyn?.dir1hMinBull, 0.2) : n(dyn?.dir1hMaxBear, -0.2);
-  const inDir = wantUp ? ch1h >= dir1h : ch1h <= dir1h;
-
-  // Iets lagere drempels zodat meer coins in aanmerking komen voor ALMOST en BUILDUP
-  if (vm >= 0.20 && range <= n(dyn?.maxRange24, 24) && inDir) return "ALMOST";
-  if (vm >= 0.15 && range <= n(dyn?.maxRange24, 30) + 4) return "BUILDUP";
-  return "RADAR";
+  return { ok: true, why: "passed", vm, dyn };
 }
