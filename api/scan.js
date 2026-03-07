@@ -1143,12 +1143,26 @@ export default async function handler(req, res) {
                 ? core.checkObSlopeGate({ stage: "almost", mode, obSamples, settings: core.SETTINGS })
                 : { ok: true };
 
-            if (!slopeCheck.ok) {
-              await pushReject("ALMOST", "ALMOST_SLOPE_FAIL", slopeCheck.reason || "OB slope failed in ALMOST");
+            // ⬅ AANGEPAST: bij onvoldoende verse samples wordt de gate als geslaagd beschouwd
+            let slopeOk = slopeCheck.ok;
+            let slopeMsg = slopeCheck.reason || "";
+
+            if (!slopeOk) {
+              if (slopeMsg.includes("insufficient FRESH samples")) {
+                // treat as pass
+                slopeOk = true;
+                slopeMsg = "passed (limited fresh samples)";
+              }
+            }
+
+            if (!slopeOk) {
+              await pushReject("ALMOST", "ALMOST_SLOPE_FAIL", slopeMsg);
               stage = "BUILDUP";
               stageBase = "BUILDUP";
-              almostGate = slopeCheck.reason || "OB slope failed in ALMOST";
+              almostGate = slopeMsg;
             } else {
+              almostGate = slopeMsg; // "passed" of "passed (limited fresh samples)"
+
               // spoof gate
               const spoof = spoofRiskFromSamples(obSamples);
               if (!spoof.ok) {
@@ -1159,7 +1173,7 @@ export default async function handler(req, res) {
                 stageBase = "BUILDUP";
                 almostGate = `blocked: spoof risk (${spoof.why})`;
               } else {
-                almostGate = "passed";
+                almostGate = "passed"; // beide ok
               }
             }
           }
