@@ -338,7 +338,6 @@ export default async function handler(req, res) {
     const mode = modeRaw === "bear" ? "bear" : "bull";
     const now = Date.now();
 
-    // ===== DIAG collectors =====
     const diag = {
       ts: now,
       mode,
@@ -367,20 +366,17 @@ export default async function handler(req, res) {
       },
     };
 
-    // 1) BTC gate
     const btc = await fetchBTCGateCached();
     const allowed = isModeAllowedByBtc(mode, btc.state);
     diag.btc = btc;
     diag.allowed = allowed;
 
-    // stores
     const resetAt = (await kv.get(keyMoonReset(mode))) || 0;
     const state = (await kv.get(keyMoonState(mode))) || {};
 
     const positionsPrev = await kv.get(keyMoonPositions(mode));
     const positions = normalizePositionsStore(positionsPrev);
 
-    // BTC flip -> close open positions (portfolio logic)
     if (!allowed && MOON.portfolio.closeOnBtcFlip && positions.open.length) {
       const cgNow = await fetchCoinGeckoTopCached();
       const priceMap = buildSymbolPriceMap(cgNow);
@@ -397,7 +393,7 @@ export default async function handler(req, res) {
         const shouldForceClose =
           Number(px || 0) === 0 ||
           Math.abs(Number(pnlPct || 0)) < 1.5 ||
-          ageMin >= 180; // sluit na 3 uur tegen BTC regime in
+          ageMin >= 180;
 
         if (shouldForceClose) {
           const closedTrade = {
@@ -443,7 +439,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // blocked -> empty latest + portfolio
     if (!allowed) {
       const portfolio = calcPortfolioFromPositions(mode, positions);
 
@@ -471,38 +466,30 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify(result));
     }
 
-    // 2) Universe
     const bitgetSet = await getBitgetSpotUsdtSymbols();
     const cg = await fetchCoinGeckoTopCached();
 
     diag.universe.cgTotal = cg.length;
 
-    // 3) Candidates
     const radarRaw = cg.filter((c) => bitgetSet.has(String(c.symbol || "").toUpperCase()));
     diag.universe.afterBitget = radarRaw.length;
 
-    // Sorteer op vm (volume/mcap), volume, en kleinere mcap
     const radarFiltered = radarRaw
       .filter((c) => passRadarMoon(c, mode))
       .sort((a, b) => {
-        // Eerst op vm (hoger is beter)
         if (b.vm !== a.vm) return b.vm - a.vm;
-        // Dan op volume (hoger is beter)
         if (b.volume !== a.volume) return b.volume - a.volume;
-        // Dan op marketCap (kleiner is beter voor Moon)
         return a.marketCap - b.marketCap;
       })
       .slice(0, MOON.RADAR_LIMIT);
 
     diag.universe.afterRadar = radarFiltered.length;
 
-    // cleanup state
     const liveSyms = new Set(radarFiltered.map((c) => c.symbol));
     for (const sym of Object.keys(state)) {
       if (!liveSyms.has(sym)) delete state[sym];
     }
 
-    // ✅ EXCLUSIVE lists
     const radar = [];
     const buildup = [];
     const almost = [];
@@ -546,7 +533,6 @@ export default async function handler(req, res) {
       const snapshots = updateSnapshots(prev.snapshots, snapshot);
       const rolling = computeRollingMetrics(snapshots);
 
-      // stale check op orderbook
       const obTs = Number(obRaw?.sampledAt ?? obRaw?.ob?.ts ?? 0);
       const obIsStale = !(obTs > 0) || (now - obTs > 25 * 60 * 1000);
 
@@ -579,7 +565,6 @@ export default async function handler(req, res) {
         btc,
       });
 
-      // Gebruik de verbeterde consistency (zonder volHist)
       const consistency = computeMoonConsistency(mode, snapshots, priceHist);
       const consistencyRatio = consistency.ratio;
 
@@ -611,7 +596,6 @@ export default async function handler(req, res) {
       const compressionOk = !needCompression || rolling.compression;
       const stabilityOk = rolling.obStability <= maxObStability;
 
-      // Voor small caps: alleen price, vol, slope; voor mid/upper-mid ook compression en stability
       const eliteExtra = priceOk && volOk && slopeOk && compressionOk && stabilityOk;
 
       if (!eliteExtra) {
@@ -623,7 +607,6 @@ export default async function handler(req, res) {
         else inc(diag.reasons.eliteExtraFail, "Unknown");
       }
 
-      // ✅ EXCLUSIVE stage keuze (ELITE > ALMOST > BUILDUP > RADAR)
       let stage = "RADAR";
       if (eliteGate.ok && eliteExtra) stage = "ELITE";
       else if (almostGate.ok) stage = "ALMOST";
@@ -741,7 +724,7 @@ export default async function handler(req, res) {
         priceFlat60: +Number(flat60 || 0).toFixed(2),
 
         confidence,
-        consistency,  // nu met details
+        consistency,
 
         rolling,
 
@@ -822,7 +805,6 @@ export default async function handler(req, res) {
         stage,
       };
 
-      // ✅ EXCLUSIVE push: coin gaat naar precies 1 lijst
       if (stage === "ELITE") {
         elite.push(item);
 
