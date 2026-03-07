@@ -533,6 +533,28 @@ function stageFromSwing(mode, c, dyn) {
 }
 
 // ======================================================
+// Helper: detectExitReason (voor TP/SL onderscheid)
+// ======================================================
+function detectExitReason({ mode, price, tradePlan }) {
+  const p = Number(price || 0);
+  const tp = Number(tradePlan?.tp || 0);
+  const sl = Number(tradePlan?.sl || 0);
+  const m = String(mode || "").toLowerCase();
+
+  if (!(p > 0) || !(tp > 0) || !(sl > 0)) return "exit_signal";
+
+  if (m === "bull") {
+    if (p >= tp) return "tp_hit";
+    if (p <= sl) return "sl_hit";
+  } else {
+    if (p <= tp) return "tp_hit";
+    if (p >= sl) return "sl_hit";
+  }
+
+  return "exit_signal";
+}
+
+// ======================================================
 // MAIN HANDLER
 // ======================================================
 export default async function handler(req, res) {
@@ -1161,7 +1183,7 @@ export default async function handler(req, res) {
               stageBase = "BUILDUP";
               almostGate = slopeMsg;
             } else {
-              almostGate = slopeMsg; // "passed" of "passed (limited fresh samples)"
+              const slopeGateMsg = slopeMsg || "passed";
 
               // spoof gate
               const spoof = spoofRiskFromSamples(obSamples);
@@ -1173,7 +1195,7 @@ export default async function handler(req, res) {
                 stageBase = "BUILDUP";
                 almostGate = `blocked: spoof risk (${spoof.why})`;
               } else {
-                almostGate = "passed"; // beide ok
+                almostGate = slopeGateMsg;
               }
             }
           }
@@ -1396,9 +1418,10 @@ export default async function handler(req, res) {
             : [finalStage],
         };
       } else {
-        // Voor RADAR, BUILDUP, ALMOST: zorg dat entryActive uit staat en history blijft zoals hij is
+        // Voor RADAR, BUILDUP, ALMOST: elite-state opruimen
         if (state[sym]) {
           state[sym].entryActive = false;
+          state[sym].entryTradePlan = null;
           // history hoeft niet aangepast, want updateStateAndConsistency heeft hem al toegevoegd
         }
       }
@@ -1513,7 +1536,22 @@ export default async function handler(req, res) {
         } else if (stage === "HOLD") {
           await safePushEvent("scan_hold", eventItem);
         } else if (stage === "SELL") {
-          await safePushEvent("scan_sell", eventItem);
+          // Detecteer exit-reason voor extra events
+          const exitReason = detectExitReason({
+            mode,
+            price: n(c.price, 0),
+            tradePlan: finalTradePlan,
+          });
+          const sellEvent = { ...eventItem, exitReason };
+          await safePushEvent("scan_sell", sellEvent);
+
+          if (exitReason === "tp_hit") {
+            await safePushEvent("trade_tp", sellEvent);
+          } else if (exitReason === "sl_hit") {
+            await safePushEvent("trade_sl", sellEvent);
+          } else {
+            await safePushEvent("trade_exit", sellEvent);
+          }
         } else if (stage === "ALMOST") {
           await safePushEvent("scan_almost", eventItem);
         } else if (stage === "BUILDUP") {
