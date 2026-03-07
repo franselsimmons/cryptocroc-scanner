@@ -1,4 +1,3 @@
-// /api/moon/latest.js
 import { kv } from "@vercel/kv";
 import {
   RUNTIME_CONFIG,
@@ -23,7 +22,7 @@ function safeBase(mode) {
 }
 
 export default async function handler(req, res) {
-  // Beveiligd: vereist token (verwijder requireSecret als je dit publiek wilt)
+  // Beveiligd: vereist token
   if (!requireSecret(req, res)) return;
 
   const modeRaw = String(req.query?.mode || "bull").toLowerCase();
