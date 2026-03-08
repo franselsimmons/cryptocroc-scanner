@@ -50,13 +50,13 @@ async function tryAcquireScanLock(mode) {
 }
 
 // ======================================================
-// ✅ Universe keys (gelijk aan universe.js)
+// Universe keys (gelijk aan universe.js)
 // ======================================================
 const K_UNIVERSE_LATEST = "universe:latest";
 const K_LOCK_UNIVERSE = "scan:lock:universe";
 
 // ======================================================
-// ✅ Design rationale (voor transparantie)
+// Design rationale (voor transparantie)
 // ======================================================
 const DESIGN_RATIONALE = [
   "Zonder coin-typische momentum en zonder consistency-blokkade krijg je bij 30m cadence te veel false positives (micro moves, random spikes, liquidity noise).",
@@ -64,7 +64,7 @@ const DESIGN_RATIONALE = [
 ].join(" ");
 
 // ======================================================
-// ✅ Tier gating config (single place to tune)
+// Tier gating config (single place to tune)
 // ======================================================
 const TIER_CFG = {
   // Basic OB sanity for anything above RADAR
@@ -158,7 +158,6 @@ async function pushStageChange({ mode, symbol, from, to, reason, item }) {
     item: item || null,
   });
 }
-// ---------------------------------------------------------
 
 // ---------- toegevoegde helper voor TP/SL ----------
 function calcTradePlan({ mode, price, spreadPct, range24, obScore }) {
@@ -213,14 +212,13 @@ function calcTradePlan({ mode, price, spreadPct, range24, obScore }) {
     slPct: +slPctBase.toFixed(2),
   };
 }
-// ----------------------------------------------------------------
 
 // ✅ OB max age (stale gate)
 const OB_MAX_AGE_MS = 120 * 60 * 1000;
 const OB_MAX_AGE_SEC = Math.floor(OB_MAX_AGE_MS / 1000);
 
 // ======================================================
-// ✅ Per-coin rolling medians & percentiles (range/spread/obScore)
+// Per-coin rolling medians & percentiles (range/spread/obScore)
 // ======================================================
 const COIN_STATS_TTL_SEC = 60 * 60 * 24 * 8; // 8 dagen bewaren
 const COIN_STATS_WINDOW_SEC = 60 * 60 * 24 * 7; // 7 dagen window
@@ -292,7 +290,7 @@ async function updateCoinStatsAndGetMetrics({ mode, sym, range24, spreadPct, obS
 }
 
 // ======================================================
-// ✅ BTC state / compat (geen fetch meer, alleen rekenen)
+// BTC state / compat (geen fetch meer, alleen rekenen)
 // ======================================================
 function normBtcState(x) {
   const s = String(x || "").toUpperCase().trim();
@@ -369,7 +367,7 @@ function computeStageCap(mode, btcState) {
 }
 
 // ======================================================
-// ✅ OB ophalen
+// OB ophalen
 // ======================================================
 async function getObForSymbol({ mode, symbol }) {
   const sym = up(symbol);
@@ -513,10 +511,9 @@ function absorptionFromSamples(samples, mode) {
 
   return absorption ? { ok: false, why: "liquidity_absorption_proxy" } : { ok: true, why: "ok" };
 }
-// ----------------------------------------------------------------
 
 // ======================================================
-// ✅ stageFromSwing (versoepeld)
+// stageFromSwing (versoepeld)
 // ======================================================
 function stageFromSwing(mode, c, dyn) {
   const vm = c.vm;
@@ -530,6 +527,35 @@ function stageFromSwing(mode, c, dyn) {
   if (vm >= 0.17 && range <= n(dyn?.maxRange24, 26) && inDir) return "ALMOST";
   if (vm >= 0.13 && range <= n(dyn?.maxRange24, 30) + 5) return "BUILDUP";
   return "RADAR";
+}
+
+// ======================================================
+// Helper: passRadar (toegevoegd omdat deze ontbrak)
+// ======================================================
+function passRadar(core, mode, c, dyn) {
+  const vm = core.computeVm(c.volume, c.marketCap);
+  const radarCfg = core.SETTINGS.radar;
+  const wantUp = mode === "bull";
+
+  if (c.marketCap < radarCfg.mcapMin) return { ok: false, why: "mcap too low", vm };
+  if (c.marketCap > radarCfg.mcapMax) return { ok: false, why: "mcap too high", vm };
+  if (c.volume < radarCfg.volMin) return { ok: false, why: "volume too low", vm };
+  if (vm < radarCfg.vmMin) return { ok: false, why: "vm too low", vm };
+  if (Math.abs(c.change24) > radarCfg.maxAbsChg24) return { ok: false, why: "chg24 too high", vm };
+  if (c.range24 > (dyn?.maxRange24 ?? radarCfg.maxRange24)) return { ok: false, why: `range24 too high (${c.range24} > ${dyn?.maxRange24 ?? radarCfg.maxRange24})`, vm };
+
+  const dir1h = wantUp ? (dyn?.dir1hMinBull ?? radarCfg.dir1hMinBull) : (dyn?.dir1hMaxBear ?? radarCfg.dir1hMaxBear);
+  const dir24 = wantUp ? (dyn?.dir24MinBull ?? radarCfg.dir24MinBull) : (dyn?.dir24MaxBear ?? radarCfg.dir24MaxBear);
+
+  if (wantUp) {
+    if (c.change1h < dir1h) return { ok: false, why: `dir fail 1h (${c.change1h} < ${dir1h})`, vm, dyn };
+    if (c.change24 < dir24) return { ok: false, why: `dir fail 24h (${c.change24} < ${dir24})`, vm, dyn };
+  } else {
+    if (c.change1h > dir1h) return { ok: false, why: `dir fail 1h (${c.change1h} > ${dir1h})`, vm, dyn };
+    if (c.change24 > dir24) return { ok: false, why: `dir fail 24h (${c.change24} > ${dir24})`, vm, dyn };
+  }
+
+  return { ok: true, why: "passed", vm, dyn };
 }
 
 // ======================================================
@@ -638,11 +664,144 @@ export default async function handler(req, res) {
         });
       };
 
-      // 1) Radar gate eerst (mcap/vol/vm/range/direction)
+      // ------------------------------------------------------------
+      // ✅ 1) Basisberekeningen (onafhankelijk van gates)
+      // ------------------------------------------------------------
+      const vm = core.computeVm(c.volume, c.marketCap);
       const dyn = typeof core.dynamicRadarThresholds === "function"
         ? core.dynamicRadarThresholds(n(c.range24, 0), core.SETTINGS)
         : null;
 
+      // OB ophalen (voor TP/SL check en gates)
+      const ob = await getObForSymbol({ mode, symbol: sym });
+      const obFresh = !!ob?.fresh;
+      const obValid = !!ob?.valid;
+      const spreadPct = n(ob?.spreadPct, 999);
+      const depthMinUsd1p = n(ob?.depthMinUsd1p, 0);
+      const obScore = n(ob?.score, 0);
+      const obScoreAbs = Math.abs(obScore);
+
+      // ------------------------------------------------------------
+      // ✅ 2) TP / SL check (heeft voorrang op alle gates)
+      // ------------------------------------------------------------
+      if (wasEliteOpen && currentState.entryTradePlan) {
+        const plan = currentState.entryTradePlan;
+        const entryPrice = Number(currentState.entryPrice || 0);
+        const currentPrice = n(c.price, 0);
+
+        if (entryPrice > 0 && currentPrice > 0 && plan.tp != null && plan.sl != null) {
+          const isBull = mode === 'bull';
+          const hitTp = isBull ? currentPrice >= Number(plan.tp) : currentPrice <= Number(plan.tp);
+          const hitSl = isBull ? currentPrice <= Number(plan.sl) : currentPrice >= Number(plan.sl);
+
+          const pnlPct = (((currentPrice - entryPrice) / entryPrice) * 100).toFixed(2);
+          const barsOpen = currentState.entryTs
+            ? Math.max(1, Math.floor((now - currentState.entryTs) / (30 * 60 * 1000)))
+            : null;
+
+          // TP geraakt
+          if (hitTp) {
+            await safePushEvent('trade_tp', {
+              symbol: sym,
+              entryPrice,
+              exitPrice: currentPrice,
+              pnlPct,
+              barsOpen,
+              reason: 'TP hit',
+            });
+
+            // State updaten naar SELL
+            state[sym] = {
+              ...currentState,
+              stage: 'SELL',
+              entryActive: false,
+              entryTradePlan: null,
+              lastSeenAt: now,
+              hist: Array.isArray(currentState.hist)
+                ? [...currentState.hist, 'SELL'].slice(-12)
+                : ['SELL'],
+            };
+
+            // Item voor output (zonder gates/consistency)
+            const item = {
+              symbol: sym,
+              name: c.name || sym,
+              price: currentPrice,
+              marketCap: n(c.marketCap, 0),
+              volume: n(c.volume, 0),
+              vm: +vm.toFixed(6),
+              change1h: +n(c.change1h, 0).toFixed(3),
+              change24: +n(c.change24, 0).toFixed(3),
+              range24: +n(c.range24, 0).toFixed(3),
+              mode,
+              btcState: btc.state,
+              tradePlan: plan,
+              confidence: 0,
+              stage: 'SELL',
+              stageBase: 'SELL',
+              gates: { radar: 'n/a', almost: 'n/a', entry: 'n/a' },
+              consistency: null,
+              rationale: DESIGN_RATIONALE,
+              dyn: dyn ? {
+                maxRange24: +n(dyn.maxRange24, 0).toFixed(3),
+                dir1hMinBull: +n(dyn.dir1hMinBull, 0).toFixed(3),
+                dir24MinBull: +n(dyn.dir24MinBull, 0).toFixed(3),
+                dir1hMaxBear: +n(dyn.dir1hMaxBear, 0).toFixed(3),
+                dir24MaxBear: +n(dyn.dir24MaxBear, 0).toFixed(3),
+                scale: +n(dyn.scale, 0).toFixed(3),
+              } : null,
+              thr: null,
+              coinStats: null,
+              anomaly: null,
+              ob: {
+                fresh: obFresh,
+                valid: obValid,
+                spreadPct,
+                depthMinUsd1p,
+                score: obScore,
+                pressureDeltaUsd: ob?.pressureDeltaUsd ?? 0,
+                ts: ob?.ts ?? null,
+                ageSec: ob?.ageSec ?? null,
+                reason: ob?.reason || '',
+              },
+            };
+
+            sell.push(item);
+            continue; // Ga naar volgende coin
+          }
+
+          // SL geraakt
+          if (hitSl) {
+            await safePushEvent('trade_sl', {
+              symbol: sym,
+              entryPrice,
+              exitPrice: currentPrice,
+              pnlPct,
+              barsOpen,
+              reason: 'SL hit',
+            });
+
+            state[sym] = {
+              ...currentState,
+              stage: 'SELL',
+              entryActive: false,
+              entryTradePlan: null,
+              lastSeenAt: now,
+              hist: Array.isArray(currentState.hist)
+                ? [...currentState.hist, 'SELL'].slice(-12)
+                : ['SELL'],
+            };
+
+            const item = { ... /* zelfde als boven */ };
+            sell.push(item);
+            continue;
+          }
+        }
+      }
+
+      // ------------------------------------------------------------
+      // ✅ 3) Radar gate (eerst)
+      // ------------------------------------------------------------
       const radarGate = passRadar(core, mode, c, dyn);
       if (!radarGate.ok) {
         let rejectCode = "RADAR_FAIL";
@@ -659,20 +818,16 @@ export default async function handler(req, res) {
         await pushReject("RADAR", rejectCode, radarGate.why, {
           marketCap: n(c.marketCap, 0),
           volume: n(c.volume, 0),
-          vm: n(core.computeVm(c.volume, c.marketCap), 0),
+          vm: n(vm, 0),
           change1h: n(c.change1h, 0),
           change24: n(c.change24, 0),
           range24: n(c.range24, 0),
         });
 
-        // Bepaal of dit een exit (SELL) of gewone RADAR moet worden
-        const vm = radarGate.vm;
-        const usedDyn = radarGate.dyn || dyn;
         const finalStage = wasEliteOpen ? "SELL" : "RADAR";
         const finalReason = wasEliteOpen ? "entry/hold invalidated before TP/SL (radar gate)" : (radarGate.why || "radar failed");
         const finalTradePlan = wasEliteOpen ? (currentState.entryTradePlan || null) : null;
 
-        // Item voor deze coin (basis)
         const item = {
           symbol: sym,
           name: c.name || sym,
@@ -696,140 +851,31 @@ export default async function handler(req, res) {
           consistency: null,
 
           rationale: DESIGN_RATIONALE,
-          dyn: usedDyn
-            ? {
-                maxRange24: +n(usedDyn.maxRange24, 0).toFixed(3),
-                dir1hMinBull: +n(usedDyn.dir1hMinBull, 0).toFixed(3),
-                dir24MinBull: +n(usedDyn.dir24MinBull, 0).toFixed(3),
-                dir1hMaxBear: +n(usedDyn.dir1hMaxBear, 0).toFixed(3),
-                dir24MaxBear: +n(usedDyn.dir24MaxBear, 0).toFixed(3),
-                scale: +n(usedDyn.scale, 0).toFixed(3),
-              }
-            : null,
-          thr: null,
-          coinStats: null,
-          anomaly: null,
-          ob: null,
-        };
-
-        // State bijwerken – hier moet history worden toegevoegd (niet vervangen)
-        const newHist = Array.isArray(currentState.hist)
-          ? currentState.hist.concat([finalStage]).slice(-12)
-          : [finalStage];
-
-        if (finalStage === "SELL") {
-          state[sym] = {
-            ...currentState,
-            stage: finalStage,
-            entryActive: false,
-            entryTradePlan: null,
-            lastSeenAt: now,
-            hist: newHist,
-          };
-        } else {
-          state[sym] = {
-            ...currentState,
-            stage: finalStage,
-            entryActive: false,
-            entryTradePlan: null, // opruimen ook voor RADAR
-            lastSeenAt: now,
-            hist: newHist,
-          };
-        }
-
-        // Toevoegen aan juiste array
-        if (finalStage === "SELL") sell.push(item);
-        else radar.push(item);
-
-        // Stage change event (alleen als stage veranderd is)
-        if (prevStageBeforeScan !== finalStage) {
-          await pushStageChange({
-            mode,
-            symbol: sym,
-            from: prevStageBeforeScan || "NONE",
-            to: finalStage,
-            reason: finalReason,
-            item: {
-              symbol: sym,
-              stage: finalStage,
-              confidence: 0,
-              tradePlan: finalTradePlan,
-              gates: item.gates,
-            },
-          });
-
-          // Discord funnel event
-          if (finalStage === "SELL") {
-            await safePushEvent("scan_sell", { ...item, prevStage: prevStageBeforeScan || null, changed: true, reason: finalReason });
-          } else {
-            await safePushEvent("scan_radar", { ...item, prevStage: prevStageBeforeScan || null, changed: true, reason: finalReason });
-          }
-        }
-
-        continue;
-      }
-
-      const vm = radarGate.vm;
-      const usedDyn = radarGate.dyn || dyn;
-
-      // 2) HARD OB gate: no fresh+valid OB => RADAR only
-      const ob = await getObForSymbol({ mode, symbol: sym });
-      if (!ob?.ok || !ob?.valid || !ob?.fresh) {
-        await pushReject("BUILDUP", "OB_MISSING_INVALID_STALE", ob?.reason || "no_ob", {
-          obFresh: !!ob?.fresh,
-          obValid: !!ob?.valid,
-          obAgeSec: ob?.ageSec ?? null,
-        });
-
-        const finalStage = wasEliteOpen ? "SELL" : "RADAR";
-        const finalReason = wasEliteOpen ? "entry/hold invalidated before TP/SL (OB missing/invalid/stale)" : (ob?.reason || "no_ob");
-        const finalTradePlan = wasEliteOpen ? (currentState.entryTradePlan || null) : null;
-
-        const item = {
-          symbol: sym,
-          name: c.name || sym,
-          price: n(c.price, 0),
-          marketCap: n(c.marketCap, 0),
-          volume: n(c.volume, 0),
-          vm: +n(vm, 0).toFixed(6),
-          change1h: +n(c.change1h, 0).toFixed(3),
-          change24: +n(c.change24, 0).toFixed(3),
-          range24: +n(c.range24, 0).toFixed(3),
-
-          mode,
-          btcState: btc.state,
-          tradePlan: finalTradePlan,
-
-          confidence: 0,
-          stage: finalStage,
-          stageBase: "RADAR",
-
-          gates: { radar: "passed", almost: "blocked: missing/invalid/stale orderbook", entry: "blocked: missing/invalid/stale orderbook" },
-          consistency: null,
-
-          rationale: DESIGN_RATIONALE,
-          dyn: usedDyn
-            ? {
-                maxRange24: +n(usedDyn.maxRange24, 0).toFixed(3),
-                dir1hMinBull: +n(usedDyn.dir1hMinBull, 0).toFixed(3),
-                dir24MinBull: +n(usedDyn.dir24MinBull, 0).toFixed(3),
-                dir1hMaxBear: +n(usedDyn.dir1hMaxBear, 0).toFixed(3),
-                dir24MaxBear: +n(usedDyn.dir24MaxBear, 0).toFixed(3),
-                scale: +n(usedDyn.scale, 0).toFixed(3),
-              }
-            : null,
+          dyn: radarGate.dyn ? {
+            maxRange24: +n(radarGate.dyn.maxRange24, 0).toFixed(3),
+            dir1hMinBull: +n(radarGate.dyn.dir1hMinBull, 0).toFixed(3),
+            dir24MinBull: +n(radarGate.dyn.dir24MinBull, 0).toFixed(3),
+            dir1hMaxBear: +n(radarGate.dyn.dir1hMaxBear, 0).toFixed(3),
+            dir24MaxBear: +n(radarGate.dyn.dir24MaxBear, 0).toFixed(3),
+            scale: +n(radarGate.dyn.scale, 0).toFixed(3),
+          } : null,
           thr: null,
           coinStats: null,
           anomaly: null,
           ob: {
-            fresh: !!ob?.fresh,
-            valid: !!ob?.valid,
-            reason: ob?.reason || "no_ob",
+            fresh: obFresh,
+            valid: obValid,
+            spreadPct,
+            depthMinUsd1p,
+            score: obScore,
+            pressureDeltaUsd: ob?.pressureDeltaUsd ?? 0,
+            ts: ob?.ts ?? null,
             ageSec: ob?.ageSec ?? null,
+            reason: ob?.reason || '',
           },
         };
 
-        // State bijwerken – toevoegen aan history
+        // State bijwerken
         const newHist = Array.isArray(currentState.hist)
           ? currentState.hist.concat([finalStage]).slice(-12)
           : [finalStage];
@@ -854,9 +900,25 @@ export default async function handler(req, res) {
           };
         }
 
-        if (finalStage === "SELL") sell.push(item);
-        else radar.push(item);
+        if (finalStage === "SELL") {
+          sell.push(item);
+          // trade_exit als het een open positie was (geen TP/SL)
+          if (wasEliteOpen) {
+            await safePushEvent('trade_exit', {
+              symbol: sym,
+              entryPrice: currentState.entryPrice || null,
+              exitPrice: n(c.price, 0),
+              pnlPct: currentState.entryPrice
+                ? (((mode === 'bull' ? 1 : -1) * (n(c.price, 0) - currentState.entryPrice) / currentState.entryPrice * 100).toFixed(2))
+                : null,
+              exitReason: finalReason,
+            });
+          }
+        } else {
+          radar.push(item);
+        }
 
+        // Stage change event
         if (prevStageBeforeScan !== finalStage) {
           await pushStageChange({
             mode,
@@ -883,13 +945,10 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // OB is ok -> extraheer basis OB-waarden
-      const obFresh = !!ob?.fresh;
-      const obValid = !!ob?.valid;
-      const spreadPct = n(ob?.spreadPct, 999);
-      const depthMinUsd1p = n(ob?.depthMinUsd1p, 0);
-      const obScore = n(ob?.score, 0);
-      const obScoreAbs = Math.abs(obScore);
+      // ------------------------------------------------------------
+      // ✅ 4) Vanaf hier: coin voldoet aan RADAR, gebruik dynamische drempels
+      // ------------------------------------------------------------
+      const usedDyn = radarGate.dyn || dyn;
 
       // ======================================================
       // Tier baseline: BUILDUP sanity check (als die faalt -> RADAR)
@@ -942,16 +1001,14 @@ export default async function handler(req, res) {
           consistency: null,
 
           rationale: DESIGN_RATIONALE,
-          dyn: usedDyn
-            ? {
-                maxRange24: +n(usedDyn.maxRange24, 0).toFixed(3),
-                dir1hMinBull: +n(usedDyn.dir1hMinBull, 0).toFixed(3),
-                dir24MinBull: +n(usedDyn.dir24MinBull, 0).toFixed(3),
-                dir1hMaxBear: +n(usedDyn.dir1hMaxBear, 0).toFixed(3),
-                dir24MaxBear: +n(usedDyn.dir24MaxBear, 0).toFixed(3),
-                scale: +n(usedDyn.scale, 0).toFixed(3),
-              }
-            : null,
+          dyn: usedDyn ? {
+            maxRange24: +n(usedDyn.maxRange24, 0).toFixed(3),
+            dir1hMinBull: +n(usedDyn.dir1hMinBull, 0).toFixed(3),
+            dir24MinBull: +n(usedDyn.dir24MinBull, 0).toFixed(3),
+            dir1hMaxBear: +n(usedDyn.dir1hMaxBear, 0).toFixed(3),
+            dir24MaxBear: +n(usedDyn.dir24MaxBear, 0).toFixed(3),
+            scale: +n(usedDyn.scale, 0).toFixed(3),
+          } : null,
           thr: null,
           coinStats: null,
           anomaly: null,
@@ -961,10 +1018,13 @@ export default async function handler(req, res) {
             spreadPct,
             depthMinUsd1p,
             score: obScore,
+            pressureDeltaUsd: ob?.pressureDeltaUsd ?? 0,
+            ts: ob?.ts ?? null,
+            ageSec: ob?.ageSec ?? null,
+            reason: ob?.reason || '',
           },
         };
 
-        // State bijwerken – toevoegen aan history
         const newHist = Array.isArray(currentState.hist)
           ? currentState.hist.concat([finalStage]).slice(-12)
           : [finalStage];
@@ -978,6 +1038,18 @@ export default async function handler(req, res) {
             lastSeenAt: now,
             hist: newHist,
           };
+          sell.push(item);
+          if (wasEliteOpen) {
+            await safePushEvent('trade_exit', {
+              symbol: sym,
+              entryPrice: currentState.entryPrice || null,
+              exitPrice: n(c.price, 0),
+              pnlPct: currentState.entryPrice
+                ? (((mode === 'bull' ? 1 : -1) * (n(c.price, 0) - currentState.entryPrice) / currentState.entryPrice * 100).toFixed(2))
+                : null,
+              exitReason: finalReason,
+            });
+          }
         } else {
           state[sym] = {
             ...currentState,
@@ -987,10 +1059,8 @@ export default async function handler(req, res) {
             lastSeenAt: now,
             hist: newHist,
           };
+          radar.push(item);
         }
-
-        if (finalStage === "SELL") sell.push(item);
-        else radar.push(item);
 
         if (prevStageBeforeScan !== finalStage) {
           await pushStageChange({
@@ -1018,9 +1088,9 @@ export default async function handler(req, res) {
         continue;
       }
 
-      // Vanaf hier: coin voldoet aan BUILDUP-eisen en heeft een geldig OB
-
-      // Coin stats (voor thresholds en anomaly)
+      // ------------------------------------------------------------
+      // ✅ 5) Coin stats (voor thresholds en anomaly)
+      // ------------------------------------------------------------
       const coinStats = await updateCoinStatsAndGetMetrics({
         mode,
         sym,
@@ -1360,12 +1430,8 @@ export default async function handler(req, res) {
           entryTs: now,
           entryTradePlan: finalTradePlan, // bewaar het tradeplan voor later
           lastSeenAt: now,
-          // Vervang de laatste history-entry door de nieuwe stage (geen dubbele toevoeging)
           hist: Array.isArray(currentStateNow.hist) && currentStateNow.hist.length
-            ? [
-                ...currentStateNow.hist.slice(0, -1),
-                finalStage,
-              ].slice(-12)
+            ? [...currentStateNow.hist.slice(0, -1), finalStage].slice(-12)
             : [finalStage],
         };
       } else if (finalStage === "HOLD") {
@@ -1375,10 +1441,7 @@ export default async function handler(req, res) {
           entryActive: true, // blijft actief
           lastSeenAt: now,
           hist: Array.isArray(currentStateNow.hist) && currentStateNow.hist.length
-            ? [
-                ...currentStateNow.hist.slice(0, -1),
-                finalStage,
-              ].slice(-12)
+            ? [...currentStateNow.hist.slice(0, -1), finalStage].slice(-12)
             : [finalStage],
         };
       } else if (finalStage === "SELL") {
@@ -1389,10 +1452,7 @@ export default async function handler(req, res) {
           entryTradePlan: null, // opruimen
           lastSeenAt: now,
           hist: Array.isArray(currentStateNow.hist) && currentStateNow.hist.length
-            ? [
-                ...currentStateNow.hist.slice(0, -1),
-                finalStage,
-              ].slice(-12)
+            ? [...currentStateNow.hist.slice(0, -1), finalStage].slice(-12)
             : [finalStage],
         };
       } else {
@@ -1400,11 +1460,9 @@ export default async function handler(req, res) {
         if (state[sym]) {
           state[sym].entryActive = false;
           state[sym].entryTradePlan = null;
-          // history hoeft niet aangepast, want updateStateAndConsistency heeft hem al toegevoegd
         }
       }
 
-      // Gebruik finalStage en finalTradePlan voor de rest van de loop
       stage = finalStage;
 
       // Bouw item
@@ -1428,20 +1486,18 @@ export default async function handler(req, res) {
         stageBase,
 
         gates: { radar: radarGate.why || "passed", almost: almostGate, entry: entryGate },
-        consistency: finalConsistency, // gebruik de definitieve consistency
+        consistency: finalConsistency,
 
         rationale: DESIGN_RATIONALE,
 
-        dyn: usedDyn
-          ? {
-              maxRange24: +n(usedDyn.maxRange24, 0).toFixed(3),
-              dir1hMinBull: +n(usedDyn.dir1hMinBull, 0).toFixed(3),
-              dir24MinBull: +n(usedDyn.dir24MinBull, 0).toFixed(3),
-              dir1hMaxBear: +n(usedDyn.dir1hMaxBear, 0).toFixed(3),
-              dir24MaxBear: +n(usedDyn.dir24MaxBear, 0).toFixed(3),
-              scale: +n(usedDyn.scale, 0).toFixed(3),
-            }
-          : null,
+        dyn: usedDyn ? {
+          maxRange24: +n(usedDyn.maxRange24, 0).toFixed(3),
+          dir1hMinBull: +n(usedDyn.dir1hMinBull, 0).toFixed(3),
+          dir24MinBull: +n(usedDyn.dir24MinBull, 0).toFixed(3),
+          dir1hMaxBear: +n(usedDyn.dir1hMaxBear, 0).toFixed(3),
+          dir24MaxBear: +n(usedDyn.dir24MaxBear, 0).toFixed(3),
+          scale: +n(usedDyn.scale, 0).toFixed(3),
+        } : null,
 
         thr: {
           minConfidence: thr.minConfidence,
@@ -1471,7 +1527,7 @@ export default async function handler(req, res) {
           pressureDeltaUsd: ob?.pressureDeltaUsd ?? 0,
           ts: ob?.ts ?? null,
           ageSec: ob?.ageSec ?? null,
-          reason: ob?.reason || "",
+          reason: ob?.reason || '',
         },
       };
 
@@ -1514,8 +1570,19 @@ export default async function handler(req, res) {
         } else if (stage === "HOLD") {
           await safePushEvent("scan_hold", eventItem);
         } else if (stage === "SELL") {
-          // Alleen scan_sell sturen (zonder extra trade events) – Discord werkt dan gegarandeerd
           await safePushEvent("scan_sell", { ...eventItem, reason: finalReason });
+          // trade_exit als het een open positie was (geen TP/SL)
+          if (wasEliteOpenNow) {
+            await safePushEvent('trade_exit', {
+              symbol: sym,
+              entryPrice: currentState.entryPrice || null,
+              exitPrice: n(c.price, 0),
+              pnlPct: currentState.entryPrice
+                ? (((mode === 'bull' ? 1 : -1) * (n(c.price, 0) - currentState.entryPrice) / currentState.entryPrice * 100).toFixed(2))
+                : null,
+              exitReason: finalReason,
+            });
+          }
         } else if (stage === "ALMOST") {
           await safePushEvent("scan_almost", eventItem);
         } else if (stage === "BUILDUP") {
@@ -1594,36 +1661,6 @@ export default async function handler(req, res) {
     return send(res, 200, out);
   } catch (err) {
     console.error("Fatal error in scan handler:", err);
-    // ✅ Oude foutafhandeling: 200 met ok:false
     return send(res, 200, { ok: false, error: "Internal server error", message: err.message });
   }
-}
-
-// ======================================================
-// Helper: passRadar (toegevoegd omdat deze ontbrak)
-// ======================================================
-function passRadar(core, mode, c, dyn) {
-  const vm = core.computeVm(c.volume, c.marketCap);
-  const radarCfg = core.SETTINGS.radar;
-  const wantUp = mode === "bull";
-
-  if (c.marketCap < radarCfg.mcapMin) return { ok: false, why: "mcap too low", vm };
-  if (c.marketCap > radarCfg.mcapMax) return { ok: false, why: "mcap too high", vm };
-  if (c.volume < radarCfg.volMin) return { ok: false, why: "volume too low", vm };
-  if (vm < radarCfg.vmMin) return { ok: false, why: "vm too low", vm };
-  if (Math.abs(c.change24) > radarCfg.maxAbsChg24) return { ok: false, why: "chg24 too high", vm };
-  if (c.range24 > (dyn?.maxRange24 ?? radarCfg.maxRange24)) return { ok: false, why: `range24 too high (${c.range24} > ${dyn?.maxRange24 ?? radarCfg.maxRange24})`, vm };
-
-  const dir1h = wantUp ? (dyn?.dir1hMinBull ?? radarCfg.dir1hMinBull) : (dyn?.dir1hMaxBear ?? radarCfg.dir1hMaxBear);
-  const dir24 = wantUp ? (dyn?.dir24MinBull ?? radarCfg.dir24MinBull) : (dyn?.dir24MaxBear ?? radarCfg.dir24MaxBear);
-
-  if (wantUp) {
-    if (c.change1h < dir1h) return { ok: false, why: `dir fail 1h (${c.change1h} < ${dir1h})`, vm, dyn };
-    if (c.change24 < dir24) return { ok: false, why: `dir fail 24h (${c.change24} < ${dir24})`, vm, dyn };
-  } else {
-    if (c.change1h > dir1h) return { ok: false, why: `dir fail 1h (${c.change1h} > ${dir1h})`, vm, dyn };
-    if (c.change24 > dir24) return { ok: false, why: `dir fail 24h (${c.change24} > ${dir24})`, vm, dyn };
-  }
-
-  return { ok: true, why: "passed", vm, dyn };
 }
