@@ -22,23 +22,32 @@ function safeBase(mode) {
 }
 
 export default async function handler(req, res) {
-  // Beveiligd: vereist token
-  if (!requireSecret(req, res)) return;
+  try {
+    if (!requireSecret(req, res)) return;
 
-  const modeRaw = String(req.query?.mode || "bull").toLowerCase();
-  const mode = modeRaw === "bear" ? "bear" : "bull";
+    const modeRaw = String(req.query?.mode || "bull").toLowerCase();
+    const mode = modeRaw === "bear" ? "bear" : "bull";
 
-  const latest = (await kv.get(keyMoonLatest(mode))) || safeBase(mode);
-  const portfolio = (await kv.get(keyMoonPortfolio(mode))) || null;
-  const positions = (await kv.get(keyMoonPositions(mode))) || null;
+    const latest = (await kv.get(keyMoonLatest(mode))) || safeBase(mode);
+    const portfolio = (await kv.get(keyMoonPortfolio(mode))) || null;
+    const positions = (await kv.get(keyMoonPositions(mode))) || null;
 
-  const out = {
-    ...latest,
-    portfolio: latest.portfolio || portfolio,
-    positions: positions || null,
-  };
+    const out = {
+      ...latest,
+      portfolio: latest.portfolio || portfolio,
+      positions: positions || null,
+    };
 
-  res.statusCode = 200;
-  res.setHeader("content-type", "application/json");
-  res.end(JSON.stringify(out));
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(out));
+  } catch (e) {
+    res.statusCode = 500;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({
+      ok: false,
+      where: "api/moon/latest.js",
+      error: String(e?.message || e),
+    }));
+  }
 }
