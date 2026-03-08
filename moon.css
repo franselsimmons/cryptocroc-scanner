@@ -1,75 +1,143 @@
 :root{
-  --bg:#020b1a;
-  --panel:#06152b;
-  --line:#17345d;
+  --bg:#06111f;
+  --panel:#09182b;
+  --panel-2:#0c1d33;
+  --stroke:#173a67;
   --text:#eef3ff;
-  --muted:#9ba8bf;
-  --ok:#7ee787;
-  --err:#ffb3c1;
-  --pill:#0d1d37;
-  --pill-active:#40206d;
+  --muted:#98a8c4;
+  --ok:#8fe38b;
+  --bad:#f2a3ad;
+  --accent:#8b5cf6;
 }
 
 *{box-sizing:border-box}
-html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-body{min-height:100vh}
-.moon-wrap{max-width:860px;margin:0 auto;padding:28px 20px 56px}
-.hero h1{font-size:54px;line-height:1.05;margin:0 0 10px}
-.hero-sub{font-size:28px;line-height:1.35;color:var(--muted);margin:14px 0 28px}
-.status{font-size:28px;margin:0 0 12px;color:var(--muted)}
-.status[data-kind="ok"]{color:var(--ok)}
-.status[data-kind="error"]{color:var(--err)}
-.status[data-kind="loading"]{color:#d2d8e6}
 
-.actions{display:flex;gap:18px;flex-wrap:wrap;margin:24px 0 30px}
-.pill{
-  display:inline-flex;align-items:center;justify-content:center;
-  min-width:170px;padding:18px 26px;border-radius:999px;
-  border:2px solid var(--line);background:var(--pill);color:var(--text);
-  text-decoration:none;font-size:26px;cursor:pointer;
-}
-.pill.active{border-color:#8b5cf6;box-shadow:0 0 0 2px rgba(139,92,246,.18) inset}
-.pill.danger{border-color:#f0728a}
-
-.panel{
-  background:rgba(6,21,43,.88);
-  border:2px solid var(--line);
-  border-radius:34px;
-  padding:28px;
-  margin:24px 0;
-}
-.panel h2{font-size:46px;margin:0 0 12px}
-.panel p{font-size:26px;line-height:1.35;color:var(--muted);margin:0 0 20px}
-
-.coin-row{
-  padding:16px 0;
-  border-top:1px solid rgba(255,255,255,.08);
-}
-.coin-row:first-child{border-top:none}
-.coin-head{
-  display:flex;justify-content:space-between;gap:12px;
-  font-size:24px;font-weight:700;
-}
-.coin-meta{
-  display:flex;gap:18px;flex-wrap:wrap;
-  margin-top:8px;font-size:20px;color:var(--muted);
+html,body{
+  margin:0;
+  padding:0;
+  background:linear-gradient(180deg,#04101d 0%, #051224 100%);
+  color:var(--text);
+  font-family:Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
 }
 
-.portfolio-block{
-  display:grid;
-  grid-template-columns:repeat(2,minmax(0,1fr));
-  gap:12px;
-  margin:10px 0 18px;
+body{
+  max-width:760px;
+  margin:0 auto;
+  padding:28px 18px 90px;
+}
+
+.page-title{
+  font-size:56px;
+  line-height:1;
+  font-weight:800;
+  letter-spacing:-0.03em;
+  margin:0 0 18px;
+}
+
+.status-line{
   font-size:22px;
+  line-height:1.35;
+  color:var(--ok);
+  margin:0 0 24px;
 }
-.empty{font-size:22px;color:var(--muted)}
-.error-box{font-size:22px;color:var(--err)}
 
-@media (max-width:700px){
-  .hero h1{font-size:42px}
-  .hero-sub,.status{font-size:22px}
-  .pill{min-width:140px;font-size:22px;padding:16px 20px}
-  .panel h2{font-size:34px}
-  .panel p,.coin-head{font-size:20px}
-  .coin-meta,.portfolio-block,.empty,.error-box{font-size:18px}
+.status-line.error{
+  color:var(--bad);
+}
+
+.subtitle{
+  font-size:22px;
+  line-height:1.5;
+  color:var(--muted);
+  margin:0 0 28px;
+}
+
+.actions{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:14px;
+  margin:0 0 26px;
+}
+
+.btn{
+  appearance:none;
+  border:none;
+  border-radius:24px;
+  min-height:74px;
+  padding:0 22px;
+  font-size:28px;
+  font-weight:600;
+  color:#e9efff;
+  background:#0d1d35;
+  border:2px solid #1b3760;
+}
+
+.btn.active{
+  border-color:var(--accent);
+  box-shadow:0 0 0 3px rgba(139,92,246,.18) inset;
+}
+
+.btn.danger{
+  border-color:#f08da0;
+}
+
+.btn.secondary{
+  color:#d6deef;
+}
+
+.cards{
+  display:grid;
+  gap:18px;
+}
+
+.card{
+  background:linear-gradient(180deg,#061429 0%, #07172b 100%);
+  border:2px solid #143764;
+  border-radius:34px;
+  padding:28px 26px 30px;
+}
+
+.card h2{
+  margin:0 0 16px;
+  font-size:46px;
+  line-height:1;
+  font-weight:800;
+  letter-spacing:-0.02em;
+}
+
+.card .desc{
+  color:var(--muted);
+  font-size:22px;
+  line-height:1.45;
+  margin:0 0 22px;
+}
+
+.card .empty{
+  color:#a8b5cd;
+  font-size:22px;
+  line-height:1.5;
+}
+
+.coin-list{
+  display:grid;
+  gap:12px;
+}
+
+.coin{
+  background:#0b1b31;
+  border:1px solid #173963;
+  border-radius:18px;
+  padding:14px 16px;
+}
+
+.coin .sym{
+  font-size:22px;
+  font-weight:700;
+}
+
+.coin .meta{
+  margin-top:6px;
+  color:#9db0cf;
+  font-size:16px;
+  line-height:1.45;
 }
