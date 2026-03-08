@@ -38,16 +38,12 @@ export default async function handler(req, res) {
       positions: positions || null,
     };
 
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify(out));
+    res.status(200).json(out);
   } catch (e) {
-    res.statusCode = 500;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({
+    res.status(500).json({
       ok: false,
       where: "api/moon/latest.js",
       error: String(e?.message || e),
-    }));
+    });
   }
 }
