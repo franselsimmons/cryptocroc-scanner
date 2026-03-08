@@ -14,17 +14,15 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
     }
 
-    // Bouw base URL correct
     let base = process.env.BASE_URL;
     if (!base) {
       const host = req.headers.host;
       if (!host) throw new Error("Missing BASE_URL and no host header");
       base = `https://${host}`;
-    } else {
-      if (!base.startsWith("http://") && !base.startsWith("https://")) {
-        base = "https://" + base;
-      }
+    } else if (!base.startsWith("http://") && !base.startsWith("https://")) {
+      base = "https://" + base;
     }
+
     if (base.endsWith("/")) base = base.slice(0, -1);
 
     const result = await runMoonAll({
@@ -37,10 +35,10 @@ export default async function handler(req, res) {
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    return res.end(JSON.stringify(result));
+    res.end(JSON.stringify(result));
   } catch (err) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    return res.end(JSON.stringify({ ok: false, error: String(err?.message || err) }));
+    res.end(JSON.stringify({ ok: false, error: String(err?.message || err) }));
   }
 }
