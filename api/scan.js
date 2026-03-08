@@ -533,28 +533,6 @@ function stageFromSwing(mode, c, dyn) {
 }
 
 // ======================================================
-// Helper: detectExitReason (voor TP/SL onderscheid)
-// ======================================================
-function detectExitReason({ mode, price, tradePlan }) {
-  const p = Number(price || 0);
-  const tp = Number(tradePlan?.tp || 0);
-  const sl = Number(tradePlan?.sl || 0);
-  const m = String(mode || "").toLowerCase();
-
-  if (!(p > 0) || !(tp > 0) || !(sl > 0)) return "exit_signal";
-
-  if (m === "bull") {
-    if (p >= tp) return "tp_hit";
-    if (p <= sl) return "sl_hit";
-  } else {
-    if (p <= tp) return "tp_hit";
-    if (p >= sl) return "sl_hit";
-  }
-
-  return "exit_signal";
-}
-
-// ======================================================
 // MAIN HANDLER
 // ======================================================
 export default async function handler(req, res) {
@@ -1536,22 +1514,8 @@ export default async function handler(req, res) {
         } else if (stage === "HOLD") {
           await safePushEvent("scan_hold", eventItem);
         } else if (stage === "SELL") {
-          // Detecteer exit-reason voor extra events
-          const exitReason = detectExitReason({
-            mode,
-            price: n(c.price, 0),
-            tradePlan: finalTradePlan,
-          });
-          const sellEvent = { ...eventItem, exitReason };
-          await safePushEvent("scan_sell", sellEvent);
-
-          if (exitReason === "tp_hit") {
-            await safePushEvent("trade_tp", sellEvent);
-          } else if (exitReason === "sl_hit") {
-            await safePushEvent("trade_sl", sellEvent);
-          } else {
-            await safePushEvent("trade_exit", sellEvent);
-          }
+          // Alleen scan_sell sturen (zonder extra trade events) – Discord werkt dan gegarandeerd
+          await safePushEvent("scan_sell", { ...eventItem, reason: finalReason });
         } else if (stage === "ALMOST") {
           await safePushEvent("scan_almost", eventItem);
         } else if (stage === "BUILDUP") {
