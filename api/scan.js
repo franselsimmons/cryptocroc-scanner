@@ -530,7 +530,7 @@ function stageFromSwing(mode, c, dyn) {
 }
 
 // ======================================================
-// Helper: passRadar (toegevoegd omdat deze ontbrak)
+// Helper: passRadar
 // ======================================================
 function passRadar(core, mode, c, dyn) {
   const vm = core.computeVm(c.volume, c.marketCap);
@@ -567,17 +567,13 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    // ✅ FIX: mode normaliseren zodat keys altijd latest:bull/bear zijn
     const mode = String(getMode(req)).toLowerCase().trim(); // bull/bear
     const coreMod = await import(`../lib/_core_${mode}.js`);
     const core = coreMod?.default ? coreMod.default : coreMod;
 
-    // ✅ LOCK CHECK: binnen 30 min -> return latest, geen scan
     const lock = await tryAcquireScanLock(mode);
     if (!lock.ok) {
       const latest = await kv.get(core.keyLatest(mode));
-
-      // ✅ FAIL-OPEN: lock actief maar geen latest => lock droppen en toch scannen
       if (!latest) {
         await kv.del(`scan:lock:${String(mode).toLowerCase()}`);
       } else {
@@ -589,7 +585,6 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    // ✅ 1) Universe uit KV (wordt 1x per 30m gevuld door /api/universe)
     const uni = await kv.get(K_UNIVERSE_LATEST);
     if (!uni?.ok || !Array.isArray(uni?.coins) || uni.coins.length === 0) {
       return send(res, 200, {
@@ -603,7 +598,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // ✅ 2) BTC komt uit universe (geen aparte fetch)
     const btcBase = uni?.btc || { chg1h: 0, chg24: 0, range24: 0 };
     const btcState = computeBtcStateCompat(btcBase, core.SETTINGS);
     const btcTune = btcConfidenceAdjustCompat(mode, btcState, btcBase, core.SETTINGS);
@@ -611,15 +605,12 @@ export default async function handler(req, res) {
 
     const cap = computeStageCap(mode, btc.state);
 
-    // ✅ 3) Slice tot gewenste aantal (core.SETTINGS.CG_TOP staat nu op 1500)
     const cgTop = Number(core?.SETTINGS?.CG_TOP ?? 1500);
     const cg = uni.coins.slice(0, Math.max(1, cgTop));
 
-    // ✅ OB coverage map laden (geen hgetall, gewoon get)
     const obMapBlob = await kv.get(obMapKey(mode));
     const obCoverageMap = obMapBlob && obMapBlob.map ? obMapBlob.map : null;
 
-    // 👇 NIEUW: fail-closed als map ontbreekt of ongeldig is
     if (!obCoverageMap || typeof obCoverageMap !== "object") {
       return send(res, 200, {
         ok: false,
@@ -628,33 +619,24 @@ export default async function handler(req, res) {
       });
     }
 
-    // ========== NIEUWE ARRAYS ==========
     const radar = [];
     const buildup = [];
     const almost = [];
     const entry = [];
     const hold = [];
     const sell = [];
-    const openTrades = []; // placeholder
+    const openTrades = [];
 
     const state = (await kv.get(core.keyState(mode))) || {};
 
     for (const c of cg) {
       const sym = up(c.symbol);
-
-      // skip coins zonder coverage (geen Bitget USDT pair)
       if (!obCoverageMap[sym]) continue;
 
-      // Oude stage bewaren vóór eventuele wijzigingen (voor change detection)
       const prevStageBeforeScan = up(state?.[sym]?.stage || "");
-
-      // Huidige state (voor entryTradePlan e.d.)
       const currentState = safeObj(state[sym]) || {};
-
-      // Bepaal of de coin in een open elite-positie zat (voor de vroege branches)
       const wasEliteOpen = prevStageBeforeScan === "ENTRY" || prevStageBeforeScan === "HOLD";
 
-      // Helper voor reject events binnen deze coin
       const pushReject = async (stageTried, rejectCode, reason, extra = {}) => {
         await safePushEvent("scan_reject", {
           mode,
@@ -665,14 +647,13 @@ export default async function handler(req, res) {
       };
 
       // ------------------------------------------------------------
-      // ✅ 1) Basisberekeningen (onafhankelijk van gates)
+      // 1) Basisberekeningen (onafhankelijk van gates)
       // ------------------------------------------------------------
       const vm = core.computeVm(c.volume, c.marketCap);
       const dyn = typeof core.dynamicRadarThresholds === "function"
         ? core.dynamicRadarThresholds(n(c.range24, 0), core.SETTINGS)
         : null;
 
-      // OB ophalen (voor TP/SL check en gates)
       const ob = await getObForSymbol({ mode, symbol: sym });
       const obFresh = !!ob?.fresh;
       const obValid = !!ob?.valid;
@@ -682,7 +663,7 @@ export default async function handler(req, res) {
       const obScoreAbs = Math.abs(obScore);
 
       // ------------------------------------------------------------
-      // ✅ 2) TP / SL check (heeft voorrang op alle gates)
+      // 2) TP / SL check (heeft voorrang op alle gates)
       // ------------------------------------------------------------
       if (wasEliteOpen && currentState.entryTradePlan) {
         const plan = currentState.entryTradePlan;
@@ -691,13 +672,18 @@ export default async function handler(req, res) {
 
         if (entryPrice > 0 && currentPrice > 0 && plan.tp != null && plan.sl != null) {
           const isBull = mode === 'bull';
-          const hitTp = isBull ? currentPrice >= Number(plan.tp) : currentPrice <= Number(plan.tp);
-          const hitSl = isBull ? currentPrice <= Number(plan.sl) : currentPrice >= Number(plan.sl);
 
-          const pnlPct = (((currentPrice - entryPrice) / entryPrice) * 100).toFixed(2);
+          // Correcte PnL-berekening voor bull en bear
+          const pnlPct = isBull
+            ? (((currentPrice - entryPrice) / entryPrice) * 100).toFixed(2)
+            : (((entryPrice - currentPrice) / entryPrice) * 100).toFixed(2);
+
           const barsOpen = currentState.entryTs
             ? Math.max(1, Math.floor((now - currentState.entryTs) / (30 * 60 * 1000)))
             : null;
+
+          const hitTp = isBull ? currentPrice >= Number(plan.tp) : currentPrice <= Number(plan.tp);
+          const hitSl = isBull ? currentPrice <= Number(plan.sl) : currentPrice >= Number(plan.sl);
 
           // TP geraakt
           if (hitTp) {
@@ -722,7 +708,7 @@ export default async function handler(req, res) {
                 : ['SELL'],
             };
 
-            // Item voor output (zonder gates/consistency)
+            // Item voor output
             const item = {
               symbol: sym,
               name: c.name || sym,
@@ -765,9 +751,25 @@ export default async function handler(req, res) {
                 reason: ob?.reason || '',
               },
             };
-
             sell.push(item);
-            continue; // Ga naar volgende coin
+
+            // 🔁 Stage change en scan_sell ook sturen
+            await pushStageChange({
+              mode,
+              symbol: sym,
+              from: prevStageBeforeScan,
+              to: 'SELL',
+              reason: 'TP hit',
+              item: { symbol: sym, stage: 'SELL' },
+            });
+            await safePushEvent('scan_sell', {
+              ...item,
+              prevStage: prevStageBeforeScan,
+              changed: true,
+              reason: 'TP hit',
+            });
+
+            continue;
           }
 
           // SL geraakt
@@ -792,20 +794,76 @@ export default async function handler(req, res) {
                 : ['SELL'],
             };
 
-            const item = { ... /* zelfde als boven */ };
+            const item = {
+              symbol: sym,
+              name: c.name || sym,
+              price: currentPrice,
+              marketCap: n(c.marketCap, 0),
+              volume: n(c.volume, 0),
+              vm: +vm.toFixed(6),
+              change1h: +n(c.change1h, 0).toFixed(3),
+              change24: +n(c.change24, 0).toFixed(3),
+              range24: +n(c.range24, 0).toFixed(3),
+              mode,
+              btcState: btc.state,
+              tradePlan: plan,
+              confidence: 0,
+              stage: 'SELL',
+              stageBase: 'SELL',
+              gates: { radar: 'n/a', almost: 'n/a', entry: 'n/a' },
+              consistency: null,
+              rationale: DESIGN_RATIONALE,
+              dyn: dyn ? {
+                maxRange24: +n(dyn.maxRange24, 0).toFixed(3),
+                dir1hMinBull: +n(dyn.dir1hMinBull, 0).toFixed(3),
+                dir24MinBull: +n(dyn.dir24MinBull, 0).toFixed(3),
+                dir1hMaxBear: +n(dyn.dir1hMaxBear, 0).toFixed(3),
+                dir24MaxBear: +n(dyn.dir24MaxBear, 0).toFixed(3),
+                scale: +n(dyn.scale, 0).toFixed(3),
+              } : null,
+              thr: null,
+              coinStats: null,
+              anomaly: null,
+              ob: {
+                fresh: obFresh,
+                valid: obValid,
+                spreadPct,
+                depthMinUsd1p,
+                score: obScore,
+                pressureDeltaUsd: ob?.pressureDeltaUsd ?? 0,
+                ts: ob?.ts ?? null,
+                ageSec: ob?.ageSec ?? null,
+                reason: ob?.reason || '',
+              },
+            };
             sell.push(item);
+
+            await pushStageChange({
+              mode,
+              symbol: sym,
+              from: prevStageBeforeScan,
+              to: 'SELL',
+              reason: 'SL hit',
+              item: { symbol: sym, stage: 'SELL' },
+            });
+            await safePushEvent('scan_sell', {
+              ...item,
+              prevStage: prevStageBeforeScan,
+              changed: true,
+              reason: 'SL hit',
+            });
+
             continue;
           }
         }
       }
 
       // ------------------------------------------------------------
-      // ✅ 3) Radar gate (eerst)
+      // 3) Radar gate
       // ------------------------------------------------------------
       const radarGate = passRadar(core, mode, c, dyn);
       if (!radarGate.ok) {
         let rejectCode = "RADAR_FAIL";
-
         if (radarGate.why === "mcap too low") rejectCode = "RADAR_MCAP_LOW";
         else if (radarGate.why === "mcap too high") rejectCode = "RADAR_MCAP_HIGH";
         else if (radarGate.why === "volume too low") rejectCode = "RADAR_VOL_LOW";
@@ -875,7 +933,6 @@ export default async function handler(req, res) {
           },
         };
 
-        // State bijwerken
         const newHist = Array.isArray(currentState.hist)
           ? currentState.hist.concat([finalStage]).slice(-12)
           : [finalStage];
@@ -889,20 +946,7 @@ export default async function handler(req, res) {
             lastSeenAt: now,
             hist: newHist,
           };
-        } else {
-          state[sym] = {
-            ...currentState,
-            stage: finalStage,
-            entryActive: false,
-            entryTradePlan: null,
-            lastSeenAt: now,
-            hist: newHist,
-          };
-        }
-
-        if (finalStage === "SELL") {
           sell.push(item);
-          // trade_exit als het een open positie was (geen TP/SL)
           if (wasEliteOpen) {
             await safePushEvent('trade_exit', {
               symbol: sym,
@@ -915,10 +959,17 @@ export default async function handler(req, res) {
             });
           }
         } else {
+          state[sym] = {
+            ...currentState,
+            stage: finalStage,
+            entryActive: false,
+            entryTradePlan: null,
+            lastSeenAt: now,
+            hist: newHist,
+          };
           radar.push(item);
         }
 
-        // Stage change event
         if (prevStageBeforeScan !== finalStage) {
           await pushStageChange({
             mode,
@@ -946,13 +997,11 @@ export default async function handler(req, res) {
       }
 
       // ------------------------------------------------------------
-      // ✅ 4) Vanaf hier: coin voldoet aan RADAR, gebruik dynamische drempels
+      // 4) Vanaf hier: coin voldoet aan RADAR, gebruik dynamische drempels
       // ------------------------------------------------------------
       const usedDyn = radarGate.dyn || dyn;
 
-      // ======================================================
-      // Tier baseline: BUILDUP sanity check (als die faalt -> RADAR)
-      // ======================================================
+      // Tier baseline: BUILDUP sanity check
       const B = TIER_CFG.buildup;
       const A = TIER_CFG.almost;
       const E = TIER_CFG.entry;
@@ -1089,7 +1138,7 @@ export default async function handler(req, res) {
       }
 
       // ------------------------------------------------------------
-      // ✅ 5) Coin stats (voor thresholds en anomaly)
+      // 5) Coin stats en verdere gates
       // ------------------------------------------------------------
       const coinStats = await updateCoinStatsAndGetMetrics({
         mode,
@@ -1100,10 +1149,8 @@ export default async function handler(req, res) {
         now,
       });
 
-      // Bepaal initiële stage op basis van swing (gebruik usedDyn) – nu met versoepelde drempels
       let stageBase = stageFromSwing(mode, { ...c, vm }, usedDyn);
 
-      // Spike detectie
       const curRange = n(c.range24, 0);
       const medRange = Number.isFinite(coinStats?.medRange24) ? coinStats.medRange24 : null;
       const hasStats = n(coinStats?.samples, 0) >= 30;
@@ -1115,7 +1162,6 @@ export default async function handler(req, res) {
         if (stageBase === "ALMOST" || stageBase === "ENTRY") stageBase = "BUILDUP";
       }
 
-      // Confidence
       const confidenceBase = core.computeConfidence({
         vm,
         change24: c.change24,
@@ -1124,14 +1170,12 @@ export default async function handler(req, res) {
       });
       const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
 
-      // Thresholds (adaptief, maar spread/depth/obScore worden nu door tiers overschreven)
       const baseThr = adaptiveEntryThresholds(core, c, vm);
       let thr =
         typeof core.dynamicEntryThresholds === "function"
           ? core.dynamicEntryThresholds({ marketCap: c.marketCap, volume: c.volume, vm }, baseThr, core.SETTINGS)
           : baseThr;
 
-      // Dynamische aanpassingen op basis van percentiles (optioneel)
       if (thr && Number.isFinite(coinStats?.p80SpreadPct)) {
         const hardMax = Number(core?.SETTINGS?.entry?.dyn?.spreadHardMaxPct ?? 1.6);
         const hardMin = Number(core?.SETTINGS?.entry?.dyn?.spreadHardMinPct ?? 0.55);
@@ -1154,7 +1198,6 @@ export default async function handler(req, res) {
       let almostGate = "n/a";
       let entryGate = "n/a";
 
-      // tradePlan berekenen op basis van huidige stand (wordt later overschreven voor HOLD/SELL)
       const tradePlan = calcTradePlan({
         mode,
         price: n(c.price, 0),
@@ -1163,7 +1206,6 @@ export default async function handler(req, res) {
         obScore,
       });
 
-      // BTC cap check (zachter gemaakt)
       if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
         if (stageBase === "ENTRY") {
           stage = "ALMOST";
@@ -1176,50 +1218,35 @@ export default async function handler(req, res) {
           entryGate = `capped: ${cap.capStage}`;
         }
       } else {
-        // ======================================================
-        // ALMOST gate (medium filters + slope + spoof)
-        // ======================================================
+        // ALMOST gate
         if (stageBase === "ALMOST") {
-          // Tier baseline checks (ALMOST) – nu met versoepelde drempels
           if (spreadPct > A.spreadMaxPct) {
-            await pushReject("ALMOST", "ALMOST_SPREAD_FAIL", `spread>${A.spreadMaxPct}%`, {
-              spreadPct,
-              limit: A.spreadMaxPct,
-            });
+            await pushReject("ALMOST", "ALMOST_SPREAD_FAIL", `spread>${A.spreadMaxPct}%`, { spreadPct, limit: A.spreadMaxPct });
             stage = "BUILDUP";
             stageBase = "BUILDUP";
             almostGate = `blocked: spread>${A.spreadMaxPct}%`;
           } else if (depthMinUsd1p < A.depthMinUsd1p) {
-            await pushReject("ALMOST", "ALMOST_DEPTH_FAIL", `depth1%<${A.depthMinUsd1p}`, {
-              depthMinUsd1p,
-              limit: A.depthMinUsd1p,
-            });
+            await pushReject("ALMOST", "ALMOST_DEPTH_FAIL", `depth1%<${A.depthMinUsd1p}`, { depthMinUsd1p, limit: A.depthMinUsd1p });
             stage = "BUILDUP";
             stageBase = "BUILDUP";
             almostGate = `blocked: depth1%<${A.depthMinUsd1p}`;
           } else if (obScoreAbs < A.obScoreAbsMin) {
-            await pushReject("ALMOST", "ALMOST_OBSCORE_FAIL", `|obScore|<${A.obScoreAbsMin}`, {
-              obScoreAbs,
-              limit: A.obScoreAbsMin,
-            });
+            await pushReject("ALMOST", "ALMOST_OBSCORE_FAIL", `|obScore|<${A.obScoreAbsMin}`, { obScoreAbs, limit: A.obScoreAbsMin });
             stage = "BUILDUP";
             stageBase = "BUILDUP";
             almostGate = `blocked: |obScore|<${A.obScoreAbsMin}`;
           } else {
-            // slope gate
             const obSamples = await kv.get(core.keyObSamples(mode, sym));
             const slopeCheck =
               typeof core.checkObSlopeGate === "function"
                 ? core.checkObSlopeGate({ stage: "almost", mode, obSamples, settings: core.SETTINGS })
                 : { ok: true };
 
-            // ⬅ AANGEPAST: bij onvoldoende verse samples wordt de gate als geslaagd beschouwd
             let slopeOk = slopeCheck.ok;
             let slopeMsg = slopeCheck.reason || "";
 
             if (!slopeOk) {
               if (slopeMsg.includes("insufficient FRESH samples")) {
-                // treat as pass
                 slopeOk = true;
                 slopeMsg = "passed (limited fresh samples)";
               }
@@ -1233,12 +1260,9 @@ export default async function handler(req, res) {
             } else {
               const slopeGateMsg = slopeMsg || "passed";
 
-              // spoof gate
               const spoof = spoofRiskFromSamples(obSamples);
               if (!spoof.ok) {
-                await pushReject("ALMOST", "ALMOST_SPOOF_FAIL", `spoof risk (${spoof.why})`, {
-                  spoofRisk: spoof.risk ?? null,
-                });
+                await pushReject("ALMOST", "ALMOST_SPOOF_FAIL", `spoof risk (${spoof.why})`, { spoofRisk: spoof.risk ?? null });
                 stage = "BUILDUP";
                 stageBase = "BUILDUP";
                 almostGate = `blocked: spoof risk (${spoof.why})`;
@@ -1249,42 +1273,22 @@ export default async function handler(req, res) {
           }
         }
 
-        // ======================================================
-        // ENTRY gate (hard filters + slope + pressure + absorption)
-        // ======================================================
-        // Gebruik de huidige stage (na ALMOST gate) in plaats van stageBase
+        // ENTRY gate
         if (stage === "ALMOST") {
-          // Eerst confidence check (adaptief)
           if (confidence < n(thr.minConfidence, 0)) {
-            await pushReject("ENTRY", "ENTRY_CONFIDENCE_FAIL", `Confidence < ${thr.minConfidence}`, {
-              confidence,
-              minConfidence: n(thr.minConfidence, 0),
-            });
+            await pushReject("ENTRY", "ENTRY_CONFIDENCE_FAIL", `Confidence < ${thr.minConfidence}`, { confidence, minConfidence: n(thr.minConfidence, 0) });
             entryGate = `Confidence < ${thr.minConfidence}`;
-          }
-          // Daarna tier harde grenzen
-          else if (spreadPct > E.spreadMaxPct) {
-            await pushReject("ENTRY", "ENTRY_SPREAD_FAIL", `spread>${E.spreadMaxPct}%`, {
-              spreadPct,
-              limit: E.spreadMaxPct,
-            });
+          } else if (spreadPct > E.spreadMaxPct) {
+            await pushReject("ENTRY", "ENTRY_SPREAD_FAIL", `spread>${E.spreadMaxPct}%`, { spreadPct, limit: E.spreadMaxPct });
             entryGate = `blocked: spread>${E.spreadMaxPct}%`;
           } else if (depthMinUsd1p < E.depthMinUsd1p) {
-            await pushReject("ENTRY", "ENTRY_DEPTH_FAIL", `depth1%<${E.depthMinUsd1p}`, {
-              depthMinUsd1p,
-              limit: E.depthMinUsd1p,
-            });
+            await pushReject("ENTRY", "ENTRY_DEPTH_FAIL", `depth1%<${E.depthMinUsd1p}`, { depthMinUsd1p, limit: E.depthMinUsd1p });
             entryGate = `blocked: depth1%<${E.depthMinUsd1p}`;
           } else if (obScoreAbs < E.obScoreAbsMin) {
-            await pushReject("ENTRY", "ENTRY_OBSCORE_FAIL", `|obScore|<${E.obScoreAbsMin}`, {
-              obScoreAbs,
-              limit: E.obScoreAbsMin,
-            });
+            await pushReject("ENTRY", "ENTRY_OBSCORE_FAIL", `|obScore|<${E.obScoreAbsMin}`, { obScoreAbs, limit: E.obScoreAbsMin });
             entryGate = `blocked: |obScore|<${E.obScoreAbsMin}`;
           } else {
-            // Nu de geavanceerde checks
             const obSamples2 = await kv.get(core.keyObSamples(mode, sym));
-            // slope gate at entry (met correcte parameter `obSamples`)
             const slopeCheck2 =
               typeof core.checkObSlopeGate === "function"
                 ? core.checkObSlopeGate({ stage: "entry", mode, obSamples: obSamples2, settings: core.SETTINGS })
@@ -1294,20 +1298,16 @@ export default async function handler(req, res) {
               await pushReject("ENTRY", "ENTRY_SLOPE_FAIL", slopeCheck2.reason || "OB slope failed at ENTRY");
               entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
             } else {
-              // pressure align (indien vereist)
               if (E.requirePressureAlign) {
                 const pressureDelta = n(ob?.pressureDeltaUsd, 0);
                 const pressureOk = mode === "bull" ? pressureDelta >= 0 : pressureDelta <= 0;
                 if (!pressureOk) {
-                  await pushReject("ENTRY", "ENTRY_PRESSURE_FAIL", "blocked: pressure contra", {
-                    pressureDeltaUsd: n(ob?.pressureDeltaUsd, 0),
-                  });
+                  await pushReject("ENTRY", "ENTRY_PRESSURE_FAIL", "blocked: pressure contra", { pressureDeltaUsd: n(ob?.pressureDeltaUsd, 0) });
                   entryGate = "blocked: pressure contra";
                 }
               }
 
               if (entryGate === "n/a" || entryGate === "passed") {
-                // absorption gate
                 const absorb = absorptionFromSamples(obSamples2, mode);
                 if (!absorb.ok) {
                   await pushReject("ENTRY", "ENTRY_ABSORPTION_FAIL", `blocked: ${absorb.why}`);
@@ -1322,20 +1322,13 @@ export default async function handler(req, res) {
         }
       }
 
-      // Anomaly gate (range spike) overschrijft eventuele gates
       if (anomaly?.type === "RANGE_SPIKE") {
-        await pushReject(stageBase === "ENTRY" ? "ENTRY" : "ALMOST", "ANOMALY_RANGE_SPIKE", `range spike x${anomaly.factor}`, {
-          curRange,
-          medRange,
-          factor: anomaly.factor,
-        });
+        await pushReject(stageBase === "ENTRY" ? "ENTRY" : "ALMOST", "ANOMALY_RANGE_SPIKE", `range spike x${anomaly.factor}`, { curRange, medRange, factor: anomaly.factor });
         if (almostGate === "n/a") almostGate = `anomaly: range spike x${anomaly.factor}`;
         if (entryGate === "n/a") entryGate = `anomaly: range spike x${anomaly.factor}`;
       }
 
-      // ======================================================
-      // Consistency check (zachter gemaakt) – herzien zodat na downgrade consistency null wordt
-      // ======================================================
+      // Consistency check
       let upd = updateStateAndConsistency(state, sym, stage, core, now);
       let stageConsistency = upd.consistency;
 
@@ -1346,7 +1339,6 @@ export default async function handler(req, res) {
           minAgree: upd.consistency.minAgree,
         });
 
-        // Soepeler: ENTRY zonder consistency wordt ALMOST, ALMOST wordt BUILDUP
         if (stage === "ENTRY") {
           stage = "ALMOST";
           if (entryGate === "n/a" || entryGate === "passed") {
@@ -1368,16 +1360,12 @@ export default async function handler(req, res) {
             state[sym].hist[state[sym].hist.length - 1] = stage;
           }
         }
-
-        // Na downgrade is de consistency niet meer van toepassing
         stageConsistency = null;
       }
 
-      // ================== NIEUWE ELITE LOGICA (HOLD/SELL) ==================
-      // Bepaal of de coin in een open elite-positie zat
+      // Elite-logica (HOLD/SELL)
       const wasEliteOpenNow = prevStageBeforeScan === "ENTRY" || prevStageBeforeScan === "HOLD";
 
-      // Reden voor stage-change (gebaseerd op oorspronkelijke stage)
       const stageChangeReason =
         entryGate !== "n/a" && entryGate !== "passed" ? entryGate :
         almostGate !== "n/a" && almostGate !== "passed" ? almostGate :
@@ -1386,39 +1374,33 @@ export default async function handler(req, res) {
         stage === "BUILDUP" ? "buildup accepted" :
         "stage update";
 
-      let finalStage = stage; // start met de stage uit de gates
+      let finalStage = stage;
       let finalReason = stageChangeReason;
-      let finalConsistency = stageConsistency; // gebruik de (mogelijk aangepaste) consistency
+      let finalConsistency = stageConsistency;
 
-      // Pas finalStage, finalReason en finalConsistency aan op basis van elite-logica
       if (stage === "ENTRY") {
         if (wasEliteOpenNow) {
           finalStage = "HOLD";
           finalReason = "position remains valid";
-          finalConsistency = null; // HOLD heeft geen consistency
+          finalConsistency = null;
         } else {
           finalStage = "ENTRY";
           finalReason = "new entry signal";
-          finalConsistency = stageConsistency; // blijft zoals berekend
+          finalConsistency = stageConsistency;
         }
       } else if (wasEliteOpenNow) {
-        // Was in ENTRY/HOLD, maar nu niet meer → exit
         finalStage = "SELL";
         finalReason = "entry/hold invalidated before TP/SL";
-        finalConsistency = null; // SELL heeft geen consistency
+        finalConsistency = null;
       } else {
-        // Geen elite-wijziging, behoud de oorspronkelijke consistency
         finalConsistency = stageConsistency;
       }
 
-      // Tradeplan: voor HOLD/SELL gebruiken we het opgeslagen plan uit de entry (indien aanwezig)
       let finalTradePlan = tradePlan;
       if (finalStage === "HOLD" || finalStage === "SELL") {
         finalTradePlan = state[sym]?.entryTradePlan || tradePlan;
       }
 
-      // State bijwerken met de definitieve stage en extra elite-velden
-      // Hierbij zorgen we dat de history NIET dubbel wordt aangepast.
       const currentStateNow = safeObj(state[sym]) || {};
 
       if (finalStage === "ENTRY") {
@@ -1428,7 +1410,7 @@ export default async function handler(req, res) {
           entryActive: true,
           entryPrice: n(c.price, 0),
           entryTs: now,
-          entryTradePlan: finalTradePlan, // bewaar het tradeplan voor later
+          entryTradePlan: finalTradePlan,
           lastSeenAt: now,
           hist: Array.isArray(currentStateNow.hist) && currentStateNow.hist.length
             ? [...currentStateNow.hist.slice(0, -1), finalStage].slice(-12)
@@ -1438,7 +1420,7 @@ export default async function handler(req, res) {
         state[sym] = {
           ...currentStateNow,
           stage: finalStage,
-          entryActive: true, // blijft actief
+          entryActive: true,
           lastSeenAt: now,
           hist: Array.isArray(currentStateNow.hist) && currentStateNow.hist.length
             ? [...currentStateNow.hist.slice(0, -1), finalStage].slice(-12)
@@ -1448,15 +1430,14 @@ export default async function handler(req, res) {
         state[sym] = {
           ...currentStateNow,
           stage: finalStage,
-          entryActive: false, // positie gesloten
-          entryTradePlan: null, // opruimen
+          entryActive: false,
+          entryTradePlan: null,
           lastSeenAt: now,
           hist: Array.isArray(currentStateNow.hist) && currentStateNow.hist.length
             ? [...currentStateNow.hist.slice(0, -1), finalStage].slice(-12)
             : [finalStage],
         };
       } else {
-        // Voor RADAR, BUILDUP, ALMOST: elite-state opruimen
         if (state[sym]) {
           state[sym].entryActive = false;
           state[sym].entryTradePlan = null;
@@ -1465,7 +1446,6 @@ export default async function handler(req, res) {
 
       stage = finalStage;
 
-      // Bouw item
       const item = {
         symbol: sym,
         name: c.name || sym,
@@ -1531,7 +1511,6 @@ export default async function handler(req, res) {
         },
       };
 
-      // Voeg item toe aan de juiste lijst (op basis van finalStage)
       if (stage === "ENTRY") entry.push(item);
       else if (stage === "HOLD") hold.push(item);
       else if (stage === "SELL") sell.push(item);
@@ -1539,7 +1518,6 @@ export default async function handler(req, res) {
       else if (stage === "BUILDUP") buildup.push(item);
       else radar.push(item);
 
-      // Stuur events alleen als de stage daadwerkelijk is veranderd
       if (prevStageBeforeScan !== stage) {
         const eventItem = {
           ...item,
@@ -1564,14 +1542,12 @@ export default async function handler(req, res) {
           },
         });
 
-        // Stuur funnel-specifiek event naar Discord
         if (stage === "ENTRY") {
           await safePushEvent("scan_entry", eventItem);
         } else if (stage === "HOLD") {
           await safePushEvent("scan_hold", eventItem);
         } else if (stage === "SELL") {
           await safePushEvent("scan_sell", { ...eventItem, reason: finalReason });
-          // trade_exit als het een open positie was (geen TP/SL)
           if (wasEliteOpenNow) {
             await safePushEvent('trade_exit', {
               symbol: sym,
@@ -1613,7 +1589,6 @@ export default async function handler(req, res) {
     const outHold = hold.slice(0, radarLimit);
     const outSell = sell.slice(0, radarLimit);
 
-    // ✅ Volledig compatibele output-structuur (uitgebreid met hold/sell)
     const out = {
       ok: true,
       mode,
@@ -1629,7 +1604,7 @@ export default async function handler(req, res) {
         hold: outHold,
         sell: outSell,
       },
-      openTrades, // lege array (placeholder)
+      openTrades,
       meta: {
         scanLock: { active: false, until: lock.until, waitMs: 0 },
         counts: {
@@ -1653,7 +1628,6 @@ export default async function handler(req, res) {
       },
     };
 
-    // Bewaar de scan resultaten (latest)
     const ttl = n(core?.SETTINGS?.entry?.resultTtlSec, 60 * 45);
     await kv.set(core.keyLatest(mode), out, { ex: Math.max(60, ttl) });
     await kv.set(core.keyState(mode), state, { ex: 60 * 60 * 24 * 7 });
