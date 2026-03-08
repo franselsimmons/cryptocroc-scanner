@@ -32,9 +32,10 @@ export default async function handler(req, res) {
       BASE_URL: inspectUrl(process.env.BASE_URL),
       KV_REST_API_URL: inspectUrl(process.env.KV_REST_API_URL),
       KV_URL: inspectUrl(process.env.KV_URL),
-      DISCORD_WEBHOOK_ELITE_MOON: inspectUrl(process.env.DISCORD_WEBHOOK_ELITE_MOON),
-      DISCORD_WEBHOOK_ALMOST_MOON: inspectUrl(process.env.DISCORD_WEBHOOK_ALMOST_MOON),
+
       DISCORD_WEBHOOK_BUILDUP_MOON: inspectUrl(process.env.DISCORD_WEBHOOK_BUILDUP_MOON),
+      DISCORD_WEBHOOK_ALMOST_MOON: inspectUrl(process.env.DISCORD_WEBHOOK_ALMOST_MOON),
+      DISCORD_WEBHOOK_ELITE_MOON: inspectUrl(process.env.DISCORD_WEBHOOK_ELITE_MOON),
       DISCORD_WEBHOOK_PORTFOLIO_MOON: inspectUrl(process.env.DISCORD_WEBHOOK_PORTFOLIO_MOON),
 
       has_CRON_SECRET: !!process.env.CRON_SECRET,
@@ -56,17 +57,21 @@ export default async function handler(req, res) {
       kvError = String(e?.message || e);
     }
 
-    res.status(200).json({
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({
       ok: true,
       env,
       kvWriteOk,
       kvReadOk,
       kvError,
-    });
+    }));
   } catch (e) {
-    res.status(500).json({
+    res.statusCode = 500;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({
       ok: false,
       error: String(e?.message || e),
-    });
+    }));
   }
 }
