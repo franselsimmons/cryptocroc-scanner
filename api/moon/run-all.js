@@ -9,7 +9,21 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const base = process.env.BASE_URL || `https://${req.headers.host}`;
+    // FIX: Bouw base URL correct
+    let base = process.env.BASE_URL;
+    if (!base) {
+      const host = req.headers.host;
+      if (!host) throw new Error("Missing BASE_URL and no host header");
+      base = `https://${host}`;
+    } else {
+      // Zorg dat base met http(s) begint
+      if (!base.startsWith("http://") && !base.startsWith("https://")) {
+        base = "https://" + base;
+      }
+    }
+    // verwijder trailing slash
+    if (base.endsWith("/")) base = base.slice(0, -1);
+
     const token = String(process.env.CRON_SECRET || "");
 
     if (!token) {
