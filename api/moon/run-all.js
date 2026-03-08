@@ -9,23 +9,18 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    // FIX: Bouw base URL correct
     let base = process.env.BASE_URL;
     if (!base) {
       const host = req.headers.host;
       if (!host) throw new Error("Missing BASE_URL and no host header");
       base = `https://${host}`;
-    } else {
-      // Zorg dat base met http(s) begint
-      if (!base.startsWith("http://") && !base.startsWith("https://")) {
-        base = "https://" + base;
-      }
+    } else if (!base.startsWith("http://") && !base.startsWith("https://")) {
+      base = "https://" + base;
     }
-    // verwijder trailing slash
+
     if (base.endsWith("/")) base = base.slice(0, -1);
 
     const token = String(process.env.CRON_SECRET || "");
-
     if (!token) {
       res.statusCode = 500;
       res.setHeader("content-type", "application/json");
@@ -42,15 +37,11 @@ export default async function handler(req, res) {
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    return res.end(JSON.stringify({
-      ok: true,
-      cron: true,
-      result,
-    }));
+    res.end(JSON.stringify({ ok: true, cron: true, result }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    return res.end(JSON.stringify({
+    res.end(JSON.stringify({
       ok: false,
       cron: true,
       error: String(e?.message || e),
