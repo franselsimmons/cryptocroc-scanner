@@ -1,27 +1,69 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="nl">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Moonshots</title>
-    <link rel="stylesheet" href="moon.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Moonshots</title>
+  <link rel="stylesheet" href="/moon.css" />
 </head>
 <body>
-    <div class="container">
-        <h1>Moonshots <span id="mode-label">LONG</span></h1>
+  <div class="page">
+    <header class="hero">
+      <div class="hero-left">
+        <h1>🌙 Moonshots</h1>
+        <div id="statusText" class="status">Status: laden...</div>
+        <p class="subtext">Vroege explosies / proactief (meer setups, meer ruis).</p>
+      </div>
 
-        <div class="mode-buttons">
-            <button id="mode-bull">LONG</button>
-            <button id="mode-bear">SHORT</button>
+      <div class="hero-right">
+        <div class="mode-row">
+          <button id="btnBull" class="chip active">BULL</button>
+          <button id="btnBear" class="chip">BEAR</button>
         </div>
 
-        <div id="btc-info" class="btc-info"></div>
-        <div id="portfolio-info" class="portfolio-info"></div>
-        <div id="error" class="error"></div>
+        <div class="action-row">
+          <button id="btnRefresh" class="chip">Refresh</button>
+          <button id="btnScan" class="chip danger">Scan nu</button>
+        </div>
 
-        <div id="funnel-container" class="funnel"></div>
-    </div>
+        <div class="action-row">
+          <a href="/index.html" class="chip linkchip">⬅ Main</a>
+        </div>
+      </div>
+    </header>
 
-    <script src="moon.js"></script>
+    <main class="cards">
+      <section class="card">
+        <h2>ELITE</h2>
+        <p class="muted">Meest betrouwbaar (OB + depth + confidence + consistency + rolling).</p>
+        <div id="eliteList" class="list"></div>
+      </section>
+
+      <section class="card">
+        <h2>ALMOST</h2>
+        <p class="muted">Sterk, bijna klaar.</p>
+        <div id="almostList" class="list"></div>
+      </section>
+
+      <section class="card">
+        <h2>BUILDUP</h2>
+        <p class="muted">In opbouw / in beeld.</p>
+        <div id="buildupList" class="list"></div>
+      </section>
+
+      <section class="card">
+        <h2>RADAR</h2>
+        <p class="muted">Brede watchlist.</p>
+        <div id="radarList" class="list"></div>
+      </section>
+
+      <section class="card">
+        <h2>BTC / Portfolio</h2>
+        <div id="metaBox" class="meta-box"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/moon.js"></script>
 </body>
 </html>
