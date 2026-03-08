@@ -2,67 +2,55 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Moonshots</title>
   <link rel="stylesheet" href="/moon.css" />
 </head>
 <body>
-  <div class="page">
-    <header class="hero">
-      <div class="hero-left">
-        <h1>🌙 Moonshots</h1>
-        <div id="statusText" class="status">Status: laden...</div>
-        <p class="subtext">Vroege explosies / proactief (meer setups, meer ruis).</p>
+  <main class="moon-wrap">
+    <section class="hero">
+      <h1>🌙 Moonshots</h1>
+      <div id="moon-status" class="status" data-kind="idle">Status: laden...</div>
+      <p class="hero-sub">Vroege explosies / proactief (meer setups, meer ruis).</p>
+
+      <div class="actions">
+        <button id="btn-bull" class="pill active">BULL</button>
+        <button id="btn-bear" class="pill">BEAR</button>
+        <button id="btn-refresh" class="pill">Refresh</button>
+        <button id="btn-scan" class="pill danger">Scan nu</button>
+        <a href="/" class="pill">⬅ Main</a>
       </div>
+    </section>
 
-      <div class="hero-right">
-        <div class="mode-row">
-          <button id="btnBull" class="chip active">BULL</button>
-          <button id="btnBear" class="chip">BEAR</button>
-        </div>
+    <section class="panel">
+      <h2>ELITE</h2>
+      <p>Meest betrouwbaar (OB + depth + confidence + consistency + rolling).</p>
+      <div id="moon-elite-list"></div>
+    </section>
 
-        <div class="action-row">
-          <button id="btnRefresh" class="chip">Refresh</button>
-          <button id="btnScan" class="chip danger">Scan nu</button>
-        </div>
+    <section class="panel">
+      <h2>ALMOST</h2>
+      <p>Sterk, bijna klaar.</p>
+      <div id="moon-almost-list"></div>
+    </section>
 
-        <div class="action-row">
-          <a href="/index.html" class="chip linkchip">⬅ Main</a>
-        </div>
-      </div>
-    </header>
+    <section class="panel">
+      <h2>BUILDUP</h2>
+      <p>In opbouw / in beeld.</p>
+      <div id="moon-buildup-list"></div>
+    </section>
 
-    <main class="cards">
-      <section class="card">
-        <h2>ELITE</h2>
-        <p class="muted">Meest betrouwbaar (OB + depth + confidence + consistency + rolling).</p>
-        <div id="eliteList" class="list"></div>
-      </section>
+    <section class="panel">
+      <h2>RADAR</h2>
+      <p>Brede watchlist.</p>
+      <div id="moon-radar-list"></div>
+    </section>
 
-      <section class="card">
-        <h2>ALMOST</h2>
-        <p class="muted">Sterk, bijna klaar.</p>
-        <div id="almostList" class="list"></div>
-      </section>
-
-      <section class="card">
-        <h2>BUILDUP</h2>
-        <p class="muted">In opbouw / in beeld.</p>
-        <div id="buildupList" class="list"></div>
-      </section>
-
-      <section class="card">
-        <h2>RADAR</h2>
-        <p class="muted">Brede watchlist.</p>
-        <div id="radarList" class="list"></div>
-      </section>
-
-      <section class="card">
-        <h2>BTC / Portfolio</h2>
-        <div id="metaBox" class="meta-box"></div>
-      </section>
-    </main>
-  </div>
+    <section class="panel">
+      <h2>BTC / Portfolio</h2>
+      <div id="moon-portfolio"></div>
+    </section>
+  </main>
 
   <script src="/moon.js"></script>
 </body>
