@@ -15,7 +15,7 @@ function safeBase(mode) {
     btc: null,
     counts: { radar: 0, buildup: 0, almost: 0, elite: 0 },
     funnel: { radar: [], buildup: [], almost: [], elite: [] },
-    note: "No data yet. Run scan first.",
+    note: "No data yet. Wait for cron scan.",
   };
 }
 
@@ -35,15 +35,17 @@ export default async function handler(req, res) {
     };
 
     res.statusCode = 200;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify(out));
+    res.setHeader("content-type", "application/json");
+    return res.end(JSON.stringify(out));
   } catch (e) {
     res.statusCode = 500;
-    res.setHeader("content-type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({
-      ok: false,
-      where: "api/moon/public-latest.js",
-      error: String(e?.message || e),
-    }));
+    res.setHeader("content-type", "application/json");
+    return res.end(
+      JSON.stringify({
+        ok: false,
+        where: "api/moon/public-latest.js",
+        error: String(e?.message || e),
+      })
+    );
   }
 }
