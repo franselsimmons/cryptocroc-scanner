@@ -23,7 +23,15 @@ async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
     `https://api.bitget.com/api/v2/spot/market/orderbook?` +
     `symbol=${encodeURIComponent(pair)}&type=${encodeURIComponent(type)}&limit=${encodeURIComponent(String(safeLimit))}`;
 
-  const r = await fetch(url, { headers: { accept: "application/json" } });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  let r;
+  try {
+    r = await fetch(url, { headers: { accept: "application/json" }, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+
   const text = await r.text();
 
   let j = null;
@@ -192,7 +200,6 @@ function validateSamples(mode, samplesFresh) {
   const stableOk = stab.ok;
 
   const last = lastN[lastN.length - 1];
-  // Gebruik de neutralere thresholds van MOON.obSampler
   const spreadOk = Number(last.spreadPct || 999) <= Number(MOON?.obSampler?.spreadMaxPct ?? 0.95);
   const lorOk = Number(last.lor || 1) <= Number(MOON?.obSampler?.largestOrderRatioMax ?? 0.65);
 
@@ -217,8 +224,15 @@ function validateSamples(mode, samplesFresh) {
   };
 }
 
+// 🔧 Verbeterde error handling: symbol blijft behouden bij uitzonderingen
 async function processCandidate(mode, symbol) {
-  const live = await fetchBitgetOrderbookRaw(symbol, 100);
+  let live;
+  try {
+    live = await fetchBitgetOrderbookRaw(symbol, 100);
+  } catch (e) {
+    return { ok: false, symbol, reason: String(e?.message || e || "orderbook failed") };
+  }
+
   if (!live.ok) return { ok: false, symbol, reason: live.msg || "orderbook failed" };
 
   const sample = computeObSample(live.depth);
@@ -229,34 +243,41 @@ async function processCandidate(mode, symbol) {
   const merged = Array.isArray(prev) ? prev.concat([sample]) : [sample];
 
   const pruned = pruneSamples(merged);
-  await kv.set(kS, pruned);
+
+  // 🔧 TTL toegevoegd voor samples
+  await kv.set(kS, pruned, { ex: 60 * 60 * 3 });
 
   const v = validateSamples(mode, pruned);
 
-  await kv.set(keyMoonObResult(mode, symbol), {
-    symbol,
-    side: mode,
-    valid: v.valid,
-    reason: v.reason,
-    avgScore: v.avgScore ?? null,
-    agree: v.agree ?? null,
-    slope: v.slope ?? 0,
-    stable: !!v.stable,
-    stabilityStd: v.stabilityStd ?? null,
-    windowN: v.windowN ?? null,
-    sampledAt: sample.ts,
-    ob: {
-      ts: sample.ts,
-      mid: sample.mid,
-      spreadPct: sample.spreadPct,
-      bidUsd: sample.bidUsd,
-      askUsd: sample.askUsd,
-      score: sample.score,
-      lor: sample.lor,
-      depthMinUsd1p: sample.depthMinUsd1p,
+  // 🔧 TTL toegevoegd voor result
+  await kv.set(
+    keyMoonObResult(mode, symbol),
+    {
+      symbol,
+      side: mode,
+      valid: v.valid,
+      reason: v.reason,
+      avgScore: v.avgScore ?? null,
+      agree: v.agree ?? null,
+      slope: v.slope ?? 0,
+      stable: !!v.stable,
+      stabilityStd: v.stabilityStd ?? null,
+      windowN: v.windowN ?? null,
+      sampledAt: sample.ts,
+      ob: {
+        ts: sample.ts,
+        mid: sample.mid,
+        spreadPct: sample.spreadPct,
+        bidUsd: sample.bidUsd,
+        askUsd: sample.askUsd,
+        score: sample.score,
+        lor: sample.lor,
+        depthMinUsd1p: sample.depthMinUsd1p,
+      },
+      stale: false,
     },
-    stale: false,
-  });
+    { ex: 60 * 60 * 2 }
+  );
 
   return { ok: true, symbol, valid: v.valid, reason: v.reason };
 }
@@ -268,7 +289,7 @@ async function runBatched(list, batchSize, fn) {
     const results = await Promise.allSettled(chunk.map(fn));
     for (const r of results) {
       if (r.status === "fulfilled") out.push(r.value);
-      else out.push({ ok: false, reason: String(r.reason || "rejected") });
+      else out.push({ ok: false, symbol: "unknown", reason: String(r.reason || "rejected") });
     }
   }
   return out;
@@ -328,6 +349,8 @@ export default async function handler(req, res) {
           if (r.valid) totalValid++;
         } else if (r?.symbol) {
           sampleErrors.push({ symbol: r.symbol, reason: r.reason || "unknown" });
+        } else {
+          sampleErrors.push({ symbol: "unknown", reason: r?.reason || "unexpected error" });
         }
       }
     }
