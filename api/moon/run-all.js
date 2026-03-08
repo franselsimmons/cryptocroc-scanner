@@ -37,7 +37,11 @@ export default async function handler(req, res) {
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: true, cron: true, result }));
+    res.end(JSON.stringify({
+      ok: true,
+      cron: true,
+      result,
+    }));
   } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
