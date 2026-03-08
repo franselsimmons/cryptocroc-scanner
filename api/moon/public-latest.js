@@ -34,12 +34,16 @@ export default async function handler(req, res) {
       positions: positions || null,
     };
 
-    res.status(200).json(out);
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify(out));
   } catch (e) {
-    res.status(500).json({
+    res.statusCode = 500;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({
       ok: false,
       where: "api/moon/public-latest.js",
       error: String(e?.message || e),
-    });
+    }));
   }
 }
