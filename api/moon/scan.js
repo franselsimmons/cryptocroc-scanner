@@ -3,40 +3,31 @@ import {
   RUNTIME_CONFIG,
   requireSecret,
   MOON,
-
   keyMoonLatest,
   keyMoonState,
   keyMoonReset,
   keyMoonObResult,
-
   keyMoonPositions,
   keyMoonPortfolio,
-
   fetchBTCGateCached,
   fetchCoinGeckoTopCached,
   getBitgetSpotUsdtSymbols,
-
   passRadarMoon,
   passBuildupMoon,
   passAlmostMoon,
   passEliteMoon,
-
   updatePriceHist,
   updateVolHist,
   volAccFromHist,
   priceFlatPct,
-
   computeConfidence,
   depthFloorUsd,
   computeMoonRisk,
   getTierForMcap,
-
   isModeAllowedByBtc,
   calcPnlPct,
   hitStopOrTp,
-
   saveMoonDiag,
-
   sendDiscord,
   webhookForMoonStage,
   webhookMoonPortfolio,
@@ -44,6 +35,9 @@ import {
   fmtTs,
   durMinutes,
   fmtModeLabel,
+  tryAcquireMoonScanLock,
+  setMoonCooldown,
+  hasMoonCooldown,
 } from "../../lib/_moon_core.js";
 
 import {
@@ -277,6 +271,37 @@ async function updateMoonTradeMfeMae({ mode, symbol, priceNow }) {
   await writeTrades("moon", trades);
 }
 
+// 🔧 Helper: sluit mirror trades waarvan het symbool niet meer in live universe zit
+async function pruneMoonTradeMirrorToLiveUniverse(mode, liveSyms) {
+  const trades = await readTrades("moon");
+  let changed = false;
+
+  for (const t of trades) {
+    if (
+      String(t?.status) === "OPEN" &&
+      String(t?.mode) === String(mode) &&
+      !liveSyms.has(String(t?.symbol || "").toUpperCase())
+    ) {
+      t.status = "CLOSED";
+      t.exitAt = Date.now();
+      t.exitPrice = Number(t.lastPrice || t.entryPrice || 0);
+      t.exitReason = "UNIVERSE_DROP";
+      t.pnlPct = +Number(
+        pnlPctFromPrices({
+          mode: t.mode,
+          entryPrice: t.entryPrice,
+          priceNow: t.exitPrice,
+        }) || 0
+      ).toFixed(2);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await writeTrades("moon", trades);
+  }
+}
+
 function computeRegime(btcRange24) {
   if (btcRange24 < 3) return "low";
   if (btcRange24 < 6) return "mid";
@@ -331,12 +356,28 @@ function computeMoonConsistency(mode, snapshots, priceHist) {
 }
 
 export default async function handler(req, res) {
+  // 🔧 Lock variabele buiten try voor finally
+  let lock = null;
+
   try {
     if (!requireSecret(req, res)) return;
 
     const modeRaw = String(req.query?.mode || "bull").toLowerCase();
     const mode = modeRaw === "bear" ? "bear" : "bull";
     const now = Date.now();
+
+    // 🔧 Scan lock – voorkom dubbele runs
+    lock = await tryAcquireMoonScanLock(mode, 90);
+    if (!lock.ok) {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      return res.end(JSON.stringify({
+        ok: true,
+        skipped: true,
+        mode,
+        reason: "Moon scan already running",
+      }));
+    }
 
     const diag = {
       ts: now,
@@ -415,6 +456,9 @@ export default async function handler(req, res) {
             reason: "BTC_GATE_FLIP",
           });
 
+          // 🔧 Cooldown na forced close
+          await setMoonCooldown(t.mode, t.symbol, 120);
+
           const hook = webhookMoonPortfolio() || webhookForMoonStage("ELITE");
           if (hook) {
             const mins = durMinutes(closedTrade.entryAt, closedTrade.exitAt);
@@ -442,8 +486,8 @@ export default async function handler(req, res) {
     if (!allowed) {
       const portfolio = calcPortfolioFromPositions(mode, positions);
 
-      await kv.set(keyMoonPortfolio(mode), portfolio);
-      await kv.set(keyMoonPositions(mode), positions);
+      await kv.set(keyMoonPortfolio(mode), portfolio, { ex: 60 * 60 * 24 * 30 });
+      await kv.set(keyMoonPositions(mode), positions, { ex: 60 * 60 * 24 * 30 });
 
       const result = {
         ok: true,
@@ -456,7 +500,7 @@ export default async function handler(req, res) {
         note: "Blocked: BTC is opposite side for this mode.",
       };
 
-      await kv.set(keyMoonLatest(mode), result);
+      await kv.set(keyMoonLatest(mode), result, { ex: 60 * 60 * 2 });
 
       diag.counts = result.counts;
       await saveMoonDiag(mode, diag);
@@ -486,9 +530,17 @@ export default async function handler(req, res) {
     diag.universe.afterRadar = radarFiltered.length;
 
     const liveSyms = new Set(radarFiltered.map((c) => c.symbol));
+
+    // 🔧 Verwijder niet-live symbols uit state
     for (const sym of Object.keys(state)) {
       if (!liveSyms.has(sym)) delete state[sym];
     }
+
+    // 🔧 Filter open positions op live universe
+    positions.open = positions.open.filter((t) => liveSyms.has(String(t.symbol || "").toUpperCase()));
+
+    // 🔧 Sync mirror trades met live universe
+    await pruneMoonTradeMirrorToLiveUniverse(mode, liveSyms);
 
     const radar = [];
     const buildup = [];
@@ -500,6 +552,11 @@ export default async function handler(req, res) {
 
     for (const c of radarFiltered) {
       const sym = c.symbol;
+
+      // 🔧 Cooldown check
+      const inCooldown = await hasMoonCooldown(mode, sym);
+      if (inCooldown) inc(diag.reasons.eliteExtraFail, "Cooldown active");
+
       const tier = getTierForMcap(c.marketCap);
 
       const prev = state[sym] || {
@@ -613,7 +670,6 @@ export default async function handler(req, res) {
       else if (buildupGate.ok) stage = "BUILDUP";
 
       const prevStage = String(prev.stage || "RADAR");
-      const stageChanged = prevStage !== stage;
 
       const risk = computeMoonRisk({
         mode,
@@ -624,33 +680,11 @@ export default async function handler(req, res) {
         tier,
       });
 
-      if (stageChanged) {
-        await pushEvent("moon", {
-          ts: now,
-          funnel: "moon",
-          mode,
-          symbol: sym,
-          type: "STAGE",
-          from: prevStage,
-          to: stage,
-          metrics: {
-            vm: c.vm,
-            volAcc,
-            confidence,
-            spreadPct: obView?.spreadPct ?? null,
-            depthUsd,
-            depthFloorUsd: floorUsd,
-            rolling,
-            tier: tier.name,
-            consistency,
-          },
-        });
-      }
-
       let trade = findOpen(sym) || null;
 
       let openedNow = false;
-      if (!trade && stage === "ELITE" && canOpenNew() && risk?.sl && risk?.tp3) {
+      // 🔧 Alleen openen als niet in cooldown
+      if (!trade && !inCooldown && stage === "ELITE" && canOpenNew() && risk?.sl && risk?.tp3) {
         const posUsd = MOON.portfolio.posUsd;
         const qty = posUsd / Number(c.price || 1);
 
@@ -698,13 +732,45 @@ export default async function handler(req, res) {
           positions.closed.push(trade);
 
           closedNow = { ...trade };
-          trade = { ...trade };
 
           await closeMoonTradeMirror({ mode, symbol: sym, priceNow: c.price, reason: hit.kind });
+
+          // 🔧 Cooldown na TP/SL
+          await setMoonCooldown(mode, sym, 90);
+
+          // 🔧 Na sluiting niet meer in elite/almost plaatsen
+          trade = null;
+          stage = "RADAR";
         } else {
           trade.pnlPct = +pnlPct.toFixed(2);
           trade.pnlUsd = +pnlUsd.toFixed(2);
         }
+      }
+
+      // 🔧 Stage change detection na trade-close logica
+      const stageChanged = prevStage !== stage;
+
+      if (stageChanged) {
+        await pushEvent("moon", {
+          ts: now,
+          funnel: "moon",
+          mode,
+          symbol: sym,
+          type: "STAGE",
+          from: prevStage,
+          to: stage,
+          metrics: {
+            vm: c.vm,
+            volAcc,
+            confidence,
+            spreadPct: obView?.spreadPct ?? null,
+            depthUsd,
+            depthFloorUsd: floorUsd,
+            rolling,
+            tier: tier.name,
+            consistency,
+          },
+        });
       }
 
       const item = {
@@ -752,6 +818,7 @@ export default async function handler(req, res) {
           almost: almostGate.why,
           elite: eliteGate.why,
           eliteExtra: eliteExtra ? "ROLLING ok" : "ROLLING fail",
+          cooldown: inCooldown ? "Cooldown active" : "No cooldown",
         },
         tier: tier.name,
       };
@@ -874,10 +941,11 @@ export default async function handler(req, res) {
       note: btc.state === "NEUTRAL" ? "BTC gate SOFT-OPEN: NEUTRAL allowed." : undefined,
     };
 
-    await kv.set(keyMoonLatest(mode), result);
-    await kv.set(keyMoonState(mode), state);
-    await kv.set(keyMoonPositions(mode), positions);
-    await kv.set(keyMoonPortfolio(mode), portfolio);
+    // 🔧 TTL's toegevoegd
+    await kv.set(keyMoonLatest(mode), result, { ex: 60 * 60 * 2 });
+    await kv.set(keyMoonState(mode), state, { ex: 60 * 60 * 24 * 7 });
+    await kv.set(keyMoonPositions(mode), positions, { ex: 60 * 60 * 24 * 30 });
+    await kv.set(keyMoonPortfolio(mode), portfolio, { ex: 60 * 60 * 24 * 30 });
 
     await saveMoonDiag(mode, diag);
 
@@ -888,5 +956,10 @@ export default async function handler(req, res) {
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+  } finally {
+    // 🔧 Lock expliciet verwijderen
+    try {
+      if (lock?.key) await kv.del(lock.key);
+    } catch {}
   }
 }
