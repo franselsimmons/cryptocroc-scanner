@@ -4,19 +4,17 @@ export default function MoonshotsPage() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [mode, setMode] = useState('bull'); // 'bull' of 'bear'
+  const [mode, setMode] = useState('build'); // 'build' of 'bear'
 
   async function fetchMoonData() {
     setLoading(true);
     setError(null);
     try {
-      // Geen token in URL, gewoon publieke endpoint
       const url = `/api/moon/public-latest?mode=${mode}`;
       const res = await fetch(url, {
         method: 'GET',
         headers: { accept: 'application/json' },
       });
-
       const text = await res.text();
       let json;
       try {
@@ -24,11 +22,9 @@ export default function MoonshotsPage() {
       } catch {
         throw new Error(`Ongeldige JSON: ${text.slice(0, 200)}`);
       }
-
-      if (!res.ok || json?.ok === false) {
+      if (!res.ok || !json?.ok) {
         throw new Error(json?.error || `HTTP ${res.status}`);
       }
-
       setData(json);
     } catch (err) {
       setError(err.message);
@@ -49,47 +45,46 @@ export default function MoonshotsPage() {
 
   return (
     <div>
-      <h1>Moonshots {mode === 'bull' ? 'LONG' : 'SHORT'}</h1>
+      <h1>Moonshots {mode === 'build' ? 'LONG' : 'SHORT'}</h1>
+
       <div>
-        <button onClick={() => setMode('bull')}>LONG</button>
+        <button onClick={() => setMode('build')}>LONG</button>
         <button onClick={() => setMode('bear')}>SHORT</button>
       </div>
-      <p>BTC: {btc?.state} | 24h: {btc?.chg24}%</p>
+
+      <div>
+        BTC: {btc?.state} | 24h: {btc?.chg24}%
+      </div>
+
       {portfolio && (
-        <p>Portfolio: open {portfolio.openCount}, closed {portfolio.closedCount}, PnL {portfolio.realizedUsd} USD</p>
+        <div>
+          Portfolio: open {portfolio.openCount}, closed {portfolio.closedCount}, PnL {portfolio.realizedUsd} USD
+        </div>
       )}
 
       {funnel && (
         <>
           <h2>ELITE</h2>
-          <ul>
-            {funnel.elite.map(coin => (
-              <li key={coin.symbol}>
-                {coin.symbol} – conf: {coin.confidence} – price: {coin.price}
-              </li>
-            ))}
-          </ul>
+          {funnel.elite.map(coin => (
+            <div key={coin.symbol}>
+              {coin.symbol} - conf: {coin.confidence} - price: {coin.price}
+            </div>
+          ))}
 
           <h2>ALMOST</h2>
-          <ul>
-            {funnel.almost.map(coin => (
-              <li key={coin.symbol}>{coin.symbol}</li>
-            ))}
-          </ul>
+          {funnel.almost.map(coin => (
+            <div key={coin.symbol}>{coin.symbol}</div>
+          ))}
 
           <h2>BUILDUP</h2>
-          <ul>
-            {funnel.buildup.map(coin => (
-              <li key={coin.symbol}>{coin.symbol}</li>
-            ))}
-          </ul>
+          {funnel.buildup.map(coin => (
+            <div key={coin.symbol}>{coin.symbol}</div>
+          ))}
 
           <h2>RADAR</h2>
-          <ul>
-            {funnel.radar.map(coin => (
-              <li key={coin.symbol}>{coin.symbol}</li>
-            ))}
-          </ul>
+          {funnel.radar.map(coin => (
+            <div key={coin.symbol}>{coin.symbol}</div>
+          ))}
         </>
       )}
     </div>
