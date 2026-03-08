@@ -14,7 +14,7 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
     }
 
-    // FIX: Bouw base URL correct
+    // Bouw base URL correct
     let base = process.env.BASE_URL;
     if (!base) {
       const host = req.headers.host;
