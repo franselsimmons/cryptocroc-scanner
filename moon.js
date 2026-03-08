@@ -19,6 +19,8 @@
     btnScan: document.getElementById("btnScan"),
   };
 
+  const STORAGE_SCAN_TOKEN = "moon_scan_token";
+
   function fmtNum(v, digits = 2) {
     const n = Number(v);
     return Number.isFinite(n) ? n.toFixed(digits) : "n/a";
@@ -57,7 +59,7 @@
       const extra = [
         `price ${fmtPrice(coin?.price)} | conf ${fmtNum(coin?.confidence, 0)} | vm ${fmtNum(coin?.vm, 3)} | 24h ${fmtNum(coin?.change24, 2)}%`,
         `OB score ${fmtNum(ob?.score, 4)} | spread ${fmtNum(ob?.spreadPct, 3)}% | depth ${fmtNum(coin?.depthUsd, 0)} / floor ${fmtNum(coin?.floorUsd, 0)}`,
-        `${tradeLine}`,
+        tradeLine,
         `why: ${why?.elite || why?.almost || why?.buildup || "n/a"} | ${why?.eliteExtra || why?.cooldown || ""}`.trim(),
       ].join("\n");
 
@@ -142,11 +144,28 @@
     }
   }
 
+  function askScanToken() {
+    const existing = sessionStorage.getItem(STORAGE_SCAN_TOKEN) || "";
+    const token = window.prompt(
+      "Voer de actuele CRON_SECRET in om handmatig een scan te starten:",
+      existing
+    );
+
+    if (!token) return null;
+
+    const clean = token.trim();
+    if (!clean) return null;
+
+    sessionStorage.setItem(STORAGE_SCAN_TOKEN, clean);
+    return clean;
+  }
+
   async function runScanNow() {
-    const token = window.prompt("Geen token in de frontend. Vul CRON_SECRET handmatig in voor een scan:");
+    const token = askScanToken();
     if (!token) return;
 
     el.statusText.textContent = "Status: scan gestart...";
+    el.statusText.classList.remove("err");
 
     try {
       const res = await fetch(`/api/moon/run-all?token=${encodeURIComponent(token)}`, {
@@ -155,11 +174,17 @@
       });
 
       const text = await res.text();
+
       let json;
       try {
         json = JSON.parse(text);
       } catch {
-        throw new Error(text.slice(0, 200));
+        throw new Error(`Ongeldige JSON van scan-endpoint: ${text.slice(0, 200)}`);
+      }
+
+      if (res.status === 401) {
+        sessionStorage.removeItem(STORAGE_SCAN_TOKEN);
+        throw new Error("Unauthorized — gebruik de nieuwe CRON_SECRET uit Vercel.");
       }
 
       if (!res.ok || json?.ok === false) {
