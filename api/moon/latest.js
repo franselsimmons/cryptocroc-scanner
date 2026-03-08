@@ -1,11 +1,13 @@
 import { kv } from "@vercel/kv";
 import {
+  RUNTIME_CONFIG,
+  requireSecret,
   keyMoonLatest,
   keyMoonPortfolio,
   keyMoonPositions,
 } from "../../lib/_moon_core.js";
 
-export const config = { runtime: "nodejs" };
+export const config = RUNTIME_CONFIG;
 
 function safeBase(mode) {
   return {
@@ -15,12 +17,14 @@ function safeBase(mode) {
     btc: null,
     counts: { radar: 0, buildup: 0, almost: 0, elite: 0 },
     funnel: { radar: [], buildup: [], almost: [], elite: [] },
-    note: "No data yet. Run scan first.",
+    note: "No data yet. Run /api/moon/scan?mode=bull (or bear) first.",
   };
 }
 
 export default async function handler(req, res) {
   try {
+    if (!requireSecret(req, res)) return;
+
     const modeRaw = String(req.query?.mode || "bull").toLowerCase();
     const mode = modeRaw === "bear" ? "bear" : "bull";
 
@@ -42,7 +46,7 @@ export default async function handler(req, res) {
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.end(JSON.stringify({
       ok: false,
-      where: "api/moon/public-latest.js",
+      where: "api/moon/latest.js",
       error: String(e?.message || e),
     }));
   }
