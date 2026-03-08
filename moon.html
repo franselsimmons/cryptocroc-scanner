@@ -1,100 +1,97 @@
-<!doctype html>
-<html lang="nl">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>CryptoCroc Moonshots</title>
-  <link rel="stylesheet" href="/styles.css" />
-  <style>
-    /* MOON accent */
-    :root{ --accent:#A855F7; }
-  </style>
-</head>
-<body>
-  <header class="topbar">
-    <div class="left">
-      <div class="brand">🌙 Moonshots</div>
-      <div class="sub" id="statusLine">Status: laden…</div>
-      <div class="sub">Vroege explosies / proactief (meer setups, meer ruis).</div>
-    </div>
+import { useState, useEffect } from 'react';
 
-    <div class="right">
-      <button id="modeBull" class="btn">BULL</button>
-      <button id="modeBear" class="btn">BEAR</button>
-      <button id="btnRefresh" class="btn">Refresh</button>
-      <button id="btnScan" class="btn danger">Scan nu</button>
-      <a class="btn" href="/">⬅ Main</a>
-    </div>
-  </header>
+export default function MoonshotsPage() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [mode, setMode] = useState('bull'); // 'bull' of 'bear'
 
-  <main class="grid">
-    <section class="panel">
-      <div class="panelTitle">ELITE</div>
-      <div class="panelHint">Meest betrouwbaar (OB + depth + confidence + consistency + rolling).</div>
-      <div class="stageBody" id="stageElite"></div>
-    </section>
+  async function fetchMoonData() {
+    setLoading(true);
+    setError(null);
+    try {
+      // Geen token in URL, gewoon publieke endpoint
+      const url = `/api/moon/public-latest?mode=${mode}`;
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+      });
 
-    <section class="panel">
-      <div class="panelTitle">ALMOST</div>
-      <div class="panelHint">Sterk, bijna klaar.</div>
-      <div class="stageBody" id="stageAlmost"></div>
-    </section>
+      const text = await res.text();
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error(`Ongeldige JSON: ${text.slice(0, 200)}`);
+      }
 
-    <section class="panel">
-      <div class="panelTitle">BUILDUP</div>
-      <div class="panelHint">In opbouw / in beeld.</div>
-      <div class="stageBody" id="stageBuildup"></div>
-    </section>
+      if (!res.ok || json?.ok === false) {
+        throw new Error(json?.error || `HTTP ${res.status}`);
+      }
 
-    <section class="panel">
-      <div class="panelTitle">RADAR</div>
-      <div class="panelHint">Alles wat binnenkomt.</div>
-      <div class="stageBody" id="stageRadar"></div>
-    </section>
-  </main>
+      setData(json);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
 
-  <!-- MODAL (zelfde voor Main + Moon) -->
-  <div class="modal hidden" id="modal">
-    <div class="modalCard">
-      <div class="modalTop">
-        <div>
-          <div class="modalTitle" id="mTitle">—</div>
-          <div class="modalSub" id="mSub">—</div>
-        </div>
-        <button class="btn" id="mClose">Sluiten</button>
+  useEffect(() => {
+    fetchMoonData();
+  }, [mode]);
+
+  if (loading) return <div>Laden...</div>;
+  if (error) return <div>Fout: {error}</div>;
+  if (!data) return <div>Geen data</div>;
+
+  const { funnel, btc, portfolio } = data;
+
+  return (
+    <div>
+      <h1>Moonshots {mode === 'bull' ? 'LONG' : 'SHORT'}</h1>
+      <div>
+        <button onClick={() => setMode('bull')}>LONG</button>
+        <button onClick={() => setMode('bear')}>SHORT</button>
       </div>
+      <p>BTC: {btc?.state} | 24h: {btc?.chg24}%</p>
+      {portfolio && (
+        <p>Portfolio: open {portfolio.openCount}, closed {portfolio.closedCount}, PnL {portfolio.realizedUsd} USD</p>
+      )}
 
-      <div class="modalTabs">
-        <button class="tabBtn active" id="tabWhy">Waarom</button>
-        <button class="tabBtn" id="tabLiq">Liquidity</button>
-        <button class="tabBtn" id="tabRisk">Risk</button>
-        <button class="tabBtn" id="tabDebug">Debug</button>
-      </div>
+      {funnel && (
+        <>
+          <h2>ELITE</h2>
+          <ul>
+            {funnel.elite.map(coin => (
+              <li key={coin.symbol}>
+                {coin.symbol} – conf: {coin.confidence} – price: {coin.price}
+              </li>
+            ))}
+          </ul>
 
-      <div class="modalBody">
-        <div class="modalBox" id="boxWhy">
-          <div class="modalBoxTitle">Waarom staat hij hier</div>
-          <div class="checkList" id="mWhyList"></div>
-        </div>
+          <h2>ALMOST</h2>
+          <ul>
+            {funnel.almost.map(coin => (
+              <li key={coin.symbol}>{coin.symbol}</li>
+            ))}
+          </ul>
 
-        <div class="modalBox hidden" id="boxLiq">
-          <div class="modalBoxTitle">Liquidity (Orderbook + Depth)</div>
-          <div class="checkList" id="mLiqList"></div>
-        </div>
+          <h2>BUILDUP</h2>
+          <ul>
+            {funnel.buildup.map(coin => (
+              <li key={coin.symbol}>{coin.symbol}</li>
+            ))}
+          </ul>
 
-        <div class="modalBox hidden" id="boxRisk">
-          <div class="modalBoxTitle">Risk</div>
-          <div class="kv" id="mRiskKv"></div>
-        </div>
-
-        <div class="modalBox hidden" id="boxDebug">
-          <div class="modalBoxTitle">Debug (coin object)</div>
-          <pre class="modalPre" id="mDebug">—</pre>
-        </div>
-      </div>
+          <h2>RADAR</h2>
+          <ul>
+            {funnel.radar.map(coin => (
+              <li key={coin.symbol}>{coin.symbol}</li>
+            ))}
+          </ul>
+        </>
+      )}
     </div>
-  </div>
-
-  <script src="/moon.js"></script>
-</body>
-</html>
+  );
+}
