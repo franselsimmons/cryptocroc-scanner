@@ -1,5 +1,5 @@
 import { kv } from "@vercel/kv";
-import { RUNTIME_CONFIG, requireSecret, keyMoonReset } from "../lib/_moon_core.js";
+import { RUNTIME_CONFIG, requireSecret, keyMoonReset } from "../../lib/_moon_core.js"; // FIX: pad gecorrigeerd
 
 export const config = RUNTIME_CONFIG;
 
