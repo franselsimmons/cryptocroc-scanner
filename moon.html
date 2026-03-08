@@ -1,92 +1,27 @@
-import { useState, useEffect } from 'react';
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moonshots</title>
+    <link rel="stylesheet" href="moon.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Moonshots <span id="mode-label">LONG</span></h1>
 
-export default function MoonshotsPage() {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [mode, setMode] = useState('build'); // 'build' of 'bear'
-
-  async function fetchMoonData() {
-    setLoading(true);
-    setError(null);
-    try {
-      const url = `/api/moon/public-latest?mode=${mode}`;
-      const res = await fetch(url, {
-        method: 'GET',
-        headers: { accept: 'application/json' },
-      });
-      const text = await res.text();
-      let json;
-      try {
-        json = JSON.parse(text);
-      } catch {
-        throw new Error(`Ongeldige JSON: ${text.slice(0, 200)}`);
-      }
-      if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || `HTTP ${res.status}`);
-      }
-      setData(json);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    fetchMoonData();
-  }, [mode]);
-
-  if (loading) return <div>Laden...</div>;
-  if (error) return <div>Fout: {error}</div>;
-  if (!data) return <div>Geen data</div>;
-
-  const { funnel, btc, portfolio } = data;
-
-  return (
-    <div>
-      <h1>Moonshots {mode === 'build' ? 'LONG' : 'SHORT'}</h1>
-
-      <div>
-        <button onClick={() => setMode('build')}>LONG</button>
-        <button onClick={() => setMode('bear')}>SHORT</button>
-      </div>
-
-      <div>
-        BTC: {btc?.state} | 24h: {btc?.chg24}%
-      </div>
-
-      {portfolio && (
-        <div>
-          Portfolio: open {portfolio.openCount}, closed {portfolio.closedCount}, PnL {portfolio.realizedUsd} USD
+        <div class="mode-buttons">
+            <button id="mode-bull">LONG</button>
+            <button id="mode-bear">SHORT</button>
         </div>
-      )}
 
-      {funnel && (
-        <>
-          <h2>ELITE</h2>
-          {funnel.elite.map(coin => (
-            <div key={coin.symbol}>
-              {coin.symbol} - conf: {coin.confidence} - price: {coin.price}
-            </div>
-          ))}
+        <div id="btc-info" class="btc-info"></div>
+        <div id="portfolio-info" class="portfolio-info"></div>
+        <div id="error" class="error"></div>
 
-          <h2>ALMOST</h2>
-          {funnel.almost.map(coin => (
-            <div key={coin.symbol}>{coin.symbol}</div>
-          ))}
-
-          <h2>BUILDUP</h2>
-          {funnel.buildup.map(coin => (
-            <div key={coin.symbol}>{coin.symbol}</div>
-          ))}
-
-          <h2>RADAR</h2>
-          {funnel.radar.map(coin => (
-            <div key={coin.symbol}>{coin.symbol}</div>
-          ))}
-        </>
-      )}
+        <div id="funnel-container" class="funnel"></div>
     </div>
-  );
-}
+
+    <script src="moon.js"></script>
+</body>
+</html>
