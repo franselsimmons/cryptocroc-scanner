@@ -1,13 +1,11 @@
 import { kv } from "@vercel/kv";
 import {
-  RUNTIME_CONFIG,
-  requireSecret,
   keyMoonLatest,
   keyMoonPortfolio,
   keyMoonPositions,
 } from "../../lib/_moon_core.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = { runtime: "nodejs" };
 
 function safeBase(mode) {
   return {
@@ -17,14 +15,12 @@ function safeBase(mode) {
     btc: null,
     counts: { radar: 0, buildup: 0, almost: 0, elite: 0 },
     funnel: { radar: [], buildup: [], almost: [], elite: [] },
-    note: "No data yet. Run /api/moon/scan?mode=bull (or bear) first.",
+    note: "No data yet. Run scan first.",
   };
 }
 
 export default async function handler(req, res) {
   try {
-    if (!requireSecret(req, res)) return;
-
     const modeRaw = String(req.query?.mode || "bull").toLowerCase();
     const mode = modeRaw === "bear" ? "bear" : "bull";
 
@@ -38,12 +34,16 @@ export default async function handler(req, res) {
       positions: positions || null,
     };
 
-    res.status(200).json(out);
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify(out));
   } catch (e) {
-    res.status(500).json({
+    res.statusCode = 500;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({
       ok: false,
-      where: "api/moon/latest.js",
+      where: "api/moon/public-latest.js",
       error: String(e?.message || e),
-    });
+    }));
   }
 }
