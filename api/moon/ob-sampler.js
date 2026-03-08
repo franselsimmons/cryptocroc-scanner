@@ -10,7 +10,6 @@ import {
 
 export const config = RUNTIME_CONFIG;
 
-// ================== BITGET V2 ORDERBOOK (SPOT) ==================
 async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
   const base = String(baseSymbol || "").toUpperCase();
   if (!base) return { ok: false, status: 400, msg: "Missing symbol" };
@@ -25,9 +24,13 @@ async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 8000);
+
   let r;
   try {
-    r = await fetch(url, { headers: { accept: "application/json" }, signal: ctrl.signal });
+    r = await fetch(url, {
+      headers: { accept: "application/json" },
+      signal: ctrl.signal,
+    });
   } finally {
     clearTimeout(timer);
   }
@@ -35,18 +38,39 @@ async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
   const text = await r.text();
 
   let j = null;
-  try { j = JSON.parse(text); } catch {}
+  try {
+    j = JSON.parse(text);
+  } catch {}
 
   if (!r.ok) {
-    return { ok: false, status: r.status, msg: j?.msg || "Bitget orderbook failed", url, preview: text.slice(0, 200) };
+    return {
+      ok: false,
+      status: r.status,
+      msg: j?.msg || "Bitget orderbook failed",
+      url,
+      preview: text.slice(0, 200),
+    };
   }
+
   if (String(j?.code || "") !== "00000") {
-    return { ok: false, status: 400, msg: j?.msg || "Bitget returned non-success code", url, preview: text.slice(0, 200) };
+    return {
+      ok: false,
+      status: 400,
+      msg: j?.msg || "Bitget returned non-success code",
+      url,
+      preview: text.slice(0, 200),
+    };
   }
 
   const depth = j?.data;
   if (!depth?.bids?.length || !depth?.asks?.length) {
-    return { ok: false, status: 200, msg: "Empty orderbook", url, preview: text.slice(0, 200) };
+    return {
+      ok: false,
+      status: 200,
+      msg: "Empty orderbook",
+      url,
+      preview: text.slice(0, 200),
+    };
   }
 
   return { ok: true, url, depth };
@@ -69,6 +93,7 @@ function sumDepth(levels, mid, pct, isBid) {
     total += usd;
     if (usd > biggest) biggest = usd;
   }
+
   return { total, biggest };
 }
 
@@ -84,13 +109,12 @@ function computeObSample(depth) {
   const mid = (bid + ask) / 2;
   const spreadPct = ((ask - bid) / mid) * 100;
 
-  const pct = 0.002; // 0.2%
+  const pct = 0.002;
   const bidRes = sumDepth(bids, mid, pct, true);
   const askRes = sumDepth(asks, mid, pct, false);
 
   const bidUsd = bidRes.total;
   const askUsd = askRes.total;
-
   const denom = bidUsd + askUsd;
   const score = denom > 0 ? (bidUsd - askUsd) / denom : 0;
 
@@ -101,7 +125,16 @@ function computeObSample(depth) {
   const ask1 = sumDepth(asks, mid, 0.01, false);
   const depthMinUsd1p = Math.min(bid1.total, ask1.total);
 
-  return { ts: Date.now(), score, spreadPct, lor, bidUsd, askUsd, mid, depthMinUsd1p };
+  return {
+    ts: Date.now(),
+    score,
+    spreadPct,
+    lor,
+    bidUsd,
+    askUsd,
+    mid,
+    depthMinUsd1p,
+  };
 }
 
 function directionOk(mode, score) {
@@ -143,8 +176,8 @@ function calcStability(lastN) {
   if (!Array.isArray(lastN) || lastN.length < 2) return { std: 0, ok: true };
   const scores = lastN.map((s) => Number(s.score || 0));
   const mean = scores.reduce((a, x) => a + x, 0) / scores.length;
-  const varr = scores.reduce((a, x) => a + (x - mean) * (x - mean), 0) / scores.length;
-  const std = Math.sqrt(varr);
+  const variance = scores.reduce((a, x) => a + (x - mean) * (x - mean), 0) / scores.length;
+  const std = Math.sqrt(variance);
   const ok = std <= 0.12;
   return { std, ok };
 }
@@ -168,12 +201,13 @@ function validateSamples(mode, samplesFresh) {
   }
 
   const lastN = freshAll.slice(-need);
-
   const agree = lastN.filter((s) => directionOk(mode, s.score)).length;
+
   if (agree < Number(MOON?.elite?.minAgree || 1)) {
     const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
     const slope = calcSlope(lastN);
     const stab = calcStability(lastN);
+
     return {
       valid: false,
       reason: "Direction not consistent",
@@ -188,8 +222,8 @@ function validateSamples(mode, samplesFresh) {
   }
 
   const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
-
   const slope = calcSlope(lastN);
+
   let slopeOk = true;
   if (MOON?.elite?.obSlopeEnabled) {
     if (mode === "bull") slopeOk = slope >= Number(MOON?.elite?.obSlopeMinBull ?? 0);
@@ -203,7 +237,13 @@ function validateSamples(mode, samplesFresh) {
   const spreadOk = Number(last.spreadPct || 999) <= Number(MOON?.obSampler?.spreadMaxPct ?? 0.95);
   const lorOk = Number(last.lor || 1) <= Number(MOON?.obSampler?.largestOrderRatioMax ?? 0.65);
 
-  const valid = !!(agree >= (MOON?.elite?.minAgree || 1) && slopeOk && stableOk && spreadOk && lorOk);
+  const valid = !!(
+    agree >= (MOON?.elite?.minAgree || 1) &&
+    slopeOk &&
+    stableOk &&
+    spreadOk &&
+    lorOk
+  );
 
   let reason = "OK";
   if (!slopeOk) reason = "Slope not ok";
@@ -224,7 +264,6 @@ function validateSamples(mode, samplesFresh) {
   };
 }
 
-// 🔧 Verbeterde error handling: symbol blijft behouden bij uitzonderingen
 async function processCandidate(mode, symbol) {
   let live;
   try {
@@ -241,15 +280,12 @@ async function processCandidate(mode, symbol) {
   const kS = keyMoonObSamples(mode, symbol);
   const prev = (await kv.get(kS)) || [];
   const merged = Array.isArray(prev) ? prev.concat([sample]) : [sample];
-
   const pruned = pruneSamples(merged);
 
-  // 🔧 TTL toegevoegd voor samples
   await kv.set(kS, pruned, { ex: 60 * 60 * 3 });
 
   const v = validateSamples(mode, pruned);
 
-  // 🔧 TTL toegevoegd voor result
   await kv.set(
     keyMoonObResult(mode, symbol),
     {
@@ -287,6 +323,7 @@ async function runBatched(list, batchSize, fn) {
   for (let i = 0; i < list.length; i += batchSize) {
     const chunk = list.slice(i, i + batchSize);
     const results = await Promise.allSettled(chunk.map(fn));
+
     for (const r of results) {
       if (r.status === "fulfilled") out.push(r.value);
       else out.push({ ok: false, symbol: "unknown", reason: String(r.reason || "rejected") });
@@ -347,10 +384,11 @@ export default async function handler(req, res) {
         if (r?.ok) {
           totalOk++;
           if (r.valid) totalValid++;
-        } else if (r?.symbol) {
-          sampleErrors.push({ symbol: r.symbol, reason: r.reason || "unknown" });
         } else {
-          sampleErrors.push({ symbol: "unknown", reason: r?.reason || "unexpected error" });
+          sampleErrors.push({
+            symbol: r?.symbol || "unknown",
+            reason: r?.reason || "unknown",
+          });
         }
       }
     }
@@ -363,7 +401,7 @@ export default async function handler(req, res) {
       totalTried,
       totalOk,
       totalValid,
-      note: "MOON OB: consensus + slope + stability + spread + LOR (sampler thresholds: spread ≤ 0.95, lor ≤ 0.65).",
+      note: "MOON OB: consensus + slope + stability + spread + LOR.",
       sampleErrors: sampleErrors.slice(0, 30),
     }));
   } catch (e) {
