@@ -378,7 +378,8 @@ export default async function handler(req, res) {
 
       totalTried += candidates.length;
 
-      const results = await runBatched(candidates, 6, (sym) => processCandidate(mode, sym));
+      // FIX 5: batch size verhoogd van 6 naar 10
+      const results = await runBatched(candidates, 10, (sym) => processCandidate(mode, sym));
 
       for (const r of results) {
         if (r?.ok) {
