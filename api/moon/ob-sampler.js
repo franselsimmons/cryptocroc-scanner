@@ -178,7 +178,7 @@ function calcStability(lastN) {
   const mean = scores.reduce((a, x) => a + x, 0) / scores.length;
   const variance = scores.reduce((a, x) => a + (x - mean) * (x - mean), 0) / scores.length;
   const std = Math.sqrt(variance);
-  const ok = std <= 0.12;
+  const ok = std <= 0.20;
   return { std, ok };
 }
 
@@ -234,8 +234,8 @@ function validateSamples(mode, samplesFresh) {
   const stableOk = stab.ok;
 
   const last = lastN[lastN.length - 1];
-  const spreadOk = Number(last.spreadPct || 999) <= Number(MOON?.obSampler?.spreadMaxPct ?? 0.95);
-  const lorOk = Number(last.lor || 1) <= Number(MOON?.obSampler?.largestOrderRatioMax ?? 0.65);
+  const spreadOk = Number(last.spreadPct || 999) <= Number(MOON?.obSampler?.spreadMaxPct ?? 1.2);
+  const lorOk = Number(last.lor || 1) <= Number(MOON?.obSampler?.largestOrderRatioMax ?? 0.8);
 
   const valid = !!(
     agree >= (MOON?.elite?.minAgree || 1) &&
@@ -364,10 +364,10 @@ export default async function handler(req, res) {
     for (const t of tasks) {
       const mode = t.mode;
 
-      const elite = (t.data?.funnel?.elite || []).slice(0, 12);
-      const almost = (t.data?.funnel?.almost || []).slice(0, 24);
-      const buildup = (t.data?.funnel?.buildup || []).slice(0, 24);
-      const radar = (t.data?.funnel?.radar || []).slice(0, 48);
+      const elite = (t.data?.funnel?.elite || []).slice(0, 10);
+      const almost = (t.data?.funnel?.almost || []).slice(0, 20);
+      const buildup = (t.data?.funnel?.buildup || []).slice(0, 20);
+      const radar = (t.data?.funnel?.radar || []).slice(0, 30);
 
       const candidates = uniqSymbols([
         ...elite.map((x) => x?.symbol),
@@ -378,8 +378,7 @@ export default async function handler(req, res) {
 
       totalTried += candidates.length;
 
-      // FIX 5: batch size verhoogd van 6 naar 10
-      const results = await runBatched(candidates, 10, (sym) => processCandidate(mode, sym));
+      const results = await runBatched(candidates, 6, (sym) => processCandidate(mode, sym));
 
       for (const r of results) {
         if (r?.ok) {
@@ -402,7 +401,7 @@ export default async function handler(req, res) {
       totalTried,
       totalOk,
       totalValid,
-      note: "MOON OB: consensus + slope + stability + spread + LOR.",
+      note: "MOON OB sampler complete.",
       sampleErrors: sampleErrors.slice(0, 30),
     }));
   } catch (e) {
