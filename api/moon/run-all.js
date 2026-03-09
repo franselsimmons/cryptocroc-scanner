@@ -31,7 +31,7 @@ export default async function handler(req, res) {
       base,
       token,
       fetchFn,
-      sleepMs: 2000,
+      sleepMs: 1500,
       maxMs: 25_000,
     });
 
