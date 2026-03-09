@@ -34,7 +34,6 @@ async function sendTelegram(msg) {
   const token = process.env.TELEGRAM_TOKEN;
   const chat = process.env.TELEGRAM_CHAT;
   if (!token || !chat) return;
-
   try {
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
@@ -60,9 +59,7 @@ async function fetchExchangeFlows() {
 async function fetchBinanceUniverse() {
   const r = await fetch("https://api.binance.com/api/v3/ticker/24hr");
   if (!r.ok) throw new Error("Binance universe failed");
-
   const data = await r.json();
-
   return data
     .filter((x) => String(x.symbol).endsWith("USDT"))
     .map((x) => ({
@@ -78,7 +75,6 @@ function sellPressure(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
   if (!bid && !ask) return 0;
-
   const ratio = ask / Math.max(bid, 1);
   if (ratio > 3) return 1;
   if (ratio > 2) return 0.7;
@@ -105,7 +101,6 @@ function liquiditySweep(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
   if (!bid || !ask) return 0;
-
   const imbalance = Math.abs(bid - ask) / Math.max(bid + ask, 1);
   if (imbalance > 0.6) return 1;
   if (imbalance > 0.4) return 0.6;
@@ -116,7 +111,6 @@ function volumeSpikeBinance(coin) {
   const vol = n(coin.binanceVolume);
   const cap = n(coin.marketCap);
   if (!cap) return 0;
-
   const ratio = vol / cap;
   if (ratio > 0.45) return 1;
   if (ratio > 0.30) return 0.7;
@@ -144,7 +138,7 @@ async function fetchCoins() {
     const url =
       `${COINGECKO}?vs_currency=usd&order=volume_desc` +
       `&per_page=${CG_PER_PAGE}&page=${page}` +
-      `&sparkline=false&price_change_percentage=24h`;
+      `&sparkline=false&price_change_percentage=24h,1h`;
 
     let ok = false;
     let lastErr = "";
@@ -185,12 +179,18 @@ async function fetchCoins() {
   }
 
   const map = new Map();
-
   for (const c of cg) {
     const sym = String(c.symbol || "").toUpperCase().trim();
     if (!sym) continue;
 
     const b = binanceMap.get(sym);
+
+    const high = n(c.high_24h);
+    const low = n(c.low_24h);
+    const range24 = high > 0 && low > 0 ? ((high - low) / ((high + low) / 2)) * 100 : 0;
+    const volume = n(c.total_volume);
+    const marketCap = n(c.market_cap);
+    const vm = marketCap > 0 ? volume / marketCap : 0;
 
     map.set(sym, {
       id: c.id,
@@ -198,18 +198,12 @@ async function fetchCoins() {
       name: c.name || "",
       image: c.image || "",
       price: n(c.current_price),
-      marketCap: n(c.market_cap),
-      volume: n(c.total_volume),
+      marketCap,
+      volume,
       change24: n(c.price_change_percentage_24h),
       change1h: n(c.price_change_percentage_1h_in_currency),
-      range24:
-        n(c.high_24h) > 0 && n(c.low_24h) > 0
-          ? ((n(c.high_24h) - n(c.low_24h)) / ((n(c.high_24h) + n(c.low_24h)) / 2)) * 100
-          : 0,
-      vm:
-        n(c.market_cap) > 0
-          ? n(c.total_volume) / n(c.market_cap)
-          : 0,
+      range24,
+      vm,
       binanceVolume: b?.volume || 0,
       binanceMomentum: b?.priceChange || 0,
     });
@@ -221,11 +215,9 @@ async function fetchCoins() {
 function basicFilter(c) {
   const vol = n(c.volume);
   const cap = n(c.marketCap);
-
   if (vol < 200000) return false;
   if (cap < 800000) return false;
   if (cap > 800000000) return false;
-
   return true;
 }
 
@@ -240,7 +232,6 @@ function computeVolumeSpike(coin) {
   const vol = n(coin.volume);
   const cap = n(coin.marketCap);
   if (!cap) return 0;
-
   const vm = vol / cap;
   if (vm > 0.35) return 1;
   if (vm > 0.25) return 0.7;
@@ -250,14 +241,12 @@ function computeVolumeSpike(coin) {
 
 function computeMomentum(coin) {
   const ch = n(coin.change24);
-
   if (ch > 12) return 1;
   if (ch > 8) return 0.7;
   if (ch > 5) return 0.5;
   if (ch < -12) return -1;
   if (ch < -8) return -0.7;
   if (ch < -5) return -0.5;
-
   return 0;
 }
 
@@ -265,15 +254,12 @@ function whalePressure(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
   if (!bid && !ask) return 0;
-
   const total = bid + ask;
   const ratio = (bid - ask) / Math.max(total, 1);
-
   if (ratio > 0.4) return 1;
   if (ratio > 0.2) return 0.6;
   if (ratio < -0.4) return -1;
   if (ratio < -0.2) return -0.6;
-
   return 0;
 }
 
@@ -281,7 +267,6 @@ function volumeExplosion(coin) {
   const vol = n(coin.volume);
   const cap = n(coin.marketCap);
   if (!cap) return 0;
-
   const vm = vol / cap;
   if (vm > 0.40) return 1;
   if (vm > 0.30) return 0.8;
@@ -292,14 +277,12 @@ function volumeExplosion(coin) {
 
 function momentumAcceleration(coin) {
   const ch = n(coin.change24);
-
   if (ch > 15) return 1;
   if (ch > 10) return 0.8;
   if (ch > 6) return 0.6;
   if (ch < -15) return -1;
   if (ch < -10) return -0.8;
   if (ch < -6) return -0.6;
-
   return 0;
 }
 
@@ -307,14 +290,11 @@ function liquidityTrap(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
   if (!bid || !ask) return 0;
-
   const ratio = bid / Math.max(ask, 1);
-
   if (ratio > 2.5) return 1;
   if (ratio > 1.8) return 0.7;
   if (ratio < 0.4) return -1;
   if (ratio < 0.6) return -0.7;
-
   return 0;
 }
 
@@ -322,27 +302,22 @@ function whalePressure2(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
   if (!bid && !ask) return 0;
-
   const ratio = (bid - ask) / Math.max(bid + ask, 1);
-
   if (ratio > 0.4) return 1;
   if (ratio > 0.25) return 0.7;
   if (ratio < -0.4) return -1;
   if (ratio < -0.25) return -0.7;
-
   return 0;
 }
 
 function binanceMomentum(coin) {
   const m = n(coin.binanceMomentum);
-
   if (m > 10) return 1;
   if (m > 6) return 0.7;
   if (m > 3) return 0.4;
   if (m < -10) return -1;
   if (m < -6) return -0.7;
   if (m < -3) return -0.4;
-
   return 0;
 }
 
@@ -443,6 +418,7 @@ function computeConfidence({
 
   if (vm >= 0.05) score += 0.12;
   if (vm >= 0.12) score += 0.10;
+
   if (vol >= 2000000) score += 0.05;
   if (spreadPct <= 0.4) score += 0.08;
 
@@ -489,7 +465,7 @@ function makeTradePlan(price, mode, confidence) {
   return { entry: p, sl, tp, rr };
 }
 
-async function normalizeCoin(raw, mode, ob) {
+async function normalizeCoin(raw, mode, ob, whaleFlow = 0) {
   const price = n(raw.price);
   const vm = computeVM(raw);
   const obx = computeObScore(ob);
@@ -513,14 +489,15 @@ async function normalizeCoin(raw, mode, ob) {
   const sweep = ob ? liquiditySweep(ob) : 0;
 
   const rawMoonProbability =
-    confidence * 0.28 +
-    volExp * 0.18 +
-    volSpikeBn * 0.16 +
+    confidence * 0.26 +
+    volExp * 0.16 +
+    volSpikeBn * 0.14 +
     Math.max(0, momentumAcc) * 0.12 +
     Math.max(0, binMomentumVal) * 0.08 +
     Math.abs(whaleNew) * 0.04 +
     vacuum * 0.02 +
-    sweep * 0.02;
+    sweep * 0.02 +
+    (whaleFlow >= 8 ? 0.04 : 0);
 
   const moonProbability = Math.max(0, Math.min(1, rawMoonProbability));
 
@@ -534,7 +511,8 @@ async function normalizeCoin(raw, mode, ob) {
     collapse * 0.16 +
     Math.abs(whaleNew < 0 ? whaleNew : 0) * 0.12 +
     Math.abs(binMomentumVal < 0 ? binMomentumVal : 0) * 0.09 +
-    sweep * 0.02;
+    sweep * 0.02 +
+    (whaleFlow >= 8 ? 0.02 : 0);
 
   const dumpProbability = Math.max(0, Math.min(1, rawDumpProbability));
 
@@ -592,14 +570,12 @@ async function normalizeCoin(raw, mode, ob) {
 
 function passModeFilter(c, mode) {
   const ch24 = n(c.change24);
-  const vol = n(c.volume);
-  const cap = n(c.marketCap);
 
   if (mode === "bull") {
     return ch24 > -2;
   }
 
-  return ch24 < -1.5 && vol >= 300000 && cap >= 800000;
+  return ch24 < 0.5;
 }
 
 function splitFunnels(coins, mode) {
@@ -666,7 +642,7 @@ function makePortfolio(mode, positions) {
   };
 }
 
-async function buildUniverse(mode) {
+async function buildUniverse(mode, whaleFlow) {
   const rawCoins = await fetchCoins();
 
   const filtered = rawCoins
@@ -678,7 +654,6 @@ async function buildUniverse(mode) {
 
   for (const coin of filtered) {
     let ob = null;
-
     if (coin.volume > 8000000) {
       const symbol = `${String(coin.symbol || "").toUpperCase()}USDT`;
       ob = await fetchOrderbook(symbol);
@@ -692,7 +667,7 @@ async function buildUniverse(mode) {
       };
     }
 
-    const normalized = await normalizeCoin(coin, mode, ob);
+    const normalized = await normalizeCoin(coin, mode, ob, whaleFlow);
     out.push(normalized);
 
     await sleep(35);
@@ -707,16 +682,24 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    mode =
-      String(req.query?.mode || "bull").toLowerCase() === "bear"
-        ? "bear"
-        : "bull";
+    mode = String(req.query?.mode || "bull").toLowerCase() === "bear"
+      ? "bear"
+      : "bull";
 
     const now = Date.now();
     const whaleFlow = await fetchExchangeFlows();
 
-    const universe = await buildUniverse(mode);
+    const universe = await buildUniverse(mode, whaleFlow);
     const funnel = splitFunnels(universe, mode);
+
+    const btc24h = universe.length
+      ? universe.reduce((a, c) => a + Number(c.change24 || 0), 0) / universe.length
+      : 0;
+
+    const btcState =
+      btc24h >= 1 ? "BULL" :
+      btc24h <= -1 ? "BEAR" :
+      "NEUTRAL";
 
     const universeMap = new Map();
     for (const c of universe) {
@@ -761,7 +744,7 @@ export default async function handler(req, res) {
           change1h: coin.change1h,
           ob: coin.ob,
           tradePlan: coin.tradePlan,
-          btcState: "NEUTRAL",
+          btcState,
           reason: "new_in_scan",
         });
 
@@ -798,7 +781,7 @@ export default async function handler(req, res) {
           change1h: coin.change1h,
           ob: coin.ob,
           tradePlan: coin.tradePlan,
-          btcState: "NEUTRAL",
+          btcState,
           reason: "stage_changed",
         });
 
@@ -853,13 +836,12 @@ export default async function handler(req, res) {
         change1h: coin.change1h,
         ob: coin.ob,
         tradePlan: coin.tradePlan,
-        btcState: "NEUTRAL",
+        btcState,
         reason: "elite_entry",
       });
     }
 
     const survivors = [];
-
     for (const trade of positions.open) {
       const coin = universeMap.get(trade.symbol);
 
@@ -906,11 +888,19 @@ export default async function handler(req, res) {
 
       const hitTp =
         trade.tp != null &&
-        (mode === "bull" ? coin.price >= n(trade.tp) : coin.price <= n(trade.tp));
+        (
+          mode === "bull"
+            ? coin.price >= n(trade.tp)
+            : coin.price <= n(trade.tp)
+        );
 
       const hitSl =
         trade.sl != null &&
-        (mode === "bull" ? coin.price <= n(trade.sl) : coin.price >= n(trade.sl));
+        (
+          mode === "bull"
+            ? coin.price <= n(trade.sl)
+            : coin.price >= n(trade.sl)
+        );
 
       if (hitTp) {
         const closed = {
@@ -942,7 +932,7 @@ export default async function handler(req, res) {
           change1h: coin.change1h,
           ob: coin.ob,
           tradePlan: coin.tradePlan,
-          btcState: "NEUTRAL",
+          btcState,
           reason: "take_profit_hit",
         });
 
@@ -979,7 +969,7 @@ export default async function handler(req, res) {
           change1h: coin.change1h,
           ob: coin.ob,
           tradePlan: coin.tradePlan,
-          btcState: "NEUTRAL",
+          btcState,
           reason: "stop_loss_hit",
         });
 
@@ -997,7 +987,7 @@ export default async function handler(req, res) {
         change1h: coin.change1h,
         ob: coin.ob,
         tradePlan: coin.tradePlan,
-        btcState: "NEUTRAL",
+        btcState,
         reason: "position_open",
       });
 
@@ -1014,8 +1004,8 @@ export default async function handler(req, res) {
       ts: now,
       mode,
       btc: {
-        state: "NEUTRAL",
-        chg24: 0,
+        state: btcState,
+        chg24: Number(btc24h.toFixed(2)),
       },
       counts: {
         elite: funnel.elite.length,
