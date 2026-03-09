@@ -3,52 +3,64 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Moonshots</title>
+  <title>Moon Funnel</title>
   <link rel="stylesheet" href="/moon.css" />
 </head>
 <body>
-  <main class="moon-wrap">
+  <main class="page">
     <section class="hero">
-      <h1>🌙 Moonshots</h1>
-      <div id="moon-status" class="status" data-kind="idle">Status: laden...</div>
-      <p class="hero-sub">Vroege explosies / proactief (meer setups, meer ruis).</p>
+      <div class="hero-top">
+        <div>
+          <h1 class="page-title">🌙 Moon Funnel</h1>
+          <p class="subtitle">
+            Vroege moonshots en dump setups. Zelfde funnel-logica als main, maar gericht op explosieve bewegingen.
+          </p>
+        </div>
+
+        <div class="hero-side">
+          <div id="moon-status" class="status-line">Status: laden...</div>
+          <div id="moon-meta" class="hero-meta">Mode: BULL</div>
+        </div>
+      </div>
 
       <div class="actions">
-        <button id="btn-bull" class="pill active">BULL</button>
-        <button id="btn-bear" class="pill">BEAR</button>
-        <button id="btn-refresh" class="pill">Refresh</button>
-        <button id="btn-scan" class="pill danger">Scan nu</button>
-        <a href="/" class="pill">⬅ Main</a>
+        <button id="btn-bull" class="btn active">BULL</button>
+        <button id="btn-bear" class="btn">BEAR</button>
+        <button id="btn-refresh" class="btn secondary">Refresh</button>
+        <button id="btn-scan" class="btn danger">Scan nu</button>
       </div>
     </section>
 
-    <section class="panel">
-      <h2>ELITE</h2>
-      <p>Meest betrouwbaar (OB + depth + confidence + consistency + rolling).</p>
-      <div id="moon-elite-list"></div>
-    </section>
+    <section class="cards">
+      <article class="card">
+        <h2>ELITE</h2>
+        <p class="desc">Hoogste kwaliteit setups. Meest selectief.</p>
+        <div id="moon-elite-list" class="coin-list"></div>
+      </article>
 
-    <section class="panel">
-      <h2>ALMOST</h2>
-      <p>Sterk, bijna klaar.</p>
-      <div id="moon-almost-list"></div>
-    </section>
+      <article class="card">
+        <h2>ALMOST</h2>
+        <p class="desc">Sterke kandidaten die dicht tegen ELITE aan zitten.</p>
+        <div id="moon-almost-list" class="coin-list"></div>
+      </article>
 
-    <section class="panel">
-      <h2>BUILDUP</h2>
-      <p>In opbouw / in beeld.</p>
-      <div id="moon-buildup-list"></div>
-    </section>
+      <article class="card">
+        <h2>BUILDUP</h2>
+        <p class="desc">Momentum is bezig op te bouwen.</p>
+        <div id="moon-buildup-list" class="coin-list"></div>
+      </article>
 
-    <section class="panel">
-      <h2>RADAR</h2>
-      <p>Brede watchlist.</p>
-      <div id="moon-radar-list"></div>
-    </section>
+      <article class="card">
+        <h2>RADAR</h2>
+        <p class="desc">Brede watchlist met coins die je systeem volgt.</p>
+        <div id="moon-radar-list" class="coin-list"></div>
+      </article>
 
-    <section class="panel">
-      <h2>BTC / Portfolio</h2>
-      <div id="moon-portfolio"></div>
+      <article class="card">
+        <h2>BTC / Portfolio</h2>
+        <p class="desc">Globale marktrichting en Moon portfolio-overzicht.</p>
+        <div id="moon-portfolio"></div>
+      </article>
     </section>
   </main>
 
