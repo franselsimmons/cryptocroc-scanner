@@ -33,8 +33,41 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// --- Binance universe (top 800 USDT-paren) -----------------------------------
+async function fetchBinanceUniverse() {
+  const r = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+  if (!r.ok) throw new Error("Binance universe failed");
+
+  const data = await r.json();
+
+  return data
+    .filter((x) => String(x.symbol).endsWith("USDT"))
+    .map((x) => ({
+      symbol: x.symbol.replace("USDT", ""),
+      volume: Number(x.quoteVolume || 0),
+      priceChange: Number(x.priceChangePercent || 0),
+    }))
+    .sort((a, b) => b.volume - a.volume)
+    .slice(0, 800);
+}
+// ----------------------------------------------------------------------------
+
+// --- AANGEPAST: fetchCoins met Binance fallback, retry en lege symbolen skip
 async function fetchCoins() {
-  const all = [];
+  const cg = [];
+  let binanceArr = [];
+
+  try {
+    binanceArr = await fetchBinanceUniverse();
+  } catch (e) {
+    console.error("Binance universe fallback:", String(e?.message || e));
+    binanceArr = [];
+  }
+
+  const binanceMap = new Map();
+  for (const b of binanceArr) {
+    binanceMap.set(b.symbol, b);
+  }
 
   for (let page = 1; page <= CG_PAGES; page++) {
     const url =
@@ -42,24 +75,47 @@ async function fetchCoins() {
       `&per_page=${CG_PER_PAGE}&page=${page}` +
       `&sparkline=false&price_change_percentage=24h`;
 
-    const r = await fetch(url, {
+    // Eerste poging
+    let r = await fetch(url, {
       headers: { accept: "application/json" },
     });
 
+    // Retry bij falen (één keer)
     if (!r.ok) {
-      throw new Error(`CoinGecko fetch failed on page ${page}`);
+      await sleep(800);
+      r = await fetch(url, {
+        headers: { accept: "application/json" },
+      });
+      if (!r.ok) {
+        throw new Error(`CoinGecko fetch failed on page ${page}`);
+      }
     }
 
     const j = await r.json();
     if (Array.isArray(j)) {
-      all.push(...j);
+      cg.push(...j);
     }
 
-    await sleep(300);
+    await sleep(250);
   }
 
-  return all;
+  const map = new Map();
+  for (const c of cg) {
+    const sym = String(c.symbol || "").toUpperCase().trim();
+    if (!sym) continue; // lege symbolen overslaan
+
+    const b = binanceMap.get(sym);
+
+    map.set(sym, {
+      ...c,
+      binanceVolume: b?.volume || 0,
+      binanceMomentum: b?.priceChange || 0,
+    });
+  }
+
+  return Array.from(map.values());
 }
+// ----------------------------------------------------------------------------
 
 function basicFilter(c) {
   const vol = n(c.total_volume);
@@ -67,6 +123,7 @@ function basicFilter(c) {
 
   if (vol < 200000) return false;
   if (cap < 800000) return false;
+  if (cap > 800000000) return false;
 
   return true;
 }
@@ -74,21 +131,16 @@ function basicFilter(c) {
 function computeVM(c) {
   const vol = n(c.total_volume);
   const cap = n(c.market_cap);
-
   if (!cap) return 0;
-
   return vol / cap;
 }
 
-// --- Nieuwe detectiefuncties -------------------------------------------------
-
+// --- Signaalfuncties --------------------------------------------------------
 function computeVolumeSpike(coin) {
   const vol = n(coin.total_volume);
   const cap = n(coin.market_cap);
   if (!cap) return 0;
-
   const vm = vol / cap;
-
   if (vm > 0.35) return 1;
   if (vm > 0.25) return 0.7;
   if (vm > 0.15) return 0.4;
@@ -97,15 +149,12 @@ function computeVolumeSpike(coin) {
 
 function computeMomentum(coin) {
   const ch = n(coin.price_change_percentage_24h);
-
   if (ch > 12) return 1;
   if (ch > 8) return 0.7;
   if (ch > 5) return 0.5;
-
   if (ch < -12) return -1;
   if (ch < -8) return -0.7;
   if (ch < -5) return -0.5;
-
   return 0;
 }
 
@@ -113,18 +162,79 @@ function whalePressure(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
   if (!bid && !ask) return 0;
-
   const total = bid + ask;
   const ratio = (bid - ask) / Math.max(total, 1);
-
   if (ratio > 0.4) return 1;
   if (ratio > 0.2) return 0.6;
   if (ratio < -0.4) return -1;
   if (ratio < -0.2) return -0.6;
-
   return 0;
 }
 
+function volumeExplosion(coin) {
+  const vol = n(coin.total_volume);
+  const cap = n(coin.market_cap);
+  if (!cap) return 0;
+  const vm = vol / cap;
+  if (vm > 0.40) return 1;
+  if (vm > 0.30) return 0.8;
+  if (vm > 0.20) return 0.6;
+  if (vm > 0.12) return 0.4;
+  return 0;
+}
+
+function momentumAcceleration(coin) {
+  const ch = n(coin.price_change_percentage_24h);
+  if (ch > 15) return 1;
+  if (ch > 10) return 0.8;
+  if (ch > 6) return 0.6;
+  if (ch < -15) return -1;
+  if (ch < -10) return -0.8;
+  if (ch < -6) return -0.6;
+  return 0;
+}
+
+function liquidityTrap(ob) {
+  const bid = n(ob.depthBidUsd);
+  const ask = n(ob.depthAskUsd);
+  if (!bid || !ask) return 0;
+  const ratio = bid / Math.max(ask, 1);
+  if (ratio > 2.5) return 1;
+  if (ratio > 1.8) return 0.7;
+  if (ratio < 0.4) return -1;
+  if (ratio < 0.6) return -0.7;
+  return 0;
+}
+
+function whalePressure2(ob) {
+  const bid = n(ob.depthBidUsd);
+  const ask = n(ob.depthAskUsd);
+  if (!bid && !ask) return 0;
+  const ratio = (bid - ask) / Math.max(bid + ask, 1);
+  if (ratio > 0.4) return 1;
+  if (ratio > 0.25) return 0.7;
+  if (ratio < -0.4) return -1;
+  if (ratio < -0.25) return -0.7;
+  return 0;
+}
+
+function binanceMomentum(coin) {
+  const m = n(coin.binanceMomentum);
+  if (m > 10) return 1;
+  if (m > 6) return 0.7;
+  if (m > 3) return 0.4;
+  if (m < -10) return -1;
+  if (m < -6) return -0.7;
+  if (m < -3) return -0.4;
+  return 0;
+}
+
+function liquidityVacuum(ob) {
+  const ask = n(ob.depthAskUsd);
+  if (ask < 20000) return 1;
+  if (ask < 50000) return 0.6;
+  return 0;
+}
 // ----------------------------------------------------------------------------
 
 function stageFromScores(conf) {
@@ -201,14 +311,13 @@ function computeObScore(ob) {
   };
 }
 
-// --- Verbeterde confidence met spike/momentum/whale -------------------------
 function computeConfidence({
   coin,
   mode,
   vm,
   obScore,
   spreadPct,
-  whale,            // nieuwe parameter
+  whale,
 }) {
   let score = 0;
 
@@ -238,7 +347,6 @@ function computeConfidence({
 
   return Math.max(0, Math.min(1, score));
 }
-// ----------------------------------------------------------------------------
 
 function makeTradePlan(price, mode, confidence) {
   const p = n(price);
@@ -286,16 +394,14 @@ function normalizeCoin(raw, mode, ob) {
   const vm = computeVM(raw);
   const obx = computeObScore(ob);
 
-  // Nieuwe signalen
-  const whale = ob ? whalePressure(ob) : 0;
-
+  const whaleOld = ob ? whalePressure(ob) : 0;
   const confidence = computeConfidence({
     coin: raw,
     mode,
     vm,
     obScore: obx.score,
     spreadPct: obx.spreadPct,
-    whale,
+    whale: whaleOld,
   });
 
   const stage = stageFromScores(confidence);
@@ -311,11 +417,24 @@ function normalizeCoin(raw, mode, ob) {
 
   const tradePlan = makeTradePlan(price, mode, confidence);
 
-  // MoonScore = combinatie van confidence, volume spike en momentum
-  const moonScore =
-    confidence * 0.5 +
-    computeVolumeSpike(raw) * 0.3 +
-    Math.abs(computeMomentum(raw)) * 0.2;
+  // Nieuwe signalen
+  const volExp = volumeExplosion(raw);
+  const momentumAcc = momentumAcceleration(raw);
+  const trap = ob ? liquidityTrap(ob) : 0;
+  const whaleNew = ob ? whalePressure2(ob) : 0;
+  const binMomentum = binanceMomentum(raw);
+  const vacuum = ob ? liquidityVacuum(ob) : 0;
+
+  // MoonProbability met clamping
+  const rawMoonProbability =
+    confidence * 0.35 +
+    volExp * 0.2 +
+    Math.max(0, momentumAcc) * 0.15 +
+    Math.max(0, binMomentum) * 0.15 +
+    Math.abs(whaleNew) * 0.1 +
+    vacuum * 0.05;
+
+  const moonProbability = Math.max(0, Math.min(1, rawMoonProbability));
 
   return {
     id: raw.id,
@@ -340,7 +459,7 @@ function normalizeCoin(raw, mode, ob) {
     },
     instability_score_raw: Number(instability.toFixed(8)),
     edgeScore: Number((confidence * 100).toFixed(1)),
-    moonScore: Number(moonScore.toFixed(3)),          // nieuw veld
+    moonProbability: Number(moonProbability.toFixed(3)),
     tradePlan: tradePlan
       ? {
           entry: Number(tradePlan.entry.toFixed(8)),
@@ -377,13 +496,11 @@ function splitFunnels(coins) {
     else funnel.radar.push(c);
   }
 
-  // Sorteer op moonScore (hoogste eerst)
-  funnel.elite.sort((a, b) => b.moonScore - a.moonScore);
-  funnel.almost.sort((a, b) => b.moonScore - a.moonScore);
-  funnel.buildup.sort((a, b) => b.moonScore - a.moonScore);
-  funnel.radar.sort((a, b) => b.moonScore - a.moonScore);
+  funnel.elite.sort((a, b) => b.moonProbability - a.moonProbability);
+  funnel.almost.sort((a, b) => b.moonProbability - a.moonProbability);
+  funnel.buildup.sort((a, b) => b.moonProbability - a.moonProbability);
+  funnel.radar.sort((a, b) => b.moonProbability - a.moonProbability);
 
-  // Beperk de grootte van de funnels
   funnel.radar = funnel.radar.slice(0, 200);
   funnel.buildup = funnel.buildup.slice(0, 80);
   funnel.almost = funnel.almost.slice(0, 30);
@@ -419,16 +536,18 @@ function makePortfolio(mode, positions) {
 async function buildUniverse(mode) {
   const rawCoins = await fetchCoins();
 
+  // Universe 350 coins (veilig voor Vercel timeout)
   const filtered = rawCoins
     .filter(basicFilter)
     .filter((c) => passModeFilter(c, mode))
-    .slice(0, 600);
+    .slice(0, 350);
 
   const out = [];
 
   for (const coin of filtered) {
     let ob = null;
-    if (coin.total_volume > 1000000) {
+    // Alleen orderbook voor volume > 8M
+    if (coin.total_volume > 8000000) {
       const symbol = `${String(coin.symbol || "").toUpperCase()}USDT`;
       ob = await fetchOrderbook(symbol);
     }
@@ -444,7 +563,7 @@ async function buildUniverse(mode) {
     const normalized = normalizeCoin(coin, mode, ob);
     out.push(normalized);
 
-    await sleep(80);
+    await sleep(30);
   }
 
   return out;
@@ -465,6 +584,13 @@ export default async function handler(req, res) {
     const universe = await buildUniverse(mode);
     const funnel = splitFunnels(universe);
 
+    // --- NIEUW: universeMap voor snelle lookups ---
+    const universeMap = new Map();
+    for (const c of universe) {
+      universeMap.set(c.symbol, c);
+    }
+    // ----------------------------------------------
+
     const prevPositions = (await kv.get(keyMoonPositions(mode))) || {
       open: [],
       closed: [],
@@ -474,11 +600,6 @@ export default async function handler(req, res) {
       open: Array.isArray(prevPositions?.open) ? [...prevPositions.open] : [],
       closed: Array.isArray(prevPositions?.closed) ? [...prevPositions.closed] : [],
     };
-
-    const eliteSymbols = new Set(funnel.elite.map((x) => x.symbol));
-    const almostSymbols = new Set(funnel.almost.map((x) => x.symbol));
-    const buildupSymbols = new Set(funnel.buildup.map((x) => x.symbol));
-    const radarSymbols = new Set(funnel.radar.map((x) => x.symbol));
 
     const prevState = (await kv.get(keyMoonState(mode))) || {};
     const nextState = {};
@@ -588,7 +709,9 @@ export default async function handler(req, res) {
 
     const survivors = [];
     for (const trade of positions.open) {
-      const coin = universe.find((c) => c.symbol === trade.symbol);
+      // --- VERVANGEN: find door Map lookup ---
+      const coin = universeMap.get(trade.symbol);
+      // ----------------------------------------
 
       if (!coin) {
         const exitPrice = n(trade.lastPrice || trade.entryPrice);
@@ -769,6 +892,9 @@ export default async function handler(req, res) {
     res.setHeader("content-type", "application/json");
     return res.end(JSON.stringify(latest));
   } catch (e) {
+    // --- VERBETERD: error naar console voor Vercel logs ---
+    console.error("MOON SCAN ERROR:", e);
+    // -------------------------------------------------------
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
     return res.end(
