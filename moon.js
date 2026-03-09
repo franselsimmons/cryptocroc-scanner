@@ -1,5 +1,6 @@
 let mode = "bull";
 let lastData = null;
+let activeCoin = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -15,143 +16,151 @@ function fmtPct(x, digits = 2) {
   return `${v >= 0 ? "+" : ""}${v.toFixed(digits)}%`;
 }
 
-function setStatus(text, kind = "idle") {
-  const el = $("moon-status");
-  if (!el) return;
-  el.textContent = `Status: ${text}`;
-  el.dataset.kind = kind;
+function fmtUsdCompact(x) {
+  const v = Number(x);
+  if (!Number.isFinite(v)) return "-";
+  if (Math.abs(v) >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
+  if (Math.abs(v) >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
+  if (Math.abs(v) >= 1_000) return `$${(v / 1_000).toFixed(2)}K`;
+  return `$${v.toFixed(0)}`;
 }
 
-function setMeta(data) {
-  const el = $("moon-meta");
-  if (!el) return;
+function stageScore(c) {
+  const edge = Number(c?.edgeScore);
+  if (Number.isFinite(edge)) return Math.max(0, Math.min(100, Math.round(edge)));
+
+  const conf = Number(c?.confidence);
+  if (!Number.isFinite(conf)) return 0;
+  return conf <= 1 ? Math.round(conf * 100) : Math.round(conf);
+}
+
+function setStatus(data) {
+  const el = $("moon-status");
+  const sub = $("moon-substatus");
+  if (!el || !sub) return;
+
+  if (!data || data.ok === false) {
+    el.textContent = "Status: error";
+    el.className = "hero-status error";
+    sub.textContent = "Kan data niet laden.";
+    return;
+  }
+
+  const counts = data.counts || {};
+  el.textContent =
+    `Status: ok • ELITE ${counts.elite ?? 0} • ALMOST ${counts.almost ?? 0} • BUILDUP ${counts.buildup ?? 0} • RADAR ${counts.radar ?? 0}`;
+  el.className = "hero-status ok";
 
   const btcState = data?.btc?.state || "-";
-  const whaleFlow = data?.whaleFlow ?? "-";
-
-  el.textContent = `Mode: ${mode.toUpperCase()} • BTC: ${btcState} • Whale flow: ${whaleFlow}`;
+  const whaleFlow = data?.whaleFlow ?? 0;
+  sub.textContent = `Mode: ${mode.toUpperCase()} • BTC: ${btcState} • Whale flow: ${whaleFlow}`;
 }
 
-function setMode(nextMode) {
-  mode = nextMode === "bear" ? "bear" : "bull";
-
-  $("btn-bull")?.classList.toggle("active", mode === "bull");
-  $("btn-bear")?.classList.toggle("active", mode === "bear");
-
-  fetchMoonData();
+function emptyHtml(text) {
+  return `<div class="empty-box">${text}</div>`;
 }
 
-function renderList(containerId, items) {
+function scoreBar(score) {
+  const safe = Math.max(0, Math.min(100, Number(score) || 0));
+  return `
+    <div class="score-wrap">
+      <div class="score-bar">
+        <div class="score-fill" style="width:${safe}%"></div>
+      </div>
+      <div class="score-num">${safe}/100</div>
+    </div>
+  `;
+}
+
+function cardReason(c, section) {
+  if (section === "elite") return "Klaar voor directe focus. Hoogste Moon-kwaliteit.";
+  if (section === "almost") return "Bijna entry — mist nog 1–2 checks.";
+  if (section === "buildup") return "Nog niet instappen, wel klaarzetten.";
+  return "Vroege watchlist. Meer ruis, maar kan snel draaien.";
+}
+
+function renderCoinCard(c, section) {
+  const score = stageScore(c);
+  const stage = String(c?.stage || section || "").toUpperCase();
+
+  return `
+    <button class="coin-card" type="button" data-symbol="${String(c.symbol || "").replace(/"/g, "&quot;")}">
+      <div class="coin-top">
+        <div class="coin-head">
+          <div class="coin-symbol">${c.symbol || "-"}</div>
+          <div class="coin-name">${c.name || ""}</div>
+        </div>
+        ${scoreBar(score)}
+      </div>
+
+      <div class="coin-meta">
+        <span>chg24: ${fmtPct(c.change24, 2)}</span>
+        <span>vol: ${fmtUsdCompact(c.volume)}</span>
+        <span>mc: ${fmtUsdCompact(c.marketCap)}</span>
+      </div>
+
+      <div class="coin-meta">
+        <span>vm: ${fmtNum(c.vm, 2)}</span>
+        <span>price: $${fmtNum(c.price, 8)}</span>
+        <span>${mode.toUpperCase()} • ${stage}</span>
+      </div>
+
+      <div class="coin-plan">
+        <span>SL: $${fmtNum(c?.tradePlan?.sl, 8)}</span>
+        <span>TP: $${fmtNum(c?.tradePlan?.tp, 8)}</span>
+      </div>
+
+      <div class="coin-reason">${cardReason(c, section)}</div>
+    </button>
+  `;
+}
+
+function renderList(containerId, items, section) {
   const el = $(containerId);
   if (!el) return;
 
   if (!Array.isArray(items) || items.length === 0) {
-    el.innerHTML = `<div class="empty">Geen coins.</div>`;
+    el.innerHTML = emptyHtml("Geen coins.");
     return;
   }
 
-  el.innerHTML = items.map(renderCoinCard).join("");
+  el.innerHTML = items.map((c) => renderCoinCard(c, section)).join("");
 }
 
-function renderCoinCard(c) {
-  const bullProb = Number(c?.moonProbability || 0);
-  const bearProb = Number(c?.dumpProbability || 0);
-
-  return `
-    <div class="coin">
-      <div class="coin-top">
-        <div class="coin-left">
-          <div class="sym">${c.symbol || "-"}</div>
-          <div class="name">${c.name || "-"}</div>
-        </div>
-        <div class="price">$${fmtNum(c.price, 8)}</div>
-      </div>
-
-      <div class="prob">
-        <span class="badge stage">${c.stage || "-"}</span>
-        <span class="badge bull">Pump ${fmtPct(bullProb * 100, 1)}</span>
-        <span class="badge bear">Dump ${fmtPct(bearProb * 100, 1)}</span>
-      </div>
-
-      <div class="meta">
-        <span><strong>24h:</strong> ${fmtPct(c.change24, 2)}</span>
-        <span><strong>VM:</strong> ${fmtNum(c.vm, 3)}</span>
-        <span><strong>Conf:</strong> ${fmtNum((Number(c.confidence || 0) * 100), 1)}</span>
-        <span><strong>Edge:</strong> ${fmtNum(c.edgeScore, 1)}</span>
-        <span><strong>Spread:</strong> ${fmtPct(c?.ob?.spreadPct, 3)}</span>
-        <span><strong>OB score:</strong> ${fmtNum(c?.ob?.score, 5)}</span>
-        <span><strong>Depth:</strong> $${fmtNum(c?.ob?.depthMinUsd1p, 0)}</span>
-        <span><strong>Instability:</strong> ${fmtNum(c?.instability_score_raw, 6)}</span>
-        <span><strong>Entry:</strong> ${fmtNum(c?.tradePlan?.entry, 8)}</span>
-        <span><strong>SL:</strong> ${fmtNum(c?.tradePlan?.sl, 8)}</span>
-        <span><strong>TP:</strong> ${fmtNum(c?.tradePlan?.tp, 8)}</span>
-        <span><strong>RR:</strong> ${fmtNum(c?.tradePlan?.rr, 2)}</span>
-      </div>
-    </div>
-  `;
-}
-
-function renderPortfolio(portfolio, btc, whaleFlow) {
-  const el = $("moon-portfolio");
-  if (!el) return;
-
-  if (!portfolio && !btc) {
-    el.innerHTML = `<div class="empty">Geen data.</div>`;
-    return;
-  }
-
-  el.innerHTML = `
-    <div class="portfolio-grid">
-      <div class="portfolio-block">
-        <div><strong>BTC state:</strong> ${btc?.state || "-"}</div>
-        <div><strong>BTC 24h:</strong> ${fmtPct(btc?.chg24, 2)}</div>
-        <div><strong>BTC range:</strong> ${fmtPct(btc?.range24, 2)}</div>
-        <div><strong>Whale flow:</strong> ${whaleFlow ?? "-"}</div>
-      </div>
-
-      ${
-        portfolio
-          ? `
-            <div class="portfolio-block">
-              <div><strong>Mode:</strong> ${(portfolio.mode || mode).toUpperCase()}</div>
-              <div><strong>Open:</strong> ${portfolio.openCount ?? 0}</div>
-              <div><strong>Closed:</strong> ${portfolio.closedCount ?? 0}</div>
-              <div><strong>Position size:</strong> $${fmtNum(portfolio.posUsd, 2)}</div>
-              <div><strong>Realized:</strong> $${fmtNum(portfolio.realizedUsd, 2)}</div>
-              <div><strong>Avg realized:</strong> ${fmtPct(portfolio.avgRealizedPct, 2)}</div>
-            </div>
-          `
-          : `<div class="portfolio-block"><div>Geen portfolio data.</div></div>`
-      }
-    </div>
-  `;
+function bindCardClicks() {
+  document.querySelectorAll(".coin-card").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const sym = btn.getAttribute("data-symbol");
+      const coin = findCoin(sym);
+      if (coin) openModal(coin);
+    });
+  });
 }
 
 function renderData(data) {
   lastData = data;
+  setStatus(data);
 
-  renderList("moon-elite-list", data?.funnel?.elite || []);
-  renderList("moon-almost-list", data?.funnel?.almost || []);
-  renderList("moon-buildup-list", data?.funnel?.buildup || []);
-  renderList("moon-radar-list", data?.funnel?.radar || []);
+  renderList("moon-elite-list", data?.funnel?.elite || [], "elite");
+  renderList("moon-almost-list", data?.funnel?.almost || [], "almost");
+  renderList("moon-buildup-list", data?.funnel?.buildup || [], "buildup");
+  renderList("moon-radar-list", data?.funnel?.radar || [], "radar");
 
-  renderPortfolio(data?.portfolio || null, data?.btc || null, data?.whaleFlow ?? null);
-  setMeta(data);
+  bindCardClicks();
+}
 
-  const eliteCount = data?.counts?.elite ?? 0;
-  const almostCount = data?.counts?.almost ?? 0;
-  const buildupCount = data?.counts?.buildup ?? 0;
-  const radarCount = data?.counts?.radar ?? 0;
-
-  setStatus(
-    `ok • ELITE ${eliteCount} • ALMOST ${almostCount} • BUILDUP ${buildupCount} • RADAR ${radarCount}`,
-    "ok"
-  );
+function findCoin(symbol) {
+  if (!lastData?.funnel || !symbol) return null;
+  const all = [
+    ...(lastData.funnel.elite || []),
+    ...(lastData.funnel.almost || []),
+    ...(lastData.funnel.buildup || []),
+    ...(lastData.funnel.radar || []),
+  ];
+  return all.find((x) => String(x.symbol || "").toUpperCase() === String(symbol).toUpperCase()) || null;
 }
 
 async function fetchMoonData() {
-  setStatus("laden...", "loading");
-
   try {
     const res = await fetch(`/api/moon/public-latest?mode=${mode}`, {
       method: "GET",
@@ -174,14 +183,188 @@ async function fetchMoonData() {
 
     renderData(json);
   } catch (e) {
-    setStatus("error", "error");
+    setStatus({ ok: false });
 
-    $("moon-elite-list").innerHTML = `<div class="error-box">Scan fout: ${String(e.message || e)}</div>`;
-    $("moon-almost-list").innerHTML = `<div class="empty">Sterke kandidaten verschijnen hier.</div>`;
-    $("moon-buildup-list").innerHTML = `<div class="empty">Buildup coins verschijnen hier.</div>`;
-    $("moon-radar-list").innerHTML = `<div class="empty">Radar coins verschijnen hier.</div>`;
-    $("moon-portfolio").innerHTML = `<div class="error-box">Scan fout: ${String(e.message || e)}</div>`;
+    $("moon-elite-list").innerHTML = `<div class="empty-box error-box">Scan fout: ${String(e.message || e)}</div>`;
+    $("moon-almost-list").innerHTML = emptyHtml("Geen coins.");
+    $("moon-buildup-list").innerHTML = emptyHtml("Geen coins.");
+    $("moon-radar-list").innerHTML = emptyHtml("Geen coins.");
   }
+}
+
+function setMode(nextMode) {
+  mode = nextMode === "bear" ? "bear" : "bull";
+
+  $("btn-bull")?.classList.toggle("active", mode === "bull");
+  $("btn-bear")?.classList.toggle("active", mode === "bear");
+
+  fetchMoonData();
+}
+
+function openModal(coin) {
+  activeCoin = coin;
+
+  $("moon-modal-title").textContent =
+    `${coin.symbol || "-"} • ${mode.toUpperCase()} • ${String(coin.stage || "-").toUpperCase()}`;
+  $("moon-modal-subtitle").textContent =
+    `Price $${fmtNum(coin.price, 8)} • Chg24 ${fmtPct(coin.change24, 2)} • VM ${fmtNum(coin.vm, 2)} • Conf ${stageScore(coin)}/100`;
+
+  renderModalTabs(coin, "actie");
+
+  $("moon-modal")?.classList.remove("hidden");
+  $("moon-modal")?.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+}
+
+function closeModal() {
+  activeCoin = null;
+  $("moon-modal")?.classList.add("hidden");
+  $("moon-modal")?.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+}
+
+function renderModalTabs(coin, activeTab) {
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.tab === activeTab);
+  });
+
+  document.querySelectorAll(".tab-panel").forEach((panel) => {
+    panel.classList.add("hidden");
+  });
+
+  const action = $("moon-tab-actie");
+  const why = $("moon-tab-waarom");
+  const liq = $("moon-tab-liquidity");
+  const det = $("moon-tab-details");
+
+  const tp = Number(coin?.tradePlan?.tp);
+  const sl = Number(coin?.tradePlan?.sl);
+  const entry = Number(coin?.tradePlan?.entry || coin?.price);
+  const rr = Number(coin?.tradePlan?.rr);
+
+  const tpPct = Number.isFinite(entry) && Number.isFinite(tp) && entry > 0
+    ? ((tp - entry) / entry) * 100 * (mode === "bear" ? -1 : 1)
+    : null;
+
+  const slPct = Number.isFinite(entry) && Number.isFinite(sl) && entry > 0
+    ? ((sl - entry) / entry) * 100 * (mode === "bear" ? -1 : 1)
+    : null;
+
+  action.innerHTML = `
+    <div class="detail-card">
+      <h4>Wat moet je doen</h4>
+      <div class="action-box">
+        <div class="action-title">${
+          coin.stage === "ELITE" ? "ENTRY KLAAR" :
+          coin.stage === "ALMOST" ? "KLAARZETTEN" :
+          coin.stage === "BUILDUP" ? "WATCH / KLAARZETTEN" :
+          "WATCHLIST"
+        }</div>
+        <div class="action-sub">
+          ${
+            coin.stage === "ELITE" ? "Hoogste Moon-kwaliteit. Directe focus." :
+            coin.stage === "ALMOST" ? "Bijna klaar, mist nog 1–2 checks" :
+            coin.stage === "BUILDUP" ? "Nog niet instappen, wel klaarzetten" :
+            "Vroege fase. Alleen volgen"
+          }
+        </div>
+      </div>
+
+      <div class="kv-table">
+        <div class="kv-row"><span>Plan</span><span>${
+          coin.stage === "ELITE"
+            ? "Focus / mogelijke entry"
+            : coin.stage === "ALMOST"
+            ? "Nog niet instappen, wel klaarzetten"
+            : coin.stage === "BUILDUP"
+            ? "Volgen en wachten"
+            : "Alleen watchlist"
+        }</span></div>
+
+        <div class="kv-row"><span>Entry</span><span>$${fmtNum(entry, 8)}</span></div>
+        <div class="kv-row"><span>SL</span><span>$${fmtNum(sl, 8)} ${slPct == null ? "" : `(${fmtPct(slPct, 2)})`}</span></div>
+        <div class="kv-row"><span>TP</span><span>$${fmtNum(tp, 8)} ${tpPct == null ? "" : `(${fmtPct(tpPct, 2)})`}</span></div>
+        <div class="kv-row"><span>R:R</span><span>${fmtNum(rr, 2)}</span></div>
+        <div class="kv-row"><span>Bron SL/TP</span><span>Systeem (exact)</span></div>
+      </div>
+    </div>
+  `;
+
+  why.innerHTML = `
+    <div class="detail-card">
+      <h4>Waarom staat hij hier</h4>
+
+      <div class="reason-item">
+        <div class="reason-title">✓ Stage: ${String(coin.stage || "-").toUpperCase()}</div>
+        <div class="reason-sub">score: ${coin.scoreProbability != null ? fmtNum(Number(coin.scoreProbability) * 100, 1) + "/100" : stageScore(coin) + "/100"}</div>
+      </div>
+
+      <div class="reason-item">
+        <div class="reason-title">✓ Confidence</div>
+        <div class="reason-sub">Score: ${stageScore(coin)}/100</div>
+      </div>
+
+      <div class="reason-item">
+        <div class="reason-title">✓ Pump / Dump kans</div>
+        <div class="reason-sub">Pump: ${fmtPct(Number(coin.moonProbability || 0) * 100, 1)} • Dump: ${fmtPct(Number(coin.dumpProbability || 0) * 100, 1)}</div>
+      </div>
+
+      <div class="reason-item warn">
+        <div class="reason-title">⚠ Waarom nog niet hoger</div>
+        <div class="reason-sub">${
+          coin.stage === "ELITE"
+            ? "Dit is al de hoogste Moon-stage."
+            : coin.stage === "ALMOST"
+            ? "Mist nog 1–2 checks voor ELITE."
+            : coin.stage === "BUILDUP"
+            ? "Nog niet genoeg bevestiging voor ALMOST."
+            : "Nog te vroeg voor BUILDUP/ALMOST."
+        }</div>
+      </div>
+    </div>
+  `;
+
+  liq.innerHTML = `
+    <div class="detail-card">
+      <h4>Liquidity (Orderbook + Depth)</h4>
+
+      <div class="kv-table">
+        <div class="kv-row"><span>Spread</span><span>${fmtPct(coin?.ob?.spreadPct, 3)}</span></div>
+        <div class="kv-row"><span>Bid depth</span><span>${fmtUsdCompact(coin?.ob?.depthBidUsd)}</span></div>
+        <div class="kv-row"><span>Ask depth</span><span>${fmtUsdCompact(coin?.ob?.depthAskUsd)}</span></div>
+        <div class="kv-row"><span>Depth min 1%</span><span>${fmtUsdCompact(coin?.ob?.depthMinUsd1p)}</span></div>
+        <div class="kv-row"><span>OB score</span><span>${fmtNum(coin?.ob?.score, 5)}</span></div>
+      </div>
+    </div>
+  `;
+
+  det.innerHTML = `
+    <div class="detail-card">
+      <h4>Details</h4>
+
+      <div class="kv-table">
+        <div class="kv-row"><span>Naam</span><span>${coin.name || "-"}</span></div>
+        <div class="kv-row"><span>Symbol</span><span>${coin.symbol || "-"}</span></div>
+        <div class="kv-row"><span>Price</span><span>$${fmtNum(coin.price, 8)}</span></div>
+        <div class="kv-row"><span>Market cap</span><span>${fmtUsdCompact(coin.marketCap)}</span></div>
+        <div class="kv-row"><span>Volume</span><span>${fmtUsdCompact(coin.volume)}</span></div>
+        <div class="kv-row"><span>24h</span><span>${fmtPct(coin.change24, 2)}</span></div>
+        <div class="kv-row"><span>VM</span><span>${fmtNum(coin.vm, 3)}</span></div>
+        <div class="kv-row"><span>Instability</span><span>${fmtNum(coin.instability_score_raw, 8)}</span></div>
+      </div>
+    </div>
+  `;
+
+  $(`moon-tab-${activeTab}`)?.classList.remove("hidden");
+}
+
+function initTabs() {
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (!activeCoin) return;
+      renderModalTabs(activeCoin, btn.dataset.tab || "actie");
+    });
+  });
 }
 
 function initMoonPage() {
@@ -190,9 +373,13 @@ function initMoonPage() {
   $("btn-refresh")?.addEventListener("click", () => fetchMoonData());
 
   $("btn-scan")?.addEventListener("click", () => {
-    alert("Moon scan loopt automatisch via cron. Gebruik de protected scan endpoint alleen intern.");
+    alert("Moon scan loopt automatisch via cron.");
   });
 
+  $("moon-modal-close")?.addEventListener("click", closeModal);
+  document.querySelector('[data-close="1"]')?.addEventListener("click", closeModal);
+
+  initTabs();
   fetchMoonData();
   setInterval(fetchMoonData, 60000);
 }
