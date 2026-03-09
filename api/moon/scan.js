@@ -55,8 +55,8 @@ async function fetchCoins() {
       all.push(...j);
     }
 
-    // CoinGecko free tier: ~50 calls/min -> 350ms tussen calls
-    await sleep(350);
+    // CoinGecko free tier: ~50 calls/min -> 300ms tussen calls
+    await sleep(300);
   }
 
   return all;
@@ -66,9 +66,9 @@ function basicFilter(c) {
   const vol = n(c.total_volume);
   const cap = n(c.market_cap);
 
-  // Ruimere filters: volume >= 300k, market cap >= 1M
-  if (vol < 300000) return false;
-  if (cap < 1000000) return false;
+  // Ruimere filters: volume >= 200k, market cap >= 800k
+  if (vol < 200000) return false;
+  if (cap < 800000) return false;
 
   return true;
 }
@@ -84,7 +84,7 @@ function computeVM(c) {
 
 function stageFromScores(conf) {
   // Aangepaste drempels voor betere vulling
-  if (conf >= 0.75) return "ELITE";
+  if (conf >= 0.72) return "ELITE";
   if (conf >= 0.55) return "ALMOST";
   if (conf >= 0.35) return "BUILDUP";
   return "RADAR";
@@ -359,11 +359,11 @@ function makePortfolio(mode, positions) {
 async function buildUniverse(mode) {
   const rawCoins = await fetchCoins();
 
-  // Ruimer filteren en grotere universe (300 i.p.v. 80)
+  // Ruimer filteren en grotere universe (400 i.p.v. 80)
   const filtered = rawCoins
     .filter(basicFilter)
     .filter((c) => passModeFilter(c, mode))
-    .slice(0, 300);
+    .slice(0, 400);
 
   const out = [];
 
