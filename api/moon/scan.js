@@ -55,7 +55,6 @@ async function fetchCoins() {
       all.push(...j);
     }
 
-    // CoinGecko free tier: ~50 calls/min -> 300ms tussen calls
     await sleep(300);
   }
 
@@ -66,7 +65,6 @@ function basicFilter(c) {
   const vol = n(c.total_volume);
   const cap = n(c.market_cap);
 
-  // Ruime filters: volume >= 200k, market cap >= 800k
   if (vol < 200000) return false;
   if (cap < 800000) return false;
 
@@ -82,8 +80,54 @@ function computeVM(c) {
   return vol / cap;
 }
 
+// --- Nieuwe detectiefuncties -------------------------------------------------
+
+function computeVolumeSpike(coin) {
+  const vol = n(coin.total_volume);
+  const cap = n(coin.market_cap);
+  if (!cap) return 0;
+
+  const vm = vol / cap;
+
+  if (vm > 0.35) return 1;
+  if (vm > 0.25) return 0.7;
+  if (vm > 0.15) return 0.4;
+  return 0;
+}
+
+function computeMomentum(coin) {
+  const ch = n(coin.price_change_percentage_24h);
+
+  if (ch > 12) return 1;
+  if (ch > 8) return 0.7;
+  if (ch > 5) return 0.5;
+
+  if (ch < -12) return -1;
+  if (ch < -8) return -0.7;
+  if (ch < -5) return -0.5;
+
+  return 0;
+}
+
+function whalePressure(ob) {
+  const bid = n(ob.depthBidUsd);
+  const ask = n(ob.depthAskUsd);
+  if (!bid && !ask) return 0;
+
+  const total = bid + ask;
+  const ratio = (bid - ask) / Math.max(total, 1);
+
+  if (ratio > 0.4) return 1;
+  if (ratio > 0.2) return 0.6;
+  if (ratio < -0.4) return -1;
+  if (ratio < -0.2) return -0.6;
+
+  return 0;
+}
+
+// ----------------------------------------------------------------------------
+
 function stageFromScores(conf) {
-  // Aangepaste drempels voor betere vulling
   if (conf >= 0.72) return "ELITE";
   if (conf >= 0.55) return "ALMOST";
   if (conf >= 0.35) return "BUILDUP";
@@ -101,7 +145,6 @@ async function fetchOrderbook(symbol) {
     if (!r.ok) return null;
 
     const j = await r.json();
-    // Bitget success code is "00000"
     if (String(j?.code || "") !== "00000") return null;
 
     const bids = j?.data?.bids || [];
@@ -158,12 +201,14 @@ function computeObScore(ob) {
   };
 }
 
+// --- Verbeterde confidence met spike/momentum/whale -------------------------
 function computeConfidence({
   coin,
   mode,
   vm,
   obScore,
   spreadPct,
+  whale,            // nieuwe parameter
 }) {
   let score = 0;
 
@@ -171,32 +216,29 @@ function computeConfidence({
   const vol = n(coin.total_volume);
   const cap = n(coin.market_cap);
 
-  if (vm >= 0.05) score += 0.18;
-  if (vm >= 0.12) score += 0.15;
-  if (vm >= 0.2) score += 0.10;
+  const volSpike = computeVolumeSpike(coin);
+  const momentum = computeMomentum(coin);
 
-  if (vol >= 3000000) score += 0.08;
-  if (vol >= 8000000) score += 0.08;
+  if (vm >= 0.05) score += 0.12;
+  if (vm >= 0.12) score += 0.10;
 
-  if (cap >= 8000000 && cap <= 350000000) score += 0.08;
+  if (vol >= 2000000) score += 0.05;
 
-  if (spreadPct <= 0.2) score += 0.10;
-  else if (spreadPct <= 0.5) score += 0.05;
+  if (spreadPct <= 0.4) score += 0.08;
+
+  score += volSpike * 0.25;
+  score += Math.abs(momentum) * 0.25;
+  score += Math.abs(whale) * 0.15;
 
   if (mode === "bull") {
-    if (ch24 >= 1) score += 0.10;
-    if (ch24 >= 3) score += 0.08;
-    if (obScore > 0) score += 0.10;
-    if (obScore > 0.15) score += 0.05;
+    if (momentum > 0) score += 0.10;
   } else {
-    if (ch24 <= -1) score += 0.10;
-    if (ch24 <= -3) score += 0.08;
-    if (obScore < 0) score += 0.10;
-    if (obScore < -0.15) score += 0.05;
+    if (momentum < 0) score += 0.10;
   }
 
   return Math.max(0, Math.min(1, score));
 }
+// ----------------------------------------------------------------------------
 
 function makeTradePlan(price, mode, confidence) {
   const p = n(price);
@@ -244,12 +286,16 @@ function normalizeCoin(raw, mode, ob) {
   const vm = computeVM(raw);
   const obx = computeObScore(ob);
 
+  // Nieuwe signalen
+  const whale = ob ? whalePressure(ob) : 0;
+
   const confidence = computeConfidence({
     coin: raw,
     mode,
     vm,
     obScore: obx.score,
     spreadPct: obx.spreadPct,
+    whale,
   });
 
   const stage = stageFromScores(confidence);
@@ -264,6 +310,12 @@ function normalizeCoin(raw, mode, ob) {
   });
 
   const tradePlan = makeTradePlan(price, mode, confidence);
+
+  // MoonScore = combinatie van confidence, volume spike en momentum
+  const moonScore =
+    confidence * 0.5 +
+    computeVolumeSpike(raw) * 0.3 +
+    Math.abs(computeMomentum(raw)) * 0.2;
 
   return {
     id: raw.id,
@@ -288,6 +340,7 @@ function normalizeCoin(raw, mode, ob) {
     },
     instability_score_raw: Number(instability.toFixed(8)),
     edgeScore: Number((confidence * 100).toFixed(1)),
+    moonScore: Number(moonScore.toFixed(3)),          // nieuw veld
     tradePlan: tradePlan
       ? {
           entry: Number(tradePlan.entry.toFixed(8)),
@@ -324,12 +377,13 @@ function splitFunnels(coins) {
     else funnel.radar.push(c);
   }
 
-  funnel.elite.sort((a, b) => b.confidence - a.confidence);
-  funnel.almost.sort((a, b) => b.confidence - a.confidence);
-  funnel.buildup.sort((a, b) => b.confidence - a.confidence);
-  funnel.radar.sort((a, b) => b.confidence - a.confidence);
+  // Sorteer op moonScore (hoogste eerst)
+  funnel.elite.sort((a, b) => b.moonScore - a.moonScore);
+  funnel.almost.sort((a, b) => b.moonScore - a.moonScore);
+  funnel.buildup.sort((a, b) => b.moonScore - a.moonScore);
+  funnel.radar.sort((a, b) => b.moonScore - a.moonScore);
 
-  // Beperk de grootte van de funnels voor overzichtelijkheid
+  // Beperk de grootte van de funnels
   funnel.radar = funnel.radar.slice(0, 200);
   funnel.buildup = funnel.buildup.slice(0, 80);
   funnel.almost = funnel.almost.slice(0, 30);
@@ -365,7 +419,6 @@ function makePortfolio(mode, positions) {
 async function buildUniverse(mode) {
   const rawCoins = await fetchCoins();
 
-  // Ruim filteren en grotere universe (600 i.p.v. 400)
   const filtered = rawCoins
     .filter(basicFilter)
     .filter((c) => passModeFilter(c, mode))
@@ -374,14 +427,12 @@ async function buildUniverse(mode) {
   const out = [];
 
   for (const coin of filtered) {
-    // Alleen orderbook ophalen voor coins met volume > 1M USD (scheelt tijd)
     let ob = null;
     if (coin.total_volume > 1000000) {
       const symbol = `${String(coin.symbol || "").toUpperCase()}USDT`;
       ob = await fetchOrderbook(symbol);
     }
 
-    // Fallback als orderbook niet bestaat (spread 0.6, depth 0)
     if (!ob) {
       ob = {
         spreadPct: 0.6,
@@ -393,7 +444,7 @@ async function buildUniverse(mode) {
     const normalized = normalizeCoin(coin, mode, ob);
     out.push(normalized);
 
-    await sleep(80); // ietwat kortere pauze omdat we minder vaak OB ophalen
+    await sleep(80);
   }
 
   return out;
