@@ -6,6 +6,7 @@ import {
   keyMoonPositions,
   keyMoonState,
   requireSecret,
+  fetchCoinGeckoTopCached,          // FIX 2: gebruik dezelfde CoinGecko functie als in core
 } from "../../lib/_moon_core.js";
 
 import {
@@ -15,14 +16,7 @@ import {
 
 import { computeInstability } from "../../lib/_moon_run_all.js";
 
-const COINGECKO =
-  "https://api.coingecko.com/api/v3/coins/markets";
-
-const BITGET_OB =
-  "https://api.bitget.com/api/v2/spot/market/orderbook";
-
-const CG_PER_PAGE = 250;
-const CG_PAGES = 4;
+const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 
 function n(x, d = 0) {
   const v = Number(x);
@@ -51,14 +45,14 @@ async function sendTelegram(msg) {
 }
 // ----------------------------------------------------------------------------
 
-// --- NIEUW: Exchange flows / whale activity (global risk) -------------------
+// --- Exchange flows / whale activity (global risk) ---------------------------
 async function fetchExchangeFlows() {
   try {
     const r = await fetch("https://api.binance.com/api/v3/ticker/24hr");
     if (!r.ok) return 0;
     const data = await r.json();
-    // Tel paren met quoteVolume > 200M USD (grote whales)
-    return data.filter((x) => Number(x.quoteVolume) > 200000000).length;
+    // Tel paren met quoteVolume > 200M USD
+    return data.filter((x) => Number(x.quoteVolume) > 200_000_000).length;
   } catch {
     return 0;
   }
@@ -80,31 +74,7 @@ async function fetchBinanceUniverse() {
     .sort((a, b) => b.volume - a.volume)
     .slice(0, 800);
 }
-
-// --- Binance 5‑minute momentum -----------------------------------------------
-async function fetchBinanceShortMomentum(symbol) {
-  try {
-    const r = await fetch(
-      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=5m&limit=3`
-    );
-    if (!r.ok) return 0;
-    const data = await r.json();
-    if (!Array.isArray(data) || data.length < 2) return 0;
-    const prev = Number(data[data.length - 2][4]);
-    const last = Number(data[data.length - 1][4]);
-    if (!prev || !last) return 0;
-    const change = ((last - prev) / prev) * 100;
-    if (change > 3) return 1;
-    if (change > 1.5) return 0.7;
-    if (change > 0.8) return 0.4;
-    if (change < -3) return -1;
-    if (change < -1.5) return -0.7;
-    if (change < -0.8) return -0.4;
-    return 0;
-  } catch {
-    return 0;
-  }
-}
+// ----------------------------------------------------------------------------
 
 // --- Dump signals ------------------------------------------------------------
 function sellPressure(ob) {
@@ -119,7 +89,7 @@ function sellPressure(ob) {
 }
 
 function crashMomentum(coin) {
-  const ch = n(coin.price_change_percentage_24h);
+  const ch = n(coin.change24);
   if (ch < -15) return 1;
   if (ch < -10) return 0.7;
   if (ch < -6) return 0.4;
@@ -133,7 +103,7 @@ function liquidityCollapse(ob) {
   return 0;
 }
 
-// --- Liquidity sweep (nieuw) -------------------------------------------------
+// --- Liquidity sweep ---------------------------------------------------------
 function liquiditySweep(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
@@ -148,7 +118,7 @@ function liquiditySweep(ob) {
 // --- Binance volume spike ----------------------------------------------------
 function volumeSpikeBinance(coin) {
   const vol = n(coin.binanceVolume);
-  const cap = n(coin.market_cap);
+  const cap = n(coin.marketCap);
   if (!cap) return 0;
   const ratio = vol / cap;
   if (ratio > 0.45) return 1;
@@ -157,11 +127,12 @@ function volumeSpikeBinance(coin) {
   return 0;
 }
 
-// --- fetchCoins met Binance fallback, retry en lege symbolen skip -----------
+// --- fetchCoins met CoinGecko (via core) + Binance data ---------------------
 async function fetchCoins() {
-  const cg = [];
-  let binanceArr = [];
+  // FIX 2: gebruik de gecachte CoinGecko top van _moon_core
+  const cgCoins = await fetchCoinGeckoTopCached();
 
+  let binanceArr = [];
   try {
     binanceArr = await fetchBinanceUniverse();
   } catch (e) {
@@ -174,53 +145,24 @@ async function fetchCoins() {
     binanceMap.set(b.symbol, b);
   }
 
-  for (let page = 1; page <= CG_PAGES; page++) {
-    const url =
-      `${COINGECKO}?vs_currency=usd&order=volume_desc` +
-      `&per_page=${CG_PER_PAGE}&page=${page}` +
-      `&sparkline=false&price_change_percentage=24h`;
-
-    let r = await fetch(url, {
-      headers: { accept: "application/json" },
-    });
-
-    if (!r.ok) {
-      await sleep(800);
-      r = await fetch(url, {
-        headers: { accept: "application/json" },
-      });
-      if (!r.ok) {
-        throw new Error(`CoinGecko fetch failed on page ${page}`);
-      }
-    }
-
-    const j = await r.json();
-    if (Array.isArray(j)) {
-      cg.push(...j);
-    }
-
-    await sleep(250);
-  }
-
-  const map = new Map();
-  for (const c of cg) {
+  const result = [];
+  for (const c of cgCoins) {
     const sym = String(c.symbol || "").toUpperCase().trim();
     if (!sym) continue;
     const b = binanceMap.get(sym);
-    map.set(sym, {
+    result.push({
       ...c,
       binanceVolume: b?.volume || 0,
       binanceMomentum: b?.priceChange || 0,
     });
   }
-
-  return Array.from(map.values());
+  return result;
 }
 
 // --- Basis filters -----------------------------------------------------------
 function basicFilter(c) {
-  const vol = n(c.total_volume);
-  const cap = n(c.market_cap);
+  const vol = n(c.volume);
+  const cap = n(c.marketCap);
   if (vol < 200000) return false;
   if (cap < 800000) return false;
   if (cap > 800000000) return false;
@@ -228,16 +170,16 @@ function basicFilter(c) {
 }
 
 function computeVM(c) {
-  const vol = n(c.total_volume);
-  const cap = n(c.market_cap);
+  const vol = n(c.volume);
+  const cap = n(c.marketCap);
   if (!cap) return 0;
   return vol / cap;
 }
 
-// --- Signaalfuncties (bestaande) ---------------------------------------------
+// --- Signaalfuncties ---------------------------------------------------------
 function computeVolumeSpike(coin) {
-  const vol = n(coin.total_volume);
-  const cap = n(coin.market_cap);
+  const vol = n(coin.volume);
+  const cap = n(coin.marketCap);
   if (!cap) return 0;
   const vm = vol / cap;
   if (vm > 0.35) return 1;
@@ -247,7 +189,7 @@ function computeVolumeSpike(coin) {
 }
 
 function computeMomentum(coin) {
-  const ch = n(coin.price_change_percentage_24h);
+  const ch = n(coin.change24);
   if (ch > 12) return 1;
   if (ch > 8) return 0.7;
   if (ch > 5) return 0.5;
@@ -271,8 +213,8 @@ function whalePressure(ob) {
 }
 
 function volumeExplosion(coin) {
-  const vol = n(coin.total_volume);
-  const cap = n(coin.market_cap);
+  const vol = n(coin.volume);
+  const cap = n(coin.marketCap);
   if (!cap) return 0;
   const vm = vol / cap;
   if (vm > 0.40) return 1;
@@ -283,7 +225,7 @@ function volumeExplosion(coin) {
 }
 
 function momentumAcceleration(coin) {
-  const ch = n(coin.price_change_percentage_24h);
+  const ch = n(coin.change24);
   if (ch > 15) return 1;
   if (ch > 10) return 0.8;
   if (ch > 6) return 0.6;
@@ -420,9 +362,9 @@ function computeConfidence({
 }) {
   let score = 0;
 
-  const ch24 = n(coin.price_change_percentage_24h);
-  const vol = n(coin.total_volume);
-  const cap = n(coin.market_cap);
+  const ch24 = n(coin.change24);
+  const vol = n(coin.volume);
+  const cap = n(coin.marketCap);
 
   const volSpike = computeVolumeSpike(coin);
   const momentum = computeMomentum(coin);
@@ -488,9 +430,9 @@ function makeTradePlan(price, mode, confidence) {
   };
 }
 
-// --- normalizeCoin met pump & dump scores, nu inclusief liquidity sweep -----
+// --- normalizeCoin (zonder 5m momentum) -------------------------------------
 async function normalizeCoin(raw, mode, ob) {
-  const price = n(raw.current_price);
+  const price = n(raw.price);
   const vm = computeVM(raw);
   const obx = computeObScore(ob);
 
@@ -525,10 +467,7 @@ async function normalizeCoin(raw, mode, ob) {
   const binMomentum = binanceMomentum(raw);
   const vacuum = ob ? liquidityVacuum(ob) : 0;
 
-  // 5-min momentum & volume spike
-  const shortMomentum = await fetchBinanceShortMomentum(
-    `${raw.symbol.toUpperCase()}USDT`
-  );
+  // FIX 4: 5-min momentum verwijderd
   const volSpikeBn = volumeSpikeBinance(raw);
 
   // Dump signalen
@@ -536,31 +475,31 @@ async function normalizeCoin(raw, mode, ob) {
   const crash = crashMomentum(raw);
   const collapse = ob ? liquidityCollapse(ob) : 0;
 
-  // NIEUW: liquidity sweep
+  // Liquidity sweep
   const sweep = ob ? liquiditySweep(ob) : 0;
 
-  // Pump probability
+  // Pump probability (zonder shortMomentum)
   const rawMoonProbability =
     confidence * 0.28 +
     volExp * 0.18 +
     volSpikeBn * 0.16 +
     Math.max(0, momentumAcc) * 0.12 +
-    Math.max(0, shortMomentum) * 0.12 +
+    // shortMomentum weg
     Math.max(0, binMomentum) * 0.08 +
     Math.abs(whaleNew) * 0.04 +
     vacuum * 0.02 +
-    sweep * 0.02; // sweep ook mee in pump (positief)
+    sweep * 0.02;
 
   const moonProbability = Math.max(0, Math.min(1, rawMoonProbability));
 
-  // Dump probability (sweep nu ook negatief mee)
+  // Dump probability
   const rawDumpProbability =
     Math.abs(crash) * 0.30 +
     sellP * 0.25 +
     collapse * 0.20 +
     Math.abs(whaleNew) * 0.15 +
     Math.abs(binMomentum < 0 ? binMomentum : 0) * 0.10 +
-    sweep * 0.05; // sweep kan ook dump versterken
+    sweep * 0.05;
 
   const dumpProbability = Math.max(0, Math.min(1, rawDumpProbability));
 
@@ -570,9 +509,9 @@ async function normalizeCoin(raw, mode, ob) {
     name: raw.name || "",
     image: raw.image || "",
     price,
-    marketCap: n(raw.market_cap),
-    volume: n(raw.total_volume),
-    change24: n(raw.price_change_percentage_24h),
+    marketCap: n(raw.marketCap),
+    volume: n(raw.volume),
+    change24: n(raw.change24),
     vm,
     confidence: Number(confidence.toFixed(4)),
     stage,
@@ -601,12 +540,12 @@ async function normalizeCoin(raw, mode, ob) {
 }
 
 function passModeFilter(c, mode) {
-  const ch24 = n(c.price_change_percentage_24h);
+  const ch24 = n(c.change24);
   if (mode === "bull") return ch24 > -2;
   return ch24 < 2;
 }
 
-// --- splitFunnels met max(pump, dump) sort -----------------------------------
+// --- splitFunnels -----------------------------------------------------------
 function splitFunnels(coins) {
   const funnel = {
     elite: [],
@@ -668,16 +607,17 @@ function makePortfolio(mode, positions) {
 async function buildUniverse(mode) {
   const rawCoins = await fetchCoins();
 
+  // FIX 3: verlaagd naar 200 i.p.v. 250
   const filtered = rawCoins
     .filter(basicFilter)
     .filter((c) => passModeFilter(c, mode))
-    .slice(0, 250); // veilig voor Vercel timeout
+    .slice(0, 200);
 
   const out = [];
 
   for (const coin of filtered) {
     let ob = null;
-    if (coin.total_volume > 8000000) {
+    if (coin.volume > 8000000) {
       const symbol = `${String(coin.symbol || "").toUpperCase()}USDT`;
       ob = await fetchOrderbook(symbol);
     }
@@ -693,28 +633,8 @@ async function buildUniverse(mode) {
     const normalized = await normalizeCoin(coin, mode, ob);
     out.push(normalized);
 
-    // NIEUW: alerts bij hoge scores
-    if (normalized.moonProbability > 0.8) {
-      await pushEvent("pump_alert", {
-        symbol: normalized.symbol,
-        probability: normalized.moonProbability,
-        price: normalized.price,
-      });
-      await sendTelegram(
-        `🚀 Pump Alert\n\n${normalized.symbol}\nProbability: ${normalized.moonProbability}\nPrice: ${normalized.price}`
-      );
-    }
-    if (normalized.dumpProbability > 0.8) {
-      await pushEvent("dump_alert", {
-        symbol: normalized.symbol,
-        probability: normalized.dumpProbability,
-        price: normalized.price,
-      });
-      await sendTelegram(
-        `📉 Dump Alert\n\n${normalized.symbol}\nProbability: ${normalized.dumpProbability}\nPrice: ${normalized.price}`
-      );
-    }
-
+    // FIX 6: verwijder de oude alerts op moon/dump probability
+    // (hier komen later alerts op stage change, in de hoofdhandler)
     await sleep(30);
   }
 
@@ -733,7 +653,6 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    // Optioneel: global whale flow indicator (kan later in dashboard gebruikt worden)
     const whaleFlow = await fetchExchangeFlows();
 
     const universe = await buildUniverse(mode);
@@ -757,6 +676,7 @@ export default async function handler(req, res) {
     const prevState = (await kv.get(keyMoonState(mode))) || {};
     const nextState = {};
 
+    // FIX 6: alerts bij stage change
     for (const coin of universe) {
       const prev = prevState?.[coin.symbol] || null;
       const prevStage = String(prev?.stage || "");
@@ -771,6 +691,7 @@ export default async function handler(req, res) {
       };
 
       if (!prevStage) {
+        // Nieuw in scan
         await pushEvent(stageToScanFunnel(stage), {
           symbol: coin.symbol,
           mode,
@@ -792,6 +713,13 @@ export default async function handler(req, res) {
           to: stage,
           reason: "new_in_scan",
         });
+
+        // Alleen Telegram bij ALMOST of ELITE bij eerste verschijning (optioneel)
+        if (stage === "ALMOST" || stage === "ELITE") {
+          await sendTelegram(
+            `🆕 Nieuwe ${stage} munt: ${coin.symbol}\nPrijs: $${coin.price}\nConfidence: ${coin.confidence}`
+          );
+        }
       } else if (prevStage !== stage) {
         await pushEvent("scan_transition", {
           symbol: coin.symbol,
@@ -814,6 +742,17 @@ export default async function handler(req, res) {
           btcState: "NEUTRAL",
           reason: "stage_changed",
         });
+
+        // FIX 6: Telegram alerts bij specifieke overgangen
+        if (prevStage === "BUILDUP" && stage === "ALMOST") {
+          await sendTelegram(
+            `🚀 BUILDUP → ALMOST: ${coin.symbol}\nPrijs: $${coin.price}\nConfidence: ${coin.confidence}`
+          );
+        } else if (prevStage === "ALMOST" && stage === "ELITE") {
+          await sendTelegram(
+            `🔥 ALMOST → ELITE: ${coin.symbol}\nPrijs: $${coin.price}\nConfidence: ${coin.confidence}`
+          );
+        }
       }
     }
 
@@ -1032,7 +971,6 @@ export default async function handler(req, res) {
       funnel,
       portfolio,
       positions,
-      // Nieuwe globale indicator (optioneel)
       whaleFlow,
     };
 
