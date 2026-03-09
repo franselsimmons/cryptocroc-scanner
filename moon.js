@@ -15,6 +15,12 @@ function fmtPct(x, digits = 2) {
   return `${v >= 0 ? "+" : ""}${v.toFixed(digits)}%`;
 }
 
+function fmtConf(x) {
+  const v = Number(x);
+  if (!Number.isFinite(v)) return "-";
+  return v <= 1 ? fmtNum(v, 3) : fmtNum(v, 1);
+}
+
 function setStatus(text, kind = "idle") {
   const el = $("moon-status");
   if (!el) return;
@@ -31,35 +37,70 @@ function setMode(nextMode) {
   fetchMoonData();
 }
 
-function renderList(containerId, items, renderer) {
+function renderList(containerId, items, renderer, emptyText = "Geen coins.") {
   const el = $(containerId);
   if (!el) return;
 
   if (!Array.isArray(items) || items.length === 0) {
-    el.innerHTML = `<div class="empty">Geen coins.</div>`;
+    el.innerHTML = `<div class="empty">${emptyText}</div>`;
     return;
   }
 
   el.innerHTML = items.map(renderer).join("");
 }
 
+function getPrimaryProbability(c) {
+  if (mode === "bear") {
+    return Number(c?.dumpProbability ?? 0);
+  }
+  return Number(c?.moonProbability ?? 0);
+}
+
 function renderCoinCard(c) {
+  const prob = getPrimaryProbability(c);
+  const probLabel = mode === "bear" ? "Dump prob" : "Moon prob";
+
   return `
-    <div class="coin-row">
-      <div class="coin-head">
-        <div class="coin-symbol">${c.symbol || "-"}</div>
+    <article class="coin-card">
+      <div class="coin-card-top">
+        <div>
+          <div class="coin-symbol">${c.symbol || "-"}</div>
+          <div class="coin-name">${c.name || ""}</div>
+        </div>
         <div class="coin-price">$${fmtNum(c.price, 8)}</div>
       </div>
-      <div class="coin-meta">
-        <span>24h: ${fmtPct(c.change24, 2)}</span>
-        <span>VM: ${fmtNum(c.vm, 3)}</span>
-        <span>Conf: ${c.confidence ?? "-"}</span>
+
+      <div class="coin-grid">
+        <div><span>24h</span><strong>${fmtPct(c.change24, 2)}</strong></div>
+        <div><span>VM</span><strong>${fmtNum(c.vm, 3)}</strong></div>
+        <div><span>Conf</span><strong>${fmtConf(c.confidence)}</strong></div>
+        <div><span>${probLabel}</span><strong>${fmtNum(prob, 3)}</strong></div>
       </div>
-    </div>
+
+      <div class="coin-grid">
+        <div><span>Spread</span><strong>${fmtNum(c?.ob?.spreadPct, 3)}%</strong></div>
+        <div><span>OB score</span><strong>${fmtNum(c?.ob?.score, 5)}</strong></div>
+        <div><span>Depth</span><strong>${fmtNum(c?.ob?.depthMinUsd1p, 0)}</strong></div>
+        <div><span>Edge</span><strong>${fmtNum(c?.edgeScore, 1)}</strong></div>
+      </div>
+
+      ${
+        c?.tradePlan
+          ? `
+          <div class="trade-plan">
+            <div><span>Entry</span><strong>$${fmtNum(c.tradePlan.entry, 8)}</strong></div>
+            <div><span>SL</span><strong>$${fmtNum(c.tradePlan.sl, 8)}</strong></div>
+            <div><span>TP</span><strong>$${fmtNum(c.tradePlan.tp, 8)}</strong></div>
+            <div><span>RR</span><strong>${fmtNum(c.tradePlan.rr, 2)}</strong></div>
+          </div>
+        `
+          : ""
+      }
+    </article>
   `;
 }
 
-function renderPortfolio(portfolio, btc) {
+function renderPortfolio(portfolio, btc, whaleFlow) {
   const el = $("moon-portfolio");
   if (!el) return;
 
@@ -69,35 +110,75 @@ function renderPortfolio(portfolio, btc) {
   }
 
   el.innerHTML = `
-    <div class="portfolio-block">
-      <div><strong>BTC:</strong> ${btc?.state || "-"}</div>
-      <div><strong>24h:</strong> ${fmtPct(btc?.chg24, 3)}</div>
-      <div><strong>Range:</strong> ${fmtPct(btc?.range24, 3)}</div>
+    <div class="portfolio-wrap">
+      <div class="portfolio-block">
+        <div class="portfolio-title">BTC</div>
+        <div><strong>State:</strong> ${btc?.state || "-"}</div>
+        <div><strong>24h:</strong> ${fmtPct(btc?.chg24, 3)}</div>
+        <div><strong>Range:</strong> ${fmtPct(btc?.range24, 3)}</div>
+      </div>
+
+      ${
+        portfolio
+          ? `
+          <div class="portfolio-block">
+            <div class="portfolio-title">Portfolio</div>
+            <div><strong>Open:</strong> ${portfolio.openCount ?? 0}</div>
+            <div><strong>Closed:</strong> ${portfolio.closedCount ?? 0}</div>
+            <div><strong>Realized:</strong> $${fmtNum(portfolio.realizedUsd, 2)}</div>
+            <div><strong>Avg realized:</strong> ${fmtPct(portfolio.avgRealizedPct, 2)}</div>
+          </div>
+        `
+          : `<div class="empty">Geen portfolio data.</div>`
+      }
+
+      ${
+        whaleFlow != null
+          ? `
+          <div class="portfolio-block">
+            <div class="portfolio-title">Market flow</div>
+            <div><strong>Whale flow:</strong> ${fmtNum(whaleFlow, 0)}</div>
+            <div><strong>Mode:</strong> ${mode.toUpperCase()}</div>
+          </div>
+        `
+          : ""
+      }
     </div>
-    ${
-      portfolio
-        ? `
-        <div class="portfolio-block">
-          <div><strong>Open:</strong> ${portfolio.openCount ?? 0}</div>
-          <div><strong>Closed:</strong> ${portfolio.closedCount ?? 0}</div>
-          <div><strong>Realized:</strong> $${fmtNum(portfolio.realizedUsd, 2)}</div>
-          <div><strong>Avg realized:</strong> ${fmtPct(portfolio.avgRealizedPct, 2)}</div>
-        </div>
-      `
-        : `<div class="empty">Geen portfolio data.</div>`
-    }
   `;
 }
 
 function renderData(data) {
   lastData = data;
 
-  renderList("moon-elite-list", data?.funnel?.elite || [], renderCoinCard);
-  renderList("moon-almost-list", data?.funnel?.almost || [], renderCoinCard);
-  renderList("moon-buildup-list", data?.funnel?.buildup || [], renderCoinCard);
-  renderList("moon-radar-list", data?.funnel?.radar || [], renderCoinCard);
+  renderList(
+    "moon-elite-list",
+    data?.funnel?.elite || [],
+    renderCoinCard,
+    mode === "bear" ? "Geen bear ELITE coins." : "Geen bull ELITE coins."
+  );
 
-  renderPortfolio(data?.portfolio || null, data?.btc || null);
+  renderList(
+    "moon-almost-list",
+    data?.funnel?.almost || [],
+    renderCoinCard,
+    mode === "bear" ? "Geen bear ALMOST coins." : "Geen bull ALMOST coins."
+  );
+
+  renderList(
+    "moon-buildup-list",
+    data?.funnel?.buildup || [],
+    renderCoinCard,
+    mode === "bear" ? "Geen bear BUILDUP coins." : "Geen bull BUILDUP coins."
+  );
+
+  renderList(
+    "moon-radar-list",
+    data?.funnel?.radar || [],
+    renderCoinCard,
+    mode === "bear" ? "Geen bear RADAR coins." : "Geen bull RADAR coins."
+  );
+
+  renderPortfolio(data?.portfolio || null, data?.btc || null, data?.whaleFlow);
 
   if (data?.ok === false) {
     setStatus(data.error || "error", "error");
@@ -109,10 +190,24 @@ function renderData(data) {
   const buildupCount = data?.counts?.buildup ?? 0;
   const radarCount = data?.counts?.radar ?? 0;
 
+  const label = mode === "bear" ? "BEAR" : "BULL";
+
   setStatus(
-    `ok • ELITE ${eliteCount} • ALMOST ${almostCount} • BUILDUP ${buildupCount} • RADAR ${radarCount}`,
+    `ok • ${label} • ELITE ${eliteCount} • ALMOST ${almostCount} • BUILDUP ${buildupCount} • RADAR ${radarCount}`,
     "ok"
   );
+}
+
+function renderError(message) {
+  setStatus("error", "error");
+
+  const err = String(message || "Onbekende fout");
+
+  $("moon-elite-list").innerHTML = `<div class="error-box">Scan fout: ${err}</div>`;
+  $("moon-almost-list").innerHTML = `<div class="empty">Geen data.</div>`;
+  $("moon-buildup-list").innerHTML = `<div class="empty">Geen data.</div>`;
+  $("moon-radar-list").innerHTML = `<div class="empty">Geen data.</div>`;
+  $("moon-portfolio").innerHTML = `<div class="error-box">Scan fout: ${err}</div>`;
 }
 
 async function fetchMoonData() {
@@ -140,13 +235,7 @@ async function fetchMoonData() {
 
     renderData(json);
   } catch (e) {
-    setStatus("error", "error");
-
-    $("moon-elite-list").innerHTML = `<div class="error-box">Scan fout: ${String(e.message || e)}</div>`;
-    $("moon-almost-list").innerHTML = `<div class="empty">Sterk, bijna klaar.</div>`;
-    $("moon-buildup-list").innerHTML = `<div class="empty">In opbouw / in beeld.</div>`;
-    $("moon-radar-list").innerHTML = `<div class="empty">Brede watchlist.</div>`;
-    $("moon-portfolio").innerHTML = `<div class="error-box">Scan fout: ${String(e.message || e)}</div>`;
+    renderError(e?.message || e);
   }
 }
 
@@ -155,14 +244,11 @@ function initMoonPage() {
   $("btn-bear")?.addEventListener("click", () => setMode("bear"));
   $("btn-refresh")?.addEventListener("click", () => fetchMoonData());
 
-  // Publieke site: scan nu niet direct triggeren
   $("btn-scan")?.addEventListener("click", () => {
     alert("Moon scan loopt automatisch elke 15 minuten.");
   });
 
   fetchMoonData();
-
-  // extra refresh op frontend, los van cron
   setInterval(fetchMoonData, 60000);
 }
 
