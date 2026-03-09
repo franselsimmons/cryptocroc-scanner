@@ -66,7 +66,7 @@ function basicFilter(c) {
   const vol = n(c.total_volume);
   const cap = n(c.market_cap);
 
-  // Ruimere filters: volume >= 200k, market cap >= 800k
+  // Ruime filters: volume >= 200k, market cap >= 800k
   if (vol < 200000) return false;
   if (cap < 800000) return false;
 
@@ -329,6 +329,12 @@ function splitFunnels(coins) {
   funnel.buildup.sort((a, b) => b.confidence - a.confidence);
   funnel.radar.sort((a, b) => b.confidence - a.confidence);
 
+  // Beperk de grootte van de funnels voor overzichtelijkheid
+  funnel.radar = funnel.radar.slice(0, 200);
+  funnel.buildup = funnel.buildup.slice(0, 80);
+  funnel.almost = funnel.almost.slice(0, 30);
+  funnel.elite = funnel.elite.slice(0, 10);
+
   return funnel;
 }
 
@@ -359,20 +365,35 @@ function makePortfolio(mode, positions) {
 async function buildUniverse(mode) {
   const rawCoins = await fetchCoins();
 
-  // Ruimer filteren en grotere universe (400 i.p.v. 80)
+  // Ruim filteren en grotere universe (600 i.p.v. 400)
   const filtered = rawCoins
     .filter(basicFilter)
     .filter((c) => passModeFilter(c, mode))
-    .slice(0, 400);
+    .slice(0, 600);
 
   const out = [];
 
   for (const coin of filtered) {
-    const symbol = `${String(coin.symbol || "").toUpperCase()}USDT`;
-    const ob = await fetchOrderbook(symbol);
+    // Alleen orderbook ophalen voor coins met volume > 1M USD (scheelt tijd)
+    let ob = null;
+    if (coin.total_volume > 1000000) {
+      const symbol = `${String(coin.symbol || "").toUpperCase()}USDT`;
+      ob = await fetchOrderbook(symbol);
+    }
+
+    // Fallback als orderbook niet bestaat (spread 0.6, depth 0)
+    if (!ob) {
+      ob = {
+        spreadPct: 0.6,
+        depthBidUsd: 0,
+        depthAskUsd: 0,
+      };
+    }
+
     const normalized = normalizeCoin(coin, mode, ob);
     out.push(normalized);
-    await sleep(120);
+
+    await sleep(80); // ietwat kortere pauze omdat we minder vaak OB ophalen
   }
 
   return out;
