@@ -5,10 +5,13 @@ import {
   keyMoonPortfolio,
   keyMoonPositions,
   keyMoonState,
-  pushEvent,
-  uid,
   requireSecret,
 } from "../../lib/_moon_core.js";
+
+import {
+  pushEvent,
+  uid,
+} from "../../lib/_analytics.js";
 
 import { computeInstability } from "../../lib/_moon_run_all.js";
 
@@ -16,9 +19,10 @@ const COINGECKO =
   "https://api.coingecko.com/api/v3/coins/markets";
 
 const BITGET_OB =
-  "https://api.bitget.com/api/v2/mix/market/depth";
+  "https://api.bitget.com/api/v2/spot/market/orderbook";
 
-const MAX_COINS = 120;
+const CG_PER_PAGE = 250;
+const CG_PAGES = 3;
 
 function n(x, d = 0) {
   const v = Number(x);
@@ -30,17 +34,32 @@ function sleep(ms) {
 }
 
 async function fetchCoins() {
-  const url =
-    `${COINGECKO}?vs_currency=usd&order=volume_desc` +
-    `&per_page=${MAX_COINS}&page=1&sparkline=false&price_change_percentage=24h`;
+  const all = [];
 
-  const r = await fetch(url);
+  for (let page = 1; page <= CG_PAGES; page++) {
+    const url =
+      `${COINGECKO}?vs_currency=usd&order=volume_desc` +
+      `&per_page=${CG_PER_PAGE}&page=${page}` +
+      `&sparkline=false&price_change_percentage=24h`;
 
-  if (!r.ok) {
-    throw new Error("CoinGecko fetch failed");
+    const r = await fetch(url, {
+      headers: { accept: "application/json" },
+    });
+
+    if (!r.ok) {
+      throw new Error(`CoinGecko fetch failed on page ${page}`);
+    }
+
+    const j = await r.json();
+    if (Array.isArray(j)) {
+      all.push(...j);
+    }
+
+    // CoinGecko free tier: ~50 calls/minuut -> 350ms tussen calls
+    await sleep(350);
   }
 
-  return r.json();
+  return all;
 }
 
 function basicFilter(c) {
@@ -71,14 +90,17 @@ function stageFromScores(conf) {
 
 async function fetchOrderbook(symbol) {
   try {
-    const url =
-      `${BITGET_OB}?symbol=${symbol}&limit=20`;
+    const url = `${BITGET_OB}?symbol=${symbol}&type=step0&limit=20`;
 
-    const r = await fetch(url);
+    const r = await fetch(url, {
+      headers: { accept: "application/json" },
+    });
 
     if (!r.ok) return null;
 
     const j = await r.json();
+    // Bitget success code is "00000"
+    if (String(j?.code || "") !== "00000") return null;
 
     const bids = j?.data?.bids || [];
     const asks = j?.data?.asks || [];
@@ -87,6 +109,7 @@ async function fetchOrderbook(symbol) {
 
     const bestBid = n(bids[0][0]);
     const bestAsk = n(asks[0][0]);
+    if (!(bestBid > 0 && bestAsk > 0)) return null;
 
     const spread = (bestAsk - bestBid) / bestBid;
 
