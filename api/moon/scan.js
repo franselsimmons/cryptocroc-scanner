@@ -33,13 +33,43 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// --- Binance universe (top 800 USDT-paren) -----------------------------------
+// --- Telegram alert helper ---------------------------------------------------
+async function sendTelegram(msg) {
+  const token = process.env.TELEGRAM_TOKEN;
+  const chat = process.env.TELEGRAM_CHAT;
+  if (!token || !chat) return;
+
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: chat, text: msg }),
+    });
+  } catch (e) {
+    console.error("Telegram send failed:", e);
+  }
+}
+// ----------------------------------------------------------------------------
+
+// --- NIEUW: Exchange flows / whale activity (global risk) -------------------
+async function fetchExchangeFlows() {
+  try {
+    const r = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+    if (!r.ok) return 0;
+    const data = await r.json();
+    // Tel paren met quoteVolume > 200M USD (grote whales)
+    return data.filter((x) => Number(x.quoteVolume) > 200000000).length;
+  } catch {
+    return 0;
+  }
+}
+// ----------------------------------------------------------------------------
+
+// --- Binance universe --------------------------------------------------------
 async function fetchBinanceUniverse() {
   const r = await fetch("https://api.binance.com/api/v3/ticker/24hr");
   if (!r.ok) throw new Error("Binance universe failed");
-
   const data = await r.json();
-
   return data
     .filter((x) => String(x.symbol).endsWith("USDT"))
     .map((x) => ({
@@ -50,9 +80,84 @@ async function fetchBinanceUniverse() {
     .sort((a, b) => b.volume - a.volume)
     .slice(0, 800);
 }
+
+// --- Binance 5‑minute momentum -----------------------------------------------
+async function fetchBinanceShortMomentum(symbol) {
+  try {
+    const r = await fetch(
+      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=5m&limit=3`
+    );
+    if (!r.ok) return 0;
+    const data = await r.json();
+    if (!Array.isArray(data) || data.length < 2) return 0;
+    const prev = Number(data[data.length - 2][4]);
+    const last = Number(data[data.length - 1][4]);
+    if (!prev || !last) return 0;
+    const change = ((last - prev) / prev) * 100;
+    if (change > 3) return 1;
+    if (change > 1.5) return 0.7;
+    if (change > 0.8) return 0.4;
+    if (change < -3) return -1;
+    if (change < -1.5) return -0.7;
+    if (change < -0.8) return -0.4;
+    return 0;
+  } catch {
+    return 0;
+  }
+}
+
+// --- Dump signals ------------------------------------------------------------
+function sellPressure(ob) {
+  const bid = n(ob.depthBidUsd);
+  const ask = n(ob.depthAskUsd);
+  if (!bid && !ask) return 0;
+  const ratio = ask / Math.max(bid, 1);
+  if (ratio > 3) return 1;
+  if (ratio > 2) return 0.7;
+  if (ratio > 1.4) return 0.4;
+  return 0;
+}
+
+function crashMomentum(coin) {
+  const ch = n(coin.price_change_percentage_24h);
+  if (ch < -15) return 1;
+  if (ch < -10) return 0.7;
+  if (ch < -6) return 0.4;
+  return 0;
+}
+
+function liquidityCollapse(ob) {
+  const bid = n(ob.depthBidUsd);
+  if (bid < 20000) return 1;
+  if (bid < 50000) return 0.6;
+  return 0;
+}
+
+// --- Liquidity sweep (nieuw) -------------------------------------------------
+function liquiditySweep(ob) {
+  const bid = n(ob.depthBidUsd);
+  const ask = n(ob.depthAskUsd);
+  if (!bid || !ask) return 0;
+  const imbalance = Math.abs(bid - ask) / Math.max(bid + ask, 1);
+  if (imbalance > 0.6) return 1;
+  if (imbalance > 0.4) return 0.6;
+  return 0;
+}
 // ----------------------------------------------------------------------------
 
-// --- AANGEPAST: fetchCoins met Binance fallback, retry en lege symbolen skip
+// --- Binance volume spike ----------------------------------------------------
+function volumeSpikeBinance(coin) {
+  const vol = n(coin.binanceVolume);
+  const cap = n(coin.market_cap);
+  if (!cap) return 0;
+  const ratio = vol / cap;
+  if (ratio > 0.45) return 1;
+  if (ratio > 0.30) return 0.7;
+  if (ratio > 0.20) return 0.4;
+  return 0;
+}
+
+// --- fetchCoins met Binance fallback, retry en lege symbolen skip -----------
 async function fetchCoins() {
   const cg = [];
   let binanceArr = [];
@@ -75,12 +180,10 @@ async function fetchCoins() {
       `&per_page=${CG_PER_PAGE}&page=${page}` +
       `&sparkline=false&price_change_percentage=24h`;
 
-    // Eerste poging
     let r = await fetch(url, {
       headers: { accept: "application/json" },
     });
 
-    // Retry bij falen (één keer)
     if (!r.ok) {
       await sleep(800);
       r = await fetch(url, {
@@ -102,10 +205,8 @@ async function fetchCoins() {
   const map = new Map();
   for (const c of cg) {
     const sym = String(c.symbol || "").toUpperCase().trim();
-    if (!sym) continue; // lege symbolen overslaan
-
+    if (!sym) continue;
     const b = binanceMap.get(sym);
-
     map.set(sym, {
       ...c,
       binanceVolume: b?.volume || 0,
@@ -115,16 +216,14 @@ async function fetchCoins() {
 
   return Array.from(map.values());
 }
-// ----------------------------------------------------------------------------
 
+// --- Basis filters -----------------------------------------------------------
 function basicFilter(c) {
   const vol = n(c.total_volume);
   const cap = n(c.market_cap);
-
   if (vol < 200000) return false;
   if (cap < 800000) return false;
   if (cap > 800000000) return false;
-
   return true;
 }
 
@@ -135,7 +234,7 @@ function computeVM(c) {
   return vol / cap;
 }
 
-// --- Signaalfuncties --------------------------------------------------------
+// --- Signaalfuncties (bestaande) ---------------------------------------------
 function computeVolumeSpike(coin) {
   const vol = n(coin.total_volume);
   const cap = n(coin.market_cap);
@@ -389,7 +488,8 @@ function makeTradePlan(price, mode, confidence) {
   };
 }
 
-function normalizeCoin(raw, mode, ob) {
+// --- normalizeCoin met pump & dump scores, nu inclusief liquidity sweep -----
+async function normalizeCoin(raw, mode, ob) {
   const price = n(raw.current_price);
   const vm = computeVM(raw);
   const obx = computeObScore(ob);
@@ -417,7 +517,7 @@ function normalizeCoin(raw, mode, ob) {
 
   const tradePlan = makeTradePlan(price, mode, confidence);
 
-  // Nieuwe signalen
+  // Bestaande signalen
   const volExp = volumeExplosion(raw);
   const momentumAcc = momentumAcceleration(raw);
   const trap = ob ? liquidityTrap(ob) : 0;
@@ -425,16 +525,44 @@ function normalizeCoin(raw, mode, ob) {
   const binMomentum = binanceMomentum(raw);
   const vacuum = ob ? liquidityVacuum(ob) : 0;
 
-  // MoonProbability met clamping
+  // 5-min momentum & volume spike
+  const shortMomentum = await fetchBinanceShortMomentum(
+    `${raw.symbol.toUpperCase()}USDT`
+  );
+  const volSpikeBn = volumeSpikeBinance(raw);
+
+  // Dump signalen
+  const sellP = ob ? sellPressure(ob) : 0;
+  const crash = crashMomentum(raw);
+  const collapse = ob ? liquidityCollapse(ob) : 0;
+
+  // NIEUW: liquidity sweep
+  const sweep = ob ? liquiditySweep(ob) : 0;
+
+  // Pump probability
   const rawMoonProbability =
-    confidence * 0.35 +
-    volExp * 0.2 +
-    Math.max(0, momentumAcc) * 0.15 +
-    Math.max(0, binMomentum) * 0.15 +
-    Math.abs(whaleNew) * 0.1 +
-    vacuum * 0.05;
+    confidence * 0.28 +
+    volExp * 0.18 +
+    volSpikeBn * 0.16 +
+    Math.max(0, momentumAcc) * 0.12 +
+    Math.max(0, shortMomentum) * 0.12 +
+    Math.max(0, binMomentum) * 0.08 +
+    Math.abs(whaleNew) * 0.04 +
+    vacuum * 0.02 +
+    sweep * 0.02; // sweep ook mee in pump (positief)
 
   const moonProbability = Math.max(0, Math.min(1, rawMoonProbability));
+
+  // Dump probability (sweep nu ook negatief mee)
+  const rawDumpProbability =
+    Math.abs(crash) * 0.30 +
+    sellP * 0.25 +
+    collapse * 0.20 +
+    Math.abs(whaleNew) * 0.15 +
+    Math.abs(binMomentum < 0 ? binMomentum : 0) * 0.10 +
+    sweep * 0.05; // sweep kan ook dump versterken
+
+  const dumpProbability = Math.max(0, Math.min(1, rawDumpProbability));
 
   return {
     id: raw.id,
@@ -460,6 +588,7 @@ function normalizeCoin(raw, mode, ob) {
     instability_score_raw: Number(instability.toFixed(8)),
     edgeScore: Number((confidence * 100).toFixed(1)),
     moonProbability: Number(moonProbability.toFixed(3)),
+    dumpProbability: Number(dumpProbability.toFixed(3)),
     tradePlan: tradePlan
       ? {
           entry: Number(tradePlan.entry.toFixed(8)),
@@ -473,14 +602,11 @@ function normalizeCoin(raw, mode, ob) {
 
 function passModeFilter(c, mode) {
   const ch24 = n(c.price_change_percentage_24h);
-
-  if (mode === "bull") {
-    return ch24 > -2;
-  }
-
+  if (mode === "bull") return ch24 > -2;
   return ch24 < 2;
 }
 
+// --- splitFunnels met max(pump, dump) sort -----------------------------------
 function splitFunnels(coins) {
   const funnel = {
     elite: [],
@@ -496,10 +622,16 @@ function splitFunnels(coins) {
     else funnel.radar.push(c);
   }
 
-  funnel.elite.sort((a, b) => b.moonProbability - a.moonProbability);
-  funnel.almost.sort((a, b) => b.moonProbability - a.moonProbability);
-  funnel.buildup.sort((a, b) => b.moonProbability - a.moonProbability);
-  funnel.radar.sort((a, b) => b.moonProbability - a.moonProbability);
+  const sortByMaxProb = (a, b) => {
+    const aMax = Math.max(a.moonProbability, a.dumpProbability);
+    const bMax = Math.max(b.moonProbability, b.dumpProbability);
+    return bMax - aMax;
+  };
+
+  funnel.elite.sort(sortByMaxProb);
+  funnel.almost.sort(sortByMaxProb);
+  funnel.buildup.sort(sortByMaxProb);
+  funnel.radar.sort(sortByMaxProb);
 
   funnel.radar = funnel.radar.slice(0, 200);
   funnel.buildup = funnel.buildup.slice(0, 80);
@@ -536,17 +668,15 @@ function makePortfolio(mode, positions) {
 async function buildUniverse(mode) {
   const rawCoins = await fetchCoins();
 
-  // Universe 350 coins (veilig voor Vercel timeout)
   const filtered = rawCoins
     .filter(basicFilter)
     .filter((c) => passModeFilter(c, mode))
-    .slice(0, 350);
+    .slice(0, 250); // veilig voor Vercel timeout
 
   const out = [];
 
   for (const coin of filtered) {
     let ob = null;
-    // Alleen orderbook voor volume > 8M
     if (coin.total_volume > 8000000) {
       const symbol = `${String(coin.symbol || "").toUpperCase()}USDT`;
       ob = await fetchOrderbook(symbol);
@@ -560,8 +690,30 @@ async function buildUniverse(mode) {
       };
     }
 
-    const normalized = normalizeCoin(coin, mode, ob);
+    const normalized = await normalizeCoin(coin, mode, ob);
     out.push(normalized);
+
+    // NIEUW: alerts bij hoge scores
+    if (normalized.moonProbability > 0.8) {
+      await pushEvent("pump_alert", {
+        symbol: normalized.symbol,
+        probability: normalized.moonProbability,
+        price: normalized.price,
+      });
+      await sendTelegram(
+        `🚀 Pump Alert\n\n${normalized.symbol}\nProbability: ${normalized.moonProbability}\nPrice: ${normalized.price}`
+      );
+    }
+    if (normalized.dumpProbability > 0.8) {
+      await pushEvent("dump_alert", {
+        symbol: normalized.symbol,
+        probability: normalized.dumpProbability,
+        price: normalized.price,
+      });
+      await sendTelegram(
+        `📉 Dump Alert\n\n${normalized.symbol}\nProbability: ${normalized.dumpProbability}\nPrice: ${normalized.price}`
+      );
+    }
 
     await sleep(30);
   }
@@ -581,15 +733,16 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
+    // Optioneel: global whale flow indicator (kan later in dashboard gebruikt worden)
+    const whaleFlow = await fetchExchangeFlows();
+
     const universe = await buildUniverse(mode);
     const funnel = splitFunnels(universe);
 
-    // --- NIEUW: universeMap voor snelle lookups ---
     const universeMap = new Map();
     for (const c of universe) {
       universeMap.set(c.symbol, c);
     }
-    // ----------------------------------------------
 
     const prevPositions = (await kv.get(keyMoonPositions(mode))) || {
       open: [],
@@ -709,9 +862,7 @@ export default async function handler(req, res) {
 
     const survivors = [];
     for (const trade of positions.open) {
-      // --- VERVANGEN: find door Map lookup ---
       const coin = universeMap.get(trade.symbol);
-      // ----------------------------------------
 
       if (!coin) {
         const exitPrice = n(trade.lastPrice || trade.entryPrice);
@@ -881,6 +1032,8 @@ export default async function handler(req, res) {
       funnel,
       portfolio,
       positions,
+      // Nieuwe globale indicator (optioneel)
+      whaleFlow,
     };
 
     await kv.set(keyMoonLatest(mode), latest, { ex: 60 * 60 });
@@ -892,9 +1045,7 @@ export default async function handler(req, res) {
     res.setHeader("content-type", "application/json");
     return res.end(JSON.stringify(latest));
   } catch (e) {
-    // --- VERBETERD: error naar console voor Vercel logs ---
     console.error("MOON SCAN ERROR:", e);
-    // -------------------------------------------------------
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
     return res.end(
@@ -910,7 +1061,6 @@ export default async function handler(req, res) {
 
 function stageToScanFunnel(stage) {
   const s = String(stage || "").toUpperCase();
-
   if (s === "ELITE") return "scan_entry";
   if (s === "ALMOST") return "scan_almost";
   if (s === "BUILDUP") return "scan_buildup";
