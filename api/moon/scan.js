@@ -22,7 +22,7 @@ const BITGET_OB =
   "https://api.bitget.com/api/v2/spot/market/orderbook";
 
 const CG_PER_PAGE = 250;
-const CG_PAGES = 3;
+const CG_PAGES = 4;
 
 function n(x, d = 0) {
   const v = Number(x);
@@ -55,7 +55,7 @@ async function fetchCoins() {
       all.push(...j);
     }
 
-    // CoinGecko free tier: ~50 calls/minuut -> 350ms tussen calls
+    // CoinGecko free tier: ~50 calls/min -> 350ms tussen calls
     await sleep(350);
   }
 
@@ -66,8 +66,9 @@ function basicFilter(c) {
   const vol = n(c.total_volume);
   const cap = n(c.market_cap);
 
-  if (vol < 2000000) return false;
-  if (cap < 5000000) return false;
+  // Ruimere filters: volume >= 300k, market cap >= 1M
+  if (vol < 300000) return false;
+  if (cap < 1000000) return false;
 
   return true;
 }
@@ -82,9 +83,10 @@ function computeVM(c) {
 }
 
 function stageFromScores(conf) {
-  if (conf >= 0.8) return "ELITE";
-  if (conf >= 0.65) return "ALMOST";
-  if (conf >= 0.5) return "BUILDUP";
+  // Aangepaste drempels voor betere vulling
+  if (conf >= 0.75) return "ELITE";
+  if (conf >= 0.55) return "ALMOST";
+  if (conf >= 0.35) return "BUILDUP";
   return "RADAR";
 }
 
@@ -357,10 +359,11 @@ function makePortfolio(mode, positions) {
 async function buildUniverse(mode) {
   const rawCoins = await fetchCoins();
 
+  // Ruimer filteren en grotere universe (300 i.p.v. 80)
   const filtered = rawCoins
     .filter(basicFilter)
     .filter((c) => passModeFilter(c, mode))
-    .slice(0, 80);
+    .slice(0, 300);
 
   const out = [];
 
