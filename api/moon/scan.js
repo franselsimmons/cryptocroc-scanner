@@ -18,7 +18,6 @@ import { computeInstability } from "../../lib/_moon_run_all.js";
 const COINGECKO = "https://api.coingecko.com/api/v3/coins/markets";
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 
-// --- pagina's en per-page (aangepast naar 3 pagina's) ---
 const CG_PER_PAGE = 250;
 const CG_PAGES = 3;
 
@@ -31,11 +30,11 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// --- Telegram helper (optioneel) ---
 async function sendTelegram(msg) {
   const token = process.env.TELEGRAM_TOKEN;
   const chat = process.env.TELEGRAM_CHAT;
   if (!token || !chat) return;
+
   try {
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
@@ -47,7 +46,6 @@ async function sendTelegram(msg) {
   }
 }
 
-// --- Exchange flows / whale activity (optioneel) ---
 async function fetchExchangeFlows() {
   try {
     const r = await fetch("https://api.binance.com/api/v3/ticker/24hr");
@@ -59,11 +57,12 @@ async function fetchExchangeFlows() {
   }
 }
 
-// --- Binance universe (voor volume & momentum) ---
 async function fetchBinanceUniverse() {
   const r = await fetch("https://api.binance.com/api/v3/ticker/24hr");
   if (!r.ok) throw new Error("Binance universe failed");
+
   const data = await r.json();
+
   return data
     .filter((x) => String(x.symbol).endsWith("USDT"))
     .map((x) => ({
@@ -75,11 +74,11 @@ async function fetchBinanceUniverse() {
     .slice(0, 800);
 }
 
-// --- dump/sweep signalen ---
 function sellPressure(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
   if (!bid && !ask) return 0;
+
   const ratio = ask / Math.max(bid, 1);
   if (ratio > 3) return 1;
   if (ratio > 2) return 0.7;
@@ -106,17 +105,18 @@ function liquiditySweep(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
   if (!bid || !ask) return 0;
+
   const imbalance = Math.abs(bid - ask) / Math.max(bid + ask, 1);
   if (imbalance > 0.6) return 1;
   if (imbalance > 0.4) return 0.6;
   return 0;
 }
 
-// --- Binance volume spike ---
 function volumeSpikeBinance(coin) {
   const vol = n(coin.binanceVolume);
   const cap = n(coin.marketCap);
   if (!cap) return 0;
+
   const ratio = vol / cap;
   if (ratio > 0.45) return 1;
   if (ratio > 0.30) return 0.7;
@@ -124,7 +124,6 @@ function volumeSpikeBinance(coin) {
   return 0;
 }
 
-// --- ROBUUSTE FETCH COINS (met retry) ---
 async function fetchCoins() {
   const cg = [];
   let binanceArr = [];
@@ -186,6 +185,7 @@ async function fetchCoins() {
   }
 
   const map = new Map();
+
   for (const c of cg) {
     const sym = String(c.symbol || "").toUpperCase().trim();
     if (!sym) continue;
@@ -202,8 +202,14 @@ async function fetchCoins() {
       volume: n(c.total_volume),
       change24: n(c.price_change_percentage_24h),
       change1h: n(c.price_change_percentage_1h_in_currency),
-      range24: n(c.range24),
-      vm: n(c.vm),
+      range24:
+        n(c.high_24h) > 0 && n(c.low_24h) > 0
+          ? ((n(c.high_24h) - n(c.low_24h)) / ((n(c.high_24h) + n(c.low_24h)) / 2)) * 100
+          : 0,
+      vm:
+        n(c.market_cap) > 0
+          ? n(c.total_volume) / n(c.market_cap)
+          : 0,
       binanceVolume: b?.volume || 0,
       binanceMomentum: b?.priceChange || 0,
     });
@@ -212,13 +218,14 @@ async function fetchCoins() {
   return Array.from(map.values());
 }
 
-// --- basis filters ---
 function basicFilter(c) {
   const vol = n(c.volume);
   const cap = n(c.marketCap);
+
   if (vol < 200000) return false;
   if (cap < 800000) return false;
   if (cap > 800000000) return false;
+
   return true;
 }
 
@@ -229,11 +236,11 @@ function computeVM(c) {
   return vol / cap;
 }
 
-// --- signaalfuncties (identiek) ---
 function computeVolumeSpike(coin) {
   const vol = n(coin.volume);
   const cap = n(coin.marketCap);
   if (!cap) return 0;
+
   const vm = vol / cap;
   if (vm > 0.35) return 1;
   if (vm > 0.25) return 0.7;
@@ -243,12 +250,14 @@ function computeVolumeSpike(coin) {
 
 function computeMomentum(coin) {
   const ch = n(coin.change24);
+
   if (ch > 12) return 1;
   if (ch > 8) return 0.7;
   if (ch > 5) return 0.5;
   if (ch < -12) return -1;
   if (ch < -8) return -0.7;
   if (ch < -5) return -0.5;
+
   return 0;
 }
 
@@ -256,12 +265,15 @@ function whalePressure(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
   if (!bid && !ask) return 0;
+
   const total = bid + ask;
   const ratio = (bid - ask) / Math.max(total, 1);
+
   if (ratio > 0.4) return 1;
   if (ratio > 0.2) return 0.6;
   if (ratio < -0.4) return -1;
   if (ratio < -0.2) return -0.6;
+
   return 0;
 }
 
@@ -269,6 +281,7 @@ function volumeExplosion(coin) {
   const vol = n(coin.volume);
   const cap = n(coin.marketCap);
   if (!cap) return 0;
+
   const vm = vol / cap;
   if (vm > 0.40) return 1;
   if (vm > 0.30) return 0.8;
@@ -279,12 +292,14 @@ function volumeExplosion(coin) {
 
 function momentumAcceleration(coin) {
   const ch = n(coin.change24);
+
   if (ch > 15) return 1;
   if (ch > 10) return 0.8;
   if (ch > 6) return 0.6;
   if (ch < -15) return -1;
   if (ch < -10) return -0.8;
   if (ch < -6) return -0.6;
+
   return 0;
 }
 
@@ -292,11 +307,14 @@ function liquidityTrap(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
   if (!bid || !ask) return 0;
+
   const ratio = bid / Math.max(ask, 1);
+
   if (ratio > 2.5) return 1;
   if (ratio > 1.8) return 0.7;
   if (ratio < 0.4) return -1;
   if (ratio < 0.6) return -0.7;
+
   return 0;
 }
 
@@ -304,22 +322,27 @@ function whalePressure2(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
   if (!bid && !ask) return 0;
+
   const ratio = (bid - ask) / Math.max(bid + ask, 1);
+
   if (ratio > 0.4) return 1;
   if (ratio > 0.25) return 0.7;
   if (ratio < -0.4) return -1;
   if (ratio < -0.25) return -0.7;
+
   return 0;
 }
 
 function binanceMomentum(coin) {
   const m = n(coin.binanceMomentum);
+
   if (m > 10) return 1;
   if (m > 6) return 0.7;
   if (m > 3) return 0.4;
   if (m < -10) return -1;
   if (m < -6) return -0.7;
   if (m < -3) return -0.4;
+
   return 0;
 }
 
@@ -330,7 +353,6 @@ function liquidityVacuum(ob) {
   return 0;
 }
 
-// --- stage bepaling op basis van een kans (0-1) ---
 function stageFromScore(score) {
   if (score >= 0.72) return "ELITE";
   if (score >= 0.55) return "ALMOST";
@@ -415,18 +437,13 @@ function computeConfidence({
 }) {
   let score = 0;
 
-  const ch24 = n(coin.change24);
   const vol = n(coin.volume);
-  const cap = n(coin.marketCap);
-
   const volSpike = computeVolumeSpike(coin);
   const momentum = computeMomentum(coin);
 
   if (vm >= 0.05) score += 0.12;
   if (vm >= 0.12) score += 0.10;
-
   if (vol >= 2000000) score += 0.05;
-
   if (spreadPct <= 0.4) score += 0.08;
 
   score += volSpike * 0.25;
@@ -462,28 +479,16 @@ function makeTradePlan(price, mode, confidence) {
     const sl = p * (1 - riskPct);
     const tp = p * (1 + rewardPct);
     const rr = rewardPct / riskPct;
-
-    return {
-      entry: p,
-      sl,
-      tp,
-      rr,
-    };
+    return { entry: p, sl, tp, rr };
   }
 
   const sl = p * (1 + riskPct);
   const tp = p * (1 - rewardPct);
   const rr = rewardPct / riskPct;
 
-  return {
-    entry: p,
-    sl,
-    tp,
-    rr,
-  };
+  return { entry: p, sl, tp, rr };
 }
 
-// --- normalizeCoin met mode-specifieke scoreProbability ---
 async function normalizeCoin(raw, mode, ob) {
   const price = n(raw.price);
   const vm = computeVM(raw);
@@ -499,7 +504,6 @@ async function normalizeCoin(raw, mode, ob) {
     whale: whaleOld,
   });
 
-  // --- bereken moonProbability (bull) ---
   const volExp = volumeExplosion(raw);
   const momentumAcc = momentumAcceleration(raw);
   const binMomentumVal = binanceMomentum(raw);
@@ -520,7 +524,6 @@ async function normalizeCoin(raw, mode, ob) {
 
   const moonProbability = Math.max(0, Math.min(1, rawMoonProbability));
 
-  // --- dumpProbability (bear) met iets zwaardere gewichten ---
   const sellP = ob ? sellPressure(ob) : 0;
   const crash = crashMomentum(raw);
   const collapse = ob ? liquidityCollapse(ob) : 0;
@@ -535,7 +538,6 @@ async function normalizeCoin(raw, mode, ob) {
 
   const dumpProbability = Math.max(0, Math.min(1, rawDumpProbability));
 
-  // --- kies de juiste kans voor de stage (bull vs bear) ---
   const scoreProbability = mode === "bear" ? dumpProbability : moonProbability;
   const stage = stageFromScore(scoreProbability);
 
@@ -559,6 +561,7 @@ async function normalizeCoin(raw, mode, ob) {
     marketCap: n(raw.marketCap),
     volume: n(raw.volume),
     change24: n(raw.change24),
+    change1h: n(raw.change1h),
     vm,
     confidence: Number(confidence.toFixed(4)),
     stage,
@@ -575,7 +578,7 @@ async function normalizeCoin(raw, mode, ob) {
     edgeScore: Number((confidence * 100).toFixed(1)),
     moonProbability: Number(moonProbability.toFixed(3)),
     dumpProbability: Number(dumpProbability.toFixed(3)),
-    scoreProbability: Number(scoreProbability.toFixed(3)), // voor debug/ranking
+    scoreProbability: Number(scoreProbability.toFixed(3)),
     tradePlan: tradePlan
       ? {
           entry: Number(tradePlan.entry.toFixed(8)),
@@ -587,7 +590,6 @@ async function normalizeCoin(raw, mode, ob) {
   };
 }
 
-// --- mode-specifieke filter ---
 function passModeFilter(c, mode) {
   const ch24 = n(c.change24);
   const vol = n(c.volume);
@@ -597,15 +599,9 @@ function passModeFilter(c, mode) {
     return ch24 > -2;
   }
 
-  // bear: strenger
-  return (
-    ch24 < -1.5 &&
-    vol >= 300000 &&
-    cap >= 800000
-  );
+  return ch24 < -1.5 && vol >= 300000 && cap >= 800000;
 }
 
-// --- splitFunnels met mode-specifieke sorteervolgorde ---
 function splitFunnels(coins, mode) {
   const funnel = {
     elite: [],
@@ -670,7 +666,6 @@ function makePortfolio(mode, positions) {
   };
 }
 
-// --- bouw het universum (max 180 coins) ---
 async function buildUniverse(mode) {
   const rawCoins = await fetchCoins();
 
@@ -683,6 +678,7 @@ async function buildUniverse(mode) {
 
   for (const coin of filtered) {
     let ob = null;
+
     if (coin.volume > 8000000) {
       const symbol = `${String(coin.symbol || "").toUpperCase()}USDT`;
       ob = await fetchOrderbook(symbol);
@@ -705,23 +701,22 @@ async function buildUniverse(mode) {
   return out;
 }
 
-// --- MAIN HANDLER ---
 export default async function handler(req, res) {
   let mode = "bull";
 
   try {
     if (!requireSecret(req, res)) return;
 
-    mode = String(req.query?.mode || "bull").toLowerCase() === "bear"
-      ? "bear"
-      : "bull";
+    mode =
+      String(req.query?.mode || "bull").toLowerCase() === "bear"
+        ? "bear"
+        : "bull";
 
     const now = Date.now();
-
     const whaleFlow = await fetchExchangeFlows();
 
     const universe = await buildUniverse(mode);
-    const funnel = splitFunnels(universe, mode);   // <- mode meegeven
+    const funnel = splitFunnels(universe, mode);
 
     const universeMap = new Map();
     for (const c of universe) {
@@ -741,7 +736,6 @@ export default async function handler(req, res) {
     const prevState = (await kv.get(keyMoonState(mode))) || {};
     const nextState = {};
 
-    // --- state updates & alerts ---
     for (const coin of universe) {
       const prev = prevState?.[coin.symbol] || null;
       const prevStage = String(prev?.stage || "");
@@ -764,6 +758,7 @@ export default async function handler(req, res) {
           price: coin.price,
           confidence: coin.confidence,
           change24: coin.change24,
+          change1h: coin.change1h,
           ob: coin.ob,
           tradePlan: coin.tradePlan,
           btcState: "NEUTRAL",
@@ -800,6 +795,7 @@ export default async function handler(req, res) {
           price: coin.price,
           confidence: coin.confidence,
           change24: coin.change24,
+          change1h: coin.change1h,
           ob: coin.ob,
           tradePlan: coin.tradePlan,
           btcState: "NEUTRAL",
@@ -818,7 +814,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- open posities beheren (identiek) ---
     const openMap = new Map(
       positions.open.map((p) => [String(p.symbol || "").toUpperCase(), p])
     );
@@ -855,6 +850,7 @@ export default async function handler(req, res) {
         price: coin.price,
         confidence: coin.confidence,
         change24: coin.change24,
+        change1h: coin.change1h,
         ob: coin.ob,
         tradePlan: coin.tradePlan,
         btcState: "NEUTRAL",
@@ -863,6 +859,7 @@ export default async function handler(req, res) {
     }
 
     const survivors = [];
+
     for (const trade of positions.open) {
       const coin = universeMap.get(trade.symbol);
 
@@ -909,19 +906,11 @@ export default async function handler(req, res) {
 
       const hitTp =
         trade.tp != null &&
-        (
-          mode === "bull"
-            ? coin.price >= n(trade.tp)
-            : coin.price <= n(trade.tp)
-        );
+        (mode === "bull" ? coin.price >= n(trade.tp) : coin.price <= n(trade.tp));
 
       const hitSl =
         trade.sl != null &&
-        (
-          mode === "bull"
-            ? coin.price <= n(trade.sl)
-            : coin.price >= n(trade.sl)
-        );
+        (mode === "bull" ? coin.price <= n(trade.sl) : coin.price >= n(trade.sl));
 
       if (hitTp) {
         const closed = {
@@ -950,6 +939,7 @@ export default async function handler(req, res) {
           price: coin.price,
           confidence: coin.confidence,
           change24: coin.change24,
+          change1h: coin.change1h,
           ob: coin.ob,
           tradePlan: coin.tradePlan,
           btcState: "NEUTRAL",
@@ -986,6 +976,7 @@ export default async function handler(req, res) {
           price: coin.price,
           confidence: coin.confidence,
           change24: coin.change24,
+          change1h: coin.change1h,
           ob: coin.ob,
           tradePlan: coin.tradePlan,
           btcState: "NEUTRAL",
@@ -1003,6 +994,7 @@ export default async function handler(req, res) {
         price: coin.price,
         confidence: coin.confidence,
         change24: coin.change24,
+        change1h: coin.change1h,
         ob: coin.ob,
         tradePlan: coin.tradePlan,
         btcState: "NEUTRAL",
