@@ -4,66 +4,48 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Moon Funnel</title>
-  <link rel="stylesheet" href="/moon.css" />
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/main.css" />
 </head>
 <body>
-  <main class="page">
-    <section class="hero">
-      <div class="hero-top">
-        <div>
-          <h1 class="page-title">🌙 Moon Funnel</h1>
-          <p class="subtitle">
-            Vroege moonshots en dump setups. Zelfde funnel-logica als main, maar gericht op explosieve bewegingen.
-          </p>
-        </div>
+  <div id="app"></div>
 
-        <div class="hero-side">
-          <div id="moon-status" class="status-line">Status: laden...</div>
-          <div id="moon-meta" class="hero-meta">Mode: BULL</div>
-        </div>
-      </div>
+  <script>
+    window.SCANNER_PAGE_CONFIG = {
+      kind: "moon",
+      title: "🌙 Moon Funnel",
+      subtitle:
+        "Vroege moonshots en dump setups. Zelfde funnel-logica als main, maar gericht op explosieve bewegingen.",
+      api: "/api/moon/public-latest",
+      allowManualScan: false,
+      modeDefault: "bull",
+      modeLabels: {
+        bull: "BULL",
+        bear: "BEAR",
+      },
+      stageMap: {
+        elite: "entry",
+        almost: "almost",
+        buildup: "buildup",
+        radar: "radar",
+      },
+      showSections: {
+        entry: true,
+        hold: false,
+        sell: false,
+        almost: true,
+        buildup: true,
+        radar: true,
+      },
+      emptyLabels: {
+        entry: "Geen coins.",
+        almost: "Geen coins.",
+        buildup: "Geen coins.",
+        radar: "Geen coins.",
+      },
+    };
+  </script>
 
-      <div class="actions">
-        <button id="btn-bull" class="btn active">BULL</button>
-        <button id="btn-bear" class="btn">BEAR</button>
-        <button id="btn-refresh" class="btn secondary">Refresh</button>
-        <button id="btn-scan" class="btn danger">Scan nu</button>
-      </div>
-    </section>
-
-    <section class="cards">
-      <article class="card">
-        <h2>ELITE</h2>
-        <p class="desc">Hoogste kwaliteit setups. Meest selectief.</p>
-        <div id="moon-elite-list" class="coin-list"></div>
-      </article>
-
-      <article class="card">
-        <h2>ALMOST</h2>
-        <p class="desc">Sterke kandidaten die dicht tegen ELITE aan zitten.</p>
-        <div id="moon-almost-list" class="coin-list"></div>
-      </article>
-
-      <article class="card">
-        <h2>BUILDUP</h2>
-        <p class="desc">Momentum is bezig op te bouwen.</p>
-        <div id="moon-buildup-list" class="coin-list"></div>
-      </article>
-
-      <article class="card">
-        <h2>RADAR</h2>
-        <p class="desc">Brede watchlist met coins die je systeem volgt.</p>
-        <div id="moon-radar-list" class="coin-list"></div>
-      </article>
-
-      <article class="card">
-        <h2>BTC / Portfolio</h2>
-        <p class="desc">Globale marktrichting en Moon portfolio-overzicht.</p>
-        <div id="moon-portfolio"></div>
-      </article>
-    </section>
-  </main>
-
-  <script src="/moon.js"></script>
+  <script src="/main.js"></script>
 </body>
 </html>
