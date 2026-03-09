@@ -2,50 +2,88 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Moon Funnel</title>
-  <link rel="stylesheet" href="/styles.css" />
-  <link rel="stylesheet" href="/main.css" />
+  <link rel="stylesheet" href="/moon.css" />
 </head>
 <body>
-  <div id="app"></div>
+  <main class="page">
+    <section class="hero-card">
+      <h1 class="hero-title">🌙 Moon Funnel</h1>
 
-  <script>
-    window.SCANNER_PAGE_CONFIG = {
-      kind: "moon",
-      title: "🌙 Moon Funnel",
-      subtitle:
-        "Vroege moonshots en dump setups. Zelfde funnel-logica als main, maar gericht op explosieve bewegingen.",
-      api: "/api/moon/public-latest",
-      allowManualScan: false,
-      modeDefault: "bull",
-      modeLabels: {
-        bull: "BULL",
-        bear: "BEAR",
-      },
-      stageMap: {
-        elite: "entry",
-        almost: "almost",
-        buildup: "buildup",
-        radar: "radar",
-      },
-      showSections: {
-        entry: true,
-        hold: false,
-        sell: false,
-        almost: true,
-        buildup: true,
-        radar: true,
-      },
-      emptyLabels: {
-        entry: "Geen coins.",
-        almost: "Geen coins.",
-        buildup: "Geen coins.",
-        radar: "Geen coins.",
-      },
-    };
-  </script>
+      <p class="hero-copy">
+        Vroege moonshots en dump setups.<br />
+        Zelfde funnel-logica als main, maar gericht op explosieve bewegingen.
+      </p>
 
-  <script src="/main.js"></script>
+      <div id="moon-status" class="hero-status">Status: laden...</div>
+
+      <div id="moon-substatus" class="hero-substatus">
+        Mode: BULL • BTC: - • Whale flow: -
+      </div>
+
+      <div class="hero-actions">
+        <button id="btn-bull" class="mode-btn active" type="button">BULL</button>
+        <button id="btn-bear" class="mode-btn" type="button">BEAR</button>
+        <button id="btn-refresh" class="mode-btn" type="button">Refresh</button>
+        <button id="btn-scan" class="mode-btn danger" type="button">Scan nu</button>
+      </div>
+
+      <a href="/" class="back-link">⬅ Main</a>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">ELITE</h2>
+      <p class="panel-desc">Hoogste kwaliteit setups. Meest selectief.</p>
+      <div id="moon-elite-list" class="coin-list"></div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">ALMOST</h2>
+      <p class="panel-desc">Bijna klaar — mist nog 1–2 checks.</p>
+      <div id="moon-almost-list" class="coin-list"></div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">BUILDUP</h2>
+      <p class="panel-desc">In opbouw. Goed om klaar te zetten.</p>
+      <div id="moon-buildup-list" class="coin-list"></div>
+    </section>
+
+    <section class="panel">
+      <h2 class="panel-title">RADAR</h2>
+      <p class="panel-desc">Vroege watchlist met meer ruis.</p>
+      <div id="moon-radar-list" class="coin-list"></div>
+    </section>
+  </main>
+
+  <div id="moon-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" data-close="1"></div>
+
+    <div class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="moon-modal-title">
+      <div class="modal-head">
+        <div>
+          <h3 id="moon-modal-title" class="modal-title">Coin details</h3>
+          <div id="moon-modal-subtitle" class="modal-subtitle"></div>
+        </div>
+
+        <button id="moon-modal-close" class="modal-close" type="button">Sluiten</button>
+      </div>
+
+      <div class="tab-row">
+        <button class="tab-btn active" data-tab="actie" type="button">Actie</button>
+        <button class="tab-btn" data-tab="waarom" type="button">Waarom</button>
+        <button class="tab-btn" data-tab="liquidity" type="button">Liquidity</button>
+        <button class="tab-btn" data-tab="details" type="button">Details</button>
+      </div>
+
+      <div id="moon-tab-actie" class="tab-panel"></div>
+      <div id="moon-tab-waarom" class="tab-panel hidden"></div>
+      <div id="moon-tab-liquidity" class="tab-panel hidden"></div>
+      <div id="moon-tab-details" class="tab-panel hidden"></div>
+    </div>
+  </div>
+
+  <script src="/moon.js"></script>
 </body>
 </html>
