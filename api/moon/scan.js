@@ -6,7 +6,6 @@ import {
   keyMoonPositions,
   keyMoonState,
   requireSecret,
-  fetchCoinGeckoTopCached,          // FIX 2: gebruik dezelfde CoinGecko functie als in core
 } from "../../lib/_moon_core.js";
 
 import {
@@ -16,7 +15,12 @@ import {
 
 import { computeInstability } from "../../lib/_moon_run_all.js";
 
+const COINGECKO = "https://api.coingecko.com/api/v3/coins/markets";
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
+
+// --- FIX 1: Verminder aantal pagina's naar 3 ---
+const CG_PER_PAGE = 250;
+const CG_PAGES = 3;                    // was 4, nu 3
 
 function n(x, d = 0) {
   const v = Number(x);
@@ -45,13 +49,12 @@ async function sendTelegram(msg) {
 }
 // ----------------------------------------------------------------------------
 
-// --- Exchange flows / whale activity (global risk) ---------------------------
+// --- Exchange flows / whale activity -----------------------------------------
 async function fetchExchangeFlows() {
   try {
     const r = await fetch("https://api.binance.com/api/v3/ticker/24hr");
     if (!r.ok) return 0;
     const data = await r.json();
-    // Tel paren met quoteVolume > 200M USD
     return data.filter((x) => Number(x.quoteVolume) > 200_000_000).length;
   } catch {
     return 0;
@@ -76,7 +79,7 @@ async function fetchBinanceUniverse() {
 }
 // ----------------------------------------------------------------------------
 
-// --- Dump signals ------------------------------------------------------------
+// --- Dump & sweep signalen (ongewijzigd) ------------------------------------
 function sellPressure(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
@@ -103,7 +106,6 @@ function liquidityCollapse(ob) {
   return 0;
 }
 
-// --- Liquidity sweep ---------------------------------------------------------
 function liquiditySweep(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
@@ -127,12 +129,11 @@ function volumeSpikeBinance(coin) {
   return 0;
 }
 
-// --- fetchCoins met CoinGecko (via core) + Binance data ---------------------
+// --- FIX 2: ROBUUSTE fetchCoins MET RETRIES EN GRACEFUL FAILURE -------------
 async function fetchCoins() {
-  // FIX 2: gebruik de gecachte CoinGecko top van _moon_core
-  const cgCoins = await fetchCoinGeckoTopCached();
-
+  const cg = [];
   let binanceArr = [];
+
   try {
     binanceArr = await fetchBinanceUniverse();
   } catch (e) {
@@ -145,19 +146,78 @@ async function fetchCoins() {
     binanceMap.set(b.symbol, b);
   }
 
-  const result = [];
-  for (const c of cgCoins) {
+  for (let page = 1; page <= CG_PAGES; page++) {
+    const url =
+      `${COINGECKO}?vs_currency=usd&order=volume_desc` +
+      `&per_page=${CG_PER_PAGE}&page=${page}` +
+      `&sparkline=false&price_change_percentage=24h`;
+
+    let ok = false;
+    let lastErr = "";
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const r = await fetch(url, {
+          headers: { accept: "application/json" },
+        });
+
+        if (r.ok) {
+          const j = await r.json();
+          if (Array.isArray(j)) {
+            cg.push(...j);
+          }
+          ok = true;
+          break;
+        }
+
+        lastErr = `status ${r.status}`;
+      } catch (e) {
+        lastErr = String(e?.message || e);
+      }
+
+      await sleep(1200); // wacht tussen retries
+    }
+
+    if (!ok) {
+      console.error(`CoinGecko page failed: ${page} (${lastErr})`);
+      // stop netjes i.p.v. hele scan te laten crashen
+      break;
+    }
+
+    await sleep(1200); // wacht tussen pagina's
+  }
+
+  if (!cg.length) {
+    throw new Error("CoinGecko returned 0 coins");
+  }
+
+  const map = new Map();
+  for (const c of cg) {
     const sym = String(c.symbol || "").toUpperCase().trim();
     if (!sym) continue;
+
     const b = binanceMap.get(sym);
-    result.push({
-      ...c,
+
+    map.set(sym, {
+      id: c.id,
+      symbol: sym,
+      name: c.name || "",
+      image: c.image || "",
+      price: n(c.current_price),
+      marketCap: n(c.market_cap),
+      volume: n(c.total_volume),
+      change24: n(c.price_change_percentage_24h),   // voor filters
+      change1h: n(c.price_change_percentage_1h_in_currency),
+      range24: n(c.range24),                         // kan 0 zijn
+      vm: n(c.vm),                                    // kan 0 zijn
       binanceVolume: b?.volume || 0,
       binanceMomentum: b?.priceChange || 0,
     });
   }
-  return result;
+
+  return Array.from(map.values());
 }
+// ----------------------------------------------------------------------------
 
 // --- Basis filters -----------------------------------------------------------
 function basicFilter(c) {
@@ -176,7 +236,7 @@ function computeVM(c) {
   return vol / cap;
 }
 
-// --- Signaalfuncties ---------------------------------------------------------
+// --- Signaalfuncties (identiek aan jouw code) -------------------------------
 function computeVolumeSpike(coin) {
   const vol = n(coin.volume);
   const cap = n(coin.marketCap);
@@ -430,7 +490,6 @@ function makeTradePlan(price, mode, confidence) {
   };
 }
 
-// --- normalizeCoin (zonder 5m momentum) -------------------------------------
 async function normalizeCoin(raw, mode, ob) {
   const price = n(raw.price);
   const vm = computeVM(raw);
@@ -459,53 +518,43 @@ async function normalizeCoin(raw, mode, ob) {
 
   const tradePlan = makeTradePlan(price, mode, confidence);
 
-  // Bestaande signalen
   const volExp = volumeExplosion(raw);
   const momentumAcc = momentumAcceleration(raw);
   const trap = ob ? liquidityTrap(ob) : 0;
   const whaleNew = ob ? whalePressure2(ob) : 0;
-  const binMomentum = binanceMomentum(raw);
+  const binMomentumVal = binanceMomentum(raw);
   const vacuum = ob ? liquidityVacuum(ob) : 0;
-
-  // FIX 4: 5-min momentum verwijderd
   const volSpikeBn = volumeSpikeBinance(raw);
-
-  // Dump signalen
   const sellP = ob ? sellPressure(ob) : 0;
   const crash = crashMomentum(raw);
   const collapse = ob ? liquidityCollapse(ob) : 0;
-
-  // Liquidity sweep
   const sweep = ob ? liquiditySweep(ob) : 0;
 
-  // Pump probability (zonder shortMomentum)
   const rawMoonProbability =
     confidence * 0.28 +
     volExp * 0.18 +
     volSpikeBn * 0.16 +
     Math.max(0, momentumAcc) * 0.12 +
-    // shortMomentum weg
-    Math.max(0, binMomentum) * 0.08 +
+    Math.max(0, binMomentumVal) * 0.08 +
     Math.abs(whaleNew) * 0.04 +
     vacuum * 0.02 +
     sweep * 0.02;
 
   const moonProbability = Math.max(0, Math.min(1, rawMoonProbability));
 
-  // Dump probability
   const rawDumpProbability =
     Math.abs(crash) * 0.30 +
     sellP * 0.25 +
     collapse * 0.20 +
     Math.abs(whaleNew) * 0.15 +
-    Math.abs(binMomentum < 0 ? binMomentum : 0) * 0.10 +
+    Math.abs(binMomentumVal < 0 ? binMomentumVal : 0) * 0.10 +
     sweep * 0.05;
 
   const dumpProbability = Math.max(0, Math.min(1, rawDumpProbability));
 
   return {
     id: raw.id,
-    symbol: String(raw.symbol || "").toUpperCase(),
+    symbol: raw.symbol,
     name: raw.name || "",
     image: raw.image || "",
     price,
@@ -540,7 +589,7 @@ async function normalizeCoin(raw, mode, ob) {
 }
 
 function passModeFilter(c, mode) {
-  const ch24 = n(c.change24);
+  const ch24 = n(c.change24);  // gebruik change24 i.p.v. price_change_percentage_24h
   if (mode === "bull") return ch24 > -2;
   return ch24 < 2;
 }
@@ -604,14 +653,14 @@ function makePortfolio(mode, positions) {
   };
 }
 
+// --- FIX 3: VERLAAG AANTAL COINS NAAR 180 ------------------------------------
 async function buildUniverse(mode) {
   const rawCoins = await fetchCoins();
 
-  // FIX 3: verlaagd naar 200 i.p.v. 250
   const filtered = rawCoins
     .filter(basicFilter)
     .filter((c) => passModeFilter(c, mode))
-    .slice(0, 200);
+    .slice(0, 180);            // was 250, nu 180
 
   const out = [];
 
@@ -633,14 +682,14 @@ async function buildUniverse(mode) {
     const normalized = await normalizeCoin(coin, mode, ob);
     out.push(normalized);
 
-    // FIX 6: verwijder de oude alerts op moon/dump probability
-    // (hier komen later alerts op stage change, in de hoofdhandler)
-    await sleep(30);
+    await sleep(35);  // iets rustiger aan
   }
 
   return out;
 }
+// ----------------------------------------------------------------------------
 
+// --- MAIN HANDLER -----------------------------------------------------------
 export default async function handler(req, res) {
   let mode = "bull";
 
@@ -676,7 +725,6 @@ export default async function handler(req, res) {
     const prevState = (await kv.get(keyMoonState(mode))) || {};
     const nextState = {};
 
-    // FIX 6: alerts bij stage change
     for (const coin of universe) {
       const prev = prevState?.[coin.symbol] || null;
       const prevStage = String(prev?.stage || "");
@@ -691,7 +739,6 @@ export default async function handler(req, res) {
       };
 
       if (!prevStage) {
-        // Nieuw in scan
         await pushEvent(stageToScanFunnel(stage), {
           symbol: coin.symbol,
           mode,
@@ -714,7 +761,7 @@ export default async function handler(req, res) {
           reason: "new_in_scan",
         });
 
-        // Alleen Telegram bij ALMOST of ELITE bij eerste verschijning (optioneel)
+        // Alleen bij ALMOST/ELITE bij eerste verschijning
         if (stage === "ALMOST" || stage === "ELITE") {
           await sendTelegram(
             `🆕 Nieuwe ${stage} munt: ${coin.symbol}\nPrijs: $${coin.price}\nConfidence: ${coin.confidence}`
@@ -743,7 +790,7 @@ export default async function handler(req, res) {
           reason: "stage_changed",
         });
 
-        // FIX 6: Telegram alerts bij specifieke overgangen
+        // Telegram alerts bij specifieke overgangen
         if (prevStage === "BUILDUP" && stage === "ALMOST") {
           await sendTelegram(
             `🚀 BUILDUP → ALMOST: ${coin.symbol}\nPrijs: $${coin.price}\nConfidence: ${coin.confidence}`
