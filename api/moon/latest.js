@@ -1,5 +1,3 @@
-// /api/moon/latest.js
-
 import { kv } from "@vercel/kv";
 import {
   RUNTIME_CONFIG,
