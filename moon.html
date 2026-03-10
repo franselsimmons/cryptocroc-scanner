@@ -2,88 +2,122 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Moon Funnel</title>
   <link rel="stylesheet" href="/moon.css" />
+  <style>
+    :root{ --accent:#3d7cff; }
+  </style>
 </head>
 <body>
-  <main class="page">
-    <section class="hero-card">
-      <h1 class="hero-title">🌙 Moon Funnel</h1>
 
-      <p class="hero-copy">
-        Vroege moonshots en dump setups.<br />
-        Zelfde funnel-logica als main, maar gericht op explosieve bewegingen.
-      </p>
+  <header class="topbar">
+    <div class="left">
+      <div class="brand">🌙 Moon Funnel</div>
+      <div class="sub" id="statusLine">Status: laden…</div>
+    </div>
 
-      <div id="moon-status" class="hero-status">Status: laden...</div>
+    <div class="right">
+      <button id="modeBull" class="btn">BULL</button>
+      <button id="modeBear" class="btn">BEAR</button>
+      <a class="btn" href="/">⬅ Main</a>
+    </div>
+  </header>
 
-      <div id="moon-substatus" class="hero-substatus">
-        Mode: BULL • BTC: - • Whale flow: -
+  <main class="grid">
+
+    <!-- ELITE -->
+    <section class="panel">
+      <div class="panelTitle">ELITE</div>
+      <div class="panelHint">
+        Hoogste kwaliteit moon setups. Meest selectief.
       </div>
+      <div class="stageBody" id="stageElite"></div>
+    </section>
 
-      <div class="hero-actions">
-        <button id="btn-bull" class="mode-btn active" type="button">BULL</button>
-        <button id="btn-bear" class="mode-btn" type="button">BEAR</button>
-        <button id="btn-refresh" class="mode-btn" type="button">Refresh</button>
-        <button id="btn-scan" class="mode-btn danger" type="button">Scan nu</button>
+    <!-- ALMOST -->
+    <section class="panel">
+      <div class="panelTitle">ALMOST</div>
+      <div class="panelHint">
+        Bijna klaar — mist nog 1–2 checks.
       </div>
-
-      <a href="/" class="back-link">⬅ Main</a>
+      <div class="stageBody" id="stageAlmost"></div>
     </section>
 
+    <!-- BUILDUP -->
     <section class="panel">
-      <h2 class="panel-title">ELITE</h2>
-      <p class="panel-desc">Hoogste kwaliteit setups. Meest selectief.</p>
-      <div id="moon-elite-list" class="coin-list"></div>
+      <div class="panelTitle">BUILDUP</div>
+      <div class="panelHint">
+        Opbouwfase — volume, momentum en confidence lopen op.
+      </div>
+      <div class="stageBody" id="stageBuildup"></div>
     </section>
 
+    <!-- RADAR -->
     <section class="panel">
-      <h2 class="panel-title">ALMOST</h2>
-      <p class="panel-desc">Bijna klaar — mist nog 1–2 checks.</p>
-      <div id="moon-almost-list" class="coin-list"></div>
+      <div class="panelTitle">RADAR</div>
+      <div class="panelHint">
+        Eerste instroom — vroeg, meer ruis, wel interessant om te volgen.
+      </div>
+      <div class="stageBody" id="stageRadar"></div>
     </section>
 
-    <section class="panel">
-      <h2 class="panel-title">BUILDUP</h2>
-      <p class="panel-desc">In opbouw. Goed om klaar te zetten.</p>
-      <div id="moon-buildup-list" class="coin-list"></div>
-    </section>
-
-    <section class="panel">
-      <h2 class="panel-title">RADAR</h2>
-      <p class="panel-desc">Vroege watchlist met meer ruis.</p>
-      <div id="moon-radar-list" class="coin-list"></div>
-    </section>
   </main>
 
-  <div id="moon-modal" class="modal hidden" aria-hidden="true">
-    <div class="modal-backdrop" data-close="1"></div>
+  <!-- MODAL -->
+  <div class="modal hidden" id="modal">
+    <div class="modalCard">
 
-    <div class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="moon-modal-title">
-      <div class="modal-head">
+      <div class="modalTop">
         <div>
-          <h3 id="moon-modal-title" class="modal-title">Coin details</h3>
-          <div id="moon-modal-subtitle" class="modal-subtitle"></div>
+          <div class="modalTitle" id="mTitle">—</div>
+          <div class="modalSub" id="mSub">—</div>
+        </div>
+        <button class="btn" id="mClose">Sluiten</button>
+      </div>
+
+      <div class="modalTabs">
+        <button class="tabBtn active" id="tabAction">Actie</button>
+        <button class="tabBtn" id="tabWhy">Waarom</button>
+        <button class="tabBtn" id="tabLiq">Liquidity</button>
+        <button class="tabBtn" id="tabDebug">Details</button>
+      </div>
+
+      <div class="modalBody">
+
+        <div class="modalBox" id="boxAction">
+          <div class="modalBoxTitle">Wat moet je doen</div>
+          <div class="actionHero">
+            <div class="actionTitle" id="mActionTitle">—</div>
+            <div class="actionSub" id="mActionSub">—</div>
+          </div>
+          <div class="kv" id="mActionKv"></div>
+          <div class="actionNote">
+            Dit is een Moon template-plan. In RADAR / BUILDUP / ALMOST is dit vooral
+            “watchen” of “klaarzetten”, niet blind instappen.
+          </div>
         </div>
 
-        <button id="moon-modal-close" class="modal-close" type="button">Sluiten</button>
-      </div>
+        <div class="modalBox" id="boxWhy">
+          <div class="modalBoxTitle">Waarom staat hij hier</div>
+          <div class="checkList" id="mWhyList"></div>
+        </div>
 
-      <div class="tab-row">
-        <button class="tab-btn active" data-tab="actie" type="button">Actie</button>
-        <button class="tab-btn" data-tab="waarom" type="button">Waarom</button>
-        <button class="tab-btn" data-tab="liquidity" type="button">Liquidity</button>
-        <button class="tab-btn" data-tab="details" type="button">Details</button>
-      </div>
+        <div class="modalBox hidden" id="boxLiq">
+          <div class="modalBoxTitle">Liquidity (Orderbook + Depth)</div>
+          <div class="checkList" id="mLiqList"></div>
+        </div>
 
-      <div id="moon-tab-actie" class="tab-panel"></div>
-      <div id="moon-tab-waarom" class="tab-panel hidden"></div>
-      <div id="moon-tab-liquidity" class="tab-panel hidden"></div>
-      <div id="moon-tab-details" class="tab-panel hidden"></div>
+        <div class="modalBox hidden" id="boxDebug">
+          <div class="modalBoxTitle">Debug (coin object)</div>
+          <pre class="modalPre" id="mDebug">—</pre>
+        </div>
+
+      </div>
     </div>
   </div>
 
   <script src="/moon.js"></script>
+
 </body>
 </html>
