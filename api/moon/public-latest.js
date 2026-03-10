@@ -1,51 +1,46 @@
+// /api/moon/latest.js
+
 import { kv } from "@vercel/kv";
 import {
+  RUNTIME_CONFIG,
+  requireSecret,
   keyMoonLatest,
-  keyMoonPortfolio,
-  keyMoonPositions,
 } from "../../lib/_moon_core.js";
 
-export const config = { runtime: "nodejs" };
+export const config = RUNTIME_CONFIG;
 
-function safeBase(mode) {
-  return {
-    ok: true,
-    ts: Date.now(),
-    mode,
-    btc: null,
-    counts: { radar: 0, buildup: 0, almost: 0, elite: 0 },
-    funnel: { radar: [], buildup: [], almost: [], elite: [] },
-    note: "No data yet. Wait for cron scan.",
-  };
+function send(res, code, obj) {
+  res.statusCode = code;
+  res.setHeader("content-type", "application/json; charset=utf-8");
+  res.setHeader("cache-control", "no-store");
+  return res.end(JSON.stringify(obj));
+}
+
+function getMode(req) {
+  return String(req.query?.mode || "bull").toLowerCase() === "bear"
+    ? "bear"
+    : "bull";
 }
 
 export default async function handler(req, res) {
   try {
-    const modeRaw = String(req.query?.mode || "bull").toLowerCase();
-    const mode = modeRaw === "bear" ? "bear" : "bull";
+    if (!requireSecret(req, res)) return;
 
-    const latest = (await kv.get(keyMoonLatest(mode))) || safeBase(mode);
-    const portfolio = (await kv.get(keyMoonPortfolio(mode))) || null;
-    const positions = (await kv.get(keyMoonPositions(mode))) || null;
+    const mode = getMode(req);
+    const key = keyMoonLatest(mode);
+    const data = await kv.get(key);
 
-    const out = {
-      ...latest,
-      portfolio: latest.portfolio || portfolio,
-      positions: positions || null,
-    };
-
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    return res.end(JSON.stringify(out));
+    return send(res, 200, {
+      ok: true,
+      mode,
+      key,
+      hasData: !!data,
+      data: data || null,
+    });
   } catch (e) {
-    res.statusCode = 500;
-    res.setHeader("content-type", "application/json");
-    return res.end(
-      JSON.stringify({
-        ok: false,
-        where: "api/moon/public-latest.js",
-        error: String(e?.message || e),
-      })
-    );
+    return send(res, 500, {
+      ok: false,
+      error: String(e?.message || e),
+    });
   }
 }
