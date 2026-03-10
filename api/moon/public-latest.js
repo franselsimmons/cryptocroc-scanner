@@ -1,9 +1,8 @@
-// /api/moon/latest.js
+// /api/moon/public-latest.js
 
 import { kv } from "@vercel/kv";
 import {
   RUNTIME_CONFIG,
-  requireSecret,
   keyMoonLatest,
 } from "../../lib/_moon_core.js";
 
@@ -17,25 +16,51 @@ function send(res, code, obj) {
 }
 
 function getMode(req) {
-  return String(req.query?.mode || "bull").toLowerCase() === "bear"
-    ? "bear"
-    : "bull";
+  const m = String(req.query?.mode || "bull").toLowerCase();
+  return m === "bear" ? "bear" : "bull";
+}
+
+function empty(mode) {
+  return {
+    ok: true,
+    ts: Date.now(),
+    mode,
+    btc: { state: "NEUTRAL", chg24: 0, range24: 0 },
+    counts: { elite: 0, almost: 0, buildup: 0, radar: 0 },
+    funnel: {
+      elite: [],
+      almost: [],
+      buildup: [],
+      radar: [],
+    },
+    whaleFlow: 0,
+  };
 }
 
 export default async function handler(req, res) {
   try {
-    if (!requireSecret(req, res)) return;
-
     const mode = getMode(req);
     const key = keyMoonLatest(mode);
+
     const data = await kv.get(key);
+
+    if (!data) {
+      return send(res, 200, empty(mode));
+    }
 
     return send(res, 200, {
       ok: true,
+      ts: Number(data.ts || 0) || Date.now(),
       mode,
-      key,
-      hasData: !!data,
-      data: data || null,
+      btc: data.btc || { state: "NEUTRAL" },
+      counts: data.counts || {},
+      funnel: {
+        elite: data?.funnel?.elite || [],
+        almost: data?.funnel?.almost || [],
+        buildup: data?.funnel?.buildup || [],
+        radar: data?.funnel?.radar || [],
+      },
+      whaleFlow: Number(data.whaleFlow || 0),
     });
   } catch (e) {
     return send(res, 500, {
