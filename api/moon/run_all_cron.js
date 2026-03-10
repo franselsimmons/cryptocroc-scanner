@@ -1,44 +1,61 @@
+// /api/moon/run_all_cron.js
+
+import { RUNTIME_CONFIG, requireSecret } from "../../lib/_moon_core.js";
 import { runMoonAll } from "../../lib/_moon_run_all.js";
 
-export const config = { runtime: "nodejs" };
+export const config = RUNTIME_CONFIG;
 
-const fetchFn = globalThis.fetch;
+function getBaseFromReq(req) {
+  const xfProto = String(req.headers["x-forwarded-proto"] || "").trim();
+  const proto = xfProto || "https";
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "").trim();
+
+  if (!host) {
+    throw new Error("Missing host header");
+  }
+
+  return `${proto}://${host}`.replace(/\/+$/, "");
+}
 
 export default async function handler(req, res) {
   try {
-    const { token } = req.query;
+    if (!requireSecret(req, res)) return;
 
-    if (!token || token !== process.env.CRON_SECRET) {
-      res.statusCode = 401;
+    const base = getBaseFromReq(req);
+    const token = String(process.env.CRON_SECRET || "");
+
+    if (!token) {
+      res.statusCode = 500;
       res.setHeader("content-type", "application/json");
-      return res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
+      return res.end(JSON.stringify({ ok: false, error: "Missing CRON_SECRET env var" }));
     }
-
-    let base = process.env.BASE_URL;
-    if (!base) {
-      const host = req.headers.host;
-      if (!host) throw new Error("Missing BASE_URL and no host header");
-      base = `https://${host}`;
-    } else if (!base.startsWith("http://") && !base.startsWith("https://")) {
-      base = "https://" + base;
-    }
-
-    if (base.endsWith("/")) base = base.slice(0, -1);
 
     const result = await runMoonAll({
       base,
-      token: String(token),
-      fetchFn,
-      sleepMs: 2000,
-      maxMs: 25_000,
+      token,
+      fetchFn: globalThis.fetch,
+      sleepMs: 1200,
+      maxMs: 55_000,
     });
 
-    res.statusCode = 200;
+    res.statusCode = result.ok ? 200 : 500;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify(result));
-  } catch (err) {
+    return res.end(
+      JSON.stringify({
+        ok: result.ok,
+        cron: true,
+        result,
+      })
+    );
+  } catch (e) {
     res.statusCode = 500;
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: false, error: String(err?.message || err) }));
+    return res.end(
+      JSON.stringify({
+        ok: false,
+        cron: true,
+        error: String(e?.message || e),
+      })
+    );
   }
 }
