@@ -1,3 +1,4 @@
+// /api/moon/cron.js
 import { RUNTIME_CONFIG, requireSecret } from "../../lib/_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
