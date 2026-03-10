@@ -1,8 +1,9 @@
-// /api/moon/public-latest.js
+// /api/moon/latest.js
 
 import { kv } from "@vercel/kv";
 import {
   RUNTIME_CONFIG,
+  requireSecret,
   keyMoonLatest,
 } from "../../lib/_moon_core.js";
 
@@ -21,57 +22,21 @@ function getMode(req) {
     : "bull";
 }
 
-function emptyLatest(mode) {
-  return {
-    ok: true,
-    ts: Date.now(),
-    mode,
-    btc: { state: "NEUTRAL", chg24: 0 },
-    counts: { elite: 0, almost: 0, buildup: 0, radar: 0 },
-    funnel: { elite: [], almost: [], buildup: [], radar: [] },
-    portfolio: {
-      mode,
-      posUsd: 50,
-      openCount: 0,
-      closedCount: 0,
-      realizedUsd: 0,
-      avgRealizedPct: 0,
-      updatedAt: Date.now(),
-    },
-    positions: { open: [], closed: [] },
-    whaleFlow: 0,
-    note: "No moon latest found yet. Run moon pipeline first.",
-  };
-}
-
 export default async function handler(req, res) {
   try {
+    if (!requireSecret(req, res)) return;
+
     const mode = getMode(req);
     const key = keyMoonLatest(mode);
-
     const data = await kv.get(key);
-    if (!data || typeof data !== "object") {
-      return send(res, 200, emptyLatest(mode));
-    }
 
-    const out = {
-      ok: data.ok !== false,
-      ts: Number(data.ts || 0) || Date.now(),
+    return send(res, 200, {
+      ok: true,
       mode,
-      btc: data.btc || { state: "NEUTRAL", chg24: 0 },
-      counts: data.counts || { elite: 0, almost: 0, buildup: 0, radar: 0 },
-      funnel: {
-        elite: Array.isArray(data?.funnel?.elite) ? data.funnel.elite : [],
-        almost: Array.isArray(data?.funnel?.almost) ? data.funnel.almost : [],
-        buildup: Array.isArray(data?.funnel?.buildup) ? data.funnel.buildup : [],
-        radar: Array.isArray(data?.funnel?.radar) ? data.funnel.radar : [],
-      },
-      portfolio: data.portfolio || emptyLatest(mode).portfolio,
-      positions: data.positions || { open: [], closed: [] },
-      whaleFlow: Number(data.whaleFlow || 0),
-    };
-
-    return send(res, 200, out);
+      key,
+      hasData: !!data,
+      data: data || null,
+    });
   } catch (e) {
     return send(res, 500, {
       ok: false,
