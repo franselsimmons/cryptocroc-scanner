@@ -9,9 +9,10 @@ function send(res, code, obj) {
   return res.end(JSON.stringify(obj));
 }
 
-async function runInternal(req) {
+async function runMode(req, mode) {
   const proto =
     String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim() || "https";
+
   const host =
     String(req.headers["x-forwarded-host"] || "").split(",")[0].trim() ||
     String(req.headers.host || "").trim();
@@ -21,7 +22,10 @@ async function runInternal(req) {
   const token = String(process.env.CRON_SECRET || "");
   if (!token) throw new Error("Missing CRON_SECRET env var");
 
-  const url = `${proto}://${host}/api/moon/run-all?token=${encodeURIComponent(token)}`;
+  const url =
+    `${proto}://${host}/api/moon/scan` +
+    `?mode=${encodeURIComponent(mode)}` +
+    `&token=${encodeURIComponent(token)}`;
 
   const r = await fetch(url, {
     method: "GET",
@@ -41,6 +45,7 @@ async function runInternal(req) {
   }
 
   return {
+    mode,
     ok: r.ok && !!json?.ok,
     status: r.status,
     url,
@@ -52,12 +57,19 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const result = await runInternal(req);
-    return send(res, result.ok ? 200 : 500, {
-      ok: result.ok,
+    const bull = await runMode(req, "bull");
+    const bear = await runMode(req, "bear");
+
+    const ok = !!bull.ok && !!bear.ok;
+
+    return send(res, ok ? 200 : 500, {
+      ok,
       cron: true,
       ts: Date.now(),
-      result,
+      result: {
+        bull,
+        bear,
+      },
     });
   } catch (e) {
     return send(res, 500, {
