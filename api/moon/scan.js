@@ -5,10 +5,9 @@ import {
   RUNTIME_CONFIG,
   requireSecret,
   keyMoonLatest,
+  keyMoonState,
   keyMoonPortfolio,
   keyMoonPositions,
-  keyMoonState,
-  getMoonMode,
 } from "../../lib/_moon_core.js";
 
 import {
@@ -42,6 +41,29 @@ function send(res, code, obj) {
   return res.end(JSON.stringify(obj));
 }
 
+function getMode(req) {
+  return String(req.query?.mode || "bull").toLowerCase() === "bear"
+    ? "bear"
+    : "bull";
+}
+
+function keyMoonScanLock(mode) {
+  return `cc:moon:scan_lock:${String(mode).toLowerCase()}`;
+}
+
+async function tryAcquireMoonScanLock(mode, ttlSec = 14 * 60) {
+  const key = keyMoonScanLock(mode);
+  const now = Date.now();
+  const ok = await kv.set(key, { ts: now, mode }, { nx: true, ex: ttlSec });
+  return { ok: !!ok, key, now };
+}
+
+async function releaseMoonScanLock(mode) {
+  try {
+    await kv.del(keyMoonScanLock(mode));
+  } catch {}
+}
+
 async function sendTelegram(msg) {
   const token = process.env.TELEGRAM_TOKEN;
   const chat = process.env.TELEGRAM_CHAT;
@@ -58,51 +80,12 @@ async function sendTelegram(msg) {
   }
 }
 
-// ======================================================
-// 15 MIN LOCK
-// ======================================================
-async function tryAcquireMoonLock(mode) {
-  const m = getMoonMode(mode);
-  const key = `cc:moon:scan_lock:${m}`;
-  const now = Date.now();
-
-  const d = new Date(now);
-  const next = new Date(d);
-  next.setSeconds(0, 0);
-
-  const minute = d.getMinutes();
-  const nextQuarter = minute < 15 ? 15 : minute < 30 ? 30 : minute < 45 ? 45 : 60;
-
-  if (nextQuarter === 60) {
-    next.setMinutes(0);
-    next.setHours(d.getHours() + 1);
-  } else {
-    next.setMinutes(nextQuarter);
-  }
-
-  const until = next.getTime();
-  const ttlSec = Math.max(60, Math.ceil((until - now) / 1000));
-
-  const ok = await kv.set(key, { setAt: now, until }, { nx: true, ex: ttlSec });
-
-  if (ok) {
-    return { ok: true, key, until, waitMs: 0 };
-  }
-
-  const cur = await kv.get(key);
-  const curUntil = Number(cur?.until || 0);
-
-  if (curUntil > now) {
-    return { ok: false, key, until: curUntil, waitMs: curUntil - now };
-  }
-
-  await kv.set(key, { setAt: now, until }, { ex: ttlSec });
-  return { ok: true, key, until, waitMs: 0 };
-}
-
 async function fetchExchangeFlows() {
   try {
-    const r = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+    const r = await fetch("https://api.binance.com/api/v3/ticker/24hr", {
+      cache: "no-store",
+      headers: { accept: "application/json" },
+    });
     if (!r.ok) return 0;
     const data = await r.json();
     return data.filter((x) => Number(x.quoteVolume) > 200_000_000).length;
@@ -112,7 +95,10 @@ async function fetchExchangeFlows() {
 }
 
 async function fetchBinanceUniverse() {
-  const r = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+  const r = await fetch("https://api.binance.com/api/v3/ticker/24hr", {
+    cache: "no-store",
+    headers: { accept: "application/json" },
+  });
   if (!r.ok) throw new Error("Binance universe failed");
 
   const data = await r.json();
@@ -128,8 +114,8 @@ async function fetchBinanceUniverse() {
 }
 
 function sellPressure(ob) {
-  const bid = n(ob.depthBidUsd);
-  const ask = n(ob.depthAskUsd);
+  const bid = n(ob?.depthBidUsd);
+  const ask = n(ob?.depthAskUsd);
   if (!bid && !ask) return 0;
   const ratio = ask / Math.max(bid, 1);
   if (ratio > 3) return 1;
@@ -139,7 +125,7 @@ function sellPressure(ob) {
 }
 
 function crashMomentum(coin) {
-  const ch = n(coin.change24);
+  const ch = n(coin?.change24);
   if (ch < -15) return 1;
   if (ch < -10) return 0.7;
   if (ch < -6) return 0.4;
@@ -147,15 +133,15 @@ function crashMomentum(coin) {
 }
 
 function liquidityCollapse(ob) {
-  const bid = n(ob.depthBidUsd);
-  if (bid < 20000) return 1;
-  if (bid < 50000) return 0.6;
+  const bid = n(ob?.depthBidUsd);
+  if (bid < 20_000) return 1;
+  if (bid < 50_000) return 0.6;
   return 0;
 }
 
 function liquiditySweep(ob) {
-  const bid = n(ob.depthBidUsd);
-  const ask = n(ob.depthAskUsd);
+  const bid = n(ob?.depthBidUsd);
+  const ask = n(ob?.depthAskUsd);
   if (!bid || !ask) return 0;
   const imbalance = Math.abs(bid - ask) / Math.max(bid + ask, 1);
   if (imbalance > 0.6) return 1;
@@ -164,8 +150,8 @@ function liquiditySweep(ob) {
 }
 
 function volumeSpikeBinance(coin) {
-  const vol = n(coin.binanceVolume);
-  const cap = n(coin.marketCap);
+  const vol = n(coin?.binanceVolume);
+  const cap = n(coin?.marketCap);
   if (!cap) return 0;
   const ratio = vol / cap;
   if (ratio > 0.45) return 1;
@@ -174,117 +160,25 @@ function volumeSpikeBinance(coin) {
   return 0;
 }
 
-async function fetchCoins() {
-  const cg = [];
-  let binanceArr = [];
-
-  try {
-    binanceArr = await fetchBinanceUniverse();
-  } catch (e) {
-    console.error("Binance universe fallback:", String(e?.message || e));
-    binanceArr = [];
-  }
-
-  const binanceMap = new Map();
-  for (const b of binanceArr) {
-    binanceMap.set(String(b.symbol || "").toUpperCase(), b);
-  }
-
-  for (let page = 1; page <= CG_PAGES; page++) {
-    const url =
-      `${COINGECKO}?vs_currency=usd&order=volume_desc` +
-      `&per_page=${CG_PER_PAGE}&page=${page}` +
-      `&sparkline=false&price_change_percentage=24h,1h`;
-
-    let ok = false;
-    let lastErr = "";
-
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const r = await fetch(url, {
-          headers: { accept: "application/json" },
-        });
-
-        if (r.ok) {
-          const j = await r.json();
-          if (Array.isArray(j)) cg.push(...j);
-          ok = true;
-          break;
-        }
-
-        lastErr = `status ${r.status}`;
-      } catch (e) {
-        lastErr = String(e?.message || e);
-      }
-
-      await sleep(1200);
-    }
-
-    if (!ok) {
-      console.error(`CoinGecko page failed: ${page} (${lastErr})`);
-      break;
-    }
-
-    await sleep(1200);
-  }
-
-  if (!cg.length) {
-    throw new Error("CoinGecko returned 0 coins");
-  }
-
-  const map = new Map();
-  for (const c of cg) {
-    const sym = String(c.symbol || "").toUpperCase().trim();
-    if (!sym) continue;
-
-    const b = binanceMap.get(sym);
-
-    const high = n(c.high_24h);
-    const low = n(c.low_24h);
-    const range24 = high > 0 && low > 0 ? ((high - low) / ((high + low) / 2)) * 100 : 0;
-    const volume = n(c.total_volume);
-    const marketCap = n(c.market_cap);
-    const vm = marketCap > 0 ? volume / marketCap : 0;
-
-    map.set(sym, {
-      id: c.id,
-      symbol: sym,
-      name: c.name || "",
-      image: c.image || "",
-      price: n(c.current_price),
-      marketCap,
-      volume,
-      change24: n(c.price_change_percentage_24h),
-      change1h: n(c.price_change_percentage_1h_in_currency),
-      range24,
-      vm,
-      binanceVolume: b?.volume || 0,
-      binanceMomentum: b?.priceChange || 0,
-    });
-  }
-
-  return Array.from(map.values());
-}
-
 function basicFilter(c) {
-  const vol = n(c.volume);
-  const cap = n(c.marketCap);
-  if (vol < 200000) return false;
-  if (cap < 800000) return false;
-  if (cap > 800000000) return false;
+  const vol = n(c?.volume);
+  const cap = n(c?.marketCap);
+  if (vol < 200_000) return false;
+  if (cap < 800_000) return false;
+  if (cap > 800_000_000) return false;
   return true;
 }
 
 function computeVM(c) {
-  const vol = n(c.volume);
-  const cap = n(c.marketCap);
+  const vol = n(c?.volume);
+  const cap = n(c?.marketCap);
   if (!cap) return 0;
   return vol / cap;
 }
 
 function computeVolumeSpike(coin) {
-  const vol = n(coin.volume);
-  const cap = n(coin.marketCap);
+  const vol = n(coin?.volume);
+  const cap = n(coin?.marketCap);
   if (!cap) return 0;
   const vm = vol / cap;
   if (vm > 0.35) return 1;
@@ -294,7 +188,7 @@ function computeVolumeSpike(coin) {
 }
 
 function computeMomentum(coin) {
-  const ch = n(coin.change24);
+  const ch = n(coin?.change24);
   if (ch > 12) return 1;
   if (ch > 8) return 0.7;
   if (ch > 5) return 0.5;
@@ -305,8 +199,8 @@ function computeMomentum(coin) {
 }
 
 function whalePressure(ob) {
-  const bid = n(ob.depthBidUsd);
-  const ask = n(ob.depthAskUsd);
+  const bid = n(ob?.depthBidUsd);
+  const ask = n(ob?.depthAskUsd);
   if (!bid && !ask) return 0;
   const total = bid + ask;
   const ratio = (bid - ask) / Math.max(total, 1);
@@ -318,8 +212,8 @@ function whalePressure(ob) {
 }
 
 function volumeExplosion(coin) {
-  const vol = n(coin.volume);
-  const cap = n(coin.marketCap);
+  const vol = n(coin?.volume);
+  const cap = n(coin?.marketCap);
   if (!cap) return 0;
   const vm = vol / cap;
   if (vm > 0.40) return 1;
@@ -330,7 +224,7 @@ function volumeExplosion(coin) {
 }
 
 function momentumAcceleration(coin) {
-  const ch = n(coin.change24);
+  const ch = n(coin?.change24);
   if (ch > 15) return 1;
   if (ch > 10) return 0.8;
   if (ch > 6) return 0.6;
@@ -340,9 +234,16 @@ function momentumAcceleration(coin) {
   return 0;
 }
 
+function liquidityVacuum(ob) {
+  const ask = n(ob?.depthAskUsd);
+  if (ask < 20_000) return 1;
+  if (ask < 50_000) return 0.6;
+  return 0;
+}
+
 function whalePressure2(ob) {
-  const bid = n(ob.depthBidUsd);
-  const ask = n(ob.depthAskUsd);
+  const bid = n(ob?.depthBidUsd);
+  const ask = n(ob?.depthAskUsd);
   if (!bid && !ask) return 0;
   const ratio = (bid - ask) / Math.max(bid + ask, 1);
   if (ratio > 0.4) return 1;
@@ -353,20 +254,13 @@ function whalePressure2(ob) {
 }
 
 function binanceMomentum(coin) {
-  const m = n(coin.binanceMomentum);
+  const m = n(coin?.binanceMomentum);
   if (m > 10) return 1;
   if (m > 6) return 0.7;
   if (m > 3) return 0.4;
   if (m < -10) return -1;
   if (m < -6) return -0.7;
   if (m < -3) return -0.4;
-  return 0;
-}
-
-function liquidityVacuum(ob) {
-  const ask = n(ob.depthAskUsd);
-  if (ask < 20000) return 1;
-  if (ask < 50000) return 0.6;
   return 0;
 }
 
@@ -382,6 +276,7 @@ async function fetchOrderbook(symbol) {
     const url = `${BITGET_OB}?symbol=${symbol}&type=step0&limit=20`;
 
     const r = await fetch(url, {
+      cache: "no-store",
       headers: { accept: "application/json" },
     });
 
@@ -401,11 +296,8 @@ async function fetchOrderbook(symbol) {
 
     const spread = (bestAsk - bestBid) / bestBid;
 
-    const depthBid =
-      bids.slice(0, 5).reduce((a, b) => a + n(b[1]) * n(b[0]), 0);
-
-    const depthAsk =
-      asks.slice(0, 5).reduce((a, b) => a + n(b[1]) * n(b[0]), 0);
+    const depthBid = bids.slice(0, 5).reduce((a, b) => a + n(b[1]) * n(b[0]), 0);
+    const depthAsk = asks.slice(0, 5).reduce((a, b) => a + n(b[1]) * n(b[0]), 0);
 
     return {
       spreadPct: spread * 100,
@@ -444,23 +336,17 @@ function computeObScore(ob) {
   };
 }
 
-function computeConfidence({
-  coin,
-  mode,
-  vm,
-  spreadPct,
-  whale,
-}) {
+function computeConfidence({ coin, mode, vm, spreadPct, whale }) {
   let score = 0;
 
-  const vol = n(coin.volume);
+  const vol = n(coin?.volume);
   const volSpike = computeVolumeSpike(coin);
   const momentum = computeMomentum(coin);
 
   if (vm >= 0.05) score += 0.12;
   if (vm >= 0.12) score += 0.10;
 
-  if (vol >= 2000000) score += 0.05;
+  if (vol >= 2_000_000) score += 0.05;
   if (spreadPct <= 0.4) score += 0.08;
 
   score += volSpike * 0.25;
@@ -608,11 +494,7 @@ async function normalizeCoin(raw, mode, ob, whaleFlow = 0) {
 
 function passModeFilter(c, mode) {
   const ch24 = n(c.change24);
-
-  if (mode === "bull") {
-    return ch24 > -2;
-  }
-
+  if (mode === "bull") return ch24 > -2;
   return ch24 < 0.5;
 }
 
@@ -665,8 +547,7 @@ function makePortfolio(mode, positions) {
 
   if (closed.length) {
     realizedUsd = closed.reduce((a, b) => a + n(b.pnlUsd), 0);
-    avgRealizedPct =
-      closed.reduce((a, b) => a + n(b.pnlPct), 0) / closed.length;
+    avgRealizedPct = closed.reduce((a, b) => a + n(b.pnlPct), 0) / closed.length;
   }
 
   return {
@@ -678,6 +559,99 @@ function makePortfolio(mode, positions) {
     avgRealizedPct: Number(avgRealizedPct.toFixed(2)),
     updatedAt: Date.now(),
   };
+}
+
+async function fetchCoins() {
+  const cg = [];
+  let binanceArr = [];
+
+  try {
+    binanceArr = await fetchBinanceUniverse();
+  } catch (e) {
+    console.error("Binance universe fallback:", String(e?.message || e));
+    binanceArr = [];
+  }
+
+  const binanceMap = new Map();
+  for (const b of binanceArr) {
+    binanceMap.set(b.symbol, b);
+  }
+
+  for (let page = 1; page <= CG_PAGES; page++) {
+    const url =
+      `${COINGECKO}?vs_currency=usd&order=volume_desc` +
+      `&per_page=${CG_PER_PAGE}&page=${page}` +
+      `&sparkline=false&price_change_percentage=24h,1h`;
+
+    let ok = false;
+    let lastErr = "";
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const r = await fetch(url, {
+          cache: "no-store",
+          headers: { accept: "application/json" },
+        });
+
+        if (r.ok) {
+          const j = await r.json();
+          if (Array.isArray(j)) cg.push(...j);
+          ok = true;
+          break;
+        }
+
+        lastErr = `status ${r.status}`;
+      } catch (e) {
+        lastErr = String(e?.message || e);
+      }
+
+      await sleep(1200);
+    }
+
+    if (!ok) {
+      console.error(`CoinGecko page failed: ${page} (${lastErr})`);
+      break;
+    }
+
+    await sleep(1200);
+  }
+
+  if (!cg.length) {
+    throw new Error("CoinGecko returned 0 coins");
+  }
+
+  const map = new Map();
+  for (const c of cg) {
+    const sym = String(c.symbol || "").toUpperCase().trim();
+    if (!sym) continue;
+
+    const b = binanceMap.get(sym);
+
+    const high = n(c.high_24h);
+    const low = n(c.low_24h);
+    const range24 = high > 0 && low > 0 ? ((high - low) / ((high + low) / 2)) * 100 : 0;
+    const volume = n(c.total_volume);
+    const marketCap = n(c.market_cap);
+    const vm = marketCap > 0 ? volume / marketCap : 0;
+
+    map.set(sym, {
+      id: c.id,
+      symbol: sym,
+      name: c.name || "",
+      image: c.image || "",
+      price: n(c.current_price),
+      marketCap,
+      volume,
+      change24: n(c.price_change_percentage_24h),
+      change1h: n(c.price_change_percentage_1h_in_currency),
+      range24,
+      vm,
+      binanceVolume: b?.volume || 0,
+      binanceMomentum: b?.priceChange || 0,
+    });
+  }
+
+  return Array.from(map.values());
 }
 
 async function buildUniverse(mode, whaleFlow) {
@@ -692,7 +666,8 @@ async function buildUniverse(mode, whaleFlow) {
 
   for (const coin of filtered) {
     let ob = null;
-    if (coin.volume > 8000000) {
+
+    if (coin.volume > 8_000_000) {
       const symbol = `${String(coin.symbol || "").toUpperCase()}USDT`;
       ob = await fetchOrderbook(symbol);
     }
@@ -724,25 +699,25 @@ function stageToScanFunnel(stage) {
 
 export default async function handler(req, res) {
   let mode = "bull";
+  let lockAcquired = false;
 
   try {
     if (!requireSecret(req, res)) return;
 
-    mode = getMoonMode(req);
-    const lock = await tryAcquireMoonLock(mode);
+    mode = getMode(req);
 
+    const lock = await tryAcquireMoonScanLock(mode, 14 * 60);
     if (!lock.ok) {
-      const latestLocked = await kv.get(keyMoonLatest(mode));
-      if (latestLocked) {
-        latestLocked.meta = latestLocked.meta || {};
-        latestLocked.meta.scanLock = {
-          active: true,
-          until: lock.until,
-          waitMs: lock.waitMs,
-        };
-        return send(res, 200, latestLocked);
-      }
+      const latest = await kv.get(keyMoonLatest(mode));
+      return send(res, 200, {
+        ok: true,
+        skipped: true,
+        mode,
+        reason: "scan_lock_active",
+        latest: latest || null,
+      });
     }
+    lockAcquired = true;
 
     const now = Date.now();
     const whaleFlow = await fetchExchangeFlows();
@@ -750,13 +725,13 @@ export default async function handler(req, res) {
     const universe = await buildUniverse(mode, whaleFlow);
     const funnel = splitFunnels(universe, mode);
 
-    const btc24h = universe.length
+    const avg24h = universe.length
       ? universe.reduce((a, c) => a + Number(c.change24 || 0), 0) / universe.length
       : 0;
 
     const btcState =
-      btc24h >= 1 ? "BULL" :
-      btc24h <= -1 ? "BEAR" :
+      avg24h >= 1 ? "BULL" :
+      avg24h <= -1 ? "BEAR" :
       "NEUTRAL";
 
     const universeMap = new Map();
@@ -946,19 +921,11 @@ export default async function handler(req, res) {
 
       const hitTp =
         trade.tp != null &&
-        (
-          mode === "bull"
-            ? coin.price >= n(trade.tp)
-            : coin.price <= n(trade.tp)
-        );
+        (mode === "bull" ? coin.price >= n(trade.tp) : coin.price <= n(trade.tp));
 
       const hitSl =
         trade.sl != null &&
-        (
-          mode === "bull"
-            ? coin.price <= n(trade.sl)
-            : coin.price >= n(trade.sl)
-        );
+        (mode === "bull" ? coin.price <= n(trade.sl) : coin.price >= n(trade.sl));
 
       if (hitTp) {
         const closed = {
@@ -1063,7 +1030,7 @@ export default async function handler(req, res) {
       mode,
       btc: {
         state: btcState,
-        chg24: Number(btc24h.toFixed(2)),
+        chg24: Number(avg24h.toFixed(2)),
       },
       counts: {
         elite: funnel.elite.length,
@@ -1075,13 +1042,6 @@ export default async function handler(req, res) {
       portfolio,
       positions,
       whaleFlow,
-      meta: {
-        scanLock: {
-          active: false,
-          until: lock.until,
-          waitMs: 0,
-        },
-      },
     };
 
     await kv.set(keyMoonLatest(mode), latest, { ex: 60 * 60 });
@@ -1098,5 +1058,9 @@ export default async function handler(req, res) {
       mode,
       error: String(e?.message || e),
     });
+  } finally {
+    if (lockAcquired) {
+      await releaseMoonScanLock(mode);
+    }
   }
 }
