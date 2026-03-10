@@ -4,7 +4,6 @@ import { kv } from "@vercel/kv";
 import {
   RUNTIME_CONFIG,
   keyMoonLatest,
-  getMoonMode,
 } from "../../lib/_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
@@ -16,22 +15,23 @@ function send(res, code, obj) {
   return res.end(JSON.stringify(obj));
 }
 
+function getMode(req) {
+  return String(req.query?.mode || "bull").toLowerCase() === "bear"
+    ? "bear"
+    : "bull";
+}
+
 export default async function handler(req, res) {
   try {
-    const mode = getMoonMode(req);
+    const mode = getMode(req);
     const key = keyMoonLatest(mode);
-    const data = await kv.get(key);
 
-    const lockKey = `cc:moon:scan_lock:${mode}`;
-    const lock = await kv.get(lockKey);
-    const now = Date.now();
-    const until = Number(lock?.until || 0);
-    const active = until > now;
+    const data = await kv.get(key);
 
     if (!data) {
       return send(res, 200, {
         ok: true,
-        ts: now,
+        ts: Date.now(),
         mode,
         btc: { state: "NEUTRAL", chg24: 0 },
         counts: {
@@ -53,34 +53,16 @@ export default async function handler(req, res) {
           closedCount: 0,
           realizedUsd: 0,
           avgRealizedPct: 0,
-          updatedAt: now,
+          updatedAt: Date.now(),
         },
         positions: {
           open: [],
           closed: [],
         },
         whaleFlow: 0,
-        note: "No moon latest yet. Run /api/moon/scan?token=CRON_SECRET first or wait for cron.",
-        meta: {
-          public: true,
-          latestKey: key,
-          scanLock: {
-            active,
-            until: until || null,
-            waitMs: active ? Math.max(0, until - now) : 0,
-          },
-        },
+        note: "No moon latest snapshot yet. Cron/scan moet eerst 1x draaien.",
       });
     }
-
-    data.meta = data.meta || {};
-    data.meta.public = true;
-    data.meta.latestKey = key;
-    data.meta.scanLock = {
-      active,
-      until: until || null,
-      waitMs: active ? Math.max(0, until - now) : 0,
-    };
 
     return send(res, 200, data);
   } catch (e) {
