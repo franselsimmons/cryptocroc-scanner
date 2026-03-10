@@ -19,7 +19,9 @@ let MODE =
   "bull";
 
 const lastTsByMode = { bull: 0, bear: 0 };
+let isLoading = false;
 
+// ==================== mode ====================
 function setMode(mode) {
   MODE = mode === "bear" ? "bear" : "bull";
   localStorage.setItem("MOON_MODE", MODE);
@@ -31,7 +33,7 @@ function setMode(mode) {
   el("modeBull")?.classList.toggle("active", MODE === "bull");
   el("modeBear")?.classList.toggle("active", MODE === "bear");
 
-  loadLatest();
+  loadLatest(true);
 }
 
 // ==================== format helpers ====================
@@ -62,7 +64,7 @@ function pct(n, d = 2) {
   return s + x.toFixed(d) + "%";
 }
 
-// ==================== Risk ====================
+// ==================== risk ====================
 function computeFallbackRisk(c, mode) {
   const price = Number(c?.price || 0);
   if (!(price > 0)) return null;
@@ -108,7 +110,7 @@ function getRisk(c, mode) {
   return computeFallbackRisk(c, mode);
 }
 
-// ==================== Action label ====================
+// ==================== action label ====================
 function actionForStage(c, data) {
   const stage = String(c?.stage || "").toUpperCase();
   const btcState = String(data?.btc?.state || "NEUTRAL").toUpperCase();
@@ -130,18 +132,18 @@ function actionForStage(c, data) {
   if (stage === "BUILDUP") {
     return {
       label: "WATCHLIST",
-      sub: `Opbouwfase. Nog niet instappen, wel volgen.`,
+      sub: "Opbouwfase. Nog niet instappen, wel volgen.",
       tone: "warn",
     };
   }
   return {
     label: "SKIP / VOLGEN",
-    sub: `Te vroeg voor actie. Alleen watchlist.`,
+    sub: "Te vroeg voor actie. Alleen watchlist.",
     tone: "no",
   };
 }
 
-// ==================== Confidence UI ====================
+// ==================== confidence ====================
 function confColor(conf) {
   const c = Number(conf) || 0;
   if (c < 50) return "#EF4444";
@@ -159,7 +161,6 @@ function confBar(conf) {
     </div>
   `;
 }
-
 function scoreValue(c) {
   if (Number.isFinite(Number(c?.edgeScore))) return Math.round(Number(c.edgeScore));
   if (Number.isFinite(Number(c?.confidence))) {
@@ -169,7 +170,7 @@ function scoreValue(c) {
   return 0;
 }
 
-// ==================== Coin row ====================
+// ==================== rows ====================
 function coinRow(c) {
   const div = document.createElement("div");
   div.className = "coinRow";
@@ -188,10 +189,9 @@ function coinRow(c) {
   div.innerHTML = `
     <div class="coinTop">
       <div>
-        <div class="sym">${c.symbol}</div>
+        <div class="sym">${c.symbol || "—"}</div>
         <div class="tag">${c.name || ""}</div>
       </div>
-
       ${confBar(conf)}
     </div>
 
@@ -221,10 +221,11 @@ function renderStage(targetId, arr, renderer = coinRow) {
     box.innerHTML = `<div class="empty">Geen coins.</div>`;
     return;
   }
+
   for (const x of arr) box.appendChild(renderer(x));
 }
 
-// ==================== top status line ====================
+// ==================== status line ====================
 function btcLine(btc) {
   if (!btc) return "BTC: —";
   const state = btc.state || "—";
@@ -249,32 +250,65 @@ function renderAll(data) {
       ` • Whale flow ${Number(data?.whaleFlow || 0)}`;
   }
 
-  renderStage("stageElite", data?.funnel?.elite || [], coinRow);
-  renderStage("stageAlmost", data?.funnel?.almost || [], coinRow);
-  renderStage("stageBuildup", data?.funnel?.buildup || [], coinRow);
-  renderStage("stageRadar", data?.funnel?.radar || [], coinRow);
+  renderStage("stageElite", data?.funnel?.elite || []);
+  renderStage("stageAlmost", data?.funnel?.almost || []);
+  renderStage("stageBuildup", data?.funnel?.buildup || []);
+  renderStage("stageRadar", data?.funnel?.radar || []);
 }
 
-async function loadLatest() {
+// ==================== load latest ====================
+async function loadLatest(force = false) {
+  if (isLoading && !force) return;
+  isLoading = true;
+
   try {
     const sl = el("statusLine");
-    if (sl) sl.textContent = "Status: laden…";
+    if (sl && force) sl.textContent = "Status: laden…";
 
     const r = await fetch(API.latest(MODE), {
       cache: "no-store",
-      headers: { "cache-control": "no-cache" },
+      headers: {
+        "cache-control": "no-cache, no-store, max-age=0",
+        pragma: "no-cache",
+      },
     });
 
-    const j = await r.json();
+    const text = await r.text();
+
+    let j;
+    try {
+      j = JSON.parse(text);
+    } catch {
+      throw new Error(`Ongeldige JSON: ${text.slice(0, 180)}`);
+    }
+
+    if (!r.ok) {
+      throw new Error(j?.error || `HTTP ${r.status}`);
+    }
 
     const ts = Number(j?.ts || 0);
-    if (ts && ts === (lastTsByMode[MODE] || 0)) return;
+
+    // force=true => altijd renderen
+    if (!force && ts && ts === (lastTsByMode[MODE] || 0)) {
+      isLoading = false;
+      return;
+    }
+
     if (ts) lastTsByMode[MODE] = ts;
 
     renderAll(j || {});
-  } catch {
+  } catch (e) {
     const statusLine = el("statusLine");
-    if (statusLine) statusLine.textContent = "Status: fout bij laden (check Vercel logs)";
+    if (statusLine) {
+      statusLine.textContent = `Status: fout bij laden • ${String(e?.message || e)}`;
+    }
+
+    renderStage("stageElite", []);
+    renderStage("stageAlmost", []);
+    renderStage("stageBuildup", []);
+    renderStage("stageRadar", []);
+  } finally {
+    isLoading = false;
   }
 }
 
@@ -284,7 +318,6 @@ function showModal(on) {
   if (!modal) return;
   modal.classList.toggle("hidden", !on);
 }
-
 function setTab(name) {
   const tabs = ["Action", "Why", "Liq", "Debug"];
   for (const t of tabs) {
@@ -334,7 +367,6 @@ function setKV(container, rows) {
   }
 }
 
-// ==================== Liquidity summary ====================
 function liquiditySummary(c) {
   const ob = c?.ob || {};
   const spread = Number(ob?.spreadPct);
@@ -350,7 +382,7 @@ function liquiditySummary(c) {
       ok: false,
       title: "Liquiditeit onbekend",
       text: "Er is geen bruikbare orderboek-data voor deze coin.",
-      why: "Moon gebruikt hier alleen aanwezige backend-data. Deze coin heeft nu geen bruikbare OB snapshot.",
+      why: "Deze coin heeft nu geen bruikbare OB snapshot.",
       tone: "warn",
       details: [],
     };
@@ -394,8 +426,8 @@ function liquiditySummary(c) {
   };
 }
 
-// ==================== modal main ====================
-async function openModalMain(c) {
+// ==================== modal ====================
+function openModalMain(c) {
   showModal(true);
   setTab("Action");
   syncTopbarHeight();
@@ -452,7 +484,6 @@ async function openModalMain(c) {
     `Score: ${scoreValue(c)}/100`,
     scoreValue(c) >= 70 ? "ok" : "warn"
   );
-
   addCheck(
     whyList,
     Number(c?.vm || 0) >= 0.15,
@@ -460,7 +491,6 @@ async function openModalMain(c) {
     `VM: ${safe(c.vm, 3)}`,
     Number(c?.vm || 0) >= 0.15 ? "ok" : "warn"
   );
-
   addCheck(
     whyList,
     Number(c?.change24 || 0) > 0,
@@ -489,20 +519,8 @@ async function openModalMain(c) {
   if (liqList) liqList.innerHTML = "";
 
   const liq = liquiditySummary(c);
-  addCheck(
-    liqList,
-    liq.ok,
-    liq.title,
-    liq.text,
-    liq.tone === "ok" ? "ok" : "warn"
-  );
-  addCheck(
-    liqList,
-    liq.ok,
-    "Waarom",
-    liq.why || "—",
-    liq.tone === "ok" ? "ok" : "warn"
-  );
+  addCheck(liqList, liq.ok, liq.title, liq.text, liq.tone === "ok" ? "ok" : "warn");
+  addCheck(liqList, liq.ok, "Waarom", liq.why || "—", liq.tone === "ok" ? "ok" : "warn");
   if (Array.isArray(liq.details)) {
     for (const [k, v] of liq.details) {
       addCheck(liqList, true, k, v, "ok");
@@ -518,5 +536,8 @@ el("modeBear")?.addEventListener("click", () => setMode("bear"));
 
 setMode(MODE);
 
-// zelfde ritme als main
-setInterval(loadLatest, 30 * 60 * 1000);
+// Meteen nog een keer na korte delay, handig na deploy / cold start
+setTimeout(() => loadLatest(true), 1500);
+
+// Elke 60 sec verversen
+setInterval(() => loadLatest(false), 60 * 1000);
