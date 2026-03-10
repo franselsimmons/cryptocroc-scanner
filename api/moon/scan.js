@@ -13,16 +13,18 @@ import {
   getBitgetSpotUsdtSymbols,
   getTierForMcap,
   depthFloorUsd,
-  computeConfidence,
-  passRadarMoon,
-  passBuildupMoon,
-  passAlmostMoon,
-  passEliteMoon,
   computeMoonRisk,
   calcPnlPct,
   hitStopOrTp,
   isBlockedMoonAsset,
-  MOON_V3, // voor configuratie
+  MOON_V2,
+  computeVelocity,
+  computeCompression,
+  computeBullMoveScore,
+  computeBearMoveScore,
+  isBullExhausted,
+  isBearBounceTrap,
+  computeMoonProbabilities,
 } from "../../lib/_moon_core.js";
 
 import {
@@ -70,10 +72,12 @@ async function fetchExchangeFlows() {
 }
 
 function stageToScanFunnel(stage, eliteType = null) {
-  if (eliteType === 'EXPANSION') return "scan_entry_expansion";
-  if (eliteType === 'IGNITION') return "scan_entry_ignition";
+  if (eliteType === 'expansion') return "scan_entry_expansion";
+  if (eliteType === 'ignition') return "scan_entry_ignition";
+  if (eliteType === 'cascade') return "scan_entry_cascade";
   const s = String(stage || "").toUpperCase();
-  if (s === "ELITE") return "scan_entry";
+  if (s === "ELITE_EXPANSION" || s === "ELITE_CASCADE") return "scan_entry";
+  if (s === "ELITE_IGNITION") return "scan_entry_ignition";
   if (s === "ALMOST") return "scan_almost";
   if (s === "BUILDUP") return "scan_buildup";
   return "scan_radar";
@@ -133,16 +137,6 @@ function computeObScore(ob) {
   };
 }
 
-function consistencyFromHistory(hist, currentStage, need = 2, minAgree = 1) {
-  const arr = Array.isArray(hist) ? hist : [];
-  const cur = String(currentStage || "").toUpperCase();
-  const tail = arr.concat([cur]).slice(-Math.max(need, 6));
-  const same = tail.filter((x) => String(x || "").toUpperCase() === cur).length;
-  const total = tail.length;
-  const ratio = total > 0 ? same / total : 0;
-  return { ok: total >= need && same >= minAgree, ratio, same, total, need, minAgree, hist: tail };
-}
-
 function buildTradePlan(price, mode, confidence, range24, depthOk, tier) {
   const risk = computeMoonRisk({ mode, price, range24, confidence, depthOk, tier });
   if (!risk) return null;
@@ -156,12 +150,11 @@ function buildTradePlan(price, mode, confidence, range24, depthOk, tier) {
 
 function sortByStageScore(mode) {
   return (a, b) => {
-    const aScore = mode === "bear" ? n(a?.dumpProbability, 0) : n(a?.moonProbability, 0);
-    const bScore = mode === "bear" ? n(b?.dumpProbability, 0) : n(b?.moonProbability, 0);
-    return bScore - aScore ||
+    return (
       n(b?.confidence, 0) - n(a?.confidence, 0) ||
-      n(b?.vm, 0) - n(a?.vm, 0) ||
-      n(b?.volume, 0) - n(a?.volume, 0);
+      n(b?.moonProbability || b?.dumpProbability || 0, 0) - n(a?.moonProbability || a?.dumpProbability || 0, 0) ||
+      n(b?.vm, 0) - n(a?.vm, 0)
+    );
   };
 }
 
@@ -173,28 +166,35 @@ function splitFunnels(coins, mode) {
     buildup: [],
     radar: [],
   };
+
   for (const c of coins) {
-    if (c.stage === "ELITE") {
-      if (c.eliteType === 'EXPANSION') funnel.elite_expansion.push(c);
-      else if (c.eliteType === 'IGNITION') funnel.elite_ignition.push(c);
-      else funnel.elite_expansion.push(c); // fallback
+    if (c.stage === "ELITE_EXPANSION" || c.stage === "ELITE_CASCADE") {
+      funnel.elite_expansion.push(c);
+    } else if (c.stage === "ELITE_IGNITION") {
+      funnel.elite_ignition.push(c);
+    } else if (c.stage === "ALMOST") {
+      funnel.almost.push(c);
+    } else if (c.stage === "BUILDUP") {
+      funnel.buildup.push(c);
+    } else {
+      funnel.radar.push(c);
     }
-    else if (c.stage === "ALMOST") funnel.almost.push(c);
-    else if (c.stage === "BUILDUP") funnel.buildup.push(c);
-    else funnel.radar.push(c);
   }
+
   const sorter = sortByStageScore(mode);
+
   funnel.elite_expansion.sort(sorter);
   funnel.elite_ignition.sort(sorter);
   funnel.almost.sort(sorter);
   funnel.buildup.sort(sorter);
   funnel.radar.sort(sorter);
-  // limieten
-  funnel.radar = funnel.radar.slice(0, 160);
-  funnel.buildup = funnel.buildup.slice(0, 70);
-  funnel.almost = funnel.almost.slice(0, 24);
-  funnel.elite_expansion = funnel.elite_expansion.slice(0, 4);
-  funnel.elite_ignition = funnel.elite_ignition.slice(0, 4);
+
+  funnel.elite_expansion = funnel.elite_expansion.slice(0, 12);
+  funnel.elite_ignition = funnel.elite_ignition.slice(0, 12);
+  funnel.almost = funnel.almost.slice(0, 20);
+  funnel.buildup = funnel.buildup.slice(0, 35);
+  funnel.radar = funnel.radar.slice(0, 80);
+
   return funnel;
 }
 
@@ -215,26 +215,219 @@ function makePortfolio(mode, positions) {
   };
 }
 
+// Nieuwe stage-bepaling voor Moon V2
+function decideMoonStageV2({ mode, coin, obx, priceHist }) {
+  const velocity = computeVelocity(coin.change1h, coin.change24);
+  const compression = computeCompression(priceHist);
+
+  const bullScore = computeBullMoveScore(coin, obx);
+  const bearScore = computeBearMoveScore(coin, obx);
+  const moveScore = mode === "bull" ? bullScore : bearScore;
+
+  // Exhaustie/bounce filters
+  if (mode === "bull" && isBullExhausted(coin)) {
+    return {
+      stage: "RADAR",
+      stageWhy: "bull_exhausted",
+      moveScore,
+      velocity,
+      compression,
+      eliteType: null,
+    };
+  }
+
+  if (mode === "bear" && isBearBounceTrap(coin)) {
+    return {
+      stage: "RADAR",
+      stageWhy: "bear_bounce_trap",
+      moveScore,
+      velocity,
+      compression,
+      eliteType: null,
+    };
+  }
+
+  // Bull logica
+  if (mode === "bull") {
+    // ELITE_IGNITION
+    if (
+      compression.isCompressed &&
+      coin.change1h >= 2.2 &&
+      coin.change24 >= 12 &&
+      coin.vm >= 0.28 &&
+      obx.score >= 0.025 &&
+      velocity >= 0.18
+    ) {
+      return {
+        stage: "ELITE_IGNITION",
+        stageWhy: "compressed_breakout_bull",
+        moveScore,
+        velocity,
+        compression,
+        eliteType: "ignition",
+      };
+    }
+
+    // ELITE_EXPANSION
+    if (
+      coin.change1h >= 3.5 &&
+      coin.change24 >= 20 &&
+      coin.vm >= 0.40 &&
+      obx.score >= 0.03 &&
+      velocity >= 0.16
+    ) {
+      return {
+        stage: "ELITE_EXPANSION",
+        stageWhy: "bull_expansion",
+        moveScore,
+        velocity,
+        compression,
+        eliteType: "expansion",
+      };
+    }
+
+    // ALMOST
+    if (
+      coin.change1h >= 1.2 &&
+      coin.change24 >= 8 &&
+      coin.vm >= 0.28 &&
+      velocity >= 0.10
+    ) {
+      return {
+        stage: "ALMOST",
+        stageWhy: "bull_almost",
+        moveScore,
+        velocity,
+        compression,
+        eliteType: null,
+      };
+    }
+
+    // BUILDUP
+    if (
+      coin.change1h >= 0.6 &&
+      coin.change24 >= 4 &&
+      coin.vm >= 0.18
+    ) {
+      return {
+        stage: "BUILDUP",
+        stageWhy: "bull_buildup",
+        moveScore,
+        velocity,
+        compression,
+        eliteType: null,
+      };
+    }
+
+    return {
+      stage: "RADAR",
+      stageWhy: "bull_radar",
+      moveScore,
+      velocity,
+      compression,
+      eliteType: null,
+    };
+  }
+
+  // Bear logica
+  // ELITE_IGNITION (breakdown)
+  if (
+    compression.isCompressed &&
+    coin.change1h <= -2.2 &&
+    coin.change24 <= -12 &&
+    coin.vm >= 0.28 &&
+    obx.score <= -0.025 &&
+    velocity >= 0.18
+  ) {
+    return {
+      stage: "ELITE_IGNITION",
+      stageWhy: "compressed_breakdown_bear",
+      moveScore,
+      velocity,
+      compression,
+      eliteType: "ignition",
+    };
+  }
+
+  // ELITE_CASCADE
+  if (
+    coin.change1h <= -3.5 &&
+    coin.change24 <= -20 &&
+    coin.vm >= 0.40 &&
+    obx.score <= -0.03 &&
+    velocity >= 0.16
+  ) {
+    return {
+      stage: "ELITE_CASCADE",
+      stageWhy: "bear_cascade",
+      moveScore,
+      velocity,
+      compression,
+      eliteType: "cascade",
+    };
+  }
+
+  // ALMOST
+  if (
+    coin.change1h <= -1.2 &&
+    coin.change24 <= -8 &&
+    coin.vm >= 0.28 &&
+    velocity >= 0.10
+  ) {
+    return {
+      stage: "ALMOST",
+      stageWhy: "bear_almost",
+      moveScore,
+      velocity,
+      compression,
+      eliteType: null,
+    };
+  }
+
+  // BUILDUP
+  if (
+    coin.change1h <= -0.6 &&
+    coin.change24 <= -4 &&
+    coin.vm >= 0.18
+  ) {
+    return {
+      stage: "BUILDUP",
+      stageWhy: "bear_buildup",
+      moveScore,
+      velocity,
+      compression,
+      eliteType: null,
+    };
+  }
+
+  return {
+    stage: "RADAR",
+    stageWhy: "bear_radar",
+    moveScore,
+    velocity,
+    compression,
+    eliteType: null,
+  };
+}
+
 async function buildUniverse(mode, whaleFlow, btc) {
   const rawCoins = await fetchCoinGeckoTopCached();
   const bitgetSymbols = await getBitgetSpotUsdtSymbols();
 
-  // Filter stappen
+  // Basis filter (blocked en Bitget)
   const step1 = rawCoins.filter(c => !isBlockedMoonAsset(c));
   const step2 = step1.filter(c => bitgetSymbols.has(String(c.symbol || "").toUpperCase()));
-  const step3 = step2.filter(c => passRadarMoon(c, mode, btc));
 
-  console.log("🔍 MOON V3 DEBUG", {
+  console.log("🔍 MOON V2 DEBUG", {
     rawCoins: rawCoins.length,
     afterBlocked: step1.length,
     bitgetSymbols: bitgetSymbols.size,
     afterBitget: step2.length,
-    afterRadar: step3.length,
     sampleCg: step1.slice(0,10).map(c => c.symbol),
     sampleBitget: Array.from(bitgetSymbols).slice(0,20),
   });
 
-  const filtered = step3.slice(0, 220);
+  const filtered = step2.slice(0, 220);
   const out = [];
   const state = (await kv.get(keyMoonState(mode))) || {};
 
@@ -251,89 +444,54 @@ async function buildUniverse(mode, whaleFlow, btc) {
     const tier = getTierForMcap(coin.marketCap);
     const floorUsd = depthFloorUsd(coin.marketCap, tier, prev?.depthHist);
     const depthUsd = n(obx.depthMinUsd1p, 0);
+    const depthOk = depthUsd >= floorUsd;
 
     // Historie
     const priceHist = Array.isArray(prev?.priceHist) ? [...prev.priceHist] : [];
     const volHist = Array.isArray(prev?.volHist) ? [...prev.volHist] : [];
-    const vmHist = Array.isArray(prev?.vmHist) ? [...prev.vmHist] : [];
     priceHist.push(n(coin.price, 0));
     volHist.push(n(coin.volume, 0));
-    vmHist.push(coin.vm);
     const priceHistNext = priceHist.slice(-120);
     const volHistNext = volHist.slice(-120);
-    const vmHistNext = vmHist.slice(-60);
 
-    // Volume acceleratie
-    const volAcc = {
-      short: 1,
-      medium: 1,
-    };
-    if (volHistNext.length >= MOON_V3.VOL_ACC.SHORT_WINDOW) {
+    // Volume acceleratie (kort en medium) – optioneel
+    const volAcc = { short: 1, medium: 1 };
+    if (volHistNext.length >= 5) {
       const now = volHistNext[volHistNext.length-1];
-      const shortAgo = volHistNext[volHistNext.length-1-MOON_V3.VOL_ACC.SHORT_WINDOW] || now;
-      const mediumAgo = volHistNext[volHistNext.length-1-MOON_V3.VOL_ACC.MEDIUM_WINDOW] || now;
+      const shortAgo = volHistNext[volHistNext.length-1-5] || now;
+      const mediumAgo = volHistNext[volHistNext.length-1-20] || now;
       volAcc.short = now / Math.max(shortAgo, 1e-9);
       volAcc.medium = now / Math.max(mediumAgo, 1e-9);
     }
 
-    // VM expansie
-    const vmExpansion = vmHistNext.length > 5
-      ? coin.vm / (vmHistNext.sort((a,b)=>a-b)[Math.floor(vmHistNext.length/2)] || 1)
-      : 1;
-
-    // Compressie
-    const compression = (() => {
-      if (priceHistNext.length < 30) return { isCompressed: false, flatPct: 100 };
-      const recent = priceHistNext.slice(-60);
-      const max = Math.max(...recent);
-      const min = Math.min(...recent);
-      const flatPct = ((max - min) / ((max + min)/2)) * 100;
-      return { isCompressed: flatPct < MOON_V3.COMPRESSION.MAX_FLAT_PCT, flatPct };
-    })();
-
-    // Confidence
-    const confidence = computeConfidence({
-      coin, mode, btc, obx, volAcc, compression, vmExpansion, mcap: coin.marketCap
+    // ----- Nieuwe stage bepaling -----
+    const stageDecision = decideMoonStageV2({
+      mode,
+      coin,
+      obx,
+      priceHist: priceHistNext,
     });
 
-    // Fasebepaling
-    let stage = "RADAR";
-    let stageWhy = "radar_passed";
-    let eliteType = null;
+    const stage = stageDecision.stage;
+    const stageWhy = stageDecision.stageWhy;
+    const eliteType = stageDecision.eliteType;
+    const velocity = stageDecision.velocity;
+    const compression = stageDecision.compression;
+    const moveScore = stageDecision.moveScore;
 
-    // BUILDUP check
-    const buildupRes = passBuildupMoon({ c: coin, volAcc, confidence });
-    if (buildupRes.ok) {
-      stage = "BUILDUP";
-      stageWhy = "buildup_passed";
-    }
+    // Probabilities
+    const probs = computeMoonProbabilities({
+      mode,
+      coin: { ...coin, ob: obx },
+      moveScore,
+      velocity,
+      compression,
+    });
 
-    // ALMOST check
-    const almostRes = passAlmostMoon({ c: coin, volAcc, confidence, compression });
-    if (almostRes.ok) {
-      stage = "ALMOST";
-      stageWhy = "almost_passed";
-    }
-
-    // ELITE check
-    const eliteRes = passEliteMoon({ mode, c: coin, obView: obx, volAcc, confidence, depthUsd, floorUsd, tier });
-    if (eliteRes.ok) {
-      stage = "ELITE";
-      stageWhy = "elite_passed";
-      eliteType = eliteRes.eliteType;
-    }
-
-    const finalConsistency = consistencyFromHistory(prev?.stageHist, stage, 2, 1);
-
-    // Tradeplan
+    // Tradeplan (gebruik moveScore als confidence)
     const tradePlan = buildTradePlan(
-      n(coin.price, 0), mode, confidence, n(coin.range24, 0),
-      depthUsd >= floorUsd, tier
+      n(coin.price, 0), mode, moveScore, n(coin.range24, 0), depthOk, tier
     );
-
-    // Kansberekening (simpel gehouden, kan later uitgebreid)
-    const moonProbability = Math.min(1, (confidence / 100) * 0.7 + (volAcc.medium - 1) * 0.3);
-    const dumpProbability = mode === 'bear' ? moonProbability : 0; // placeholder
 
     out.push({
       id: coin.id,
@@ -346,20 +504,11 @@ async function buildUniverse(mode, whaleFlow, btc) {
       change24: n(coin.change24, 0),
       change1h: n(coin.change1h, 0),
       vm: n(coin.vm, 0),
-      vmExpansion: Number(vmExpansion.toFixed(2)),
-      confidence: Number(confidence.toFixed(2)),
+      confidence: moveScore, // moveScore = confidence
       stage,
       stageWhy,
-      eliteType, // alleen voor ELITE
+      eliteType,
       tier: tier?.name || "unknown",
-      consistency: {
-        ok: finalConsistency.ok,
-        ratio: Number(finalConsistency.ratio.toFixed(3)),
-        same: finalConsistency.same,
-        total: finalConsistency.total,
-        need: finalConsistency.need,
-        minAgree: finalConsistency.minAgree,
-      },
       ob: {
         spreadPct: Number(obx.spreadPct.toFixed(4)),
         depthBidUsd: Math.round(obx.depthBidUsd),
@@ -374,18 +523,20 @@ async function buildUniverse(mode, whaleFlow, btc) {
       },
       thresholds: {
         depthFloorUsd: Math.round(floorUsd),
-        depthOk: depthUsd >= floorUsd,
+        depthOk,
       },
       compression: {
         isCompressed: compression.isCompressed,
-        flatPct: Number(compression.flatPct.toFixed(2)),
+        flatPct: compression.flatPct,
       },
       volAcc: {
         short: Number(volAcc.short.toFixed(3)),
         medium: Number(volAcc.medium.toFixed(3)),
       },
-      moonProbability: Number(moonProbability.toFixed(3)),
-      dumpProbability: Number(dumpProbability.toFixed(3)),
+      moveScore,
+      velocity: Number(velocity.toFixed(3)),
+      moonProbability: probs.moonProbability,
+      dumpProbability: probs.dumpProbability,
       tradePlan: tradePlan ? {
         entry: Number(tradePlan.entry.toFixed(8)),
         sl: Number(tradePlan.sl.toFixed(8)),
@@ -395,7 +546,6 @@ async function buildUniverse(mode, whaleFlow, btc) {
       _state: {
         priceHist: priceHistNext,
         volHist: volHistNext,
-        vmHist: vmHistNext,
         stageHist: (prev?.stageHist || []).concat([stage]).slice(-12),
       },
     });
@@ -443,18 +593,16 @@ export default async function handler(req, res) {
         price: coin.price,
         priceHist: coin?._state?.priceHist || [],
         volHist: coin?._state?.volHist || [],
-        vmHist: coin?._state?.vmHist || [],
         stageHist: coin?._state?.stageHist || [],
       };
 
-      // Events (vereenvoudigd, kan worden uitgebreid)
       if (!prevStage) {
         await pushEvent(stageToScanFunnel(stage, coin.eliteType), {
           symbol: coin.symbol, mode, stage, prevStage: "", price: coin.price,
           confidence: coin.confidence, change24: coin.change24, change1h: coin.change1h,
           ob: coin.ob, tradePlan: coin.tradePlan, btcState: btc.state, reason: "new_in_scan",
         });
-        if (stage === "ALMOST" || stage === "ELITE") {
+        if (stage === "ALMOST" || stage.startsWith("ELITE")) {
           await sendTelegram(
             `🆕 Nieuwe ${stage}${coin.eliteType ? ' ('+coin.eliteType+')' : ''} moon coin: ${coin.symbol}\nPrijs: $${coin.price}\nConfidence: ${coin.confidence}`
           );
@@ -463,8 +611,8 @@ export default async function handler(req, res) {
         await pushEvent("scan_transition", { symbol: coin.symbol, mode, from: prevStage, to: stage, reason: "stage_changed" });
         if (prevStage === "BUILDUP" && stage === "ALMOST") {
           await sendTelegram(`🚀 BUILDUP → ALMOST: ${coin.symbol}\nPrijs: $${coin.price}\nConfidence: ${coin.confidence}`);
-        } else if (prevStage === "ALMOST" && stage === "ELITE") {
-          await sendTelegram(`🔥 ALMOST → ELITE (${coin.eliteType}): ${coin.symbol}\nPrijs: $${coin.price}\nConfidence: ${coin.confidence}`);
+        } else if (prevStage === "ALMOST" && stage.startsWith("ELITE")) {
+          await sendTelegram(`🔥 ALMOST → ${stage} (${coin.eliteType}): ${coin.symbol}\nPrijs: $${coin.price}\nConfidence: ${coin.confidence}`);
         }
       }
     }
@@ -480,7 +628,7 @@ export default async function handler(req, res) {
         symbol: sym,
         mode,
         status: "OPEN",
-        stage: "ELITE",
+        stage: coin.stage,
         eliteType: coin.eliteType,
         entryAt: now,
         entryPrice: coin.price,
@@ -495,7 +643,7 @@ export default async function handler(req, res) {
       positions.open.push(trade);
       openMap.set(sym, trade);
       await pushEvent("scan_entry", {
-        symbol: sym, mode, stage: "ENTRY", prevStage: "ELITE",
+        symbol: sym, mode, stage: "ENTRY", prevStage: coin.stage,
         price: coin.price, confidence: coin.confidence,
         change24: coin.change24, change1h: coin.change1h,
         ob: coin.ob, tradePlan: coin.tradePlan,
@@ -503,7 +651,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // Posities bijwerken en sluiten (identiek aan vorige versie)
+    // Posities bijwerken en sluiten
     const survivors = [];
     for (const trade of positions.open) {
       const coin = universeMap.get(trade.symbol);
