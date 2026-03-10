@@ -1,4 +1,3 @@
-// /api/moon/scan.js – Tijdelijke veilige versie
 import { kv } from "@vercel/kv";
 
 import {
@@ -8,7 +7,7 @@ import {
   keyMoonPortfolio,
   keyMoonPositions,
   keyMoonState,
-  fetchBTCGateCached,           // ← bestaande functie, gebruiken we als fallback
+  fetchBTCGateFromUniverse,
   fetchCoinGeckoTopCached,
   getBitgetSpotUsdtSymbols,
   getTierForMcap,
@@ -29,25 +28,11 @@ import {
   uid,
 } from "../../lib/_analytics.js";
 
-// IMPORTANT: computeInstability wordt tijdelijk lokaal gedefinieerd om importfouten te voorkomen
-// import { computeInstability } from "../../lib/_moon_run_all.js"; // (uitgeschakeld)
+import { computeInstability } from "../../lib/_moon_run_all.js";
 
 export const config = RUNTIME_CONFIG;
 
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
-
-// ---------- TIJDELIJKE FALLBACKS ----------
-// 1. Zorg dat fetchBTCGateFromUniverse bestaat (gebruikt fetchBTCGateCached)
-async function fetchBTCGateFromUniverse() {
-  // Roep de bestaande functie aan
-  return await fetchBTCGateCached();
-}
-
-// 2. Definieer computeInstability lokaal (geen import uit mogelijk kapot bestand)
-function computeInstability() {
-  return 0; // tijdelijk altijd 0
-}
-// -------------------------------------------
 
 function n(x, d = 0) {
   const v = Number(x);
@@ -296,11 +281,30 @@ async function buildUniverse(mode, whaleFlow, btc) {
   const rawCoins = await fetchCoinGeckoTopCached();
   const bitgetSymbols = await getBitgetSpotUsdtSymbols();
 
-  const filtered = rawCoins
-    .filter((c) => !isBlockedMoonAsset(c))
-    .filter((c) => bitgetSymbols.has(String(c.symbol || "").toUpperCase()))
-    .filter((c) => passRadarMoon(c, mode, btc))
-    .slice(0, 220);
+  // ---- DEBUG STAPPEN ----
+  const step1 = rawCoins.filter((c) => !isBlockedMoonAsset(c));
+  const step2 = step1.filter((c) =>
+    bitgetSymbols.has(String(c.symbol || "").toUpperCase())
+  );
+  const step3 = step2.filter((c) => passRadarMoon(c, mode, btc));
+
+  console.log("🔍 MOON DEBUG", {
+    rawCoins: rawCoins.length,
+    afterBlocked: step1.length,
+    bitgetSymbols: bitgetSymbols.size,
+    afterBitget: step2.length,
+    afterRadar: step3.length,
+    sampleCg: step1.slice(0, 10).map((c) => c.symbol),
+    sampleBitget: Array.from(bitgetSymbols).slice(0, 20),
+  });
+
+  // Gebruik step3 voor de verdere verwerking
+  const filtered = step3.slice(0, 220);
+
+  // OPTIONEEL: als je de Bitget-filter tijdelijk wilt uitschakelen,
+  // vervang dan filtered door:
+  // const filtered = step1.filter((c) => passRadarMoon(c, mode, btc)).slice(0, 220);
+  // (en comment de bovenstaande filtered-regel)
 
   const out = [];
   const state = (await kv.get(keyMoonState(mode))) || {};
@@ -519,7 +523,7 @@ export default async function handler(req, res) {
 
     const now = Date.now();
     const whaleFlow = await fetchExchangeFlows();
-    const btc = await fetchBTCGateFromUniverse(); // Gebruikt nu de lokale fallback
+    const btc = await fetchBTCGateFromUniverse();
 
     const universe = await buildUniverse(mode, whaleFlow, btc);
     const funnel = splitFunnels(universe, mode);
