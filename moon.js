@@ -70,7 +70,7 @@ function computeFallbackRisk(c, mode) {
   if (!(price > 0)) return null;
 
   const ch24 = Math.abs(Number(c?.change24 || 0));
-  let proxyPct = Math.max(2.2, Math.min(8.0, ch24 / 3 || 2.8));
+  const proxyPct = Math.max(2.2, Math.min(8.0, ch24 / 3 || 2.8));
   const proxy = proxyPct / 100;
 
   const isBull = String(mode || "bull").toLowerCase() === "bull";
@@ -152,12 +152,12 @@ function confColor(conf) {
   return "#22C55E";
 }
 function confBar(conf) {
-  const pct = Math.max(0, Math.min(100, Number(conf) || 0));
-  const col = confColor(pct);
+  const pctVal = Math.max(0, Math.min(100, Number(conf) || 0));
+  const col = confColor(pctVal);
   return `
     <div class="confWrap">
-      <div class="confBar"><div class="confFill" style="width:${pct}%;background:${col}"></div></div>
-      <div class="confTxt">${pct}/100</div>
+      <div class="confBar"><div class="confFill" style="width:${pctVal}%;background:${col}"></div></div>
+      <div class="confTxt">${pctVal}/100</div>
     </div>
   `;
 }
@@ -282,21 +282,19 @@ async function loadLatest(force = false) {
       throw new Error(`Ongeldige JSON: ${text.slice(0, 180)}`);
     }
 
-    if (!r.ok) {
+    if (!r.ok || j?.ok === false) {
       throw new Error(j?.error || `HTTP ${r.status}`);
     }
 
-    const ts = Number(j?.ts || 0);
+    const data = j?.data || j;
+    const ts = Number(data?.ts || 0);
 
-    // force=true => altijd renderen
     if (!force && ts && ts === (lastTsByMode[MODE] || 0)) {
-      isLoading = false;
       return;
     }
 
     if (ts) lastTsByMode[MODE] = ts;
-
-    renderAll(j || {});
+    renderAll(data || {});
   } catch (e) {
     const statusLine = el("statusLine");
     if (statusLine) {
@@ -535,9 +533,5 @@ el("modeBull")?.addEventListener("click", () => setMode("bull"));
 el("modeBear")?.addEventListener("click", () => setMode("bear"));
 
 setMode(MODE);
-
-// Meteen nog een keer na korte delay, handig na deploy / cold start
 setTimeout(() => loadLatest(true), 1500);
-
-// Elke 60 sec verversen
 setInterval(() => loadLatest(false), 60 * 1000);
