@@ -1,34 +1,72 @@
-import { RUNTIME_CONFIG, requireSecret, tryAcquireMoonScanLock } from "../../lib/_moon_core.js";
+import { RUNTIME_CONFIG, requireSecret } from "../../lib/_moon_core.js";
+import runMoonScan from "./scan.js";
 
 export const config = {
   ...RUNTIME_CONFIG,
   maxDuration: 60,
 };
 
-const fetchFn = globalThis.fetch;
-
-async function hit(url, token) {
-  const r = await fetchFn(url, {
+function makeReq(mode, token, originalReq) {
+  return {
+    ...originalReq,
     method: "GET",
-    headers: {
-      authorization: `Bearer ${token}`,
-      accept: "application/json",
-      "cache-control": "no-cache",
+    query: {
+      ...(originalReq?.query || {}),
+      mode,
+      token,
     },
-  });
+    headers: {
+      ...(originalReq?.headers || {}),
+      authorization: `Bearer ${token}`,
+    },
+  };
+}
 
-  const text = await r.text();
+function createBufferRes() {
+  let statusCode = 200;
+  const headers = {};
+  let body = "";
 
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = { raw: text.slice(0, 500) };
-  }
+  return {
+    get statusCode() {
+      return statusCode;
+    },
+    set statusCode(v) {
+      statusCode = v;
+    },
+    setHeader(name, value) {
+      headers[String(name).toLowerCase()] = value;
+    },
+    getHeader(name) {
+      return headers[String(name).toLowerCase()];
+    },
+    end(payload = "") {
+      body = String(payload || "");
+      return body;
+    },
+    json() {
+      try {
+        return JSON.parse(body || "{}");
+      } catch {
+        return { ok: false, error: body || "Invalid JSON body" };
+      }
+    },
+    rawBody() {
+      return body;
+    },
+  };
+}
 
-  if (!r.ok || json?.ok === false) {
+async function runOne(mode, req, token) {
+  const subReq = makeReq(mode, token, req);
+  const subRes = createBufferRes();
+
+  await runMoonScan(subReq, subRes);
+
+  const json = subRes.json();
+  if (subRes.statusCode >= 400 || json?.ok === false) {
     throw new Error(
-      `Request failed: ${url} | HTTP ${r.status} | ${json?.error || text.slice(0, 300)}`
+      `moon ${mode} failed: ${json?.error || subRes.rawBody() || `HTTP ${subRes.statusCode}`}`
     );
   }
 
@@ -39,48 +77,21 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    let base = String(process.env.BASE_URL || "").trim();
-
-    if (!base) {
-      const host = req.headers.host;
-      if (!host) throw new Error("Missing BASE_URL and no host header");
-      base = `https://${host}`;
-    } else if (!base.startsWith("http://") && !base.startsWith("https://")) {
-      base = `https://${base}`;
-    }
-
-    if (base.endsWith("/")) base = base.slice(0, -1);
-
     const token = String(process.env.CRON_SECRET || "").trim();
     if (!token) {
       res.statusCode = 500;
       res.setHeader("content-type", "application/json");
       return res.end(JSON.stringify({
         ok: false,
-        error: "Missing CRON_SECRET env var",
-      }));
-    }
-
-    // 1 lock voor volledige moon-run
-    const lock = await tryAcquireMoonScanLock("global", 14 * 60);
-    if (!lock.ok) {
-      res.statusCode = 200;
-      res.setHeader("content-type", "application/json");
-      return res.end(JSON.stringify({
-        ok: true,
         cron: true,
-        skipped: true,
-        reason: "moon global lock active",
+        error: "Missing CRON_SECRET env var",
       }));
     }
 
     const startedAt = Date.now();
 
-    const bullUrl = `${base}/api/moon/scan?mode=bull`;
-    const bearUrl = `${base}/api/moon/scan?mode=bear`;
-
-    const bull = await hit(bullUrl, token);
-    const bear = await hit(bearUrl, token);
+    const bull = await runOne("bull", req, token);
+    const bear = await runOne("bear", req, token);
 
     res.statusCode = 200;
     res.setHeader("content-type", "application/json");
@@ -90,10 +101,12 @@ export default async function handler(req, res) {
       startedAt,
       finishedAt: Date.now(),
       bull: {
+        ts: bull?.ts || null,
         counts: bull?.counts || null,
         btc: bull?.btc || null,
       },
       bear: {
+        ts: bear?.ts || null,
         counts: bear?.counts || null,
         btc: bear?.btc || null,
       },
