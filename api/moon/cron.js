@@ -1,6 +1,9 @@
 import { RUNTIME_CONFIG, requireSecret, tryAcquireMoonScanLock } from "../../lib/_moon_core.js";
 
-export const config = RUNTIME_CONFIG;
+export const config = {
+  ...RUNTIME_CONFIG,
+  maxDuration: 60,
+};
 
 const fetchFn = globalThis.fetch;
 
@@ -15,8 +18,8 @@ async function hit(url, token) {
   });
 
   const text = await r.text();
-  let json = null;
 
+  let json;
   try {
     json = JSON.parse(text);
   } catch {
@@ -36,7 +39,8 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    let base = process.env.BASE_URL;
+    let base = String(process.env.BASE_URL || "").trim();
+
     if (!base) {
       const host = req.headers.host;
       if (!host) throw new Error("Missing BASE_URL and no host header");
@@ -47,23 +51,26 @@ export default async function handler(req, res) {
 
     if (base.endsWith("/")) base = base.slice(0, -1);
 
-    const token = String(process.env.CRON_SECRET || "");
+    const token = String(process.env.CRON_SECRET || "").trim();
     if (!token) {
       res.statusCode = 500;
       res.setHeader("content-type", "application/json");
-      return res.end(JSON.stringify({ ok: false, error: "Missing CRON_SECRET env var" }));
+      return res.end(JSON.stringify({
+        ok: false,
+        error: "Missing CRON_SECRET env var",
+      }));
     }
 
-    // overlap voorkomen
-    const bullLock = await tryAcquireMoonScanLock("bull", 14 * 60);
-    if (!bullLock.ok) {
+    // 1 lock voor volledige moon-run
+    const lock = await tryAcquireMoonScanLock("global", 14 * 60);
+    if (!lock.ok) {
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");
       return res.end(JSON.stringify({
         ok: true,
         cron: true,
         skipped: true,
-        reason: "bull lock active",
+        reason: "moon global lock active",
       }));
     }
 
