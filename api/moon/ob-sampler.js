@@ -1,412 +1,113 @@
 import { kv } from "@vercel/kv";
+import { RUNTIME_CONFIG, requireSecret } from "../../../lib/_runtime.js";
 import {
-  RUNTIME_CONFIG,
-  requireSecret,
-  MOON,
-  keyMoonLatest,
-  keyMoonObSamples,
-  keyMoonObResult,
-} from "../../lib/_moon_core.js";
+  keyMoonObMap,
+  keyObSamples,
+  keyObResult,
+  keyObResultMapTs,
+} from "../../../lib/_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
 
-async function fetchBitgetOrderbookRaw(baseSymbol, limit = 100) {
-  const base = String(baseSymbol || "").toUpperCase();
-  if (!base) return { ok: false, status: 400, msg: "Missing symbol" };
+const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
+const SAMPLES_WINDOW_SEC = 3 * 3600; // 3 uur (zelfde als main)
+const SAMPLES_MAX = 24;
+const SAMPLE_TTL_SEC = 60 * 60 * 48; // 48 uur
 
-  const pair = `${base}USDT`;
-  const safeLimit = Math.max(5, Math.min(150, Number(limit) || 100));
-  const type = "step0";
+function n(x, d = 0) {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : d;
+}
 
-  const url =
-    `https://api.bitget.com/api/v2/spot/market/orderbook?` +
-    `symbol=${encodeURIComponent(pair)}&type=${encodeURIComponent(type)}&limit=${encodeURIComponent(String(safeLimit))}`;
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
-
-  let r;
+async function fetchOrderbook(symbol) {
   try {
-    r = await fetch(url, {
-      headers: { accept: "application/json" },
-      signal: ctrl.signal,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
+    const url = `${BITGET_OB}?symbol=${symbol}USDT&type=step0&limit=20`;
+    const r = await fetch(url, { headers: { accept: "application/json" } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (String(j?.code || "") !== "00000") return null;
+    const bids = j?.data?.bids || [];
+    const asks = j?.data?.asks || [];
+    if (!bids.length || !asks.length) return null;
 
-  const text = await r.text();
+    const bestBid = n(bids[0][0]);
+    const bestAsk = n(asks[0][0]);
+    if (!(bestBid > 0 && bestAsk > 0)) return null;
 
-  let j = null;
-  try {
-    j = JSON.parse(text);
-  } catch {}
-
-  if (!r.ok) {
-    return {
-      ok: false,
-      status: r.status,
-      msg: j?.msg || "Bitget orderbook failed",
-      url,
-      preview: text.slice(0, 200),
-    };
-  }
-
-  if (String(j?.code || "") !== "00000") {
-    return {
-      ok: false,
-      status: 400,
-      msg: j?.msg || "Bitget returned non-success code",
-      url,
-      preview: text.slice(0, 200),
-    };
-  }
-
-  const depth = j?.data;
-  if (!depth?.bids?.length || !depth?.asks?.length) {
-    return {
-      ok: false,
-      status: 200,
-      msg: "Empty orderbook",
-      url,
-      preview: text.slice(0, 200),
-    };
-  }
-
-  return { ok: true, url, depth };
-}
-
-function sumDepth(levels, mid, pct, isBid) {
-  const limit = isBid ? mid * (1 - pct) : mid * (1 + pct);
-  let total = 0;
-  let biggest = 0;
-
-  for (const row of levels) {
-    const p = Number(row?.[0]);
-    const s = Number(row?.[1]);
-    if (!Number.isFinite(p) || !Number.isFinite(s)) continue;
-
-    if (isBid && p < limit) break;
-    if (!isBid && p > limit) break;
-
-    const usd = p * s;
-    total += usd;
-    if (usd > biggest) biggest = usd;
-  }
-
-  return { total, biggest };
-}
-
-function computeObSample(depth) {
-  const bids = depth?.bids || [];
-  const asks = depth?.asks || [];
-  if (!bids.length || !asks.length) return null;
-
-  const bid = Number(bids[0]?.[0]);
-  const ask = Number(asks[0]?.[0]);
-  if (!(bid > 0) || !(ask > 0)) return null;
-
-  const mid = (bid + ask) / 2;
-  const spreadPct = ((ask - bid) / mid) * 100;
-
-  const pct = 0.002;
-  const bidRes = sumDepth(bids, mid, pct, true);
-  const askRes = sumDepth(asks, mid, pct, false);
-
-  const bidUsd = bidRes.total;
-  const askUsd = askRes.total;
-  const denom = bidUsd + askUsd;
-  const score = denom > 0 ? (bidUsd - askUsd) / denom : 0;
-
-  const biggest = Math.max(bidRes.biggest, askRes.biggest);
-  const lor = denom > 0 ? biggest / denom : 1;
-
-  const bid1 = sumDepth(bids, mid, 0.01, true);
-  const ask1 = sumDepth(asks, mid, 0.01, false);
-  const depthMinUsd1p = Math.min(bid1.total, ask1.total);
-
-  return {
-    ts: Date.now(),
-    score,
-    spreadPct,
-    lor,
-    bidUsd,
-    askUsd,
-    mid,
-    depthMinUsd1p,
-  };
-}
-
-function directionOk(mode, score) {
-  return mode === "bull" ? score > 0 : score < 0;
-}
-
-function pruneSamples(samples) {
-  const now = Date.now();
-  const winMs = MOON.elite.samplesWindowSec * 1000;
-  const arr = Array.isArray(samples) ? samples : [];
-
-  const fresh = arr
-    .map((s) => ({
-      ts: Number(s?.ts || 0),
-      score: Number(s?.score ?? 0),
-      spreadPct: Number(s?.spreadPct ?? 999),
-      lor: Number(s?.lor ?? 1),
-      bidUsd: Number(s?.bidUsd ?? 0),
-      askUsd: Number(s?.askUsd ?? 0),
-      mid: Number(s?.mid ?? 0),
-      depthMinUsd1p: Number(s?.depthMinUsd1p ?? 0),
-    }))
-    .filter((s) => s.ts > 0 && Number.isFinite(s.score))
-    .filter((s) => now - s.ts <= winMs)
-    .sort((a, b) => a.ts - b.ts);
-
-  return fresh.slice(-30);
-}
-
-function calcSlope(lastN) {
-  if (!Array.isArray(lastN) || lastN.length < 2) return 0;
-  const first = lastN[0].score;
-  const last = lastN[lastN.length - 1].score;
-  const steps = lastN.length - 1;
-  return steps > 0 ? (last - first) / steps : 0;
-}
-
-function calcStability(lastN) {
-  if (!Array.isArray(lastN) || lastN.length < 2) return { std: 0, ok: true };
-  const scores = lastN.map((s) => Number(s.score || 0));
-  const mean = scores.reduce((a, x) => a + x, 0) / scores.length;
-  const variance = scores.reduce((a, x) => a + (x - mean) * (x - mean), 0) / scores.length;
-  const std = Math.sqrt(variance);
-  const ok = std <= 0.20;
-  return { std, ok };
-}
-
-function validateSamples(mode, samplesFresh) {
-  const freshAll = pruneSamples(samplesFresh);
-
-  const need = Number(MOON?.elite?.samplesNeed || 2);
-  if (freshAll.length < need) {
-    return {
-      valid: false,
-      reason: "Not enough samples",
-      agree: 0,
-      avgScore: null,
-      slope: 0,
-      stabilityStd: null,
-      stable: false,
-      fresh: freshAll,
-      windowN: need,
-    };
-  }
-
-  const lastN = freshAll.slice(-need);
-  const agree = lastN.filter((s) => directionOk(mode, s.score)).length;
-
-  if (agree < Number(MOON?.elite?.minAgree || 1)) {
-    const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
-    const slope = calcSlope(lastN);
-    const stab = calcStability(lastN);
+    const spread = (bestAsk - bestBid) / bestBid;
+    const depthBid = bids.slice(0, 5).reduce((a, b) => a + n(b[1]) * n(b[0]), 0);
+    const depthAsk = asks.slice(0, 5).reduce((a, b) => a + n(b[1]) * n(b[0]), 0);
 
     return {
-      valid: false,
-      reason: "Direction not consistent",
-      agree,
-      avgScore,
-      slope,
-      stabilityStd: stab.std,
-      stable: stab.ok,
-      fresh: lastN,
-      windowN: need,
+      spreadPct: spread * 100,
+      depthBidUsd: depthBid,
+      depthAskUsd: depthAsk,
+      depthMinUsd1p: Math.min(depthBid, depthAsk),
+      score: (depthBid - depthAsk) / (depthBid + depthAsk || 1),
     };
+  } catch {
+    return null;
   }
-
-  const avgScore = lastN.reduce((a, s) => a + s.score, 0) / lastN.length;
-  const slope = calcSlope(lastN);
-
-  let slopeOk = true;
-  if (MOON?.elite?.obSlopeEnabled) {
-    if (mode === "bull") slopeOk = slope >= Number(MOON?.elite?.obSlopeMinBull ?? 0);
-    else slopeOk = slope <= Number(MOON?.elite?.obSlopeMaxBear ?? 0);
-  }
-
-  const stab = calcStability(lastN);
-  const stableOk = stab.ok;
-
-  const last = lastN[lastN.length - 1];
-  const spreadOk = Number(last.spreadPct || 999) <= Number(MOON?.obSampler?.spreadMaxPct ?? 1.2);
-  const lorOk = Number(last.lor || 1) <= Number(MOON?.obSampler?.largestOrderRatioMax ?? 0.8);
-
-  const valid = !!(
-    agree >= (MOON?.elite?.minAgree || 1) &&
-    slopeOk &&
-    stableOk &&
-    spreadOk &&
-    lorOk
-  );
-
-  let reason = "OK";
-  if (!slopeOk) reason = "Slope not ok";
-  else if (!stableOk) reason = "OB too spiky (stability fail)";
-  else if (!spreadOk) reason = "Spread too wide";
-  else if (!lorOk) reason = "Largest order suspicious";
-
-  return {
-    valid,
-    reason,
-    agree,
-    avgScore,
-    slope,
-    stabilityStd: stab.std,
-    stable: stableOk,
-    fresh: lastN,
-    windowN: need,
-  };
-}
-
-async function processCandidate(mode, symbol) {
-  let live;
-  try {
-    live = await fetchBitgetOrderbookRaw(symbol, 100);
-  } catch (e) {
-    return { ok: false, symbol, reason: String(e?.message || e || "orderbook failed") };
-  }
-
-  if (!live.ok) return { ok: false, symbol, reason: live.msg || "orderbook failed" };
-
-  const sample = computeObSample(live.depth);
-  if (!sample) return { ok: false, symbol, reason: "could not compute sample" };
-
-  const kS = keyMoonObSamples(mode, symbol);
-  const prev = (await kv.get(kS)) || [];
-  const merged = Array.isArray(prev) ? prev.concat([sample]) : [sample];
-  const pruned = pruneSamples(merged);
-
-  await kv.set(kS, pruned, { ex: 60 * 60 * 3 });
-
-  const v = validateSamples(mode, pruned);
-
-  await kv.set(
-    keyMoonObResult(mode, symbol),
-    {
-      symbol,
-      side: mode,
-      valid: v.valid,
-      reason: v.reason,
-      avgScore: v.avgScore ?? null,
-      agree: v.agree ?? null,
-      slope: v.slope ?? 0,
-      stable: !!v.stable,
-      stabilityStd: v.stabilityStd ?? null,
-      windowN: v.windowN ?? null,
-      sampledAt: sample.ts,
-      ob: {
-        ts: sample.ts,
-        mid: sample.mid,
-        spreadPct: sample.spreadPct,
-        bidUsd: sample.bidUsd,
-        askUsd: sample.askUsd,
-        score: sample.score,
-        lor: sample.lor,
-        depthMinUsd1p: sample.depthMinUsd1p,
-      },
-      stale: false,
-    },
-    { ex: 60 * 60 * 2 }
-  );
-
-  return { ok: true, symbol, valid: v.valid, reason: v.reason };
-}
-
-async function runBatched(list, batchSize, fn) {
-  const out = [];
-  for (let i = 0; i < list.length; i += batchSize) {
-    const chunk = list.slice(i, i + batchSize);
-    const results = await Promise.allSettled(chunk.map(fn));
-
-    for (const r of results) {
-      if (r.status === "fulfilled") out.push(r.value);
-      else out.push({ ok: false, symbol: "unknown", reason: String(r.reason || "rejected") });
-    }
-  }
-  return out;
-}
-
-function uniqSymbols(arr) {
-  const seen = new Set();
-  const out = [];
-  for (const s of arr) {
-    const x = String(s || "").toUpperCase().trim();
-    if (!x) continue;
-    if (seen.has(x)) continue;
-    seen.add(x);
-    out.push(x);
-  }
-  return out;
 }
 
 export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const bull = await kv.get(keyMoonLatest("bull"));
-    const bear = await kv.get(keyMoonLatest("bear"));
-
-    const tasks = [];
-    if (bull?.funnel) tasks.push({ mode: "bull", data: bull });
-    if (bear?.funnel) tasks.push({ mode: "bear", data: bear });
-
-    let totalTried = 0;
-    let totalOk = 0;
-    let totalValid = 0;
-    const sampleErrors = [];
-
-    for (const t of tasks) {
-      const mode = t.mode;
-
-      const elite = (t.data?.funnel?.elite || []).slice(0, 10);
-      const almost = (t.data?.funnel?.almost || []).slice(0, 20);
-      const buildup = (t.data?.funnel?.buildup || []).slice(0, 20);
-      const radar = (t.data?.funnel?.radar || []).slice(0, 30);
-
-      const candidates = uniqSymbols([
-        ...elite.map((x) => x?.symbol),
-        ...almost.map((x) => x?.symbol),
-        ...buildup.map((x) => x?.symbol),
-        ...radar.map((x) => x?.symbol),
-      ]);
-
-      totalTried += candidates.length;
-
-      const results = await runBatched(candidates, 6, (sym) => processCandidate(mode, sym));
-
-      for (const r of results) {
-        if (r?.ok) {
-          totalOk++;
-          if (r.valid) totalValid++;
-        } else {
-          sampleErrors.push({
-            symbol: r?.symbol || "unknown",
-            reason: r?.reason || "unknown",
-          });
-        }
-      }
+    const mode = String(req.query?.mode || "bull").toLowerCase();
+    if (mode !== "bull" && mode !== "bear") {
+      res.status(400).json({ ok: false, error: "mode must be bull or bear" });
+      return;
     }
 
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({
-      ok: true,
-      ts: Date.now(),
-      totalTried,
-      totalOk,
-      totalValid,
-      note: "MOON OB sampler complete.",
-      sampleErrors: sampleErrors.slice(0, 30),
-    }));
+    const mapKey = keyMoonObMap(mode);
+    const mapData = await kv.get(mapKey);
+    if (!mapData?.ok || !mapData.map) {
+      res.status(200).json({ ok: false, error: "No OB map available" });
+      return;
+    }
+
+    const symbols = Object.keys(mapData.map);
+    const now = Date.now();
+    const results = [];
+
+    for (let i = 0; i < symbols.length; i++) {
+      const sym = symbols[i];
+      const ob = await fetchOrderbook(sym);
+      if (!ob) continue;
+
+      // Sample opslaan
+      const sampleKey = keyObSamples(mode, sym);
+      let samples = (await kv.get(sampleKey)) || [];
+      if (!Array.isArray(samples)) samples = [];
+
+      samples.push({ ts: now, ...ob });
+      // bewaar alleen laatste SAMPLES_WINDOW_SEC
+      const cutoff = now - SAMPLES_WINDOW_SEC * 1000;
+      samples = samples.filter(s => s.ts >= cutoff).slice(-SAMPLES_MAX);
+      await kv.set(sampleKey, samples, { ex: SAMPLE_TTL_SEC });
+
+      // Resultaat berekenen (gewoon de laatste waarde, geen slope)
+      const result = {
+        ts: now,
+        ...ob,
+      };
+      await kv.set(keyObResult(mode, sym), result, { ex: SAMPLE_TTL_SEC });
+
+      results.push({ symbol: sym, ok: true });
+
+      await sleep(120); // kleine pauze om rate limits te mijden
+    }
+
+    // Update timestamp map
+    await kv.set(keyObResultMapTs(mode), now, { ex: SAMPLE_TTL_SEC });
+
+    res.status(200).json({ ok: true, mode, sampled: results.length, ts: now });
   } catch (e) {
-    res.statusCode = 500;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: false, error: String(e?.message || e) }));
+    res.status(500).json({ ok: false, error: e.message });
   }
 }
