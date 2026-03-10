@@ -219,12 +219,15 @@ async function fetchCoins() {
   return Array.from(map.values());
 }
 
+// ========== RADAR STRENGER ==========
 function basicFilter(c) {
   const vol = n(c.volume);
   const cap = n(c.marketCap);
-  if (vol < 200000) return false;
-  if (cap < 800000) return false;
-  if (cap > 800000000) return false;
+  // volume minimaal 250k (was 200k)
+  if (vol < 250_000) return false;
+  // market cap ondergrens verhoogd naar 1M (was 800k)
+  if (cap < 1_000_000) return false;
+  if (cap > 800_000_000) return false;
   return true;
 }
 
@@ -323,10 +326,11 @@ function liquidityVacuum(ob) {
   return 0;
 }
 
+// ========== STAGE DREMPELS AANGEPAST ==========
 function stageFromScore(score) {
-  if (score >= 0.72) return "ELITE";
-  if (score >= 0.55) return "ALMOST";
-  if (score >= 0.35) return "BUILDUP";
+  if (score >= 0.68) return "ELITE";      // was 0.72 (soepeler)
+  if (score >= 0.57) return "ALMOST";     // was 0.55 (strenger)
+  if (score >= 0.37) return "BUILDUP";    // was 0.35 (strenger)
   return "RADAR";
 }
 
