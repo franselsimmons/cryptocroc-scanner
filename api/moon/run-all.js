@@ -1,9 +1,74 @@
-// /api/moon/run-all.js
+import { RUNTIME_CONFIG, requireSecret } from "../../lib/_moon_core.js";
 
-import runAllCron from "./run_all_cron.js";
+export const config = RUNTIME_CONFIG;
 
-export { config } from "./run_all_cron.js";
+function send(res, code, obj) {
+  res.statusCode = code;
+  res.setHeader("content-type", "application/json; charset=utf-8");
+  res.setHeader("cache-control", "no-store");
+  return res.end(JSON.stringify(obj));
+}
+
+async function callLocal(path, req) {
+  const proto =
+    String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim() || "https";
+  const host =
+    String(req.headers["x-forwarded-host"] || "").split(",")[0].trim() ||
+    String(req.headers.host || "").trim();
+
+  if (!host) {
+    throw new Error("Missing host header");
+  }
+
+  const token = String(process.env.CRON_SECRET || "");
+  if (!token) {
+    throw new Error("Missing CRON_SECRET env var");
+  }
+
+  const url = `${proto}://${host}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+
+  const r = await fetch(url, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      "cache-control": "no-store",
+    },
+  });
+
+  const text = await r.text();
+  let json = null;
+
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = { ok: false, raw: text };
+  }
+
+  return {
+    ok: r.ok && !!json?.ok,
+    status: r.status,
+    url,
+    body: json,
+  };
+}
 
 export default async function handler(req, res) {
-  return runAllCron(req, res);
+  try {
+    if (!requireSecret(req, res)) return;
+
+    const bull = await callLocal("/api/moon/scan?mode=bull", req);
+    const bear = await callLocal("/api/moon/scan?mode=bear", req);
+
+    return send(res, 200, {
+      ok: bull.ok || bear.ok,
+      bull,
+      bear,
+      ts: Date.now(),
+    });
+  } catch (e) {
+    return send(res, 500, {
+      ok: false,
+      error: String(e?.message || e),
+    });
+  }
 }
