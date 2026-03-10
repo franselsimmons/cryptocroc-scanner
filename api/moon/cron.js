@@ -1,24 +1,16 @@
 import { RUNTIME_CONFIG, requireSecret } from "../../lib/_moon_core.js";
-import runMoonScan from "./scan.js";
+import mapRefresh from "./ob/map_refresh.js";
+import sampler from "./ob/sampler.js";
+import scan from "./scan.js";
 
-export const config = {
-  ...RUNTIME_CONFIG,
-  maxDuration: 60,
-};
+export const config = RUNTIME_CONFIG;
 
-function makeReq(mode, token, originalReq) {
+function createInternalReq(mode, originalReq) {
   return {
     ...originalReq,
     method: "GET",
-    query: {
-      ...(originalReq?.query || {}),
-      mode,
-      token,
-    },
-    headers: {
-      ...(originalReq?.headers || {}),
-      authorization: `Bearer ${token}`,
-    },
+    query: { mode, ...originalReq.query },
+    headers: originalReq.headers,
   };
 }
 
@@ -26,51 +18,26 @@ function createBufferRes() {
   let statusCode = 200;
   const headers = {};
   let body = "";
-
   return {
-    get statusCode() {
-      return statusCode;
-    },
-    set statusCode(v) {
-      statusCode = v;
-    },
-    setHeader(name, value) {
-      headers[String(name).toLowerCase()] = value;
-    },
-    getHeader(name) {
-      return headers[String(name).toLowerCase()];
-    },
-    end(payload = "") {
-      body = String(payload || "");
-      return body;
-    },
+    statusCode,
+    setHeader(k, v) { headers[String(k).toLowerCase()] = v; },
+    end(payload) { body = String(payload || ""); return body; },
     json() {
-      try {
-        return JSON.parse(body || "{}");
-      } catch {
-        return { ok: false, error: body || "Invalid JSON body" };
-      }
+      try { return JSON.parse(body); } catch { return { ok: false, raw: body }; }
     },
-    rawBody() {
-      return body;
-    },
+    get statusCode() { return statusCode; },
+    set statusCode(v) { statusCode = v; },
   };
 }
 
-async function runOne(mode, req, token) {
-  const subReq = makeReq(mode, token, req);
+async function runStep(handler, mode, req) {
+  const subReq = createInternalReq(mode, req);
   const subRes = createBufferRes();
-
-  await runMoonScan(subReq, subRes);
-
-  const json = subRes.json();
-  if (subRes.statusCode >= 400 || json?.ok === false) {
-    throw new Error(
-      `moon ${mode} failed: ${json?.error || subRes.rawBody() || `HTTP ${subRes.statusCode}`}`
-    );
+  await handler(subReq, subRes);
+  if (subRes.statusCode >= 400) {
+    throw new Error(`Step failed with status ${subRes.statusCode}: ${subRes.json().error || subRes.json().raw || "unknown"}`);
   }
-
-  return json;
+  return subRes.json();
 }
 
 export default async function handler(req, res) {
@@ -79,45 +46,32 @@ export default async function handler(req, res) {
 
     const token = String(process.env.CRON_SECRET || "").trim();
     if (!token) {
-      res.statusCode = 500;
-      res.setHeader("content-type", "application/json");
-      return res.end(JSON.stringify({
-        ok: false,
-        cron: true,
-        error: "Missing CRON_SECRET env var",
-      }));
+      return res.status(500).json({ ok: false, error: "Missing CRON_SECRET" });
     }
 
     const startedAt = Date.now();
 
-    const bull = await runOne("bull", req, token);
-    const bear = await runOne("bear", req, token);
+    // 1. map_refresh voor bull
+    await runStep(mapRefresh, "bull", req);
+    // 2. sampler voor bull
+    await runStep(sampler, "bull", req);
+    // 3. scan voor bull
+    const bull = await runStep(scan, "bull", req);
 
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    return res.end(JSON.stringify({
+    // 4. zelfde voor bear
+    await runStep(mapRefresh, "bear", req);
+    await runStep(sampler, "bear", req);
+    const bear = await runStep(scan, "bear", req);
+
+    res.status(200).json({
       ok: true,
       cron: true,
       startedAt,
       finishedAt: Date.now(),
-      bull: {
-        ts: bull?.ts || null,
-        counts: bull?.counts || null,
-        btc: bull?.btc || null,
-      },
-      bear: {
-        ts: bear?.ts || null,
-        counts: bear?.counts || null,
-        btc: bear?.btc || null,
-      },
-    }));
+      bull: { ts: bull?.ts, counts: bull?.counts, btc: bull?.btc },
+      bear: { ts: bear?.ts, counts: bear?.counts, btc: bear?.btc },
+    });
   } catch (e) {
-    res.statusCode = 500;
-    res.setHeader("content-type", "application/json");
-    return res.end(JSON.stringify({
-      ok: false,
-      cron: true,
-      error: String(e?.message || e),
-    }));
+    res.status(500).json({ ok: false, error: e.message });
   }
 }
