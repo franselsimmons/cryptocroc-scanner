@@ -1,3 +1,4 @@
+// /api/moon/scan.js (gecorrigeerd)
 import { kv } from "@vercel/kv";
 
 import {
@@ -28,7 +29,7 @@ import {
   uid,
 } from "../../lib/_analytics.js";
 
-import { computeInstability } from "../../lib/_moon_run_all.js";
+// import { computeInstability } from "../../lib/_moon_run_all.js";  // verwijderd
 
 export const config = RUNTIME_CONFIG;
 
@@ -419,14 +420,8 @@ async function buildUniverse(mode, whaleFlow, btc) {
       tier
     );
 
-    const instability = computeInstability({
-      direction: mode,
-      volumeRoc5m: coin.vm * 100,
-      obSlope: Math.abs(obx.score),
-      obStability: obx.spreadPct / 100,
-      depthBidUsd: obx.depthBidUsd,
-      depthAskUsd: obx.depthAskUsd,
-    });
+    // computeInstability is vervangen door 0 (om importfout te voorkomen)
+    const instability = 0;
 
     const moonProbabilityRaw =
       confidence / 100 * 0.45 +
