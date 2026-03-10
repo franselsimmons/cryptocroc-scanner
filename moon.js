@@ -1,387 +1,522 @@
-let mode = "bull";
-let lastData = null;
-let activeCoin = null;
+function syncTopbarHeight() {
+  const tb = document.querySelector(".topbar");
+  const h = tb ? Math.ceil(tb.getBoundingClientRect().height) : 78;
+  document.documentElement.style.setProperty("--topbar-h", h + "px");
+}
+window.addEventListener("resize", syncTopbarHeight);
+window.addEventListener("load", syncTopbarHeight);
+syncTopbarHeight();
 
-const $ = (id) => document.getElementById(id);
+const el = (id) => document.getElementById(id);
 
-function fmtNum(x, digits = 8) {
-  const v = Number(x);
-  if (!Number.isFinite(v)) return "-";
-  return v.toFixed(digits).replace(/\.?0+$/, "");
+const API = {
+  latest: (mode) => `/api/moon/public-latest?mode=${encodeURIComponent(mode)}`,
+};
+
+let MODE =
+  new URLSearchParams(location.search).get("mode") ||
+  localStorage.getItem("MOON_MODE") ||
+  "bull";
+
+const lastTsByMode = { bull: 0, bear: 0 };
+
+function setMode(mode) {
+  MODE = mode === "bear" ? "bear" : "bull";
+  localStorage.setItem("MOON_MODE", MODE);
+
+  const url = new URL(location.href);
+  url.searchParams.set("mode", MODE);
+  history.replaceState({}, "", url.toString());
+
+  el("modeBull")?.classList.toggle("active", MODE === "bull");
+  el("modeBear")?.classList.toggle("active", MODE === "bear");
+
+  loadLatest();
 }
 
-function fmtPct(x, digits = 2) {
-  const v = Number(x);
-  if (!Number.isFinite(v)) return "-";
-  return `${v >= 0 ? "+" : ""}${v.toFixed(digits)}%`;
+// ==================== format helpers ====================
+function fmtUSD(n) {
+  n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
+  return n.toFixed(0);
+}
+function fmtPct(n) {
+  n = Number(n) || 0;
+  const s = n >= 0 ? "+" : "";
+  return s + n.toFixed(2) + "%";
+}
+function fmt(n) {
+  return (Number(n) || 0).toFixed(2);
+}
+function safe(n, d = 2) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "—";
+  return x.toFixed(d);
+}
+function pct(n, d = 2) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "—";
+  const s = x >= 0 ? "+" : "";
+  return s + x.toFixed(d) + "%";
 }
 
-function fmtUsdCompact(x) {
-  const v = Number(x);
-  if (!Number.isFinite(v)) return "-";
-  if (Math.abs(v) >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
-  if (Math.abs(v) >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
-  if (Math.abs(v) >= 1_000) return `$${(v / 1_000).toFixed(2)}K`;
-  return `$${v.toFixed(0)}`;
+// ==================== Risk ====================
+function computeFallbackRisk(c, mode) {
+  const price = Number(c?.price || 0);
+  if (!(price > 0)) return null;
+
+  const ch24 = Math.abs(Number(c?.change24 || 0));
+  let proxyPct = Math.max(2.2, Math.min(8.0, ch24 / 3 || 2.8));
+  const proxy = proxyPct / 100;
+
+  const isBull = String(mode || "bull").toLowerCase() === "bull";
+
+  const sl = isBull ? price * (1 - proxy) : price * (1 + proxy);
+  const tp = isBull ? price * (1 + proxy * 2.2) : price * (1 - proxy * 2.2);
+  const rr = Math.abs((tp - price) / (price - sl || 1e-9));
+
+  return { atrPct: proxyPct, sl, tp, rr, source: "fallback" };
 }
 
-function stageScore(c) {
-  const edge = Number(c?.edgeScore);
-  if (Number.isFinite(edge)) return Math.max(0, Math.min(100, Math.round(edge)));
+function getRisk(c, mode) {
+  const price = Number(c?.price || 0);
+  const plan = c?.tradePlan || null;
 
-  const conf = Number(c?.confidence);
-  if (!Number.isFinite(conf)) return 0;
-  return conf <= 1 ? Math.round(conf * 100) : Math.round(conf);
-}
+  const hasBackendPlan =
+    Number.isFinite(Number(plan?.sl)) &&
+    Number.isFinite(Number(plan?.tp)) &&
+    Number(plan?.sl) !== 0 &&
+    Number(plan?.tp) !== 0;
 
-function setStatus(data) {
-  const el = $("moon-status");
-  const sub = $("moon-substatus");
-  if (!el || !sub) return;
+  if (hasBackendPlan) {
+    const sl = Number(plan.sl);
+    const tp = Number(plan.tp);
 
-  if (!data || data.ok === false) {
-    el.textContent = "Status: error";
-    el.className = "hero-status error";
-    sub.textContent = "Kan data niet laden.";
-    return;
+    return {
+      atrPct: null,
+      sl,
+      tp,
+      rr: Number.isFinite(Number(plan?.rr))
+        ? Number(plan.rr)
+        : (price > 0 ? Math.abs((tp - price) / (price - sl || 1e-9)) : null),
+      source: "backend",
+    };
   }
 
-  const counts = data.counts || {};
-  el.textContent =
-    `Status: ok • ELITE ${counts.elite ?? 0} • ALMOST ${counts.almost ?? 0} • BUILDUP ${counts.buildup ?? 0} • RADAR ${counts.radar ?? 0}`;
-  el.className = "hero-status ok";
-
-  const btcState = data?.btc?.state || "-";
-  const whaleFlow = data?.whaleFlow ?? 0;
-  sub.textContent = `Mode: ${mode.toUpperCase()} • BTC: ${btcState} • Whale flow: ${whaleFlow}`;
+  return computeFallbackRisk(c, mode);
 }
 
-function emptyHtml(text) {
-  return `<div class="empty-box">${text}</div>`;
+// ==================== Action label ====================
+function actionForStage(c, data) {
+  const stage = String(c?.stage || "").toUpperCase();
+  const btcState = String(data?.btc?.state || "NEUTRAL").toUpperCase();
+
+  if (stage === "ELITE") {
+    return {
+      label: "FOCUS / MOGELIJKE ENTRY",
+      sub: `Top Moon setup. BTC is ${btcState}.`,
+      tone: "ok",
+    };
+  }
+  if (stage === "ALMOST") {
+    return {
+      label: "KLAARZETTEN",
+      sub: `Bijna klaar, mist nog 1–2 checks. BTC is ${btcState}.`,
+      tone: "warn",
+    };
+  }
+  if (stage === "BUILDUP") {
+    return {
+      label: "WATCHLIST",
+      sub: `Opbouwfase. Nog niet instappen, wel volgen.`,
+      tone: "warn",
+    };
+  }
+  return {
+    label: "SKIP / VOLGEN",
+    sub: `Te vroeg voor actie. Alleen watchlist.`,
+    tone: "no",
+  };
 }
 
-function scoreBar(score) {
-  const safe = Math.max(0, Math.min(100, Number(score) || 0));
+// ==================== Confidence UI ====================
+function confColor(conf) {
+  const c = Number(conf) || 0;
+  if (c < 50) return "#EF4444";
+  if (c < 70) return "#F59E0B";
+  if (c < 85) return "#3B82F6";
+  return "#22C55E";
+}
+function confBar(conf) {
+  const pct = Math.max(0, Math.min(100, Number(conf) || 0));
+  const col = confColor(pct);
   return `
-    <div class="score-wrap">
-      <div class="score-bar">
-        <div class="score-fill" style="width:${safe}%"></div>
-      </div>
-      <div class="score-num">${safe}/100</div>
+    <div class="confWrap">
+      <div class="confBar"><div class="confFill" style="width:${pct}%;background:${col}"></div></div>
+      <div class="confTxt">${pct}/100</div>
     </div>
   `;
 }
 
-function cardReason(c, section) {
-  if (section === "elite") return "Klaar voor directe focus. Hoogste Moon-kwaliteit.";
-  if (section === "almost") return "Bijna entry — mist nog 1–2 checks.";
-  if (section === "buildup") return "Nog niet instappen, wel klaarzetten.";
-  return "Vroege watchlist. Meer ruis, maar kan snel draaien.";
+function scoreValue(c) {
+  if (Number.isFinite(Number(c?.edgeScore))) return Math.round(Number(c.edgeScore));
+  if (Number.isFinite(Number(c?.confidence))) {
+    const v = Number(c.confidence);
+    return v <= 1 ? Math.round(v * 100) : Math.round(v);
+  }
+  return 0;
 }
 
-function renderCoinCard(c, section) {
-  const score = stageScore(c);
-  const stage = String(c?.stage || section || "").toUpperCase();
+// ==================== Coin row ====================
+function coinRow(c) {
+  const div = document.createElement("div");
+  div.className = "coinRow";
 
-  return `
-    <button class="coin-card" type="button" data-symbol="${String(c.symbol || "").replace(/"/g, "&quot;")}">
-      <div class="coin-top">
-        <div class="coin-head">
-          <div class="coin-symbol">${c.symbol || "-"}</div>
-          <div class="coin-name">${c.name || ""}</div>
-        </div>
-        ${scoreBar(score)}
+  const conf = scoreValue(c);
+  const risk = getRisk(c, MODE);
+  const slTxt = risk ? `$${safe(risk.sl, 6)}` : "—";
+  const tpTxt = risk ? `$${safe(risk.tp, 6)}` : "—";
+
+  const stageReason =
+    c?.stage === "ELITE" ? "Hoogste Moon-kwaliteit." :
+    c?.stage === "ALMOST" ? "Bijna klaar voor upgrade." :
+    c?.stage === "BUILDUP" ? "In opbouw, nog geen top-confirmatie." :
+    "Vroeg signaal, vooral volgen.";
+
+  div.innerHTML = `
+    <div class="coinTop">
+      <div>
+        <div class="sym">${c.symbol}</div>
+        <div class="tag">${c.name || ""}</div>
       </div>
 
-      <div class="coin-meta">
-        <span>chg24: ${fmtPct(c.change24, 2)}</span>
-        <span>vol: ${fmtUsdCompact(c.volume)}</span>
-        <span>mc: ${fmtUsdCompact(c.marketCap)}</span>
-      </div>
+      ${confBar(conf)}
+    </div>
 
-      <div class="coin-meta">
-        <span>vm: ${fmtNum(c.vm, 2)}</span>
-        <span>price: $${fmtNum(c.price, 8)}</span>
-        <span>${mode.toUpperCase()} • ${stage}</span>
-      </div>
+    <div class="coinMeta">
+      <span>chg24: ${fmtPct(c.change24)}</span>
+      <span>vol: $${fmtUSD(c.volume)}</span>
+      <span>mc: $${fmtUSD(c.marketCap)}</span>
+      <span>vm: ${fmt(c.vm)}</span>
+      <span>price: $${safe(c.price, 6)}</span>
+      <span>SL: ${slTxt}</span>
+      <span>TP: ${tpTxt}</span>
+    </div>
 
-      <div class="coin-plan">
-        <span>SL: $${fmtNum(c?.tradePlan?.sl, 8)}</span>
-        <span>TP: $${fmtNum(c?.tradePlan?.tp, 8)}</span>
-      </div>
-
-      <div class="coin-reason">${cardReason(c, section)}</div>
-    </button>
+    <div class="tag" style="margin-top:6px;">${stageReason}</div>
   `;
+
+  div.addEventListener("click", () => openModalMain(c));
+  return div;
 }
 
-function renderList(containerId, items, section) {
-  const el = $(containerId);
-  if (!el) return;
+function renderStage(targetId, arr, renderer = coinRow) {
+  const box = el(targetId);
+  if (!box) return;
 
-  if (!Array.isArray(items) || items.length === 0) {
-    el.innerHTML = emptyHtml("Geen coins.");
+  box.innerHTML = "";
+  if (!arr || arr.length === 0) {
+    box.innerHTML = `<div class="empty">Geen coins.</div>`;
     return;
   }
-
-  el.innerHTML = items.map((c) => renderCoinCard(c, section)).join("");
+  for (const x of arr) box.appendChild(renderer(x));
 }
 
-function bindCardClicks() {
-  document.querySelectorAll(".coin-card").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const sym = btn.getAttribute("data-symbol");
-      const coin = findCoin(sym);
-      if (coin) openModal(coin);
-    });
-  });
+// ==================== top status line ====================
+function btcLine(btc) {
+  if (!btc) return "BTC: —";
+  const state = btc.state || "—";
+  const chg24 = Number.isFinite(Number(btc.chg24)) ? ` | chg24 ${fmtPct(btc.chg24)}` : "";
+  const range24 = Number.isFinite(Number(btc.range24)) ? ` | range24 ${fmtPct(btc.range24)}` : "";
+  return `BTC: ${state}${chg24}${range24}`;
 }
 
-function renderData(data) {
-  lastData = data;
-  setStatus(data);
+function renderAll(data) {
+  window.__LAST_DATA__ = data;
 
-  renderList("moon-elite-list", data?.funnel?.elite || [], "elite");
-  renderList("moon-almost-list", data?.funnel?.almost || [], "almost");
-  renderList("moon-buildup-list", data?.funnel?.buildup || [], "buildup");
-  renderList("moon-radar-list", data?.funnel?.radar || [], "radar");
+  const ts = data?.ts ? new Date(data.ts) : null;
+  const stamp = ts ? ts.toLocaleString() : "—";
+  const counts = data?.counts || {};
 
-  bindCardClicks();
+  const statusLine = el("statusLine");
+  if (statusLine) {
+    statusLine.textContent =
+      `${btcLine(data.btc)} • Laatste update: ${stamp} • ` +
+      `ELITE ${counts.elite || 0} • ALMOST ${counts.almost || 0} • ` +
+      `BUILDUP ${counts.buildup || 0} • RADAR ${counts.radar || 0}` +
+      ` • Whale flow ${Number(data?.whaleFlow || 0)}`;
+  }
+
+  renderStage("stageElite", data?.funnel?.elite || [], coinRow);
+  renderStage("stageAlmost", data?.funnel?.almost || [], coinRow);
+  renderStage("stageBuildup", data?.funnel?.buildup || [], coinRow);
+  renderStage("stageRadar", data?.funnel?.radar || [], coinRow);
 }
 
-function findCoin(symbol) {
-  if (!lastData?.funnel || !symbol) return null;
-  const all = [
-    ...(lastData.funnel.elite || []),
-    ...(lastData.funnel.almost || []),
-    ...(lastData.funnel.buildup || []),
-    ...(lastData.funnel.radar || []),
-  ];
-  return all.find((x) => String(x.symbol || "").toUpperCase() === String(symbol).toUpperCase()) || null;
-}
-
-async function fetchMoonData() {
+async function loadLatest() {
   try {
-    const res = await fetch(`/api/moon/public-latest?mode=${mode}`, {
-      method: "GET",
-      headers: { accept: "application/json" },
+    const sl = el("statusLine");
+    if (sl) sl.textContent = "Status: laden…";
+
+    const r = await fetch(API.latest(MODE), {
       cache: "no-store",
+      headers: { "cache-control": "no-cache" },
     });
 
-    const text = await res.text();
+    const j = await r.json();
 
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      throw new Error(`Ongeldige JSON: ${text.slice(0, 200)}`);
-    }
+    const ts = Number(j?.ts || 0);
+    if (ts && ts === (lastTsByMode[MODE] || 0)) return;
+    if (ts) lastTsByMode[MODE] = ts;
 
-    if (!res.ok || json?.ok === false) {
-      throw new Error(json?.error || `HTTP ${res.status}`);
-    }
-
-    renderData(json);
-  } catch (e) {
-    setStatus({ ok: false });
-
-    $("moon-elite-list").innerHTML = `<div class="empty-box error-box">Scan fout: ${String(e.message || e)}</div>`;
-    $("moon-almost-list").innerHTML = emptyHtml("Geen coins.");
-    $("moon-buildup-list").innerHTML = emptyHtml("Geen coins.");
-    $("moon-radar-list").innerHTML = emptyHtml("Geen coins.");
+    renderAll(j || {});
+  } catch {
+    const statusLine = el("statusLine");
+    if (statusLine) statusLine.textContent = "Status: fout bij laden (check Vercel logs)";
   }
 }
 
-function setMode(nextMode) {
-  mode = nextMode === "bear" ? "bear" : "bull";
-
-  $("btn-bull")?.classList.toggle("active", mode === "bull");
-  $("btn-bear")?.classList.toggle("active", mode === "bear");
-
-  fetchMoonData();
+// ==================== modal helpers ====================
+function showModal(on) {
+  const modal = el("modal");
+  if (!modal) return;
+  modal.classList.toggle("hidden", !on);
 }
 
-function openModal(coin) {
-  activeCoin = coin;
-
-  $("moon-modal-title").textContent =
-    `${coin.symbol || "-"} • ${mode.toUpperCase()} • ${String(coin.stage || "-").toUpperCase()}`;
-  $("moon-modal-subtitle").textContent =
-    `Price $${fmtNum(coin.price, 8)} • Chg24 ${fmtPct(coin.change24, 2)} • VM ${fmtNum(coin.vm, 2)} • Conf ${stageScore(coin)}/100`;
-
-  renderModalTabs(coin, "actie");
-
-  $("moon-modal")?.classList.remove("hidden");
-  $("moon-modal")?.setAttribute("aria-hidden", "false");
-  document.body.classList.add("modal-open");
+function setTab(name) {
+  const tabs = ["Action", "Why", "Liq", "Debug"];
+  for (const t of tabs) {
+    el("tab" + t)?.classList.toggle("active", t === name);
+    el("box" + t)?.classList.toggle("hidden", t !== name);
+  }
 }
 
-function closeModal() {
-  activeCoin = null;
-  $("moon-modal")?.classList.add("hidden");
-  $("moon-modal")?.setAttribute("aria-hidden", "true");
-  document.body.classList.remove("modal-open");
+el("mClose")?.addEventListener("click", () => showModal(false));
+el("modal")?.addEventListener("click", (e) => {
+  if (e.target.id === "modal") showModal(false);
+});
+
+el("tabAction")?.addEventListener("click", () => setTab("Action"));
+el("tabWhy")?.addEventListener("click", () => setTab("Why"));
+el("tabLiq")?.addEventListener("click", () => setTab("Liq"));
+el("tabDebug")?.addEventListener("click", () => setTab("Debug"));
+
+function icon(ok, kind = "ok") {
+  if (ok === true) return `<span class="iconOk">✓</span>`;
+  if (kind === "warn") return `<span class="iconWarn">⚠</span>`;
+  return `<span class="iconNo">✗</span>`;
 }
 
-function renderModalTabs(coin, activeTab) {
-  document.querySelectorAll(".tab-btn").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.tab === activeTab);
-  });
-
-  document.querySelectorAll(".tab-panel").forEach((panel) => {
-    panel.classList.add("hidden");
-  });
-
-  const action = $("moon-tab-actie");
-  const why = $("moon-tab-waarom");
-  const liq = $("moon-tab-liquidity");
-  const det = $("moon-tab-details");
-
-  const tp = Number(coin?.tradePlan?.tp);
-  const sl = Number(coin?.tradePlan?.sl);
-  const entry = Number(coin?.tradePlan?.entry || coin?.price);
-  const rr = Number(coin?.tradePlan?.rr);
-
-  const tpPct = Number.isFinite(entry) && Number.isFinite(tp) && entry > 0
-    ? ((tp - entry) / entry) * 100 * (mode === "bear" ? -1 : 1)
-    : null;
-
-  const slPct = Number.isFinite(entry) && Number.isFinite(sl) && entry > 0
-    ? ((sl - entry) / entry) * 100 * (mode === "bear" ? -1 : 1)
-    : null;
-
-  action.innerHTML = `
-    <div class="detail-card">
-      <h4>Wat moet je doen</h4>
-      <div class="action-box">
-        <div class="action-title">${
-          coin.stage === "ELITE" ? "ENTRY KLAAR" :
-          coin.stage === "ALMOST" ? "KLAARZETTEN" :
-          coin.stage === "BUILDUP" ? "WATCH / KLAARZETTEN" :
-          "WATCHLIST"
-        }</div>
-        <div class="action-sub">
-          ${
-            coin.stage === "ELITE" ? "Hoogste Moon-kwaliteit. Directe focus." :
-            coin.stage === "ALMOST" ? "Bijna klaar, mist nog 1–2 checks" :
-            coin.stage === "BUILDUP" ? "Nog niet instappen, wel klaarzetten" :
-            "Vroege fase. Alleen volgen"
-          }
-        </div>
-      </div>
-
-      <div class="kv-table">
-        <div class="kv-row"><span>Plan</span><span>${
-          coin.stage === "ELITE"
-            ? "Focus / mogelijke entry"
-            : coin.stage === "ALMOST"
-            ? "Nog niet instappen, wel klaarzetten"
-            : coin.stage === "BUILDUP"
-            ? "Volgen en wachten"
-            : "Alleen watchlist"
-        }</span></div>
-
-        <div class="kv-row"><span>Entry</span><span>$${fmtNum(entry, 8)}</span></div>
-        <div class="kv-row"><span>SL</span><span>$${fmtNum(sl, 8)} ${slPct == null ? "" : `(${fmtPct(slPct, 2)})`}</span></div>
-        <div class="kv-row"><span>TP</span><span>$${fmtNum(tp, 8)} ${tpPct == null ? "" : `(${fmtPct(tpPct, 2)})`}</span></div>
-        <div class="kv-row"><span>R:R</span><span>${fmtNum(rr, 2)}</span></div>
-        <div class="kv-row"><span>Bron SL/TP</span><span>Systeem (exact)</span></div>
-      </div>
+function addCheck(container, ok, title, sub = "", kind = "ok") {
+  if (!container) return;
+  const div = document.createElement("div");
+  div.className = "checkItem";
+  div.innerHTML = `
+    ${icon(ok, kind)}
+    <div class="checkText">
+      <div><b>${title}</b></div>
+      ${sub ? `<div class="checkSmall">${sub}</div>` : ""}
     </div>
   `;
-
-  why.innerHTML = `
-    <div class="detail-card">
-      <h4>Waarom staat hij hier</h4>
-
-      <div class="reason-item">
-        <div class="reason-title">✓ Stage: ${String(coin.stage || "-").toUpperCase()}</div>
-        <div class="reason-sub">score: ${coin.scoreProbability != null ? fmtNum(Number(coin.scoreProbability) * 100, 1) + "/100" : stageScore(coin) + "/100"}</div>
-      </div>
-
-      <div class="reason-item">
-        <div class="reason-title">✓ Confidence</div>
-        <div class="reason-sub">Score: ${stageScore(coin)}/100</div>
-      </div>
-
-      <div class="reason-item">
-        <div class="reason-title">✓ Pump / Dump kans</div>
-        <div class="reason-sub">Pump: ${fmtPct(Number(coin.moonProbability || 0) * 100, 1)} • Dump: ${fmtPct(Number(coin.dumpProbability || 0) * 100, 1)}</div>
-      </div>
-
-      <div class="reason-item warn">
-        <div class="reason-title">⚠ Waarom nog niet hoger</div>
-        <div class="reason-sub">${
-          coin.stage === "ELITE"
-            ? "Dit is al de hoogste Moon-stage."
-            : coin.stage === "ALMOST"
-            ? "Mist nog 1–2 checks voor ELITE."
-            : coin.stage === "BUILDUP"
-            ? "Nog niet genoeg bevestiging voor ALMOST."
-            : "Nog te vroeg voor BUILDUP/ALMOST."
-        }</div>
-      </div>
-    </div>
-  `;
-
-  liq.innerHTML = `
-    <div class="detail-card">
-      <h4>Liquidity (Orderbook + Depth)</h4>
-
-      <div class="kv-table">
-        <div class="kv-row"><span>Spread</span><span>${fmtPct(coin?.ob?.spreadPct, 3)}</span></div>
-        <div class="kv-row"><span>Bid depth</span><span>${fmtUsdCompact(coin?.ob?.depthBidUsd)}</span></div>
-        <div class="kv-row"><span>Ask depth</span><span>${fmtUsdCompact(coin?.ob?.depthAskUsd)}</span></div>
-        <div class="kv-row"><span>Depth min 1%</span><span>${fmtUsdCompact(coin?.ob?.depthMinUsd1p)}</span></div>
-        <div class="kv-row"><span>OB score</span><span>${fmtNum(coin?.ob?.score, 5)}</span></div>
-      </div>
-    </div>
-  `;
-
-  det.innerHTML = `
-    <div class="detail-card">
-      <h4>Details</h4>
-
-      <div class="kv-table">
-        <div class="kv-row"><span>Naam</span><span>${coin.name || "-"}</span></div>
-        <div class="kv-row"><span>Symbol</span><span>${coin.symbol || "-"}</span></div>
-        <div class="kv-row"><span>Price</span><span>$${fmtNum(coin.price, 8)}</span></div>
-        <div class="kv-row"><span>Market cap</span><span>${fmtUsdCompact(coin.marketCap)}</span></div>
-        <div class="kv-row"><span>Volume</span><span>${fmtUsdCompact(coin.volume)}</span></div>
-        <div class="kv-row"><span>24h</span><span>${fmtPct(coin.change24, 2)}</span></div>
-        <div class="kv-row"><span>VM</span><span>${fmtNum(coin.vm, 3)}</span></div>
-        <div class="kv-row"><span>Instability</span><span>${fmtNum(coin.instability_score_raw, 8)}</span></div>
-      </div>
-    </div>
-  `;
-
-  $(`moon-tab-${activeTab}`)?.classList.remove("hidden");
+  container.appendChild(div);
 }
 
-function initTabs() {
-  document.querySelectorAll(".tab-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      if (!activeCoin) return;
-      renderModalTabs(activeCoin, btn.dataset.tab || "actie");
-    });
-  });
+function setKV(container, rows) {
+  if (!container) return;
+  container.innerHTML = "";
+  for (const [k, v] of rows) {
+    const r = document.createElement("div");
+    r.className = "kvRow";
+    r.innerHTML = `<div class="kvKey">${k}</div><div class="kvVal">${v}</div>`;
+    container.appendChild(r);
+  }
 }
 
-function initMoonPage() {
-  $("btn-bull")?.addEventListener("click", () => setMode("bull"));
-  $("btn-bear")?.addEventListener("click", () => setMode("bear"));
-  $("btn-refresh")?.addEventListener("click", () => fetchMoonData());
+// ==================== Liquidity summary ====================
+function liquiditySummary(c) {
+  const ob = c?.ob || {};
+  const spread = Number(ob?.spreadPct);
+  const depth = Number(ob?.depthMinUsd1p);
+  const score = Number(ob?.score);
 
-  $("btn-scan")?.addEventListener("click", () => {
-    alert("Moon scan loopt automatisch via cron.");
-  });
+  const hasSpread = Number.isFinite(spread);
+  const hasDepth = Number.isFinite(depth);
+  const hasScore = Number.isFinite(score);
 
-  $("moon-modal-close")?.addEventListener("click", closeModal);
-  document.querySelector('[data-close="1"]')?.addEventListener("click", closeModal);
+  if (!hasSpread && !hasDepth && !hasScore) {
+    return {
+      ok: false,
+      title: "Liquiditeit onbekend",
+      text: "Er is geen bruikbare orderboek-data voor deze coin.",
+      why: "Moon gebruikt hier alleen aanwezige backend-data. Deze coin heeft nu geen bruikbare OB snapshot.",
+      tone: "warn",
+      details: [],
+    };
+  }
 
-  initTabs();
-  fetchMoonData();
-  setInterval(fetchMoonData, 60000);
+  const spreadOk = hasSpread ? spread <= 0.95 : false;
+  const depthOk = hasDepth ? depth >= 45000 : false;
+  const scoreOk = hasScore ? Math.abs(score) >= 0.05 : false;
+
+  if (spreadOk && depthOk && scoreOk) {
+    return {
+      ok: true,
+      title: "Liquiditeit goed",
+      text: "Orderboek ziet er gezond uit.",
+      why: "Spread, depth en OB score zijn sterk genoeg.",
+      tone: "ok",
+      details: [
+        ["Spread", hasSpread ? `${safe(spread, 3)}%` : "—"],
+        ["Depth 1%", hasDepth ? `$${Math.round(depth).toLocaleString()}` : "—"],
+        ["OB score", hasScore ? safe(score, 5) : "—"],
+      ],
+    };
+  }
+
+  const reasons = [];
+  if (!spreadOk) reasons.push("Spread is te hoog of ontbreekt");
+  if (!depthOk) reasons.push("Depth is te laag of ontbreekt");
+  if (!scoreOk) reasons.push("OB score is te zwak of ontbreekt");
+
+  return {
+    ok: false,
+    title: "Voorzichtig met liquiditeit",
+    text: "Deze coin kan slippen of slecht vullen.",
+    why: reasons.join(" • "),
+    tone: "warn",
+    details: [
+      ["Spread", hasSpread ? `${safe(spread, 3)}%` : "—"],
+      ["Depth 1%", hasDepth ? `$${Math.round(depth).toLocaleString()}` : "—"],
+      ["OB score", hasScore ? safe(score, 5) : "—"],
+    ],
+  };
 }
 
-document.addEventListener("DOMContentLoaded", initMoonPage);
+// ==================== modal main ====================
+async function openModalMain(c) {
+  showModal(true);
+  setTab("Action");
+  syncTopbarHeight();
+
+  el("mTitle").textContent = `${c.symbol} • ${MODE.toUpperCase()} • ${String(c.stage || "—").toUpperCase()}`;
+  el("mSub").textContent =
+    `Price $${safe(c.price, 6)} • Chg24 ${fmtPct(c.change24)} • VM ${safe(c.vm, 2)} • Conf ${scoreValue(c)}/100`;
+
+  const act = actionForStage(c, window.__LAST_DATA__ || {});
+  el("mActionTitle").textContent = act.label;
+  el("mActionSub").textContent = act.sub;
+
+  const risk = getRisk(c, MODE);
+  const entryPx = Number(c?.price || 0);
+
+  if (risk && entryPx > 0) {
+    const isBear = String(MODE).toLowerCase() === "bear";
+
+    let slPct = ((risk.sl - entryPx) / entryPx) * 100;
+    let tpPct = ((risk.tp - entryPx) / entryPx) * 100;
+
+    if (isBear) {
+      slPct = -slPct;
+      tpPct = -tpPct;
+    }
+
+    setKV(el("mActionKv"), [
+      ["Plan", act.label],
+      ["Entry", `$${safe(entryPx, 6)}`],
+      ["SL", `$${safe(risk.sl, 6)} (${pct(slPct, 2)})`],
+      ["TP", `$${safe(risk.tp, 6)} (${pct(tpPct, 2)})`],
+      ["R:R", risk.rr ? safe(risk.rr, 2) : "—"],
+      ["Bron SL/TP", risk.source === "backend" ? "Systeem (exact)" : "Fallback"],
+      ["Moon probability", Number.isFinite(Number(c?.moonProbability)) ? `${safe(Number(c.moonProbability) * 100, 1)}%` : "—"],
+      ["Dump probability", Number.isFinite(Number(c?.dumpProbability)) ? `${safe(Number(c.dumpProbability) * 100, 1)}%` : "—"],
+    ]);
+  } else {
+    setKV(el("mActionKv"), [
+      ["Plan", "—"],
+      ["Entry", "—"],
+      ["SL", "—"],
+      ["TP", "—"],
+    ]);
+  }
+
+  const whyList = el("mWhyList");
+  if (whyList) whyList.innerHTML = "";
+
+  addCheck(whyList, true, `Stage: ${String(c.stage || "—").toUpperCase()}`, `Mode: ${MODE.toUpperCase()}`);
+  addCheck(
+    whyList,
+    scoreValue(c) >= 70,
+    "Confidence",
+    `Score: ${scoreValue(c)}/100`,
+    scoreValue(c) >= 70 ? "ok" : "warn"
+  );
+
+  addCheck(
+    whyList,
+    Number(c?.vm || 0) >= 0.15,
+    "Volume / MarketCap",
+    `VM: ${safe(c.vm, 3)}`,
+    Number(c?.vm || 0) >= 0.15 ? "ok" : "warn"
+  );
+
+  addCheck(
+    whyList,
+    Number(c?.change24 || 0) > 0,
+    "Momentum 24h",
+    `chg24: ${fmtPct(c.change24)}`,
+    Number(c?.change24 || 0) > 0 ? "ok" : "warn"
+  );
+
+  if (String(c.stage).toUpperCase() !== "ELITE") {
+    addCheck(
+      whyList,
+      false,
+      "Waarom nog niet hoger",
+      c.stage === "ALMOST"
+        ? "Mist nog 1 stap voor ELITE."
+        : c.stage === "BUILDUP"
+        ? "Nog niet genoeg bevestiging voor ALMOST."
+        : "Nog te vroeg voor BUILDUP / ALMOST / ELITE.",
+      "warn"
+    );
+  } else {
+    addCheck(whyList, true, "Waarom ELITE", "Top score binnen Moon funnel.", "ok");
+  }
+
+  const liqList = el("mLiqList");
+  if (liqList) liqList.innerHTML = "";
+
+  const liq = liquiditySummary(c);
+  addCheck(
+    liqList,
+    liq.ok,
+    liq.title,
+    liq.text,
+    liq.tone === "ok" ? "ok" : "warn"
+  );
+  addCheck(
+    liqList,
+    liq.ok,
+    "Waarom",
+    liq.why || "—",
+    liq.tone === "ok" ? "ok" : "warn"
+  );
+  if (Array.isArray(liq.details)) {
+    for (const [k, v] of liq.details) {
+      addCheck(liqList, true, k, v, "ok");
+    }
+  }
+
+  el("mDebug").textContent = JSON.stringify(c, null, 2);
+}
+
+// ==================== init ====================
+el("modeBull")?.addEventListener("click", () => setMode("bull"));
+el("modeBear")?.addEventListener("click", () => setMode("bear"));
+
+setMode(MODE);
+
+// zelfde ritme als main
+setInterval(loadLatest, 30 * 60 * 1000);
