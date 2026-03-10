@@ -22,7 +22,7 @@ const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 
 export const config = {
   runtime: "nodejs",
-  maxDuration: 300,
+  maxDuration: 300,          // 5 minuten – ruim voldoende voor een volledige scan
 };
 
 const CG_PER_PAGE = 250;
