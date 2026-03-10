@@ -6,6 +6,8 @@ import {
   keyMoonPositions,
   keyMoonState,
   requireSecret,
+  tryAcquireMoonScanLock,
+  releaseMoonScanLock,
 } from "../../lib/_moon_core.js";
 
 import {
@@ -17,6 +19,11 @@ import { computeInstability } from "../../lib/_moon_run_all.js";
 
 const COINGECKO = "https://api.coingecko.com/api/v3/coins/markets";
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
+
+export const config = {
+  runtime: "nodejs",
+  maxDuration: 300,
+};
 
 const CG_PER_PAGE = 250;
 const CG_PAGES = 3;
@@ -286,18 +293,6 @@ function momentumAcceleration(coin) {
   return 0;
 }
 
-function liquidityTrap(ob) {
-  const bid = n(ob.depthBidUsd);
-  const ask = n(ob.depthAskUsd);
-  if (!bid || !ask) return 0;
-  const ratio = bid / Math.max(ask, 1);
-  if (ratio > 2.5) return 1;
-  if (ratio > 1.8) return 0.7;
-  if (ratio < 0.4) return -1;
-  if (ratio < 0.6) return -0.7;
-  return 0;
-}
-
 function whalePressure2(ob) {
   const bid = n(ob.depthBidUsd);
   const ask = n(ob.depthAskUsd);
@@ -406,7 +401,6 @@ function computeConfidence({
   coin,
   mode,
   vm,
-  obScore,
   spreadPct,
   whale,
 }) {
@@ -475,7 +469,6 @@ async function normalizeCoin(raw, mode, ob, whaleFlow = 0) {
     coin: raw,
     mode,
     vm,
-    obScore: obx.score,
     spreadPct: obx.spreadPct,
     whale: whaleOld,
   });
@@ -548,9 +541,7 @@ async function normalizeCoin(raw, mode, ob, whaleFlow = 0) {
       depthBidUsd: Math.round(obx.depthBidUsd),
       depthAskUsd: Math.round(obx.depthAskUsd),
       score: Number(obx.score.toFixed(5)),
-      depthMinUsd1p: Math.round(
-        Math.min(obx.depthBidUsd, obx.depthAskUsd)
-      ),
+      depthMinUsd1p: Math.round(Math.min(obx.depthBidUsd, obx.depthAskUsd)),
     },
     instability_score_raw: Number(instability.toFixed(8)),
     edgeScore: Number((confidence * 100).toFixed(1)),
@@ -570,11 +561,7 @@ async function normalizeCoin(raw, mode, ob, whaleFlow = 0) {
 
 function passModeFilter(c, mode) {
   const ch24 = n(c.change24);
-
-  if (mode === "bull") {
-    return ch24 > -2;
-  }
-
+  if (mode === "bull") return ch24 > -2;
   return ch24 < 0.5;
 }
 
@@ -594,14 +581,8 @@ function splitFunnels(coins, mode) {
   }
 
   const sortByModeProb = (a, b) => {
-    const aScore = mode === "bear"
-      ? Number(a.dumpProbability || 0)
-      : Number(a.moonProbability || 0);
-
-    const bScore = mode === "bear"
-      ? Number(b.dumpProbability || 0)
-      : Number(b.moonProbability || 0);
-
+    const aScore = mode === "bear" ? Number(a.dumpProbability || 0) : Number(a.moonProbability || 0);
+    const bScore = mode === "bear" ? Number(b.dumpProbability || 0) : Number(b.moonProbability || 0);
     return bScore - aScore;
   };
 
@@ -627,8 +608,7 @@ function makePortfolio(mode, positions) {
 
   if (closed.length) {
     realizedUsd = closed.reduce((a, b) => a + n(b.pnlUsd), 0);
-    avgRealizedPct =
-      closed.reduce((a, b) => a + n(b.pnlPct), 0) / closed.length;
+    avgRealizedPct = closed.reduce((a, b) => a + n(b.pnlPct), 0) / closed.length;
   }
 
   return {
@@ -654,6 +634,7 @@ async function buildUniverse(mode, whaleFlow) {
 
   for (const coin of filtered) {
     let ob = null;
+
     if (coin.volume > 8000000) {
       const symbol = `${String(coin.symbol || "").toUpperCase()}USDT`;
       ob = await fetchOrderbook(symbol);
@@ -678,6 +659,7 @@ async function buildUniverse(mode, whaleFlow) {
 
 export default async function handler(req, res) {
   let mode = "bull";
+  let lockAcquired = false;
 
   try {
     if (!requireSecret(req, res)) return;
@@ -685,6 +667,22 @@ export default async function handler(req, res) {
     mode = String(req.query?.mode || "bull").toLowerCase() === "bear"
       ? "bear"
       : "bull";
+
+    const lock = await tryAcquireMoonScanLock(mode, 600);
+    lockAcquired = !!lock?.ok;
+
+    if (!lockAcquired) {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      return res.end(
+        JSON.stringify({
+          ok: true,
+          mode,
+          skipped: true,
+          reason: "scan already running",
+        })
+      );
+    }
 
     const now = Date.now();
     const whaleFlow = await fetchExchangeFlows();
@@ -888,19 +886,11 @@ export default async function handler(req, res) {
 
       const hitTp =
         trade.tp != null &&
-        (
-          mode === "bull"
-            ? coin.price >= n(trade.tp)
-            : coin.price <= n(trade.tp)
-        );
+        (mode === "bull" ? coin.price >= n(trade.tp) : coin.price <= n(trade.tp));
 
       const hitSl =
         trade.sl != null &&
-        (
-          mode === "bull"
-            ? coin.price <= n(trade.sl)
-            : coin.price >= n(trade.sl)
-        );
+        (mode === "bull" ? coin.price <= n(trade.sl) : coin.price >= n(trade.sl));
 
       if (hitTp) {
         const closed = {
@@ -1039,6 +1029,10 @@ export default async function handler(req, res) {
         error: String(e?.message || e),
       })
     );
+  } finally {
+    if (lockAcquired) {
+      await releaseMoonScanLock(mode);
+    }
   }
 }
 
