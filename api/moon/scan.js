@@ -7,7 +7,7 @@ import {
   keyMoonPortfolio,
   keyMoonPositions,
   keyMoonState,
-  fetchBTCGateCached,
+  fetchBTCGateFromUniverse, // gewijzigd: van fetchBTCGateCached
   fetchCoinGeckoTopCached,
   getBitgetSpotUsdtSymbols,
   getTierForMcap,
@@ -504,7 +504,7 @@ export default async function handler(req, res) {
 
     const now = Date.now();
     const whaleFlow = await fetchExchangeFlows();
-    const btc = await fetchBTCGateCached();
+    const btc = await fetchBTCGateFromUniverse(); // gewijzigd: van fetchBTCGateCached()
 
     const universe = await buildUniverse(mode, whaleFlow, btc);
     const funnel = splitFunnels(universe, mode);
