@@ -5,7 +5,7 @@
       "schedule": "0,30 * * * *"
     },
     {
-      "path": "/api/moon/run-all",
+      "path": "/api/moon/cron",
       "schedule": "*/15 * * * *"
     }
   ]
