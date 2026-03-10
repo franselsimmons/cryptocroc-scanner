@@ -605,8 +605,7 @@ export default async function handler(req, res) {
 
     const cap = computeStageCap(mode, btc.state);
 
-    // 🔽 AANTAL COINS GEMAXIMEERD OP 60 OM TIMEOUTS TE VOORKOMEN
-    const cgTop = Math.min(Number(core?.SETTINGS?.CG_TOP ?? 1500), 60);
+    const cgTop = Number(core?.SETTINGS?.CG_TOP ?? 1500);
     const cg = uni.coins.slice(0, Math.max(1, cgTop));
 
     const obMapBlob = await kv.get(obMapKey(mode));
