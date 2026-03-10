@@ -5,7 +5,7 @@
       "schedule": "0,30 * * * *"
     },
     {
-      "path": "/api/moon/run-all?token=cc_9F3k2M7pQ1xR8vT6nD4zL0sH5aB2cE",
+      "path": "/api/moon/run-all",
       "schedule": "*/15 * * * *"
     }
   ]
