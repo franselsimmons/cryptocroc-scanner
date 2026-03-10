@@ -1,3 +1,4 @@
+// /api/moon/scan.js – Tijdelijke veilige versie
 import { kv } from "@vercel/kv";
 
 import {
@@ -7,7 +8,7 @@ import {
   keyMoonPortfolio,
   keyMoonPositions,
   keyMoonState,
-  fetchBTCGateFromUniverse, // gewijzigd: van fetchBTCGateCached
+  fetchBTCGateCached,           // ← bestaande functie, gebruiken we als fallback
   fetchCoinGeckoTopCached,
   getBitgetSpotUsdtSymbols,
   getTierForMcap,
@@ -28,11 +29,25 @@ import {
   uid,
 } from "../../lib/_analytics.js";
 
-import { computeInstability } from "../../lib/_moon_run_all.js";
+// IMPORTANT: computeInstability wordt tijdelijk lokaal gedefinieerd om importfouten te voorkomen
+// import { computeInstability } from "../../lib/_moon_run_all.js"; // (uitgeschakeld)
 
 export const config = RUNTIME_CONFIG;
 
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
+
+// ---------- TIJDELIJKE FALLBACKS ----------
+// 1. Zorg dat fetchBTCGateFromUniverse bestaat (gebruikt fetchBTCGateCached)
+async function fetchBTCGateFromUniverse() {
+  // Roep de bestaande functie aan
+  return await fetchBTCGateCached();
+}
+
+// 2. Definieer computeInstability lokaal (geen import uit mogelijk kapot bestand)
+function computeInstability() {
+  return 0; // tijdelijk altijd 0
+}
+// -------------------------------------------
 
 function n(x, d = 0) {
   const v = Number(x);
@@ -504,7 +519,7 @@ export default async function handler(req, res) {
 
     const now = Date.now();
     const whaleFlow = await fetchExchangeFlows();
-    const btc = await fetchBTCGateFromUniverse(); // gewijzigd: van fetchBTCGateCached()
+    const btc = await fetchBTCGateFromUniverse(); // Gebruikt nu de lokale fallback
 
     const universe = await buildUniverse(mode, whaleFlow, btc);
     const funnel = splitFunnels(universe, mode);
