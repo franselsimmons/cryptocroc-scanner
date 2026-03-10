@@ -1,5 +1,3 @@
-// /api/moon/cron.js
-
 import { RUNTIME_CONFIG, requireSecret } from "../../lib/_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
@@ -11,64 +9,55 @@ function send(res, code, obj) {
   return res.end(JSON.stringify(obj));
 }
 
+async function runInternal(req) {
+  const proto =
+    String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim() || "https";
+  const host =
+    String(req.headers["x-forwarded-host"] || "").split(",")[0].trim() ||
+    String(req.headers.host || "").trim();
+
+  if (!host) throw new Error("Missing host header");
+
+  const token = String(process.env.CRON_SECRET || "");
+  if (!token) throw new Error("Missing CRON_SECRET env var");
+
+  const url = `${proto}://${host}/api/moon/run-all?token=${encodeURIComponent(token)}`;
+
+  const r = await fetch(url, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      "cache-control": "no-store",
+    },
+  });
+
+  const text = await r.text();
+  let json = null;
+
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = { ok: false, raw: text };
+  }
+
+  return {
+    ok: r.ok && !!json?.ok,
+    status: r.status,
+    url,
+    body: json,
+  };
+}
+
 export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const host = req.headers["x-forwarded-host"] || req.headers.host;
-    const proto = req.headers["x-forwarded-proto"] || "https";
-
-    if (!host) {
-      return send(res, 500, {
-        ok: false,
-        error: "Missing host header",
-      });
-    }
-
-    const base = `${proto}://${host}`;
-    const secret = String(process.env.CRON_SECRET || "");
-
-    if (!secret) {
-      return send(res, 500, {
-        ok: false,
-        error: "Missing CRON_SECRET env var",
-      });
-    }
-
-    const headers = {
-      "x-cron-secret": secret,
-      "content-type": "application/json",
-      "cache-control": "no-cache, no-store, max-age=0",
-    };
-
-    const results = {};
-
-    const bullRes = await fetch(`${base}/api/moon/scan?mode=bull`, {
-      method: "GET",
-      headers,
-      cache: "no-store",
-    });
-    results.bull = await bullRes.json().catch(() => ({
-      ok: false,
-      error: `Bull scan returned non-JSON (${bullRes.status})`,
-    }));
-
-    const bearRes = await fetch(`${base}/api/moon/scan?mode=bear`, {
-      method: "GET",
-      headers,
-      cache: "no-store",
-    });
-    results.bear = await bearRes.json().catch(() => ({
-      ok: false,
-      error: `Bear scan returned non-JSON (${bearRes.status})`,
-    }));
-
-    return send(res, 200, {
-      ok: true,
+    const result = await runInternal(req);
+    return send(res, result.ok ? 200 : 500, {
+      ok: result.ok,
       cron: true,
-      base,
-      ranAt: Date.now(),
-      results,
+      ts: Date.now(),
+      result,
     });
   } catch (e) {
     return send(res, 500, {
