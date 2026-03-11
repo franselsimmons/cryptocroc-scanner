@@ -224,9 +224,9 @@ function isLateBullEntry(coin) {
   const ch24 = Number(coin?.change24 || 0);
   const vm = Number(coin?.vm || 0);
 
-  if (ch1h >= 12 && ch24 >= 30) return true;
-  if (ch1h >= 9 && ch24 >= 40) return true;
-  if (ch24 >= 55 && vm < 1.2) return true;
+  if (ch1h >= 15 && ch24 >= 38) return true;
+  if (ch1h >= 11 && ch24 >= 48) return true;
+  if (ch24 >= 65 && vm < 1.1) return true;
 
   return false;
 }
@@ -236,9 +236,9 @@ function isLateBearEntry(coin) {
   const ch24 = Number(coin?.change24 || 0);
   const vm = Number(coin?.vm || 0);
 
-  if (ch1h <= -12 && ch24 <= -30) return true;
-  if (ch1h <= -9 && ch24 <= -40) return true;
-  if (ch24 <= -55 && vm < 1.2) return true;
+  if (ch1h <= -15 && ch24 <= -38) return true;
+  if (ch1h <= -11 && ch24 <= -48) return true;
+  if (ch24 <= -65 && vm < 1.1) return true;
 
   return false;
 }
@@ -253,7 +253,7 @@ function hasEliteFollowThrough(prev, currentStage) {
     s === "ELITE_IGNITION" || s === "ELITE_EXPANSION" || s === "ELITE_CASCADE"
   ).length;
 
-  return eliteLike >= 2;
+  return eliteLike >= 1;
 }
 
 // ======================================================
@@ -281,8 +281,8 @@ function decideMoonStageV2({ mode, coin, obx, priceHist, btc, prev }) {
   const moveScore = mode === "bull" ? computeBullMoveScore(coin, obx) : computeBearMoveScore(coin, obx);
 
   const btcMomentumOk = mode === "bull"
-    ? Number(btc?.chg24 || 0) >= 1.2 && Number(btc?.range24 || 0) >= 3.5
-    : Number(btc?.chg24 || 0) <= -1.2 && Number(btc?.range24 || 0) >= 3.5;
+    ? Number(btc?.chg24 || 0) >= 0.8 && Number(btc?.range24 || 0) >= 2.8
+    : Number(btc?.chg24 || 0) <= -0.8 && Number(btc?.range24 || 0) >= 2.8;
 
   let stage, eliteType;
 
