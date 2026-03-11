@@ -63,6 +63,62 @@ function pct(n, d = 2) {
   const s = x >= 0 ? "+" : "";
   return s + x.toFixed(d) + "%";
 }
+function upperStage(v) {
+  return String(v || "").toUpperCase();
+}
+
+// ==================== stage helpers ====================
+function normalizeMoonFunnel(data) {
+  const funnel = data?.funnel || {};
+
+  return {
+    elite_expansion: Array.isArray(funnel.elite_expansion) ? funnel.elite_expansion : [],
+    elite_ignition: Array.isArray(funnel.elite_ignition) ? funnel.elite_ignition : [],
+    almost: Array.isArray(funnel.almost) ? funnel.almost : [],
+    buildup: Array.isArray(funnel.buildup) ? funnel.buildup : [],
+    radar: Array.isArray(funnel.radar) ? funnel.radar : [],
+  };
+}
+
+function normalizedCounts(data) {
+  const funnel = normalizeMoonFunnel(data);
+  const counts = data?.counts || {};
+
+  return {
+    elite_expansion: Number(counts.elite_expansion ?? funnel.elite_expansion.length ?? 0),
+    elite_ignition: Number(counts.elite_ignition ?? funnel.elite_ignition.length ?? 0),
+    almost: Number(counts.almost ?? funnel.almost.length ?? 0),
+    buildup: Number(counts.buildup ?? funnel.buildup.length ?? 0),
+    radar: Number(counts.radar ?? funnel.radar.length ?? 0),
+  };
+}
+
+function stageReasonText(stage) {
+  const s = upperStage(stage);
+
+  if (s === "ELITE_EXPANSION") {
+    return "Explosieve topfase. Dit zijn de hardste Moon movers.";
+  }
+  if (s === "ELITE_IGNITION") {
+    return "Vlak vóór of bij het begin van de grote move.";
+  }
+  if (s === "ALMOST") {
+    return "Bijna klaar voor ignition/expansion.";
+  }
+  if (s === "BUILDUP") {
+    return "Opbouwfase. Momentum en volume lopen op.";
+  }
+  return "Vroeg signaal. Vooral volgen, nog veel ruis.";
+}
+
+function stageTone(stage) {
+  const s = upperStage(stage);
+  if (s === "ELITE_EXPANSION") return "ok";
+  if (s === "ELITE_IGNITION") return "ok";
+  if (s === "ALMOST") return "warn";
+  if (s === "BUILDUP") return "warn";
+  return "no";
+}
 
 // ==================== risk ====================
 function computeFallbackRisk(c, mode) {
@@ -70,13 +126,13 @@ function computeFallbackRisk(c, mode) {
   if (!(price > 0)) return null;
 
   const ch24 = Math.abs(Number(c?.change24 || 0));
-  let proxyPct = Math.max(2.2, Math.min(8.0, ch24 / 3 || 2.8));
+  let proxyPct = Math.max(2.2, Math.min(12.0, ch24 / 2.2 || 3.2));
   const proxy = proxyPct / 100;
 
   const isBull = String(mode || "bull").toLowerCase() === "bull";
 
   const sl = isBull ? price * (1 - proxy) : price * (1 + proxy);
-  const tp = isBull ? price * (1 + proxy * 2.2) : price * (1 - proxy * 2.2);
+  const tp = isBull ? price * (1 + proxy * 2.4) : price * (1 - proxy * 2.4);
   const rr = Math.abs((tp - price) / (price - sl || 1e-9));
 
   return { atrPct: proxyPct, sl, tp, rr, source: "fallback" };
@@ -112,13 +168,20 @@ function getRisk(c, mode) {
 
 // ==================== action label ====================
 function actionForStage(c, data) {
-  const stage = String(c?.stage || "").toUpperCase();
-  const btcState = String(data?.btc?.state || "NEUTRAL").toUpperCase();
+  const stage = upperStage(c?.stage);
+  const btcState = upperStage(data?.btc?.state || "NEUTRAL");
 
-  if (stage === "ELITE") {
+  if (stage === "ELITE_EXPANSION") {
     return {
-      label: "FOCUS / MOGELIJKE ENTRY",
-      sub: `Top Moon setup. BTC is ${btcState}.`,
+      label: "TOP PRIORITEIT",
+      sub: `Explosieve Moon-move actief. BTC is ${btcState}.`,
+      tone: "ok",
+    };
+  }
+  if (stage === "ELITE_IGNITION") {
+    return {
+      label: "FOCUS / KLAARZETTEN",
+      sub: `Vlak voor of bij ignition. BTC is ${btcState}.`,
       tone: "ok",
     };
   }
@@ -132,7 +195,7 @@ function actionForStage(c, data) {
   if (stage === "BUILDUP") {
     return {
       label: "WATCHLIST",
-      sub: "Opbouwfase. Nog niet instappen, wel volgen.",
+      sub: "Opbouwfase. Nog niet blind instappen, wel strak volgen.",
       tone: "warn",
     };
   }
@@ -144,11 +207,22 @@ function actionForStage(c, data) {
 }
 
 // ==================== confidence ====================
+function scoreValue(c) {
+  if (Number.isFinite(Number(c?.moveScore))) return Math.round(Number(c.moveScore));
+  if (Number.isFinite(Number(c?.edgeScore))) return Math.round(Number(c.edgeScore));
+
+  if (Number.isFinite(Number(c?.confidence))) {
+    const v = Number(c.confidence);
+    return v <= 1 ? Math.round(v * 100) : Math.round(v);
+  }
+  return 0;
+}
+
 function confColor(conf) {
   const c = Number(conf) || 0;
-  if (c < 50) return "#EF4444";
-  if (c < 70) return "#F59E0B";
-  if (c < 85) return "#3B82F6";
+  if (c < 40) return "#EF4444";
+  if (c < 60) return "#F59E0B";
+  if (c < 80) return "#3B82F6";
   return "#22C55E";
 }
 function confBar(conf) {
@@ -161,14 +235,6 @@ function confBar(conf) {
     </div>
   `;
 }
-function scoreValue(c) {
-  if (Number.isFinite(Number(c?.edgeScore))) return Math.round(Number(c.edgeScore));
-  if (Number.isFinite(Number(c?.confidence))) {
-    const v = Number(c.confidence);
-    return v <= 1 ? Math.round(v * 100) : Math.round(v);
-  }
-  return 0;
-}
 
 // ==================== rows ====================
 function coinRow(c) {
@@ -180,12 +246,6 @@ function coinRow(c) {
   const slTxt = risk ? `$${safe(risk.sl, 6)}` : "—";
   const tpTxt = risk ? `$${safe(risk.tp, 6)}` : "—";
 
-  const stageReason =
-    c?.stage === "ELITE" ? "Hoogste Moon-kwaliteit." :
-    c?.stage === "ALMOST" ? "Bijna klaar voor upgrade." :
-    c?.stage === "BUILDUP" ? "In opbouw, nog geen top-confirmatie." :
-    "Vroeg signaal, vooral volgen.";
-
   div.innerHTML = `
     <div class="coinTop">
       <div>
@@ -196,6 +256,7 @@ function coinRow(c) {
     </div>
 
     <div class="coinMeta">
+      <span>chg1h: ${fmtPct(c.change1h)}</span>
       <span>chg24: ${fmtPct(c.change24)}</span>
       <span>vol: $${fmtUSD(c.volume)}</span>
       <span>mc: $${fmtUSD(c.marketCap)}</span>
@@ -205,7 +266,7 @@ function coinRow(c) {
       <span>TP: ${tpTxt}</span>
     </div>
 
-    <div class="tag" style="margin-top:6px;">${stageReason}</div>
+    <div class="tag" style="margin-top:6px;">${stageReasonText(c?.stage)}</div>
   `;
 
   div.addEventListener("click", () => openModalMain(c));
@@ -239,21 +300,23 @@ function renderAll(data) {
 
   const ts = data?.ts ? new Date(data.ts) : null;
   const stamp = ts ? ts.toLocaleString() : "—";
-  const counts = data?.counts || {};
+  const counts = normalizedCounts(data);
+  const funnel = normalizeMoonFunnel(data);
 
   const statusLine = el("statusLine");
   if (statusLine) {
     statusLine.textContent =
       `${btcLine(data.btc)} • Laatste update: ${stamp} • ` +
-      `ELITE ${counts.elite || 0} • ALMOST ${counts.almost || 0} • ` +
-      `BUILDUP ${counts.buildup || 0} • RADAR ${counts.radar || 0}` +
+      `EXP ${counts.elite_expansion} • IGN ${counts.elite_ignition} • ` +
+      `ALMOST ${counts.almost} • BUILDUP ${counts.buildup} • RADAR ${counts.radar}` +
       ` • Whale flow ${Number(data?.whaleFlow || 0)}`;
   }
 
-  renderStage("stageElite", data?.funnel?.elite || []);
-  renderStage("stageAlmost", data?.funnel?.almost || []);
-  renderStage("stageBuildup", data?.funnel?.buildup || []);
-  renderStage("stageRadar", data?.funnel?.radar || []);
+  renderStage("stageEliteExpansion", funnel.elite_expansion);
+  renderStage("stageEliteIgnition", funnel.elite_ignition);
+  renderStage("stageAlmost", funnel.almost);
+  renderStage("stageBuildup", funnel.buildup);
+  renderStage("stageRadar", funnel.radar);
 }
 
 // ==================== load latest ====================
@@ -302,7 +365,8 @@ async function loadLatest(force = false) {
       statusLine.textContent = `Status: fout bij laden • ${String(e?.message || e)}`;
     }
 
-    renderStage("stageElite", []);
+    renderStage("stageEliteExpansion", []);
+    renderStage("stageEliteIgnition", []);
     renderStage("stageAlmost", []);
     renderStage("stageBuildup", []);
     renderStage("stageRadar", []);
@@ -387,15 +451,15 @@ function liquiditySummary(c) {
     };
   }
 
-  const spreadOk = hasSpread ? spread <= 0.95 : false;
-  const depthOk = hasDepth ? depth >= 45000 : false;
-  const scoreOk = hasScore ? Math.abs(score) >= 0.05 : false;
+  const spreadOk = hasSpread ? spread <= 1.0 : false;
+  const depthOk = hasDepth ? depth >= 5000 : false;
+  const scoreOk = hasScore ? Math.abs(score) >= 0.04 : false;
 
   if (spreadOk && depthOk && scoreOk) {
     return {
       ok: true,
       title: "Liquiditeit goed",
-      text: "Orderboek ziet er gezond uit.",
+      text: "Orderboek ziet er bruikbaar uit voor Moon.",
       why: "Spread, depth en OB score zijn sterk genoeg.",
       tone: "ok",
       details: [
@@ -414,7 +478,7 @@ function liquiditySummary(c) {
   return {
     ok: false,
     title: "Voorzichtig met liquiditeit",
-    text: "Deze coin kan slippen of slecht vullen.",
+    text: "Deze coin kan slippen of zwak orderboek hebben.",
     why: reasons.join(" • "),
     tone: "warn",
     details: [
@@ -431,9 +495,11 @@ function openModalMain(c) {
   setTab("Action");
   syncTopbarHeight();
 
-  el("mTitle").textContent = `${c.symbol} • ${MODE.toUpperCase()} • ${String(c.stage || "—").toUpperCase()}`;
+  const stage = upperStage(c.stage);
+
+  el("mTitle").textContent = `${c.symbol} • ${MODE.toUpperCase()} • ${stage || "—"}`;
   el("mSub").textContent =
-    `Price $${safe(c.price, 6)} • Chg24 ${fmtPct(c.change24)} • VM ${safe(c.vm, 2)} • Conf ${scoreValue(c)}/100`;
+    `Price $${safe(c.price, 6)} • Chg1h ${fmtPct(c.change1h)} • Chg24 ${fmtPct(c.change24)} • VM ${safe(c.vm, 2)} • Score ${scoreValue(c)}/100`;
 
   const act = actionForStage(c, window.__LAST_DATA__ || {});
   el("mActionTitle").textContent = act.label;
@@ -455,6 +521,7 @@ function openModalMain(c) {
 
     setKV(el("mActionKv"), [
       ["Plan", act.label],
+      ["Stage", stage || "—"],
       ["Entry", `$${safe(entryPx, 6)}`],
       ["SL", `$${safe(risk.sl, 6)} (${pct(slPct, 2)})`],
       ["TP", `$${safe(risk.tp, 6)} (${pct(tpPct, 2)})`],
@@ -475,43 +542,60 @@ function openModalMain(c) {
   const whyList = el("mWhyList");
   if (whyList) whyList.innerHTML = "";
 
-  addCheck(whyList, true, `Stage: ${String(c.stage || "—").toUpperCase()}`, `Mode: ${MODE.toUpperCase()}`);
+  addCheck(whyList, true, `Stage: ${stage || "—"}`, `Mode: ${MODE.toUpperCase()}`);
+
   addCheck(
     whyList,
-    scoreValue(c) >= 70,
-    "Confidence",
+    scoreValue(c) >= 75,
+    "Move score / confidence",
     `Score: ${scoreValue(c)}/100`,
-    scoreValue(c) >= 70 ? "ok" : "warn"
-  );
-  addCheck(
-    whyList,
-    Number(c?.vm || 0) >= 0.15,
-    "Volume / MarketCap",
-    `VM: ${safe(c.vm, 3)}`,
-    Number(c?.vm || 0) >= 0.15 ? "ok" : "warn"
-  );
-  addCheck(
-    whyList,
-    Number(c?.change24 || 0) > 0,
-    "Momentum 24h",
-    `chg24: ${fmtPct(c.change24)}`,
-    Number(c?.change24 || 0) > 0 ? "ok" : "warn"
+    scoreValue(c) >= 75 ? "ok" : "warn"
   );
 
-  if (String(c.stage).toUpperCase() !== "ELITE") {
+  addCheck(
+    whyList,
+    Number(c?.vm || 0) >= 0.30,
+    "Volume / MarketCap",
+    `VM: ${safe(c.vm, 3)}`,
+    Number(c?.vm || 0) >= 0.30 ? "ok" : "warn"
+  );
+
+  addCheck(
+    whyList,
+    Math.abs(Number(c?.change1h || 0)) >= 1,
+    "Momentum 1h",
+    `chg1h: ${fmtPct(c.change1h)}`,
+    Math.abs(Number(c?.change1h || 0)) >= 1 ? "ok" : "warn"
+  );
+
+  addCheck(
+    whyList,
+    Math.abs(Number(c?.change24 || 0)) >= 6,
+    "Momentum 24h",
+    `chg24: ${fmtPct(c.change24)}`,
+    Math.abs(Number(c?.change24 || 0)) >= 6 ? "ok" : "warn"
+  );
+
+  if (c?.compression && typeof c.compression === "object") {
     addCheck(
       whyList,
-      false,
-      "Waarom nog niet hoger",
-      c.stage === "ALMOST"
-        ? "Mist nog 1 stap voor ELITE."
-        : c.stage === "BUILDUP"
-        ? "Nog niet genoeg bevestiging voor ALMOST."
-        : "Nog te vroeg voor BUILDUP / ALMOST / ELITE.",
-      "warn"
+      !!c.compression.isCompressed,
+      "Compressie",
+      `flatPct: ${safe(c.compression.flatPct, 2)}%`,
+      c.compression.isCompressed ? "ok" : "warn"
     );
+  }
+
+  if (stage === "ELITE_EXPANSION") {
+    addCheck(whyList, true, "Waarom ELITE EXPANSION", "Explosieve fase is al actief.", "ok");
+  } else if (stage === "ELITE_IGNITION") {
+    addCheck(whyList, true, "Waarom ELITE IGNITION", "Sterke kans op directe expansie.", "ok");
+  } else if (stage === "ALMOST") {
+    addCheck(whyList, false, "Waarom nog niet elite", "Mist nog 1 laatste upgrade-check.", "warn");
+  } else if (stage === "BUILDUP") {
+    addCheck(whyList, false, "Waarom nog niet almost", "Momentum bouwt op, maar nog niet scherp genoeg.", "warn");
   } else {
-    addCheck(whyList, true, "Waarom ELITE", "Top score binnen Moon funnel.", "ok");
+    addCheck(whyList, false, "Waarom nog niet buildup", "Nog te vroeg of te veel ruis.", "warn");
   }
 
   const liqList = el("mLiqList");
