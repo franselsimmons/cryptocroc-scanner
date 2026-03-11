@@ -2,6 +2,8 @@ import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
 import { pushEvent } from "../lib/_analytics.js";
 import { getObSnapshot, obMapKey } from "../lib/obStore.js";
+import { sendDiscord } from "../lib/sendDiscord.js";
+import { sendSignal } from "../lib/discordRouter.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -1544,10 +1546,43 @@ export default async function handler(req, res) {
 
         if (stage === "ENTRY") {
           await safePushEvent("scan_entry", eventItem);
+          await sendSignal(
+            {
+              source: "main",
+              stage: "ENTRY",
+              mode,
+              coin: { ...item, tradePlan: finalTradePlan },
+              btcState: btc.state,
+              kind: "signal",
+            },
+            sendDiscord
+          );
         } else if (stage === "HOLD") {
           await safePushEvent("scan_hold", eventItem);
+          await sendSignal(
+            {
+              source: "main",
+              stage: "HOLD",
+              mode,
+              coin: { ...item, tradePlan: finalTradePlan },
+              btcState: btc.state,
+              kind: "portfolio",
+            },
+            sendDiscord
+          );
         } else if (stage === "SELL") {
           await safePushEvent("scan_sell", { ...eventItem, reason: finalReason });
+          await sendSignal(
+            {
+              source: "main",
+              stage: "SELL",
+              mode,
+              coin: { ...item, tradePlan: finalTradePlan },
+              btcState: btc.state,
+              kind: "portfolio",
+            },
+            sendDiscord
+          );
           if (wasEliteOpenNow) {
             await safePushEvent('trade_exit', {
               symbol: sym,
@@ -1561,10 +1596,43 @@ export default async function handler(req, res) {
           }
         } else if (stage === "ALMOST") {
           await safePushEvent("scan_almost", eventItem);
+          await sendSignal(
+            {
+              source: "main",
+              stage: "ALMOST",
+              mode,
+              coin: { ...item, tradePlan: finalTradePlan },
+              btcState: btc.state,
+              kind: "signal",
+            },
+            sendDiscord
+          );
         } else if (stage === "BUILDUP") {
           await safePushEvent("scan_buildup", eventItem);
+          await sendSignal(
+            {
+              source: "main",
+              stage: "BUILDUP",
+              mode,
+              coin: { ...item, tradePlan: finalTradePlan },
+              btcState: btc.state,
+              kind: "signal",
+            },
+            sendDiscord
+          );
         } else if (stage === "RADAR") {
           await safePushEvent("scan_radar", eventItem);
+          await sendSignal(
+            {
+              source: "main",
+              stage: "RADAR",
+              mode,
+              coin: { ...item, tradePlan: finalTradePlan },
+              btcState: btc.state,
+              kind: "signal",
+            },
+            sendDiscord
+          );
         }
       }
     }
