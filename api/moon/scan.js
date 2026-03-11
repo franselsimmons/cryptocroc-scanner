@@ -695,45 +695,11 @@ export default async function handler(req, res) {
         positions.closed.unshift(closed);
         await pushEvent(`trade_${hit.kind.toLowerCase()}`, { symbol: closed.symbol, entryPrice: closed.entryPrice, exitPrice: closed.exitPrice, pnlPct: closed.pnlPct, barsOpen: closed.barsOpen });
         await pushEvent("scan_sell", { symbol: coin.symbol, mode, stage: "SELL", prevStage: "HOLD", price: coin.price, confidence: coin.confidence, change24: coin.change24, change1h: coin.change1h, ob: coin.ob, tradePlan: coin.tradePlan, btcState: btc.state, reason: `${hit.kind}_hit` });
-        await sendSignal({
-          source: "moon",
-          stage: "SELL",
-          mode,
-          coin: {
-            ...coin,
-            tradePlan: {
-              entry: trade.entryPrice,
-              sl: trade.sl,
-              tp: trade.tp,
-              rr: trade.rr,
-            },
-            pnlPct: closed.pnlPct,
-            pnlUsd: closed.pnlUsd,
-          },
-          btcState: btc.state,
-          kind: "portfolio",
-        });
+        // sendSignal voor SELL verwijderd
         continue;
       }
       await pushEvent("scan_hold", { symbol: coin.symbol, mode, stage: "HOLD", prevStage: coin.stage, price: coin.price, confidence: coin.confidence, change24: coin.change24, change1h: coin.change1h, ob: coin.ob, tradePlan: coin.tradePlan, btcState: btc.state, reason: "position_open" });
-      await sendSignal({
-        source: "moon",
-        stage: "HOLD",
-        mode,
-        coin: {
-          ...coin,
-          tradePlan: {
-            entry: trade.entryPrice,
-            sl: trade.sl,
-            tp: trade.tp,
-            rr: trade.rr,
-          },
-          pnlPct: trade.pnlPct,
-          pnlUsd: trade.pnlUsd,
-        },
-        btcState: btc.state,
-        kind: "portfolio",
-      });
+      // sendSignal voor HOLD verwijderd
       survivors.push(trade);
     }
     positions.open = survivors;
