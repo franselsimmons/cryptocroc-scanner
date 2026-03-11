@@ -32,7 +32,6 @@ import {
   uid,
 } from "../../lib/_analytics.js";
 
-import { sendDiscord } from "../../lib/sendDiscord.js";
 import { sendSignal } from "../../lib/discordRouter.js";
 
 export const config = RUNTIME_CONFIG;
@@ -603,17 +602,14 @@ export default async function handler(req, res) {
         });
 
         if (stage === "ALMOST" || stage.startsWith("ELITE")) {
-          await sendSignal(
-            {
-              source: "moon",
-              stage,
-              mode,
-              coin,
-              btcState: btc.state,
-              kind: "signal",
-            },
-            sendDiscord
-          );
+          await sendSignal({
+            source: "moon",
+            stage,
+            mode,
+            coin,
+            btcState: btc.state,
+            kind: "signal",
+          });
           await sendTelegram(
             `🆕 Nieuwe ${stage}${coin.eliteType ? ' ('+coin.eliteType+')' : ''} moon coin: ${coin.symbol}\nPrijs: $${coin.price}\nConfidence: ${coin.confidence}`
           );
@@ -622,17 +618,14 @@ export default async function handler(req, res) {
         await pushEvent("scan_transition", { symbol: coin.symbol, mode, from: prevStage, to: stage, reason: "stage_changed" });
 
         if (stage === "ALMOST" || stage.startsWith("ELITE")) {
-          await sendSignal(
-            {
-              source: "moon",
-              stage,
-              mode,
-              coin,
-              btcState: btc.state,
-              kind: "signal",
-            },
-            sendDiscord
-          );
+          await sendSignal({
+            source: "moon",
+            stage,
+            mode,
+            coin,
+            btcState: btc.state,
+            kind: "signal",
+          });
         }
 
         if (prevStage === "BUILDUP" && stage === "ALMOST") {
@@ -702,34 +695,9 @@ export default async function handler(req, res) {
         positions.closed.unshift(closed);
         await pushEvent(`trade_${hit.kind.toLowerCase()}`, { symbol: closed.symbol, entryPrice: closed.entryPrice, exitPrice: closed.exitPrice, pnlPct: closed.pnlPct, barsOpen: closed.barsOpen });
         await pushEvent("scan_sell", { symbol: coin.symbol, mode, stage: "SELL", prevStage: "HOLD", price: coin.price, confidence: coin.confidence, change24: coin.change24, change1h: coin.change1h, ob: coin.ob, tradePlan: coin.tradePlan, btcState: btc.state, reason: `${hit.kind}_hit` });
-        await sendSignal(
-          {
-            source: "moon",
-            stage: "SELL",
-            mode,
-            coin: {
-              ...coin,
-              tradePlan: {
-                entry: trade.entryPrice,
-                sl: trade.sl,
-                tp: trade.tp,
-                rr: trade.rr,
-              },
-              pnlPct: closed.pnlPct,
-              pnlUsd: closed.pnlUsd,
-            },
-            btcState: btc.state,
-            kind: "portfolio",
-          },
-          sendDiscord
-        );
-        continue;
-      }
-      await pushEvent("scan_hold", { symbol: coin.symbol, mode, stage: "HOLD", prevStage: coin.stage, price: coin.price, confidence: coin.confidence, change24: coin.change24, change1h: coin.change1h, ob: coin.ob, tradePlan: coin.tradePlan, btcState: btc.state, reason: "position_open" });
-      await sendSignal(
-        {
+        await sendSignal({
           source: "moon",
-          stage: "HOLD",
+          stage: "SELL",
           mode,
           coin: {
             ...coin,
@@ -739,14 +707,33 @@ export default async function handler(req, res) {
               tp: trade.tp,
               rr: trade.rr,
             },
-            pnlPct: trade.pnlPct,
-            pnlUsd: trade.pnlUsd,
+            pnlPct: closed.pnlPct,
+            pnlUsd: closed.pnlUsd,
           },
           btcState: btc.state,
           kind: "portfolio",
+        });
+        continue;
+      }
+      await pushEvent("scan_hold", { symbol: coin.symbol, mode, stage: "HOLD", prevStage: coin.stage, price: coin.price, confidence: coin.confidence, change24: coin.change24, change1h: coin.change1h, ob: coin.ob, tradePlan: coin.tradePlan, btcState: btc.state, reason: "position_open" });
+      await sendSignal({
+        source: "moon",
+        stage: "HOLD",
+        mode,
+        coin: {
+          ...coin,
+          tradePlan: {
+            entry: trade.entryPrice,
+            sl: trade.sl,
+            tp: trade.tp,
+            rr: trade.rr,
+          },
+          pnlPct: trade.pnlPct,
+          pnlUsd: trade.pnlUsd,
         },
-        sendDiscord
-      );
+        btcState: btc.state,
+        kind: "portfolio",
+      });
       survivors.push(trade);
     }
     positions.open = survivors;
