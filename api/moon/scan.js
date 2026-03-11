@@ -1,4 +1,3 @@
-// /api/moon/scan.js
 import { kv } from "@vercel/kv";
 
 import {
