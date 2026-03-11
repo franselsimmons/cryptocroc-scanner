@@ -219,9 +219,49 @@ function makePortfolio(mode, positions) {
 }
 
 // ======================================================
-// NIEUWE stage-bepaling op basis van MOON_V2 thresholds
+// NIEUWE UPGRADE 2: LATE-ENTRY BLOCKER
 // ======================================================
-function decideMoonStageV2({ mode, coin, obx, priceHist }) {
+function isLateBullEntry(coin) {
+  const ch1h = Number(coin?.change1h || 0);
+  const ch24 = Number(coin?.change24 || 0);
+  const vm = Number(coin?.vm || 0);
+
+  if (ch1h >= 12 && ch24 >= 30) return true;
+  if (ch1h >= 9 && ch24 >= 40) return true;
+  if (ch24 >= 55 && vm < 1.2) return true;
+
+  return false;
+}
+
+function isLateBearEntry(coin) {
+  const ch1h = Number(coin?.change1h || 0);
+  const ch24 = Number(coin?.change24 || 0);
+  const vm = Number(coin?.vm || 0);
+
+  if (ch1h <= -12 && ch24 <= -30) return true;
+  if (ch1h <= -9 && ch24 <= -40) return true;
+  if (ch24 <= -55 && vm < 1.2) return true;
+
+  return false;
+}
+
+// ======================================================
+// NIEUWE UPGRADE 3: MULTI-SCAN FOLLOW-THROUGH
+// ======================================================
+function hasEliteFollowThrough(prev, currentStage) {
+  const hist = Array.isArray(prev?.stageHist) ? prev.stageHist : [];
+  const tail = hist.concat([currentStage]).slice(-3);
+  const eliteLike = tail.filter(s =>
+    s === "ELITE_IGNITION" || s === "ELITE_EXPANSION" || s === "ELITE_CASCADE"
+  ).length;
+
+  return eliteLike >= 2;
+}
+
+// ======================================================
+// NIEUWE stage-bepaling op basis van MOON_V2 thresholds + upgrades
+// ======================================================
+function decideMoonStageV2({ mode, coin, obx, priceHist, btc, prev }) {
   const velocity = computeVelocity(coin.change1h, coin.change24);
   const compression = computeCompression(priceHist);
 
@@ -233,8 +273,23 @@ function decideMoonStageV2({ mode, coin, obx, priceHist }) {
     return { stage: "RADAR", stageWhy: "bear_bounce_trap", moveScore: 0, velocity, compression, eliteType: null };
   }
 
+  // Upgrade 2: late-entry check
+  if (mode === "bull" && isLateBullEntry(coin)) {
+    return { stage: "ALMOST", stageWhy: "late_bull_entry", moveScore: 0, velocity, compression, eliteType: null };
+  }
+  if (mode === "bear" && isLateBearEntry(coin)) {
+    return { stage: "ALMOST", stageWhy: "late_bear_entry", moveScore: 0, velocity, compression, eliteType: null };
+  }
+
   const cfg = MOON_V2[mode];
   const moveScore = mode === "bull" ? computeBullMoveScore(coin, obx) : computeBearMoveScore(coin, obx);
+
+  // Upgrade 1: BTC momentum gate
+  const btcMomentumOk = mode === "bull"
+    ? Number(btc?.chg24 || 0) >= 1.2 && Number(btc?.range24 || 0) >= 3.5
+    : Number(btc?.chg24 || 0) <= -1.2 && Number(btc?.range24 || 0) >= 3.5;
+
+  let stage, eliteType;
 
   if (mode === "bull") {
     // ELITE_EXPANSION (sterkste)
@@ -245,38 +300,43 @@ function decideMoonStageV2({ mode, coin, obx, priceHist }) {
       obx.score >= cfg.minObStrong &&
       velocity >= cfg.explosiveVelocity
     ) {
-      return { stage: "ELITE_EXPANSION", stageWhy: "bull_expansion", moveScore, velocity, compression, eliteType: "expansion" };
+      stage = "ELITE_EXPANSION";
+      eliteType = "expansion";
     }
     // ELITE_IGNITION
-    if (
+    else if (
       coin.change1h >= cfg.minCh1hIgnition &&
       coin.change24 >= cfg.minCh24Ignition &&
       coin.vm >= cfg.minVmElite &&
       obx.score >= cfg.minObStrong &&
       velocity >= cfg.strongVelocity
     ) {
-      return { stage: "ELITE_IGNITION", stageWhy: "bull_ignition", moveScore, velocity, compression, eliteType: "ignition" };
+      stage = "ELITE_IGNITION";
+      eliteType = "ignition";
     }
     // ALMOST
-    if (
+    else if (
       coin.change1h >= cfg.minCh1hAlmost &&
       coin.change24 >= cfg.minCh24Almost &&
       coin.vm >= cfg.minVmAlmost &&
       velocity >= cfg.strongVelocity
     ) {
-      return { stage: "ALMOST", stageWhy: "bull_almost", moveScore, velocity, compression, eliteType: null };
+      stage = "ALMOST";
+      eliteType = null;
     }
     // BUILDUP
-    if (
+    else if (
       coin.change1h >= cfg.minCh1hBuildup &&
       coin.change24 >= cfg.minCh24Buildup &&
       coin.vm >= cfg.minVmBuildup &&
       velocity >= cfg.minVelocity
     ) {
-      return { stage: "BUILDUP", stageWhy: "bull_buildup", moveScore, velocity, compression, eliteType: null };
+      stage = "BUILDUP";
+      eliteType = null;
+    } else {
+      stage = "RADAR";
+      eliteType = null;
     }
-    // Anders RADAR
-    return { stage: "RADAR", stageWhy: "bull_radar", moveScore, velocity, compression, eliteType: null };
   } else {
     // BEAR
     if (
@@ -287,9 +347,10 @@ function decideMoonStageV2({ mode, coin, obx, priceHist }) {
       obx.score <= 0 &&
       velocity >= cfg.explosiveVelocity
     ) {
-      return { stage: "ELITE_CASCADE", stageWhy: "bear_cascade", moveScore, velocity, compression, eliteType: "cascade" };
+      stage = "ELITE_CASCADE";
+      eliteType = "cascade";
     }
-    if (
+    else if (
       coin.change1h <= cfg.maxCh1hIgnition &&
       coin.change24 <= cfg.maxCh24Ignition &&
       coin.vm >= cfg.minVmElite &&
@@ -297,26 +358,47 @@ function decideMoonStageV2({ mode, coin, obx, priceHist }) {
       obx.score <= 0 &&
       velocity >= cfg.strongVelocity
     ) {
-      return { stage: "ELITE_IGNITION", stageWhy: "bear_ignition", moveScore, velocity, compression, eliteType: "ignition" };
+      stage = "ELITE_IGNITION";
+      eliteType = "ignition";
     }
-    if (
+    else if (
       coin.change1h <= cfg.maxCh1hAlmost &&
       coin.change24 <= cfg.maxCh24Almost &&
       coin.vm >= cfg.minVmAlmost &&
       velocity >= cfg.strongVelocity
     ) {
-      return { stage: "ALMOST", stageWhy: "bear_almost", moveScore, velocity, compression, eliteType: null };
+      stage = "ALMOST";
+      eliteType = null;
     }
-    if (
+    else if (
       coin.change1h <= cfg.maxCh1hBuildup &&
       coin.change24 <= cfg.maxCh24Buildup &&
       coin.vm >= cfg.minVmBuildup &&
       velocity >= cfg.minVelocity
     ) {
-      return { stage: "BUILDUP", stageWhy: "bear_buildup", moveScore, velocity, compression, eliteType: null };
+      stage = "BUILDUP";
+      eliteType = null;
+    } else {
+      stage = "RADAR";
+      eliteType = null;
     }
-    return { stage: "RADAR", stageWhy: "bear_radar", moveScore, velocity, compression, eliteType: null };
   }
+
+  // Upgrade 1: BTC momentum gate (downgrade elite if BTC not expanding)
+  if ((stage === "ELITE_EXPANSION" || stage === "ELITE_IGNITION" || stage === "ELITE_CASCADE") && !btcMomentumOk) {
+    stage = "ALMOST";
+    eliteType = null;
+    return { stage, stageWhy: "btc_not_expanding", moveScore, velocity, compression, eliteType };
+  }
+
+  // Upgrade 3: follow-through check (downgrade elite if not enough follow-through)
+  if ((stage === "ELITE_EXPANSION" || stage === "ELITE_IGNITION" || stage === "ELITE_CASCADE") && !hasEliteFollowThrough(prev, stage)) {
+    stage = "ALMOST";
+    eliteType = null;
+    return { stage, stageWhy: "elite_needs_followthrough", moveScore, velocity, compression, eliteType };
+  }
+
+  return { stage, stageWhy: "ok", moveScore, velocity, compression, eliteType };
 }
 
 // ======================================================
@@ -376,12 +458,14 @@ async function buildUniverse(mode, whaleFlow, btc) {
       volAcc.medium = now / Math.max(mediumAgo, 1e-9);
     }
 
-    // ----- Nieuwe stage bepaling (gebruikt MOON_V2) -----
+    // ----- Nieuwe stage bepaling (gebruikt MOON_V2 + upgrades) -----
     const stageDecision = decideMoonStageV2({
       mode,
       coin,
       obx,
       priceHist: priceHistNext,
+      btc,
+      prev,
     });
 
     const stage = stageDecision.stage;
@@ -469,7 +553,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
 }
 
 // ======================================================
-// MAIN HANDLER
+// MAIN HANDLER (ongewijzigd, behalve dat btc wordt doorgegeven)
 // ======================================================
 export default async function handler(req, res) {
   let mode = "bull";
