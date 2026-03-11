@@ -1,4 +1,3 @@
-// /api/scan.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
 import { pushEvent } from "../lib/_analytics.js";
@@ -1593,14 +1592,7 @@ export default async function handler(req, res) {
           });
         } else if (stage === "RADAR") {
           await safePushEvent("scan_radar", eventItem);
-          await sendSignal({
-            source: "main",
-            stage: "RADAR",
-            mode,
-            coin: { ...item, tradePlan: finalTradePlan },
-            btcState: btc.state,
-            kind: "signal",
-          });
+          // sendSignal voor RADAR verwijderd
         }
       }
     }
