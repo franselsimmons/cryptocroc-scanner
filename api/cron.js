@@ -7,8 +7,6 @@ import obSampler from "./ob/sampler.js";
 import obMapRefresh from "./ob/map_refresh.js";
 
 import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
-import { sendDiscord } from "../lib/discord.js";
-import { formatStage } from "../lib/formatDiscord.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -66,62 +64,6 @@ function normMode(raw) {
   if (m === "bull" || m === "bear") return m;
   if (m === "both" || m === "all") return "both";
   return "both";
-}
-
-function stageSymbols(arr) {
-  return (arr || [])
-    .map((x) => String(x?.symbol || "").toUpperCase())
-    .filter(Boolean)
-    .slice(0, 50);
-}
-
-async function notifyMainDiscord(mode, scanResult) {
-  const funnel = scanResult?.funnel || {};
-  const radar = funnel.radar || [];
-  const buildup = funnel.buildup || [];
-  const almost = funnel.almost || [];
-  const entry = funnel.entry || [];
-
-  const hooks = {
-    RADAR: process.env.DISCORD_WEBHOOK_RADAR || "",
-    BUILDUP: process.env.DISCORD_WEBHOOK_BUILDUP || "",
-    ALMOST: process.env.DISCORD_WEBHOOK_ALMOST || "",
-    ENTRY: process.env.DISCORD_WEBHOOK_ELITE || "",
-  };
-
-  async function sendIfChanged(stageName, coins) {
-    const hook = hooks[stageName];
-    if (!hook) return { stageName, sent: false, why: "no webhook set" };
-
-    const syms = stageSymbols(coins);
-    if (syms.length === 0) return { stageName, sent: false, why: "empty" };
-
-    const key = `discord:last:main:${mode}:${stageName}`;
-    const prevSig = (await kv.get(key)) || "";
-    const nowSig = syms.join(",");
-
-    if (prevSig === nowSig) return { stageName, sent: false, why: "no change" };
-
-    const text = formatStage(
-      `${stageName} (MAIN ${mode.toUpperCase()})`,
-      mode === "bull" ? coins : [],
-      mode === "bear" ? coins : []
-    );
-
-    if (!text) return { stageName, sent: false, why: "formatStage empty" };
-
-    await sendDiscord(hook, `CryptoCroc MAIN • ${stageName}`, text);
-    await kv.set(key, nowSig, { ex: 60 * 60 });
-
-    return { stageName, sent: true, count: syms.length };
-  }
-
-  const r1 = await sendIfChanged("ENTRY", entry);
-  const r2 = await sendIfChanged("ALMOST", almost);
-  const r3 = await sendIfChanged("BUILDUP", buildup);
-  const r4 = await sendIfChanged("RADAR", radar);
-
-  return { ok: true, results: [r1, r2, r3, r4] };
 }
 
 function pickSecret() {
@@ -254,9 +196,8 @@ async function runOneMode(mode, max, radar, symbols, secret) {
   const ok = a1.ok && a2.ok && a3.ok;
   const errors = [a1, a2, a3].filter((x) => !x.ok).map((x) => x.error);
 
-  // discord alleen als scan ok
-  let discord = { ok: false, skipped: true, why: "scan not ok" };
-  if (ok) discord = await notifyMainDiscord(mode, scanOut);
+  // Discord-berichten via cron zijn uitgeschakeld; routing loopt alleen via sendSignal() in scan.js / moon/scan.js
+  const discord = { ok: true, skipped: true, why: "cron discord disabled" };
 
   return { ok, mode, errors, obMap: mapOut, ob: obOut, scan: scanOut, discord };
 }
@@ -367,7 +308,7 @@ export default async function handler(req, res) {
         tookMs: Date.now() - startedAt,
         heartbeatKey: CRON_HEARTBEAT_KEY,
         lock: { key: CRON_LOCK_KEY, ttlSec: CRON_LOCK_TTL_SEC },
-        note: "Eén universe-run, daarna bull/bear (map_refresh → sampler → scan → discord).",
+        note: "Eén universe-run, daarna bull/bear (map_refresh → sampler → scan). Discord-berichten via cron zijn uitgeschakeld.",
       })
     );
   } catch (e) {
