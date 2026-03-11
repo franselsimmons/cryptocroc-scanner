@@ -1,3 +1,4 @@
+// /api/scan.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
 import { pushEvent } from "../lib/_analytics.js";
@@ -1555,24 +1556,10 @@ export default async function handler(req, res) {
           });
         } else if (stage === "HOLD") {
           await safePushEvent("scan_hold", eventItem);
-          await sendSignal({
-            source: "main",
-            stage: "HOLD",
-            mode,
-            coin: { ...item, tradePlan: finalTradePlan },
-            btcState: btc.state,
-            kind: "portfolio",
-          });
+          // sendSignal voor HOLD verwijderd
         } else if (stage === "SELL") {
           await safePushEvent("scan_sell", { ...eventItem, reason: finalReason });
-          await sendSignal({
-            source: "main",
-            stage: "SELL",
-            mode,
-            coin: { ...item, tradePlan: finalTradePlan },
-            btcState: btc.state,
-            kind: "portfolio",
-          });
+          // sendSignal voor SELL verwijderd
           if (wasEliteOpenNow) {
             await safePushEvent('trade_exit', {
               symbol: sym,
