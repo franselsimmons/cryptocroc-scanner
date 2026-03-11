@@ -84,13 +84,13 @@ const TIER_CFG = {
     requireWall: false,
   },
 
-  // Hard filters
+  // Hard filters – nu soepeler
   entry: {
-    spreadMaxPct: 1.10,
-    depthMinUsd1p: 32_000,
-    obScoreAbsMin: 0.040,
+    spreadMaxPct: 1.20,
+    depthMinUsd1p: 24_000,
+    obScoreAbsMin: 0.030,
     requireWall: false,
-    requirePressureAlign: false, // bull => pressureDelta>=0, bear => <=0
+    requirePressureAlign: false,
   },
 
   // Sample-based gate thresholds
