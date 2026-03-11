@@ -263,7 +263,6 @@ function decideMoonStageV2({ mode, coin, obx, priceHist, btc, prev }) {
   const velocity = computeVelocity(coin.change1h, coin.change24);
   const compression = computeCompression(priceHist);
 
-  // Eerst uitsluiten op basis van exhaustion / bounce trap
   if (mode === "bull" && isBullExhausted(coin)) {
     return { stage: "RADAR", stageWhy: "bull_exhausted", moveScore: 0, velocity, compression, eliteType: null };
   }
@@ -271,7 +270,6 @@ function decideMoonStageV2({ mode, coin, obx, priceHist, btc, prev }) {
     return { stage: "RADAR", stageWhy: "bear_bounce_trap", moveScore: 0, velocity, compression, eliteType: null };
   }
 
-  // Upgrade 2: late-entry check
   if (mode === "bull" && isLateBullEntry(coin)) {
     return { stage: "ALMOST", stageWhy: "late_bull_entry", moveScore: 0, velocity, compression, eliteType: null };
   }
@@ -282,7 +280,6 @@ function decideMoonStageV2({ mode, coin, obx, priceHist, btc, prev }) {
   const cfg = MOON_V2[mode];
   const moveScore = mode === "bull" ? computeBullMoveScore(coin, obx) : computeBearMoveScore(coin, obx);
 
-  // Upgrade 1: BTC momentum gate
   const btcMomentumOk = mode === "bull"
     ? Number(btc?.chg24 || 0) >= 1.2 && Number(btc?.range24 || 0) >= 3.5
     : Number(btc?.chg24 || 0) <= -1.2 && Number(btc?.range24 || 0) >= 3.5;
@@ -290,7 +287,6 @@ function decideMoonStageV2({ mode, coin, obx, priceHist, btc, prev }) {
   let stage, eliteType;
 
   if (mode === "bull") {
-    // ELITE_EXPANSION (sterkste)
     if (
       coin.change1h >= cfg.minCh1hExpansion &&
       coin.change24 >= cfg.minCh24Expansion &&
@@ -301,7 +297,6 @@ function decideMoonStageV2({ mode, coin, obx, priceHist, btc, prev }) {
       stage = "ELITE_EXPANSION";
       eliteType = "expansion";
     }
-    // ELITE_IGNITION
     else if (
       coin.change1h >= cfg.minCh1hIgnition &&
       coin.change24 >= cfg.minCh24Ignition &&
@@ -312,7 +307,6 @@ function decideMoonStageV2({ mode, coin, obx, priceHist, btc, prev }) {
       stage = "ELITE_IGNITION";
       eliteType = "ignition";
     }
-    // ALMOST
     else if (
       coin.change1h >= cfg.minCh1hAlmost &&
       coin.change24 >= cfg.minCh24Almost &&
@@ -322,7 +316,6 @@ function decideMoonStageV2({ mode, coin, obx, priceHist, btc, prev }) {
       stage = "ALMOST";
       eliteType = null;
     }
-    // BUILDUP
     else if (
       coin.change1h >= cfg.minCh1hBuildup &&
       coin.change24 >= cfg.minCh24Buildup &&
@@ -336,7 +329,6 @@ function decideMoonStageV2({ mode, coin, obx, priceHist, btc, prev }) {
       eliteType = null;
     }
   } else {
-    // BEAR
     if (
       coin.change1h <= cfg.maxCh1hCascade &&
       coin.change24 <= cfg.maxCh24Cascade &&
@@ -382,14 +374,12 @@ function decideMoonStageV2({ mode, coin, obx, priceHist, btc, prev }) {
     }
   }
 
-  // Upgrade 1: BTC momentum gate (downgrade elite if BTC not expanding)
   if ((stage === "ELITE_EXPANSION" || stage === "ELITE_IGNITION" || stage === "ELITE_CASCADE") && !btcMomentumOk) {
     stage = "ALMOST";
     eliteType = null;
     return { stage, stageWhy: "btc_not_expanding", moveScore, velocity, compression, eliteType };
   }
 
-  // Upgrade 3: follow-through check (downgrade elite if not enough follow-through)
   if ((stage === "ELITE_EXPANSION" || stage === "ELITE_IGNITION" || stage === "ELITE_CASCADE") && !hasEliteFollowThrough(prev, stage)) {
     stage = "ALMOST";
     eliteType = null;
@@ -406,7 +396,6 @@ async function buildUniverse(mode, whaleFlow, btc) {
   const rawCoins = await fetchCoinGeckoTopCached();
   const bitgetSymbols = await getBitgetSpotUsdtSymbols();
 
-  // Basis filter (blocked en Bitget)
   const step1 = rawCoins.filter(c => !isBlockedMoonAsset(c));
   const step2 = step1.filter(c => bitgetSymbols.has(String(c.symbol || "").toUpperCase()));
 
@@ -427,7 +416,6 @@ async function buildUniverse(mode, whaleFlow, btc) {
     const sym = String(coin.symbol || "").toUpperCase();
     const prev = state?.[sym] || {};
 
-    // Orderbook
     let ob = null;
     if (n(coin.volume, 0) >= 600_000) {
       ob = await fetchOrderbook(`${sym}USDT`);
@@ -438,7 +426,6 @@ async function buildUniverse(mode, whaleFlow, btc) {
     const depthUsd = n(obx.depthMinUsd1p, 0);
     const depthOk = depthUsd >= floorUsd;
 
-    // Historie
     const priceHist = Array.isArray(prev?.priceHist) ? [...prev.priceHist] : [];
     const volHist = Array.isArray(prev?.volHist) ? [...prev.volHist] : [];
     priceHist.push(n(coin.price, 0));
@@ -446,7 +433,6 @@ async function buildUniverse(mode, whaleFlow, btc) {
     const priceHistNext = priceHist.slice(-120);
     const volHistNext = volHist.slice(-120);
 
-    // Volume acceleratie (kort en medium) – optioneel
     const volAcc = { short: 1, medium: 1 };
     if (volHistNext.length >= 5) {
       const now = volHistNext[volHistNext.length-1];
@@ -456,7 +442,6 @@ async function buildUniverse(mode, whaleFlow, btc) {
       volAcc.medium = now / Math.max(mediumAgo, 1e-9);
     }
 
-    // ----- Nieuwe stage bepaling (gebruikt MOON_V2 + upgrades) -----
     const stageDecision = decideMoonStageV2({
       mode,
       coin,
@@ -473,7 +458,6 @@ async function buildUniverse(mode, whaleFlow, btc) {
     const compression = stageDecision.compression;
     const moveScore = stageDecision.moveScore;
 
-    // Probabilities
     const probs = computeMoonProbabilities({
       mode,
       coin: { ...coin, ob: obx },
@@ -482,7 +466,6 @@ async function buildUniverse(mode, whaleFlow, btc) {
       compression,
     });
 
-    // Tradeplan (gebruik moveScore als confidence)
     const tradePlan = buildTradePlan(
       n(coin.price, 0), mode, moveScore, n(coin.range24, 0), depthOk, tier
     );
@@ -498,7 +481,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
       change24: n(coin.change24, 0),
       change1h: n(coin.change1h, 0),
       vm: n(coin.vm, 0),
-      confidence: moveScore, // moveScore = confidence
+      confidence: moveScore,
       stage,
       stageWhy,
       eliteType,
@@ -551,7 +534,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
 }
 
 // ======================================================
-// MAIN HANDLER (ongewijzigd, behalve dat btc wordt doorgegeven)
+// MAIN HANDLER
 // ======================================================
 export default async function handler(req, res) {
   let mode = "bull";
@@ -635,7 +618,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // Posities openen vanuit ELITE (beide typen)
     const openMap = new Map(positions.open.map(p => [String(p.symbol || "").toUpperCase(), p]));
     for (const coin of [...funnel.elite_expansion, ...funnel.elite_ignition]) {
       const sym = coin.symbol;
@@ -669,7 +651,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // Posities bijwerken en sluiten
     const survivors = [];
     for (const trade of positions.open) {
       const coin = universeMap.get(trade.symbol);
@@ -694,11 +675,11 @@ export default async function handler(req, res) {
         positions.closed.unshift(closed);
         await pushEvent(`trade_${hit.kind.toLowerCase()}`, { symbol: closed.symbol, entryPrice: closed.entryPrice, exitPrice: closed.exitPrice, pnlPct: closed.pnlPct, barsOpen: closed.barsOpen });
         await pushEvent("scan_sell", { symbol: coin.symbol, mode, stage: "SELL", prevStage: "HOLD", price: coin.price, confidence: coin.confidence, change24: coin.change24, change1h: coin.change1h, ob: coin.ob, tradePlan: coin.tradePlan, btcState: btc.state, reason: `${hit.kind}_hit` });
-        // sendSignal voor SELL verwijderd
+        // ❌ geen sendSignal voor SELL
         continue;
       }
       await pushEvent("scan_hold", { symbol: coin.symbol, mode, stage: "HOLD", prevStage: coin.stage, price: coin.price, confidence: coin.confidence, change24: coin.change24, change1h: coin.change1h, ob: coin.ob, tradePlan: coin.tradePlan, btcState: btc.state, reason: "position_open" });
-      // sendSignal voor HOLD verwijderd
+      // ❌ geen sendSignal voor HOLD
       survivors.push(trade);
     }
     positions.open = survivors;
