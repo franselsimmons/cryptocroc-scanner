@@ -13,7 +13,6 @@ async function tryAcquireScanLock(mode) {
   const key = `scan:lock:${String(mode).toLowerCase()}`;
   const now = Date.now();
 
-  // ✅ lock loopt altijd tot de volgende :00 of :30
   const d = new Date(now);
   const m = d.getMinutes();
 
@@ -28,16 +27,14 @@ async function tryAcquireScanLock(mode) {
   }
 
   const nextUntil = next.getTime();
-  const ttlSec = Math.max(60, Math.ceil((nextUntil - now) / 1000)); // minimaal 60s
+  const ttlSec = Math.max(60, Math.ceil((nextUntil - now) / 1000));
 
-  // Atomisch: alleen lock zetten als hij niet bestaat (NX)
   const ok = await kv.set(key, { until: nextUntil, setAt: now }, { nx: true, ex: ttlSec });
 
   if (ok) {
     return { ok: true, key, until: nextUntil, now, waitMs: 0 };
   }
 
-  // Lock bestond al → lees huidige
   const cur = await kv.get(key);
   const until = Number(cur?.until || 0);
 
@@ -45,19 +42,18 @@ async function tryAcquireScanLock(mode) {
     return { ok: false, key, until, now, waitMs: until - now };
   }
 
-  // stale → refresh tot volgende boundary
   await kv.set(key, { until: nextUntil, setAt: now }, { ex: ttlSec });
   return { ok: true, key, until: nextUntil, now, waitMs: 0 };
 }
 
 // ======================================================
-// Universe keys (gelijk aan universe.js)
+// Universe keys
 // ======================================================
 const K_UNIVERSE_LATEST = "universe:latest";
 const K_LOCK_UNIVERSE = "scan:lock:universe";
 
 // ======================================================
-// Design rationale (voor transparantie)
+// Design rationale
 // ======================================================
 const DESIGN_RATIONALE = [
   "Zonder coin-typische momentum en zonder consistency-blokkade krijg je bij 30m cadence te veel false positives (micro moves, random spikes, liquidity noise).",
@@ -68,22 +64,17 @@ const DESIGN_RATIONALE = [
 // Tier gating config (single place to tune)
 // ======================================================
 const TIER_CFG = {
-  // Basic OB sanity for anything above RADAR
   buildup: {
     spreadMaxPct: 1.60,
     depthMinUsd1p: 14_000,
-    obScoreAbsMin: 0.00, // buildup doesn't require imbalance, just sanity
+    obScoreAbsMin: 0.00,
   },
-
-  // Medium filters (versoepeld)
   almost: {
     spreadMaxPct: 1.35,
     depthMinUsd1p: 18_000,
     obScoreAbsMin: 0.020,
     requireWall: false,
   },
-
-  // Hard filters – nu soepeler
   entry: {
     spreadMaxPct: 1.20,
     depthMinUsd1p: 24_000,
@@ -91,15 +82,12 @@ const TIER_CFG = {
     requireWall: false,
     requirePressureAlign: false,
   },
-
-  // Sample-based gate thresholds
   samples: {
     minForSpoof: 3,
     minForAbsorption: 3,
   },
 };
 
-// ---------- hulpfunctie voor null-safe getallen ----------
 function fnum(x) {
   const v = Number(x);
   return Number.isFinite(v) ? v : null;
@@ -112,9 +100,6 @@ function send(res, code, obj) {
   return res.end(JSON.stringify(obj));
 }
 
-// --------------------
-// Helpers
-// --------------------
 function n(x, d = 0) {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
@@ -134,7 +119,6 @@ async function safePushEvent(funnel, data) {
   }
 }
 
-// ---------- helpers voor reject en stage change ----------
 function makeReject(reason, stageTried, rejectCode, extra = {}) {
   return {
     type: "scan_reject",
@@ -160,7 +144,6 @@ async function pushStageChange({ mode, symbol, from, to, reason, item }) {
   });
 }
 
-// ---------- toegevoegde helper voor TP/SL ----------
 function calcTradePlan({ mode, price, spreadPct, range24, obScore }) {
   const p = Number(price || 0);
   if (!(p > 0)) {
@@ -178,13 +161,11 @@ function calcTradePlan({ mode, price, spreadPct, range24, obScore }) {
   const range = Math.max(0, Number(range24 || 0));
   const scoreAbs = Math.abs(Number(obScore || 0));
 
-  // adaptieve SL (aangepast: strakker)
   const slPctBase = Math.max(
     1.0,
     Math.min(2.8, 0.22 * range + 0.90 * spread + 0.70)
   );
 
-  // adaptieve TP obv OB-score (aangepast: iets hogere RR)
   const rrBase =
     scoreAbs >= 0.10 ? 2.4 :
     scoreAbs >= 0.07 ? 2.1 :
@@ -214,16 +195,15 @@ function calcTradePlan({ mode, price, spreadPct, range24, obScore }) {
   };
 }
 
-// ✅ OB max age (stale gate)
 const OB_MAX_AGE_MS = 120 * 60 * 1000;
 const OB_MAX_AGE_SEC = Math.floor(OB_MAX_AGE_MS / 1000);
 
 // ======================================================
-// Per-coin rolling medians & percentiles (range/spread/obScore)
+// Per-coin rolling medians & percentiles
 // ======================================================
-const COIN_STATS_TTL_SEC = 60 * 60 * 24 * 8; // 8 dagen bewaren
-const COIN_STATS_WINDOW_SEC = 60 * 60 * 24 * 7; // 7 dagen window
-const COIN_STATS_KEEP_MAX = 700; // hard cap
+const COIN_STATS_TTL_SEC = 60 * 60 * 24 * 8;
+const COIN_STATS_WINDOW_SEC = 60 * 60 * 24 * 7;
+const COIN_STATS_KEEP_MAX = 700;
 
 function kCoinStats(mode, sym) {
   return `coin:stats:${String(mode).toLowerCase()}:${String(sym).toUpperCase()}`;
@@ -291,7 +271,7 @@ async function updateCoinStatsAndGetMetrics({ mode, sym, range24, spreadPct, obS
 }
 
 // ======================================================
-// BTC state / compat (geen fetch meer, alleen rekenen)
+// BTC state / compat
 // ======================================================
 function normBtcState(x) {
   const s = String(x || "").toUpperCase().trim();
@@ -305,7 +285,6 @@ function getBtcCfg(SETTINGS) {
     bullMinChg24: Number.isFinite(Number(b.bullMinChg24)) ? Number(b.bullMinChg24) : 1.0,
     bearMaxChg24: Number.isFinite(Number(b.bearMaxChg24)) ? Number(b.bearMaxChg24) : -1.0,
     softOpenNeutral: !!b.softOpenNeutral,
-
     neutral24Pct: Number.isFinite(Number(b.neutral24Pct)) ? Number(b.neutral24Pct) : null,
     fine1hAbsPct: Number.isFinite(Number(b.fine1hAbsPct)) ? Number(b.fine1hAbsPct) : 0.25,
     confBoost: Number.isFinite(Number(b.confBoost)) ? Number(b.confBoost) : 4,
@@ -386,7 +365,6 @@ function obSnapshotToFlat(ob, sym) {
     stale: !!ob?.stale,
     reason: String(ob?.reason || ""),
     ageSec: ob?.ageSec ?? null,
-
     ts: n(snap?.ts, 0) || null,
     spreadPct: Number.isFinite(Number(snap?.spreadPct)) ? Number(snap.spreadPct) : null,
     depthMinUsd1p: Number.isFinite(Number(snap?.depthMinUsd1p)) ? Number(snap.depthMinUsd1p) : null,
@@ -462,7 +440,6 @@ function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
   };
 }
 
-// ---------- toegevoegde helpers voor spoof en absorption ----------
 function spoofRiskFromSamples(samples) {
   const a = Array.isArray(samples) ? samples : [];
   if (a.length < TIER_CFG.samples.minForSpoof) return { ok: true, risk: 0, why: "not_enough_samples" };
@@ -495,7 +472,6 @@ function absorptionFromSamples(samples, mode) {
   const a = Array.isArray(samples) ? samples : [];
   if (a.length < TIER_CFG.samples.minForAbsorption) return { ok: true, why: "not_enough_samples" };
 
-  // Gebruik de centrale instelling voor het aantal samples
   const last = a.slice(-TIER_CFG.samples.minForAbsorption);
 
   const scores = last.map((x) => Number(x?.score || 0));
@@ -507,15 +483,11 @@ function absorptionFromSamples(samples, mode) {
   const wantUp = String(mode) === "bull";
   const aligned = wantUp ? avgScore > 0.03 : avgScore < -0.03;
 
-  // Absorption proxy: deep liquidity but weak/non-aligned pressure
   const absorption = avgDepth > 55_000 && !aligned;
 
   return absorption ? { ok: false, why: "liquidity_absorption_proxy" } : { ok: true, why: "ok" };
 }
 
-// ======================================================
-// stageFromSwing (versoepeld)
-// ======================================================
 function stageFromSwing(mode, c, dyn) {
   const vm = c.vm;
   const range = c.range24;
@@ -530,9 +502,6 @@ function stageFromSwing(mode, c, dyn) {
   return "RADAR";
 }
 
-// ======================================================
-// Helper: passRadar
-// ======================================================
 function passRadar(core, mode, c, dyn) {
   const vm = core.computeVm(c.volume, c.marketCap);
   const radarCfg = core.SETTINGS.radar;
@@ -568,7 +537,7 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const mode = String(getMode(req)).toLowerCase().trim(); // bull/bear
+    const mode = String(getMode(req)).toLowerCase().trim();
     const coreMod = await import(`../lib/_core_${mode}.js`);
     const core = coreMod?.default ? coreMod.default : coreMod;
 
@@ -648,7 +617,7 @@ export default async function handler(req, res) {
       };
 
       // ------------------------------------------------------------
-      // 1) Basisberekeningen (onafhankelijk van gates)
+      // 1) Basisberekeningen
       // ------------------------------------------------------------
       const vm = core.computeVm(c.volume, c.marketCap);
       const dyn = typeof core.dynamicRadarThresholds === "function"
@@ -674,7 +643,6 @@ export default async function handler(req, res) {
         if (entryPrice > 0 && currentPrice > 0 && plan.tp != null && plan.sl != null) {
           const isBull = mode === 'bull';
 
-          // Correcte PnL-berekening voor bull en bear
           const pnlPct = isBull
             ? (((currentPrice - entryPrice) / entryPrice) * 100).toFixed(2)
             : (((entryPrice - currentPrice) / entryPrice) * 100).toFixed(2);
@@ -686,7 +654,6 @@ export default async function handler(req, res) {
           const hitTp = isBull ? currentPrice >= Number(plan.tp) : currentPrice <= Number(plan.tp);
           const hitSl = isBull ? currentPrice <= Number(plan.sl) : currentPrice >= Number(plan.sl);
 
-          // TP geraakt
           if (hitTp) {
             await safePushEvent('trade_tp', {
               symbol: sym,
@@ -697,7 +664,6 @@ export default async function handler(req, res) {
               reason: 'TP hit',
             });
 
-            // State updaten naar SELL
             state[sym] = {
               ...currentState,
               stage: 'SELL',
@@ -709,7 +675,6 @@ export default async function handler(req, res) {
                 : ['SELL'],
             };
 
-            // Item voor output
             const item = {
               symbol: sym,
               name: c.name || sym,
@@ -754,7 +719,6 @@ export default async function handler(req, res) {
             };
             sell.push(item);
 
-            // 🔁 Stage change en scan_sell ook sturen
             await pushStageChange({
               mode,
               symbol: sym,
@@ -773,7 +737,6 @@ export default async function handler(req, res) {
             continue;
           }
 
-          // SL geraakt
           if (hitSl) {
             await safePushEvent('trade_sl', {
               symbol: sym,
@@ -998,11 +961,10 @@ export default async function handler(req, res) {
       }
 
       // ------------------------------------------------------------
-      // 4) Vanaf hier: coin voldoet aan RADAR, gebruik dynamische drempels
+      // 4) Vanaf hier: coin voldoet aan RADAR
       // ------------------------------------------------------------
       const usedDyn = radarGate.dyn || dyn;
 
-      // Tier baseline: BUILDUP sanity check
       const B = TIER_CFG.buildup;
       const A = TIER_CFG.almost;
       const E = TIER_CFG.entry;
@@ -1364,7 +1326,6 @@ export default async function handler(req, res) {
         stageConsistency = null;
       }
 
-      // Elite-logica (HOLD/SELL)
       const wasEliteOpenNow = prevStageBeforeScan === "ENTRY" || prevStageBeforeScan === "HOLD";
 
       const stageChangeReason =
@@ -1555,10 +1516,10 @@ export default async function handler(req, res) {
           });
         } else if (stage === "HOLD") {
           await safePushEvent("scan_hold", eventItem);
-          // sendSignal voor HOLD verwijderd
+          // ❌ geen sendSignal voor HOLD
         } else if (stage === "SELL") {
           await safePushEvent("scan_sell", { ...eventItem, reason: finalReason });
-          // sendSignal voor SELL verwijderd
+          // ❌ geen sendSignal voor SELL
           if (wasEliteOpenNow) {
             await safePushEvent('trade_exit', {
               symbol: sym,
@@ -1592,7 +1553,7 @@ export default async function handler(req, res) {
           });
         } else if (stage === "RADAR") {
           await safePushEvent("scan_radar", eventItem);
-          // sendSignal voor RADAR verwijderd
+          // ❌ geen sendSignal voor RADAR
         }
       }
     }
