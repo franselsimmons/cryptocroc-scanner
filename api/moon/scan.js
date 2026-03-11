@@ -725,7 +725,7 @@ export default async function handler(req, res) {
     }
 
     // --------------------------------------------------
-    // 2) ELITE = ENTRY
+    // 2) ELITE = ENTRY (alleen voor coins zonder open positie)
     // --------------------------------------------------
     for (const coin of [...funnel.elite_expansion, ...funnel.elite_ignition]) {
       const sym = up(coin.symbol);
@@ -786,7 +786,7 @@ export default async function handler(req, res) {
     }
 
     // --------------------------------------------------
-    // 3) Position management
+    // 3) Position management (alleen TP/SL sluitingen, nooit missing_from_universe)
     // --------------------------------------------------
     const survivors = [];
 
@@ -794,40 +794,31 @@ export default async function handler(req, res) {
       const sym = up(trade.symbol);
       const coin = universeMap.get(sym);
 
+      // Als de coin niet in universe zit, behouden we de trade met de laatste prijs
       if (!coin) {
-        const exitPrice = n(trade.lastPrice || trade.entryPrice);
-        const pnlPct = calcPnlPct({ mode, entryPrice: trade.entryPrice, priceNow: exitPrice });
+        // Geen nieuwe data, trade blijft zoals hij is
+        survivors.push(trade);
 
-        const closed = {
-          ...trade,
-          status: "CLOSED",
-          exitAt: now,
-          exitPrice,
-          pnlPct: Number(pnlPct.toFixed(2)),
-          pnlUsd: Number(((50 * pnlPct) / 100).toFixed(2)),
-          exitReason: "missing_from_universe",
-        };
-
-        positions.closed.unshift(closed);
-
-        await pushEvent("trade_exit", {
-          symbol: closed.symbol,
-          entryPrice: closed.entryPrice,
-          exitPrice: closed.exitPrice,
-          pnlPct: closed.pnlPct,
-          exitReason: closed.exitReason,
-        });
-
-        nextState[sym] = {
-          ...(nextState[sym] || {}),
-          symbol: sym,
-          stage: "SELL",
-          rawStage: "RADAR",
-          lastSeenAt: now,
-          entryActive: false,
-          price: exitPrice,
-        };
-
+        // Zorg dat nextState voor deze coin blijft bestaan (met HOLD)
+        if (!nextState[sym]) {
+          // Maak een minimale state op basis van trade
+          nextState[sym] = {
+            symbol: sym,
+            stage: "HOLD",
+            rawStage: trade.stage || "RADAR",
+            lastSeenAt: now,
+            entryActive: true,
+            price: trade.lastPrice,
+            // Historische data kunnen we niet aanvullen, laten we leeg
+            priceHist: [],
+            volHist: [],
+            stageHist: [],
+          };
+        } else {
+          // Overschrijf naar HOLD als dat nog niet zo is
+          nextState[sym].stage = "HOLD";
+          nextState[sym].entryActive = true;
+        }
         continue;
       }
 
@@ -898,6 +889,7 @@ export default async function handler(req, res) {
           stageHist: coin?._state?.stageHist || nextState[sym]?.stageHist || [],
         };
 
+        // Deze trade wordt niet aan survivors toegevoegd
         continue;
       }
 
