@@ -65,20 +65,20 @@ const DESIGN_RATIONALE = [
 // ======================================================
 const TIER_CFG = {
   buildup: {
-    spreadMaxPct: 1.60,
-    depthMinUsd1p: 14_000,
+    spreadMaxPct: 1.75,
+    depthMinUsd1p: 12_000,
     obScoreAbsMin: 0.00,
   },
   almost: {
-    spreadMaxPct: 1.35,
-    depthMinUsd1p: 18_000,
-    obScoreAbsMin: 0.020,
+    spreadMaxPct: 1.50,
+    depthMinUsd1p: 15_000,
+    obScoreAbsMin: 0.015,
     requireWall: false,
   },
   entry: {
-    spreadMaxPct: 1.20,
-    depthMinUsd1p: 24_000,
-    obScoreAbsMin: 0.030,
+    spreadMaxPct: 1.35,
+    depthMinUsd1p: 18_000,
+    obScoreAbsMin: 0.024,
     requireWall: false,
     requirePressureAlign: false,
   },
