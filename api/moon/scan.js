@@ -215,201 +215,110 @@ function makePortfolio(mode, positions) {
   };
 }
 
-// Nieuwe stage-bepaling voor Moon V2
+// ======================================================
+// NIEUWE stage-bepaling op basis van MOON_V2 thresholds
+// ======================================================
 function decideMoonStageV2({ mode, coin, obx, priceHist }) {
   const velocity = computeVelocity(coin.change1h, coin.change24);
   const compression = computeCompression(priceHist);
 
-  const bullScore = computeBullMoveScore(coin, obx);
-  const bearScore = computeBearMoveScore(coin, obx);
-  const moveScore = mode === "bull" ? bullScore : bearScore;
-
-  // Exhaustie/bounce filters
+  // Eerst uitsluiten op basis van exhaustion / bounce trap
   if (mode === "bull" && isBullExhausted(coin)) {
-    return {
-      stage: "RADAR",
-      stageWhy: "bull_exhausted",
-      moveScore,
-      velocity,
-      compression,
-      eliteType: null,
-    };
+    return { stage: "RADAR", stageWhy: "bull_exhausted", moveScore: 0, velocity, compression, eliteType: null };
   }
-
   if (mode === "bear" && isBearBounceTrap(coin)) {
-    return {
-      stage: "RADAR",
-      stageWhy: "bear_bounce_trap",
-      moveScore,
-      velocity,
-      compression,
-      eliteType: null,
-    };
+    return { stage: "RADAR", stageWhy: "bear_bounce_trap", moveScore: 0, velocity, compression, eliteType: null };
   }
 
-  // Bull logica
+  const cfg = MOON_V2[mode];
+  const moveScore = mode === "bull" ? computeBullMoveScore(coin, obx) : computeBearMoveScore(coin, obx);
+
   if (mode === "bull") {
+    // ELITE_EXPANSION (sterkste)
+    if (
+      coin.change1h >= cfg.minCh1hExpansion &&
+      coin.change24 >= cfg.minCh24Expansion &&
+      coin.vm >= cfg.minVmElite &&
+      obx.score >= cfg.minObStrong &&
+      velocity >= cfg.explosiveVelocity
+    ) {
+      return { stage: "ELITE_EXPANSION", stageWhy: "bull_expansion", moveScore, velocity, compression, eliteType: "expansion" };
+    }
     // ELITE_IGNITION
     if (
-      compression.isCompressed &&
-      coin.change1h >= 2.2 &&
-      coin.change24 >= 12 &&
-      coin.vm >= 0.28 &&
-      obx.score >= 0.025 &&
-      velocity >= 0.18
+      coin.change1h >= cfg.minCh1hIgnition &&
+      coin.change24 >= cfg.minCh24Ignition &&
+      coin.vm >= cfg.minVmElite &&
+      obx.score >= cfg.minObStrong &&
+      velocity >= cfg.strongVelocity
     ) {
-      return {
-        stage: "ELITE_IGNITION",
-        stageWhy: "compressed_breakout_bull",
-        moveScore,
-        velocity,
-        compression,
-        eliteType: "ignition",
-      };
+      return { stage: "ELITE_IGNITION", stageWhy: "bull_ignition", moveScore, velocity, compression, eliteType: "ignition" };
     }
-
-    // ELITE_EXPANSION
-    if (
-      coin.change1h >= 3.5 &&
-      coin.change24 >= 20 &&
-      coin.vm >= 0.40 &&
-      obx.score >= 0.03 &&
-      velocity >= 0.16
-    ) {
-      return {
-        stage: "ELITE_EXPANSION",
-        stageWhy: "bull_expansion",
-        moveScore,
-        velocity,
-        compression,
-        eliteType: "expansion",
-      };
-    }
-
     // ALMOST
     if (
-      coin.change1h >= 1.2 &&
-      coin.change24 >= 8 &&
-      coin.vm >= 0.28 &&
-      velocity >= 0.10
+      coin.change1h >= cfg.minCh1hAlmost &&
+      coin.change24 >= cfg.minCh24Almost &&
+      coin.vm >= cfg.minVmAlmost &&
+      velocity >= cfg.strongVelocity
     ) {
-      return {
-        stage: "ALMOST",
-        stageWhy: "bull_almost",
-        moveScore,
-        velocity,
-        compression,
-        eliteType: null,
-      };
+      return { stage: "ALMOST", stageWhy: "bull_almost", moveScore, velocity, compression, eliteType: null };
     }
-
     // BUILDUP
     if (
-      coin.change1h >= 0.6 &&
-      coin.change24 >= 4 &&
-      coin.vm >= 0.18
+      coin.change1h >= cfg.minCh1hBuildup &&
+      coin.change24 >= cfg.minCh24Buildup &&
+      coin.vm >= cfg.minVmBuildup &&
+      velocity >= cfg.minVelocity
     ) {
-      return {
-        stage: "BUILDUP",
-        stageWhy: "bull_buildup",
-        moveScore,
-        velocity,
-        compression,
-        eliteType: null,
-      };
+      return { stage: "BUILDUP", stageWhy: "bull_buildup", moveScore, velocity, compression, eliteType: null };
     }
-
-    return {
-      stage: "RADAR",
-      stageWhy: "bull_radar",
-      moveScore,
-      velocity,
-      compression,
-      eliteType: null,
-    };
+    // Anders RADAR
+    return { stage: "RADAR", stageWhy: "bull_radar", moveScore, velocity, compression, eliteType: null };
+  } else {
+    // BEAR
+    if (
+      coin.change1h <= cfg.maxCh1hCascade &&
+      coin.change24 <= cfg.maxCh24Cascade &&
+      coin.vm >= cfg.minVmElite &&
+      Math.abs(obx.score) >= cfg.minObStrongAbs &&
+      obx.score <= 0 &&
+      velocity >= cfg.explosiveVelocity
+    ) {
+      return { stage: "ELITE_CASCADE", stageWhy: "bear_cascade", moveScore, velocity, compression, eliteType: "cascade" };
+    }
+    if (
+      coin.change1h <= cfg.maxCh1hIgnition &&
+      coin.change24 <= cfg.maxCh24Ignition &&
+      coin.vm >= cfg.minVmElite &&
+      Math.abs(obx.score) >= cfg.minObStrongAbs &&
+      obx.score <= 0 &&
+      velocity >= cfg.strongVelocity
+    ) {
+      return { stage: "ELITE_IGNITION", stageWhy: "bear_ignition", moveScore, velocity, compression, eliteType: "ignition" };
+    }
+    if (
+      coin.change1h <= cfg.maxCh1hAlmost &&
+      coin.change24 <= cfg.maxCh24Almost &&
+      coin.vm >= cfg.minVmAlmost &&
+      velocity >= cfg.strongVelocity
+    ) {
+      return { stage: "ALMOST", stageWhy: "bear_almost", moveScore, velocity, compression, eliteType: null };
+    }
+    if (
+      coin.change1h <= cfg.maxCh1hBuildup &&
+      coin.change24 <= cfg.maxCh24Buildup &&
+      coin.vm >= cfg.minVmBuildup &&
+      velocity >= cfg.minVelocity
+    ) {
+      return { stage: "BUILDUP", stageWhy: "bear_buildup", moveScore, velocity, compression, eliteType: null };
+    }
+    return { stage: "RADAR", stageWhy: "bear_radar", moveScore, velocity, compression, eliteType: null };
   }
-
-  // Bear logica
-  // ELITE_IGNITION (breakdown)
-  if (
-    compression.isCompressed &&
-    coin.change1h <= -2.2 &&
-    coin.change24 <= -12 &&
-    coin.vm >= 0.28 &&
-    obx.score <= -0.025 &&
-    velocity >= 0.18
-  ) {
-    return {
-      stage: "ELITE_IGNITION",
-      stageWhy: "compressed_breakdown_bear",
-      moveScore,
-      velocity,
-      compression,
-      eliteType: "ignition",
-    };
-  }
-
-  // ELITE_CASCADE
-  if (
-    coin.change1h <= -3.5 &&
-    coin.change24 <= -20 &&
-    coin.vm >= 0.40 &&
-    obx.score <= -0.03 &&
-    velocity >= 0.16
-  ) {
-    return {
-      stage: "ELITE_CASCADE",
-      stageWhy: "bear_cascade",
-      moveScore,
-      velocity,
-      compression,
-      eliteType: "cascade",
-    };
-  }
-
-  // ALMOST
-  if (
-    coin.change1h <= -1.2 &&
-    coin.change24 <= -8 &&
-    coin.vm >= 0.28 &&
-    velocity >= 0.10
-  ) {
-    return {
-      stage: "ALMOST",
-      stageWhy: "bear_almost",
-      moveScore,
-      velocity,
-      compression,
-      eliteType: null,
-    };
-  }
-
-  // BUILDUP
-  if (
-    coin.change1h <= -0.6 &&
-    coin.change24 <= -4 &&
-    coin.vm >= 0.18
-  ) {
-    return {
-      stage: "BUILDUP",
-      stageWhy: "bear_buildup",
-      moveScore,
-      velocity,
-      compression,
-      eliteType: null,
-    };
-  }
-
-  return {
-    stage: "RADAR",
-    stageWhy: "bear_radar",
-    moveScore,
-    velocity,
-    compression,
-    eliteType: null,
-  };
 }
 
+// ======================================================
+// Bouw het universum (coins met OB en stage)
+// ======================================================
 async function buildUniverse(mode, whaleFlow, btc) {
   const rawCoins = await fetchCoinGeckoTopCached();
   const bitgetSymbols = await getBitgetSpotUsdtSymbols();
@@ -464,7 +373,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
       volAcc.medium = now / Math.max(mediumAgo, 1e-9);
     }
 
-    // ----- Nieuwe stage bepaling -----
+    // ----- Nieuwe stage bepaling (gebruikt MOON_V2) -----
     const stageDecision = decideMoonStageV2({
       mode,
       coin,
@@ -556,6 +465,9 @@ async function buildUniverse(mode, whaleFlow, btc) {
   return out;
 }
 
+// ======================================================
+// MAIN HANDLER
+// ======================================================
 export default async function handler(req, res) {
   let mode = "bull";
   try {
