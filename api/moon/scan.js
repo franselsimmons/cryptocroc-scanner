@@ -144,6 +144,14 @@ function displayStageForCoin(rawStage, hasOpenPosition) {
   return hasOpenPosition ? "HOLD" : up(rawStage);
 }
 
+function getEliteTypeFromStage(stage) {
+  const s = up(stage);
+  if (s === "ELITE_EXPANSION") return "expansion";
+  if (s === "ELITE_CASCADE") return "cascade";
+  if (s === "ELITE_IGNITION") return "ignition";
+  return null;
+}
+
 async function sendTelegram(msg) {
   const token = process.env.TELEGRAM_TOKEN;
   const chat = process.env.TELEGRAM_CHAT;
@@ -607,6 +615,37 @@ function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
     };
   }
 
+  const prevRawStage = up(prev?.rawStage || prev?.stage || "");
+  const prevWasElite = isMoonEliteStage(prevRawStage);
+  const currentIsElite = isMoonEliteStage(stage);
+
+  if (prevWasElite && !currentIsElite) {
+    const stillHealthy =
+      entryQuality >= 58 &&
+      persistenceScore >= 45 &&
+      velocity >= 0.08 &&
+      (
+        (mode === "bull" && n(obx.score, 0) > -0.03) ||
+        (mode === "bear" && n(obx.score, 0) < 0.03)
+      );
+
+    if (stillHealthy) {
+      stage = prevRawStage;
+      eliteType = getEliteTypeFromStage(prevRawStage);
+      return {
+        stage,
+        stageWhy: "elite_sticky_hold",
+        moveScore,
+        velocity,
+        compression,
+        breakout,
+        eliteType,
+        persistenceScore,
+        entryQuality,
+      };
+    }
+  }
+
   return {
     stage,
     stageWhy: "ok",
@@ -928,6 +967,8 @@ export default async function handler(req, res) {
         volHist: coin?._state?.volHist || [],
         stageHist: coin?._state?.stageHist || [],
         entryActive: hasOpenPosition,
+        entryStage: prev?.entryStage || null,
+        entryEliteType: prev?.entryEliteType || null,
         volAcc: coin?._state?.volAcc || { short: 1, medium: 1 },
       };
 
@@ -1051,6 +1092,8 @@ export default async function handler(req, res) {
         symbol: sym,
         stage: "HOLD",
         rawStage: up(coin.stage),
+        entryStage: up(coin.stage),
+        entryEliteType: coin.eliteType || null,
         lastSeenAt: now,
         confidence: coin.confidence,
         entryQuality: coin.entryQuality,
@@ -1081,6 +1124,8 @@ export default async function handler(req, res) {
             symbol: sym,
             stage: "HOLD",
             rawStage: trade.stage || "RADAR",
+            entryStage: trade.stage || null,
+            entryEliteType: trade.eliteType || null,
             lastSeenAt: now,
             entryActive: true,
             price: trade.lastPrice,
@@ -1092,6 +1137,8 @@ export default async function handler(req, res) {
         } else {
           nextState[sym].stage = "HOLD";
           nextState[sym].entryActive = true;
+          nextState[sym].entryStage = nextState[sym].entryStage || trade.stage || null;
+          nextState[sym].entryEliteType = nextState[sym].entryEliteType || trade.eliteType || null;
         }
         continue;
       }
@@ -1149,6 +1196,8 @@ export default async function handler(req, res) {
           symbol: sym,
           stage: "SELL",
           rawStage: up(coin.stage),
+          entryStage: nextState[sym]?.entryStage || trade.stage || null,
+          entryEliteType: nextState[sym]?.entryEliteType || trade.eliteType || null,
           lastSeenAt: now,
           entryActive: false,
           confidence: coin.confidence,
@@ -1214,6 +1263,8 @@ export default async function handler(req, res) {
           symbol: sym,
           stage: "SELL",
           rawStage: up(coin.stage),
+          entryStage: nextState[sym]?.entryStage || trade.stage || null,
+          entryEliteType: nextState[sym]?.entryEliteType || trade.eliteType || null,
           lastSeenAt: now,
           entryActive: false,
           confidence: coin.confidence,
@@ -1250,6 +1301,8 @@ export default async function handler(req, res) {
         symbol: sym,
         stage: "HOLD",
         rawStage: up(coin.stage),
+        entryStage: nextState[sym]?.entryStage || trade.stage || null,
+        entryEliteType: nextState[sym]?.entryEliteType || trade.eliteType || null,
         lastSeenAt: now,
         entryActive: true,
         confidence: coin.confidence,
