@@ -38,6 +38,23 @@ export const config = RUNTIME_CONFIG;
 
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 
+// ======================================================
+// V7 / V8 SAFE ADDITIONS
+// ======================================================
+const SCAN_LOCK_TTL_SEC = 12 * 60;
+
+const COOLDOWN_SL_SEC = 8 * 60 * 60;
+const COOLDOWN_TP_SEC = 3 * 60 * 60;
+const COOLDOWN_TIMEOUT_SEC = 2 * 60 * 60;
+
+const MAX_OPEN_TRADES = 2;
+const TIMEOUT_BARS = 8;
+const TIMEOUT_MIN_PNL_PCT = 2.0;
+
+const ENTRY_HISTORY_KEEP = 40;
+const ENTRY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const MIN_RECENT_ENTRIES_TARGET = 1;
+
 function n(x, d = 0) {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
@@ -49,6 +66,49 @@ function sleep(ms) {
 
 function up(x) {
   return String(x || "").toUpperCase();
+}
+
+function scanLockKey(mode) {
+  return `moon:scan:lock:${String(mode || "bull").toLowerCase()}`;
+}
+
+function cooldownKey(mode, symbol) {
+  return `moon:cooldown:${String(mode || "bull").toLowerCase()}:${up(symbol)}`;
+}
+
+function entryHistoryKey(mode) {
+  return `moon:entry:history:${String(mode || "bull").toLowerCase()}`;
+}
+
+async function acquireScanLock(mode) {
+  const key = scanLockKey(mode);
+  const ok = await kv.set(key, { ts: Date.now(), mode }, { nx: true, ex: SCAN_LOCK_TTL_SEC });
+  return { ok: !!ok, key };
+}
+
+async function releaseScanLock(mode) {
+  try {
+    await kv.del(scanLockKey(mode));
+  } catch {}
+}
+
+async function readRecentEntryCount(mode, lookbackMs = ENTRY_LOOKBACK_MS) {
+  const key = entryHistoryKey(mode);
+  const now = Date.now();
+  const prev = (await kv.get(key)) || [];
+  const arr = Array.isArray(prev) ? prev : [];
+  const filtered = arr.filter((ts) => n(ts, 0) >= now - lookbackMs).slice(0, ENTRY_HISTORY_KEEP);
+  await kv.set(key, filtered, { ex: 60 * 60 * 24 * 3 });
+  return filtered.length;
+}
+
+async function appendEntryHistory(mode) {
+  const key = entryHistoryKey(mode);
+  const now = Date.now();
+  const prev = (await kv.get(key)) || [];
+  const arr = Array.isArray(prev) ? prev : [];
+  const next = [now, ...arr].slice(0, ENTRY_HISTORY_KEEP);
+  await kv.set(key, next, { ex: 60 * 60 * 24 * 3 });
 }
 
 function isMoonEliteStage(stage) {
@@ -204,7 +264,7 @@ function buildTradePlan({ price, mode, confidence, range24, depthOk, tier, regim
   };
 }
 
-function sortByStageScore(mode) {
+function sortByStageScore() {
   return (a, b) =>
     n(b?.entryQuality || b?.confidence, 0) - n(a?.entryQuality || a?.confidence, 0) ||
     n(b?.confidence, 0) - n(a?.confidence, 0) ||
@@ -212,7 +272,7 @@ function sortByStageScore(mode) {
     n(b?.vm, 0) - n(a?.vm, 0);
 }
 
-function splitFunnels(coins, mode) {
+function splitFunnels(coins) {
   const funnel = {
     elite_expansion: [],
     elite_ignition: [],
@@ -229,7 +289,7 @@ function splitFunnels(coins, mode) {
     else funnel.radar.push(c);
   }
 
-  const sorter = sortByStageScore(mode);
+  const sorter = sortByStageScore();
 
   funnel.elite_expansion.sort(sorter);
   funnel.elite_ignition.sort(sorter);
@@ -715,12 +775,83 @@ async function buildUniverse(mode, whaleFlow, btc) {
   return { regime, coins: out };
 }
 
+// ======================================================
+// FUNNEL BALANCER
+// ======================================================
+function canPromoteBalancedEntry(coin, mode, regime) {
+  if (!coin) return false;
+  if (coin.tradePlan == null) return false;
+  if (up(coin.stage) !== "ALMOST") return false;
+  if (String(regime || "").toUpperCase() === "HEADWIND") return false;
+
+  const eq = n(coin.entryQuality, 0);
+  const ps = n(coin.persistenceScore, 0);
+  const brReady = !!coin?.breakout?.ready;
+  const v1 = n(coin?.volAcc?.short, 1);
+  const v2 = n(coin?.volAcc?.medium, 1);
+  const ob = n(coin?.ob?.score, 0);
+
+  if (eq < 68) return false;
+  if (ps < 58) return false;
+  if (!brReady) return false;
+  if (v1 < 1.03 && v2 < 1.08) return false;
+
+  if (mode === "bull" && ob <= 0) return false;
+  if (mode === "bear" && ob >= 0) return false;
+
+  return true;
+}
+
+function applyFunnelBalancer({ funnel, mode, regime, openCount, recentEntryCount }) {
+  if (!funnel) return funnel;
+  if (openCount >= MAX_OPEN_TRADES) return funnel;
+  if (recentEntryCount >= MIN_RECENT_ENTRIES_TARGET) return funnel;
+  if ((funnel.elite_expansion?.length || 0) + (funnel.elite_ignition?.length || 0) > 0) return funnel;
+
+  const almost = Array.isArray(funnel.almost) ? [...funnel.almost] : [];
+  if (!almost.length) return funnel;
+
+  const idx = almost.findIndex((coin) => canPromoteBalancedEntry(coin, mode, regime));
+  if (idx === -1) return funnel;
+
+  const promoted = {
+    ...almost[idx],
+    stage: "ELITE_IGNITION",
+    eliteType: "ignition",
+    stageWhy: "funnel_balancer_promoted",
+  };
+
+  almost.splice(idx, 1);
+
+  return {
+    ...funnel,
+    almost,
+    elite_ignition: [promoted, ...(funnel.elite_ignition || [])].slice(0, 12),
+  };
+}
+
 export default async function handler(req, res) {
   let mode = "bull";
+  let lockAcquired = false;
 
   try {
     if (!requireSecret(req, res)) return;
     mode = String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
+
+    const lock = await acquireScanLock(mode);
+    if (!lock.ok) {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      return res.end(
+        JSON.stringify({
+          ok: true,
+          skipped: true,
+          reason: "scan_lock_active",
+          mode,
+        })
+      );
+    }
+    lockAcquired = true;
 
     const now = Date.now();
     const whaleFlow = await fetchExchangeFlows();
@@ -729,8 +860,6 @@ export default async function handler(req, res) {
     const built = await buildUniverse(mode, whaleFlow, btc);
     const universe = built.coins;
     const regime = built.regime;
-
-    const funnel = splitFunnels(universe, mode);
 
     const prevPositions = (await kv.get(keyMoonPositions(mode))) || { open: [], closed: [] };
     const positions = {
@@ -745,6 +874,17 @@ export default async function handler(req, res) {
     for (const c of universe) universeMap.set(c.symbol, c);
 
     const openMap = new Map(positions.open.map((p) => [up(p.symbol), p]));
+
+    let funnel = splitFunnels(universe);
+    const recentEntryCount = await readRecentEntryCount(mode);
+
+    funnel = applyFunnelBalancer({
+      funnel,
+      mode,
+      regime,
+      openCount: positions.open.length,
+      recentEntryCount,
+    });
 
     for (const coin of universe) {
       const sym = up(coin.symbol);
@@ -835,9 +975,14 @@ export default async function handler(req, res) {
     }
 
     for (const coin of [...funnel.elite_expansion, ...funnel.elite_ignition]) {
+      if (positions.open.length >= MAX_OPEN_TRADES) break;
+
       const sym = up(coin.symbol);
       if (openMap.has(sym)) continue;
       if (!coin.tradePlan) continue;
+
+      const cooldown = await kv.get(cooldownKey(mode, sym));
+      if (cooldown) continue;
 
       const trade = {
         id: uid("moon"),
@@ -877,8 +1022,10 @@ export default async function handler(req, res) {
         ob: coin.ob,
         tradePlan: coin.tradePlan,
         btcState: btc.state,
-        reason: "elite_entry",
+        reason: coin.stageWhy === "funnel_balancer_promoted" ? "elite_entry_balanced" : "elite_entry",
       });
+
+      await appendEntryHistory(mode);
 
       nextState[sym] = {
         ...(nextState[sym] || {}),
@@ -942,6 +1089,63 @@ export default async function handler(req, res) {
       trade.pnlPct = Number(pnlPct.toFixed(2));
       trade.pnlUsd = Number(((50 * pnlPct) / 100).toFixed(2));
 
+      if (trade.barsOpen >= TIMEOUT_BARS && trade.pnlPct < TIMEOUT_MIN_PNL_PCT) {
+        const closed = {
+          ...trade,
+          status: "CLOSED",
+          exitAt: now,
+          exitPrice: coin.price,
+          exitReason: "timeout",
+        };
+
+        positions.closed.unshift(closed);
+
+        await kv.set(cooldownKey(mode, sym), Date.now(), { ex: COOLDOWN_TIMEOUT_SEC });
+
+        await pushEvent("trade_timeout", {
+          symbol: closed.symbol,
+          entryPrice: closed.entryPrice,
+          exitPrice: closed.exitPrice,
+          pnlPct: closed.pnlPct,
+          barsOpen: closed.barsOpen,
+        });
+
+        await pushEvent("scan_sell", {
+          symbol: coin.symbol,
+          mode,
+          stage: "SELL",
+          prevStage: "HOLD",
+          price: coin.price,
+          confidence: coin.entryQuality || coin.confidence,
+          change24: coin.change24,
+          change1h: coin.change1h,
+          ob: coin.ob,
+          tradePlan: coin.tradePlan,
+          btcState: btc.state,
+          reason: "timeout",
+        });
+
+        nextState[sym] = {
+          ...(nextState[sym] || {}),
+          symbol: sym,
+          stage: "SELL",
+          rawStage: up(coin.stage),
+          lastSeenAt: now,
+          entryActive: false,
+          confidence: coin.confidence,
+          entryQuality: coin.entryQuality,
+          persistenceScore: coin.persistenceScore,
+          marketRegime: coin.marketRegime,
+          price: coin.price,
+          priceHist: coin?._state?.priceHist || nextState[sym]?.priceHist || [],
+          volHist: coin?._state?.volHist || nextState[sym]?.volHist || [],
+          stageHist: coin?._state?.stageHist || nextState[sym]?.stageHist || [],
+          volAcc: coin?._state?.volAcc || { short: 1, medium: 1 },
+        };
+
+        continue;
+      }
+
       const hit = hitStopOrTp({
         mode,
         priceNow: coin.price,
@@ -959,6 +1163,9 @@ export default async function handler(req, res) {
         };
 
         positions.closed.unshift(closed);
+
+        const cooldownSec = hit.kind === "SL" ? COOLDOWN_SL_SEC : COOLDOWN_TP_SEC;
+        await kv.set(cooldownKey(mode, sym), Date.now(), { ex: cooldownSec });
 
         await pushEvent(`trade_${hit.kind.toLowerCase()}`, {
           symbol: closed.symbol,
@@ -1065,6 +1272,11 @@ export default async function handler(req, res) {
         buildup: funnel.buildup.length,
         radar: funnel.radar.length,
       },
+      meta: {
+        recentEntryCount,
+        maxOpenTrades: MAX_OPEN_TRADES,
+        timeoutBars: TIMEOUT_BARS,
+      },
       funnel,
       portfolio,
       positions,
@@ -1091,5 +1303,9 @@ export default async function handler(req, res) {
         error: String(e?.message || e),
       })
     );
+  } finally {
+    if (lockAcquired) {
+      await releaseScanLock(mode);
+    }
   }
 }
