@@ -76,9 +76,9 @@ const TIER_CFG = {
     requireWall: false,
   },
   entry: {
-    spreadMaxPct: 1.35,
-    depthMinUsd1p: 18_000,
-    obScoreAbsMin: 0.024,
+    spreadMaxPct: 1.70,
+    depthMinUsd1p: 12_000,
+    obScoreAbsMin: 0.022,
     requireWall: false,
     requirePressureAlign: false,
   },
@@ -494,7 +494,7 @@ function stageFromSwing(mode, c, dyn) {
   const ch1h = c.change1h;
 
   const wantUp = mode === "bull";
-  const dir1h = wantUp ? n(dyn?.dir1hMinBull, 0.2) : n(dyn?.dir1hMaxBear, -0.2);
+  const dir1h = wantUp ? n(dyn?.dir1hMinBull, 0.08) : n(dyn?.dir1hMaxBear, -0.08);
   const inDir = wantUp ? ch1h >= dir1h : ch1h <= dir1h;
 
   if (vm >= 0.17 && range <= n(dyn?.maxRange24, 26) && inDir) return "ALMOST";
@@ -509,13 +509,13 @@ function passRadar(core, mode, c, dyn) {
 
   if (c.marketCap < radarCfg.mcapMin) return { ok: false, why: "mcap too low", vm };
   if (c.marketCap > radarCfg.mcapMax) return { ok: false, why: "mcap too high", vm };
-  if (c.volume < radarCfg.volMin) return { ok: false, why: "volume too low", vm };
-  if (vm < radarCfg.vmMin) return { ok: false, why: "vm too low", vm };
+  if (c.volume < 1_800_000) return { ok: false, why: "volume too low", vm };
+  if (vm < 0.10) return { ok: false, why: "vm too low", vm };
   if (Math.abs(c.change24) > radarCfg.maxAbsChg24) return { ok: false, why: "chg24 too high", vm };
   if (c.range24 > (dyn?.maxRange24 ?? radarCfg.maxRange24)) return { ok: false, why: `range24 too high (${c.range24} > ${dyn?.maxRange24 ?? radarCfg.maxRange24})`, vm };
 
-  const dir1h = wantUp ? (dyn?.dir1hMinBull ?? radarCfg.dir1hMinBull) : (dyn?.dir1hMaxBear ?? radarCfg.dir1hMaxBear);
-  const dir24 = wantUp ? (dyn?.dir24MinBull ?? radarCfg.dir24MinBull) : (dyn?.dir24MaxBear ?? radarCfg.dir24MaxBear);
+  const dir1h = wantUp ? 0.08 : -0.08;
+  const dir24 = wantUp ? 0.20 : -0.20;
 
   if (wantUp) {
     if (c.change1h < dir1h) return { ok: false, why: `dir fail 1h (${c.change1h} < ${dir1h})`, vm, dyn };
@@ -1238,8 +1238,8 @@ export default async function handler(req, res) {
 
         // ENTRY gate
         if (stage === "ALMOST") {
-          if (confidence < n(thr.minConfidence, 0)) {
-            await pushReject("ENTRY", "ENTRY_CONFIDENCE_FAIL", `Confidence < ${thr.minConfidence}`, { confidence, minConfidence: n(thr.minConfidence, 0) });
+          if (confidence < n(thr.minConfidence, 40)) {
+            await pushReject("ENTRY", "ENTRY_CONFIDENCE_FAIL", `Confidence < ${thr.minConfidence}`, { confidence, minConfidence: n(thr.minConfidence, 40) });
             entryGate = `Confidence < ${thr.minConfidence}`;
           } else if (spreadPct > E.spreadMaxPct) {
             await pushReject("ENTRY", "ENTRY_SPREAD_FAIL", `spread>${E.spreadMaxPct}%`, { spreadPct, limit: E.spreadMaxPct });
