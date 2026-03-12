@@ -5,7 +5,11 @@
       "schedule": "0,30 * * * *"
     },
     {
-      "path": "/api/moon/cron",
+      "path": "/api/moon/cron-bull",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/moon/cron-bear",
       "schedule": "*/15 * * * *"
     }
   ]
