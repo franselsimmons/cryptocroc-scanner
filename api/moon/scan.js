@@ -39,6 +39,25 @@ export const config = RUNTIME_CONFIG;
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 
 // ======================================================
+// V8.1 – Veilige wrappers voor externe calls
+// ======================================================
+async function safePushEvent(name, payload) {
+  try {
+    await pushEvent(name, payload);
+  } catch (e) {
+    console.error(`pushEvent failed (${name}):`, e?.message || e);
+  }
+}
+
+async function safeSendSignal(payload) {
+  try {
+    await sendSignal(payload);
+  } catch (e) {
+    console.error("sendSignal failed:", e?.message || e);
+  }
+}
+
+// ======================================================
 // V7 / V8 SAFE ADDITIONS
 // ======================================================
 const SCAN_LOCK_TTL_SEC = 12 * 60;
@@ -555,7 +574,7 @@ function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
     }
   }
 
-  if (isMoonEliteStage(stage) && !breakout.ready && entryQuality < 86) {
+  if (isMoonEliteStage(stage) && !breakout.ready && entryQuality < 82) {
     stage = "ALMOST";
     eliteType = null;
   }
@@ -913,7 +932,7 @@ export default async function handler(req, res) {
       };
 
       if (!prevStage) {
-        await pushEvent(stageToScanFunnel(rawStage, coin.eliteType), {
+        await safePushEvent(stageToScanFunnel(rawStage, coin.eliteType), {
           symbol: sym,
           mode,
           stage: rawStage,
@@ -929,7 +948,7 @@ export default async function handler(req, res) {
         });
 
         if (!hasOpenPosition && isMoonSignalStage(rawStage)) {
-          await sendSignal({
+          await safeSendSignal({
             source: "moon",
             stage: rawStage,
             mode,
@@ -943,7 +962,7 @@ export default async function handler(req, res) {
           );
         }
       } else if (prevStage !== publicStage && !hasOpenPosition) {
-        await pushEvent("scan_transition", {
+        await safePushEvent("scan_transition", {
           symbol: sym,
           mode,
           from: prevStage,
@@ -952,7 +971,7 @@ export default async function handler(req, res) {
         });
 
         if (isMoonSignalStage(rawStage)) {
-          await sendSignal({
+          await safeSendSignal({
             source: "moon",
             stage: rawStage,
             mode,
@@ -1010,7 +1029,7 @@ export default async function handler(req, res) {
       positions.open.push(trade);
       openMap.set(sym, trade);
 
-      await pushEvent("scan_entry", {
+      await safePushEvent("scan_entry", {
         symbol: sym,
         mode,
         stage: "ENTRY",
@@ -1102,7 +1121,7 @@ export default async function handler(req, res) {
 
         await kv.set(cooldownKey(mode, sym), Date.now(), { ex: COOLDOWN_TIMEOUT_SEC });
 
-        await pushEvent("trade_timeout", {
+        await safePushEvent("trade_timeout", {
           symbol: closed.symbol,
           entryPrice: closed.entryPrice,
           exitPrice: closed.exitPrice,
@@ -1110,7 +1129,7 @@ export default async function handler(req, res) {
           barsOpen: closed.barsOpen,
         });
 
-        await pushEvent("scan_sell", {
+        await safePushEvent("scan_sell", {
           symbol: coin.symbol,
           mode,
           stage: "SELL",
@@ -1167,7 +1186,7 @@ export default async function handler(req, res) {
         const cooldownSec = hit.kind === "SL" ? COOLDOWN_SL_SEC : COOLDOWN_TP_SEC;
         await kv.set(cooldownKey(mode, sym), Date.now(), { ex: cooldownSec });
 
-        await pushEvent(`trade_${hit.kind.toLowerCase()}`, {
+        await safePushEvent(`trade_${hit.kind.toLowerCase()}`, {
           symbol: closed.symbol,
           entryPrice: closed.entryPrice,
           exitPrice: closed.exitPrice,
@@ -1175,7 +1194,7 @@ export default async function handler(req, res) {
           barsOpen: closed.barsOpen,
         });
 
-        await pushEvent("scan_sell", {
+        await safePushEvent("scan_sell", {
           symbol: coin.symbol,
           mode,
           stage: "SELL",
@@ -1211,7 +1230,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      await pushEvent("scan_hold", {
+      await safePushEvent("scan_hold", {
         symbol: coin.symbol,
         mode,
         stage: "HOLD",
