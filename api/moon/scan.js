@@ -43,17 +43,17 @@ const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 // ======================================================
 const SCAN_LOCK_TTL_SEC = 12 * 60;
 
-const COOLDOWN_SL_SEC = 8 * 60 * 60;
-const COOLDOWN_TP_SEC = 3 * 60 * 60;
-const COOLDOWN_TIMEOUT_SEC = 2 * 60 * 60;
+const COOLDOWN_SL_SEC = 4 * 60 * 60;
+const COOLDOWN_TP_SEC = 90 * 60;
+const COOLDOWN_TIMEOUT_SEC = 60 * 60;
 
-const MAX_OPEN_TRADES = 2;
-const TIMEOUT_BARS = 8;
-const TIMEOUT_MIN_PNL_PCT = 2.0;
+const MAX_OPEN_TRADES = 4;
+const TIMEOUT_BARS = 16;
+const TIMEOUT_MIN_PNL_PCT = 1.0;
 
 const ENTRY_HISTORY_KEEP = 40;
 const ENTRY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
-const MIN_RECENT_ENTRIES_TARGET = 1;
+const MIN_RECENT_ENTRIES_TARGET = 2;
 
 function n(x, d = 0) {
   const v = Number(x);
@@ -486,7 +486,7 @@ function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
       n(coin.vm, 0) >= n(cfg.minVmElite, 0) &&
       n(obx.score, 0) >= n(cfg.minObStrong, 0) &&
       velocity >= n(cfg.explosiveVelocity, 0) &&
-      entryQuality >= 82
+      entryQuality >= 76
     ) {
       stage = "ELITE_EXPANSION";
       eliteType = "expansion";
@@ -496,7 +496,7 @@ function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
       n(coin.vm, 0) >= n(cfg.minVmElite, 0) &&
       n(obx.score, 0) >= n(cfg.minObStrong, 0) &&
       velocity >= n(cfg.strongVelocity, 0) &&
-      entryQuality >= 72
+      entryQuality >= 66
     ) {
       stage = "ELITE_IGNITION";
       eliteType = "ignition";
@@ -523,7 +523,7 @@ function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
       Math.abs(n(obx.score, 0)) >= n(cfg.minObStrongAbs, 0) &&
       n(obx.score, 0) <= 0 &&
       velocity >= n(cfg.explosiveVelocity, 0) &&
-      entryQuality >= 82
+      entryQuality >= 76
     ) {
       stage = "ELITE_CASCADE";
       eliteType = "cascade";
@@ -534,7 +534,7 @@ function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
       Math.abs(n(obx.score, 0)) >= n(cfg.minObStrongAbs, 0) &&
       n(obx.score, 0) <= 0 &&
       velocity >= n(cfg.strongVelocity, 0) &&
-      entryQuality >= 72
+      entryQuality >= 66
     ) {
       stage = "ELITE_IGNITION";
       eliteType = "ignition";
@@ -791,13 +791,13 @@ function canPromoteBalancedEntry(coin, mode, regime) {
   const v2 = n(coin?.volAcc?.medium, 1);
   const ob = n(coin?.ob?.score, 0);
 
-  if (eq < 68) return false;
-  if (ps < 58) return false;
-  if (!brReady) return false;
-  if (v1 < 1.03 && v2 < 1.08) return false;
+  if (eq < 62) return false;
+  if (ps < 50) return false;
+  if (!brReady && eq < 72) return false;
+  if (v1 < 1.01 && v2 < 1.05) return false;
 
-  if (mode === "bull" && ob <= 0) return false;
-  if (mode === "bear" && ob >= 0) return false;
+  if (mode === "bull" && ob < -0.01) return false;
+  if (mode === "bear" && ob > 0.01) return false;
 
   return true;
 }
