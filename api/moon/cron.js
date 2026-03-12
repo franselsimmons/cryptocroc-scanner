@@ -10,31 +10,88 @@ function send(res, code, obj) {
   return res.end(JSON.stringify(obj));
 }
 
+function isVercelCron(req) {
+  const h = req?.headers || {};
+  const v =
+    h["x-vercel-cron"] ||
+    h["x-vercel-cron-job"] ||
+    h["X-Vercel-Cron"] ||
+    h["X-Vercel-Cron-Job"];
+
+  return String(v || "") !== "";
+}
+
 async function runMode(req, mode) {
   const proto =
     String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim() || "https";
+
   const host =
     String(req.headers["x-forwarded-host"] || "").split(",")[0].trim() ||
     String(req.headers.host || "").trim();
+
   if (!host) throw new Error("Missing host header");
+
   const token = String(process.env.CRON_SECRET || "");
   if (!token) throw new Error("Missing CRON_SECRET env var");
-  const url = `${proto}://${host}/api/moon/scan?mode=${encodeURIComponent(mode)}&token=${encodeURIComponent(token)}`;
-  const r = await fetch(url, { method: "GET", headers: { accept: "application/json", "cache-control": "no-store" } });
+
+  const url =
+    `${proto}://${host}/api/moon/scan` +
+    `?mode=${encodeURIComponent(mode)}` +
+    `&token=${encodeURIComponent(token)}`;
+
+  const r = await fetch(url, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      "cache-control": "no-store",
+    },
+  });
+
   const text = await r.text();
+
   let json = null;
-  try { json = JSON.parse(text); } catch { json = { ok: false, raw: text }; }
-  return { mode, ok: r.ok && !!json?.ok, status: r.status, url, body: json };
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = { ok: false, raw: text };
+  }
+
+  return {
+    mode,
+    ok: r.ok && !!json?.ok,
+    status: r.status,
+    url,
+    body: json,
+  };
 }
 
 export default async function handler(req, res) {
   try {
-    if (!requireSecret(req, res)) return;
-    const bull = await runMode(req, "bull");
-    const bear = await runMode(req, "bear");
+    // Vercel cron direct toestaan
+    if (!isVercelCron(req)) {
+      // Handmatig testen => secret verplicht
+      if (!requireSecret(req, res)) return;
+    }
+
+    const [bull, bear] = await Promise.all([
+      runMode(req, "bull"),
+      runMode(req, "bear"),
+    ]);
+
     const ok = !!bull.ok && !!bear.ok;
-    return send(res, ok ? 200 : 500, { ok, cron: true, ts: Date.now(), result: { bull, bear } });
+
+    return send(res, ok ? 200 : 500, {
+      ok,
+      cron: true,
+      ts: Date.now(),
+      cadence: "15m",
+      result: { bull, bear },
+    });
   } catch (e) {
-    return send(res, 500, { ok: false, cron: true, error: String(e?.message || e) });
+    return send(res, 500, {
+      ok: false,
+      cron: true,
+      error: String(e?.message || e),
+    });
   }
 }
