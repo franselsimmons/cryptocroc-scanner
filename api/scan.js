@@ -1015,4 +1015,351 @@ export default async function handler(req, res) {
           coin.breakout?.ready === true &&
           coin.thresholds?.depthOk === true &&
           coin.ob?.valid === true &&
-          Math.abs(coin.ob?.score || 0) >=
+          Math.abs(coin.ob?.score || 0) >= 0.04 &&  // extra eis voor Main
+          (coin.entryQuality || 0) >= 72 &&
+          (coin.persistenceScore || 0) >= 65 &&
+          (coin.volAcc?.short || 1) >= 1.02
+        );
+      }
+
+      nextState[sym] = {
+        ...prev,
+        stage: rawStage,
+        stageWhy: coin.stageWhy,
+        eliteType: coin.eliteType,
+        price: coin.price,
+        marketCap: coin.marketCap,
+        volume: coin.volume,
+        change24: coin.change24,
+        change1h: coin.change1h,
+        vm: coin.vm,
+        confidence: coin.confidence,
+        entryQuality: coin.entryQuality,
+        persistenceScore: coin.persistenceScore,
+        moveScore: coin.moveScore,
+        velocity: coin.velocity,
+        moonProbability: coin.moonProbability,
+        dumpProbability: coin.dumpProbability,
+        ob: coin.ob,
+        thresholds: coin.thresholds,
+        compression: coin.compression,
+        breakout: coin.breakout,
+        volAcc: coin.volAcc,
+        tradePlan: tradePlan,
+        thesisDamage: thesisInfo.damage,
+        thesisReasons: thesisInfo.reasons,
+        priceHist: coin._state.priceHist,
+        volHist: coin._state.volHist,
+        stageHist: coin._state.stageHist,
+        depthHist,
+        strongScans,
+        weakScans,
+        thesisInvalidScans,
+        eliteScans,
+        candidateSince,
+        eliteSince,
+        entryLocked,
+        entryReady,
+        lastSeen: now,
+      };
+    }
+
+    // ------------------------------------------------------------
+    // 2) Open posities verwerken
+    // ------------------------------------------------------------
+    const updatedOpen = [];
+    for (const pos of positions.open) {
+      const sym = up(pos.symbol);
+      const coin = universeMap.get(sym);
+      const now = Date.now();
+
+      let coinState = nextState[sym] || prevState?.[sym] || {};
+      const prevCoinState = prevState?.[sym] || {};
+
+      let thesisDamage = coin ? calculateThesisDamage(coin, coinState, mode) : { damage: 0, reasons: {} };
+      if (!coin) {
+        thesisDamage = { damage: coinState.thesisDamage || 0, reasons: coinState.thesisReasons || {} };
+      }
+
+      let thesisInvalidScans = coinState.thesisInvalidScans || 0;
+      if (!isThesisStillValid(coin, coinState, mode)) {
+        thesisInvalidScans++;
+      } else {
+        thesisInvalidScans = Math.max(0, thesisInvalidScans - 1);
+      }
+
+      let entryLocked = true; // tijdens open positie altijd locked
+
+      const priceNow = coin?.price || pos.lastPrice;
+      const pnlPct = calcPnlPct({
+        mode: pos.mode || mode,
+        entryPrice: pos.entryPrice,
+        priceNow,
+      });
+      const barsHeld = Math.floor((now - pos.entryAt) / (30 * 60 * 1000)); // 30min bars voor Main
+
+      const hit = coin
+        ? hitStopOrTp({
+            mode: pos.mode || mode,
+            priceNow: coin.price,
+            sl: pos.sl,
+            tp3: pos.tp,
+          })
+        : { hit: false };
+
+      let exitReason = null;
+      if (hit.hit && hit.kind === "SL") exitReason = "stop_loss";
+      else if (hit.hit && hit.kind === "TP") exitReason = "take_profit";
+
+      if (!exitReason && barsHeld >= TIMEOUT_BARS && pnlPct < TIMEOUT_MIN_PNL_PCT) {
+        exitReason = "timeout";
+      }
+
+      if (!exitReason && thesisInvalidScans >= THESIS_BREAK_SCANS_FOR_EXIT && barsHeld >= MIN_HOLD_BARS_BEFORE_SOFT_EXIT) {
+        exitReason = "thesis_break";
+      }
+
+      if (exitReason) {
+        const pnlUsd = (pos.sizeUsd * pnlPct) / 100;
+        const closedPos = {
+          ...pos,
+          exitPrice: priceNow,
+          exitAt: now,
+          pnlUsd,
+          pnlPct,
+          exitReason,
+        };
+        positions.closed.push(closedPos);
+
+        const cdKey = cooldownKey(mode, sym);
+        let cdSec = COOLDOWN_SL_SEC;
+        if (exitReason === "take_profit") cdSec = COOLDOWN_TP_SEC;
+        else if (exitReason === "timeout") cdSec = COOLDOWN_TIMEOUT_SEC;
+        else if (exitReason === "thesis_break") cdSec = COOLDOWN_EARLY_EXIT_SEC;
+        await kv.set(cdKey, now + cdSec * 1000, { ex: cdSec * 2 });
+
+        nextState[sym] = {
+          ...coinState,
+          entryActive: false,
+          entryLocked: true,
+          candidateSince: null,
+          eliteScans: 0,
+          strongScans: 0,
+          weakScans: 0,
+          thesisInvalidScans: 0,
+          entryReady: false,
+          lastExit: now,
+          lastExitReason: exitReason,
+        };
+
+        await safePushEvent("trade_closed", {
+          id: pos.id,
+          mode,
+          symbol: sym,
+          entry: pos.entryPrice,
+          exit: closedPos.exitPrice,
+          pnlPct: closedPos.pnlPct,
+          pnlUsd: closedPos.pnlUsd,
+          reason: exitReason,
+          holdBars: barsHeld,
+        });
+
+        const coinForSignal = coin || {
+          symbol: sym,
+          price: coinState.price,
+          change1h: coinState.change1h,
+          change24: coinState.change24,
+          vm: coinState.vm,
+          ob: coinState.ob,
+          tradePlan: coinState.tradePlan,
+          stage: coinState.stage,
+        };
+        await safeSendSignal({
+          source: "main",
+          stage: coinState.stage || "",
+          mode,
+          coin: coinForSignal,
+          btcState: btc?.state || "NEUTRAL",   // ✅ correcte BTC state
+          kind: "trade_closed",
+          pnl: closedPos.pnlPct,
+          reason: exitReason,
+        });
+
+      } else {
+        const pnlUsd = (pos.sizeUsd * pnlPct) / 100;
+        const updatedPos = {
+          ...pos,
+          lastPrice: priceNow,
+          lastUpdate: now,
+          pnlPct,
+          pnlUsd,
+        };
+        updatedOpen.push(updatedPos);
+
+        nextState[sym] = {
+          ...coinState,
+          thesisInvalidScans,
+          thesisDamage: thesisDamage.damage,
+          thesisReasons: thesisDamage.reasons,
+          entryLocked: true,
+          entryActive: true,
+          entryReady: false,
+          lastPrice: priceNow,
+          pnlPct,
+          pnlUsd,
+        };
+
+        const prevPnl = coinState.pnlPct || 0;
+        const stageNow = coin?.stage || coinState.stage || "";
+        if (Math.abs(pnlPct - prevPnl) >= 2.0 || thesisDamage.damage !== (coinState.thesisDamage || 0) || stageNow !== coinState.stage) {
+          await safePushEvent("scan_hold", {
+            mode,
+            symbol: sym,
+            stage: stageNow,
+            pnlPct,
+            thesisDamage: thesisDamage.damage,
+            reasons: thesisDamage.reasons,
+          });
+        }
+      }
+    }
+
+    positions.open = updatedOpen;
+
+    // ------------------------------------------------------------
+    // 3) Nieuwe entries openen
+    // ------------------------------------------------------------
+    const entryCandidates = [];
+    for (const sym of Object.keys(nextState)) {
+      const state = nextState[sym];
+      if (state.entryReady && !openMap.has(sym)) {
+        const coin = universeMap.get(sym);
+        if (!coin || !coin.tradePlan) continue;
+
+        const cdKey = cooldownKey(mode, sym);
+        const cdUntil = await kv.get(cdKey);
+        if (n(cdUntil, 0) > now) continue;
+
+        entryCandidates.push({ sym, state, coin });
+      }
+    }
+
+    entryCandidates.sort((a, b) => (b.coin.entryQuality || 0) - (a.coin.entryQuality || 0));
+    const slotsLeft = MAX_OPEN_TRADES - positions.open.length;
+    const toOpen = entryCandidates.slice(0, slotsLeft);
+
+    for (const candidate of toOpen) {
+      const { sym, coin, state } = candidate;
+      const id = uid("main");
+
+      const newPos = {
+        id,
+        symbol: sym,
+        mode,
+        status: "OPEN",
+        entryAt: now,
+        entryPrice: coin.tradePlan.entry,
+        lastPrice: coin.price,
+        sizeUsd: POSITION_SIZE_USD,
+        pnlPct: 0,
+        pnlUsd: 0,
+        tp: coin.tradePlan.tp,
+        sl: coin.tradePlan.sl,
+        rr: coin.tradePlan.rr,
+        tpPct: coin.tradePlan.tpPct,
+        slPct: coin.tradePlan.slPct,
+        entryQuality: coin.entryQuality,
+        persistenceScore: coin.persistenceScore,
+        regime,
+        stage: coin.stage,
+        eliteType: coin.eliteType,
+      };
+
+      positions.open.push(newPos);
+      nextState[sym] = {
+        ...state,
+        entryActive: true,
+        entryLocked: true,
+        entryReady: false,
+        lastEntryAt: now,
+      };
+      await appendEntryHistory(mode);
+
+      await safePushEvent("trade_opened", {
+        id,
+        mode,
+        symbol: sym,
+        entry: newPos.entryPrice,
+        size: newPos.sizeUsd,
+        tp: newPos.tp,
+        sl: newPos.sl,
+        rr: newPos.rr,
+        stage: newPos.stage,
+        eliteType: newPos.eliteType,
+      });
+
+      await safeSendSignal({
+        source: "main",
+        stage: coin.stage,
+        mode,
+        coin: coin,
+        btcState: btc?.state || "NEUTRAL",   // ✅ correcte BTC state
+        kind: "trade_opened",
+      });
+    }
+
+    // ------------------------------------------------------------
+    // 4) Portfolio en opslag (met TTL)
+    // ------------------------------------------------------------
+    const portfolio = makePortfolio(mode, positions);
+    await kv.set(keyMainPortfolio(mode), portfolio, { ex: 60 * 60 * 24 * 7 });
+    positions.closed = positions.closed.slice(-1000);
+    await kv.set(keyMainState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
+    await kv.set(keyMainPositions(mode), positions, { ex: 60 * 60 * 24 * 7 });
+
+    // ------------------------------------------------------------
+    // 5) Response-funnel en latest opslaan
+    // ------------------------------------------------------------
+    const holdCoins = positions.open
+      .map(p => {
+        const coin = universeMap.get(p.symbol);
+        if (!coin) return null;
+        return {
+          ...coin,
+          stage: "HOLD",
+          pnlPct: p.pnlPct,
+          holdTime: Math.floor((now - p.entryAt) / (60 * 1000)),
+        };
+      })
+      .filter(Boolean);
+
+    holdCoins.sort((a, b) => Math.abs(b.pnlPct) - Math.abs(a.pnlPct));
+
+    const responseFunnel = {
+      ...funnel,
+      hold: holdCoins.slice(0, 20),
+    };
+
+    const latest = {
+      ok: true,
+      mode,
+      regime,
+      funnel: responseFunnel,
+      portfolio,
+      positions: {
+        open: positions.open.length,
+        closed: positions.closed.length,
+      },
+      scannedAt: now,
+    };
+
+    await kv.set(keyMainLatest(mode), latest, { ex: 60 * 60 });
+
+    res.status(200).json(latest);
+  } catch (err) {
+    console.error("Main scan error:", err);
+    res.status(500).json({ ok: false, error: err.message });
+  } finally {
+    if (lockAcquired) await releaseScanLock(mode);
+  }
+}
