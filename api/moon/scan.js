@@ -1482,6 +1482,5 @@ export default async function handler(req, res) {
     console.error("Moon scan error:", err);
     res.status(500).json({ ok: false, error: err.message });
   } finally {
-    if (lockAcquired) await releaseScanLock(mode);
   }
 }
