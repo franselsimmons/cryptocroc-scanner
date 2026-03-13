@@ -1,20 +1,20 @@
 {
   "crons": [
     {
-      "path": "/api/cron-bull",
-      "schedule": "1,31 * * * *"
+      "path": "/api/scan?mode=bull",
+      "schedule": "0,30 * * * *"
     },
     {
-      "path": "/api/cron-bear",
-      "schedule": "16,46 * * * *"
+      "path": "/api/scan?mode=bear",
+      "schedule": "0,30 * * * *"
     },
     {
-      "path": "/api/moon/cron-bull",
-      "schedule": "1,16,31,46 * * * *"
+      "path": "/api/moon/scan?mode=bull",
+      "schedule": "*/15 * * * *"
     },
     {
-      "path": "/api/moon/cron-bear",
-      "schedule": "6,21,36,51 * * * *"
+      "path": "/api/moon/scan?mode=bear",
+      "schedule": "*/15 * * * *"
     }
   ]
 }
