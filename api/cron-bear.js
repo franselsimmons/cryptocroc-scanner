@@ -1,7 +1,7 @@
 // api/cron-bear.js
 import mainScan from "./scan.js";
 
-export default async function handler(req, res) {
+export default async function cronBear(req, res) {
   req.query = {
     ...(req.query || {}),
     mode: "bear",
