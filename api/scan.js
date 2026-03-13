@@ -1,1629 +1,1018 @@
+// api/scan.js (Main)
 import { kv } from "@vercel/kv";
-import { RUNTIME_CONFIG, requireSecret, getMode } from "../lib/_runtime.js";
-import { pushEvent } from "../lib/_analytics.js";
-import { getObSnapshot, obMapKey } from "../lib/obStore.js";
+
+import {
+  RUNTIME_CONFIG,
+  requireSecret,
+  keyMainLatest,
+  keyMainPortfolio,
+  keyMainPositions,
+  keyMainState,
+  fetchBTCGateFromUniverse,
+  fetchCoinGeckoTopCached,
+  getBitgetSpotUsdtSymbols,
+  getTierForMcap,
+  depthFloorUsd,
+  computeMoonRisk,
+  calcPnlPct,
+  hitStopOrTp,
+  isBlockedMoonAsset,
+  MAIN_V2,
+  computeVelocity,
+  computeCompression,
+  computeBreakoutPressure,
+  computePersistenceScore,
+  computeMarketRegime,
+  adjustMoonConfigForRegime,
+  computeEliteQuality,
+  computeBullMoveScore,
+  computeBearMoveScore,
+  isBullExhausted,
+  isBearBounceTrap,
+  computeMoonProbabilities,
+} from "../lib/_moon_core.js";
+
+import { pushEvent, uid } from "../lib/_analytics.js";
 import { sendSignal } from "../lib/discordRouter.js";
 
 export const config = RUNTIME_CONFIG;
 
+const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
+
 // ======================================================
-// ✅ 30 MIN SCAN LOCK (ATOMISCH) – NU BOUNDARY-BASED
+// Veilige wrappers
 // ======================================================
-async function tryAcquireScanLock(mode) {
-  const key = `scan:lock:${String(mode).toLowerCase()}`;
-  const now = Date.now();
-
-  const d = new Date(now);
-  const m = d.getMinutes();
-
-  const next = new Date(d);
-  next.setSeconds(0, 0);
-
-  if (m < 30) {
-    next.setMinutes(30);
-  } else {
-    next.setMinutes(0);
-    next.setHours(d.getHours() + 1);
+async function safePushEvent(name, payload) {
+  try {
+    await pushEvent(name, payload);
+  } catch (e) {
+    console.error(`pushEvent failed (${name}):`, e?.message || e);
   }
+}
 
-  const nextUntil = next.getTime();
-  const ttlSec = Math.max(60, Math.ceil((nextUntil - now) / 1000));
-
-  const ok = await kv.set(key, { until: nextUntil, setAt: now }, { nx: true, ex: ttlSec });
-
-  if (ok) {
-    return { ok: true, key, until: nextUntil, now, waitMs: 0 };
+async function safeSendSignal(payload) {
+  try {
+    await sendSignal(payload);
+  } catch (e) {
+    console.error("sendSignal failed:", e?.message || e);
   }
-
-  const cur = await kv.get(key);
-  const until = Number(cur?.until || 0);
-
-  if (until > now) {
-    return { ok: false, key, until, now, waitMs: until - now };
-  }
-
-  await kv.set(key, { until: nextUntil, setAt: now }, { ex: ttlSec });
-  return { ok: true, key, until: nextUntil, now, waitMs: 0 };
 }
 
 // ======================================================
-// Universe keys
+// Constantes – Main specifiek
 // ======================================================
-const K_UNIVERSE_LATEST = "universe:latest";
-const K_LOCK_UNIVERSE = "scan:lock:universe";
+const SCAN_LOCK_TTL_SEC = 12 * 60;
+const COOLDOWN_SL_SEC = 4 * 60 * 60;
+const COOLDOWN_TP_SEC = 90 * 60;
+const COOLDOWN_TIMEOUT_SEC = 2 * 60 * 60;
+const COOLDOWN_EARLY_EXIT_SEC = 90 * 60; // 1.5 uur
 
-// ======================================================
-// Design rationale
-// ======================================================
-const DESIGN_RATIONALE = [
-  "Zonder coin-typische momentum en zonder consistency-blokkade krijg je bij 30m cadence te veel false positives (micro moves, random spikes, liquidity noise).",
-  "OB gates zijn goed, maar spread/score zijn coin-dependent → daarom percentiles.",
-].join(" ");
+const MAX_OPEN_TRADES = 6; // Main mag wat meer open trades hebben
+const TIMEOUT_BARS = 8;       // 8 * 30min = 4 uur (swing)
+const TIMEOUT_MIN_PNL_PCT = 1.5;
 
-// ======================================================
-// Tier gating config (single place to tune)
-// ======================================================
-const TIER_CFG = {
-  buildup: {
-    spreadMaxPct: 1.75,
-    depthMinUsd1p: 12_000,
-    obScoreAbsMin: 0.00,
-  },
-  almost: {
-    spreadMaxPct: 1.50,
-    depthMinUsd1p: 15_000,
-    obScoreAbsMin: 0.015,
-    requireWall: false,
-  },
-  entry: {
-    spreadMaxPct: 1.70,
-    depthMinUsd1p: 12_000,
-    obScoreAbsMin: 0.022,
-    requireWall: false,
-    requirePressureAlign: false,
-  },
-  samples: {
-    minForSpoof: 3,
-    minForAbsorption: 3,
-  },
-};
+const ENTRY_HISTORY_KEEP = 40;
+const ENTRY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const MIN_RECENT_ENTRIES_TARGET = 3;
 
-function fnum(x) {
-  const v = Number(x);
-  return Number.isFinite(v) ? v : null;
-}
+// Hysteresis
+const STRONG_SCANS_NEEDED_FOR_ENTRY = 3;
+const THESIS_BREAK_SCANS_FOR_EXIT = 3;
+const MIN_HOLD_BARS_BEFORE_SOFT_EXIT = 3;
+const MIN_ELITE_SCANS_BEFORE_ENTRY = 1;
 
-function send(res, code, obj) {
-  res.statusCode = code;
-  res.setHeader("content-type", "application/json; charset=utf-8");
-  res.setHeader("cache-control", "no-store");
-  return res.end(JSON.stringify(obj));
-}
+const POSITION_SIZE_USD = 50;
 
 function n(x, d = 0) {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
 }
-function safeObj(x) {
-  return x && typeof x === "object" ? x : null;
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
+
 function up(x) {
   return String(x || "").toUpperCase();
 }
 
-async function safePushEvent(funnel, data) {
+function scanLockKey(mode) {
+  return `main:scan:lock:${String(mode || "bull").toLowerCase()}`;
+}
+
+function cooldownKey(mode, symbol) {
+  return `main:cooldown:${String(mode || "bull").toLowerCase()}:${up(symbol)}`;
+}
+
+function entryHistoryKey(mode) {
+  return `main:entry:history:${String(mode || "bull").toLowerCase()}`;
+}
+
+async function acquireScanLock(mode) {
+  const key = scanLockKey(mode);
+  const ok = await kv.set(key, { ts: Date.now(), mode }, { nx: true, ex: SCAN_LOCK_TTL_SEC });
+  return { ok: !!ok, key };
+}
+
+async function releaseScanLock(mode) {
   try {
-    await pushEvent(funnel, data);
-  } catch (e) {
-    console.error("pushEvent failed:", funnel, e?.message || e);
+    await kv.del(scanLockKey(mode));
+  } catch {}
+}
+
+async function readRecentEntryCount(mode, lookbackMs = ENTRY_LOOKBACK_MS) {
+  const key = entryHistoryKey(mode);
+  const now = Date.now();
+  const prev = (await kv.get(key)) || [];
+  const arr = Array.isArray(prev) ? prev : [];
+  const filtered = arr.filter((ts) => n(ts, 0) >= now - lookbackMs).slice(0, ENTRY_HISTORY_KEEP);
+  await kv.set(key, filtered, { ex: 60 * 60 * 24 * 3 });
+  return filtered.length;
+}
+
+async function appendEntryHistory(mode) {
+  const key = entryHistoryKey(mode);
+  const now = Date.now();
+  const prev = (await kv.get(key)) || [];
+  const arr = Array.isArray(prev) ? prev : [];
+  const next = [now, ...arr].slice(0, ENTRY_HISTORY_KEEP);
+  await kv.set(key, next, { ex: 60 * 60 * 24 * 3 });
+}
+
+function isMainEliteStage(stage) {
+  const s = up(stage);
+  return s === "ELITE_IGNITION" || s === "ELITE_EXPANSION" || s === "ELITE_CASCADE";
+}
+
+async function fetchExchangeFlows() {
+  try {
+    const r = await fetch("https://api.binance.com/api/v3/ticker/24hr");
+    if (!r.ok) return 0;
+    const data = await r.json();
+    return data.filter((x) => Number(x.quoteVolume) > 200_000_000).length;
+  } catch {
+    return 0;
   }
 }
 
-function makeReject(reason, stageTried, rejectCode, extra = {}) {
-  return {
-    type: "scan_reject",
-    stageTried: String(stageTried || "").toUpperCase(),
-    rejectCode: String(rejectCode || "UNKNOWN"),
-    reason: String(reason || "unknown"),
-    ...extra,
-  };
-}
+async function fetchOrderbook(symbol) {
+  try {
+    const url = `${BITGET_OB}?symbol=${symbol}&type=step0&limit=20`;
+    const r = await fetch(url, { headers: { accept: "application/json" } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (String(j?.code || "") !== "00000") return null;
 
-async function pushStageChange({ mode, symbol, from, to, reason, item }) {
-  if (!from || !to || String(from).toUpperCase() === String(to).toUpperCase()) return;
+    const bids = j?.data?.bids || [];
+    const asks = j?.data?.asks || [];
+    if (!bids.length || !asks.length) return null;
 
-  await safePushEvent("scan_transition", {
-    type: "stage_change",
-    mode,
-    symbol,
-    from: String(from).toUpperCase(),
-    to: String(to).toUpperCase(),
-    reason: String(reason || "stage_update"),
-    ts: Date.now(),
-    item: item || null,
-  });
-}
+    const bestBid = n(bids[0]?.[0], 0);
+    const bestAsk = n(asks[0]?.[0], 0);
+    if (!(bestBid > 0 && bestAsk > 0)) return null;
 
-function calcTradePlan({ mode, price, spreadPct, range24, obScore }) {
-  const p = Number(price || 0);
-  if (!(p > 0)) {
+    const spreadPct = ((bestAsk - bestBid) / bestBid) * 100;
+    const depthBidUsd = bids.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
+    const depthAskUsd = asks.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
+    const total = depthBidUsd + depthAskUsd;
+    const score = total > 0 ? (depthBidUsd - depthAskUsd) / total : 0;
+    const largestBidUsd = Math.max(...bids.slice(0, 8).map((b) => n(b?.[1]) * n(b?.[0])), 0);
+    const largestAskUsd = Math.max(...asks.slice(0, 8).map((b) => n(b?.[1]) * n(b?.[0])), 0);
+    const largestOrderRatio = total > 0 ? Math.max(largestBidUsd, largestAskUsd) / total : 0;
+
     return {
-      entry: null,
-      tp: null,
-      sl: null,
-      rr: null,
-      tpPct: null,
-      slPct: null,
+      status: "ok",
+      valid: true,
+      fresh: true,
+      stale: false,
+      reason: "",
+      spreadPct,
+      depthBidUsd,
+      depthAskUsd,
+      depthMinUsd1p: Math.min(depthBidUsd, depthAskUsd),
+      score,
+      lor: largestOrderRatio,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function computeObScore(ob) {
+  if (!ob) {
+    return {
+      spreadPct: 999,
+      depthBidUsd: 0,
+      depthAskUsd: 0,
+      depthMinUsd1p: 0,
+      score: 0,
+      lor: 1,
+      valid: false,
+      fresh: false,
+      stale: true,
+      reason: "missing_snapshot",
+      status: "none",
     };
   }
 
-  const spread = Math.max(0, Number(spreadPct || 0));
-  const range = Math.max(0, Number(range24 || 0));
-  const scoreAbs = Math.abs(Number(obScore || 0));
+  return {
+    spreadPct: n(ob.spreadPct, 999),
+    depthBidUsd: n(ob.depthBidUsd, 0),
+    depthAskUsd: n(ob.depthAskUsd, 0),
+    depthMinUsd1p: n(ob.depthMinUsd1p, 0),
+    score: n(ob.score, 0),
+    lor: n(ob.lor, 0),
+    valid: !!ob.valid,
+    fresh: !!ob.fresh,
+    stale: !!ob.stale,
+    reason: String(ob.reason || ""),
+    status: String(ob.status || "ok"),
+  };
+}
 
-  const slPctBase = Math.max(
-    1.0,
-    Math.min(2.8, 0.22 * range + 0.90 * spread + 0.70)
-  );
+function buildTradePlan({ price, mode, confidence, range24, depthOk, tier, regime, persistenceScore }) {
+  const risk = computeMoonRisk({
+    mode,
+    price,
+    range24,
+    confidence,
+    depthOk,
+    tier,
+    regime,
+    persistenceScore,
+  });
 
-  const rrBase =
-    scoreAbs >= 0.10 ? 2.4 :
-    scoreAbs >= 0.07 ? 2.1 :
-    scoreAbs >= 0.05 ? 1.9 : 1.7;
+  if (!risk) return null;
 
-  const tpPctBase = slPctBase * rrBase;
+  return {
+    entry: Number(price.toFixed(8)),
+    sl: Number(risk.sl.toFixed(8)),
+    tp: Number(risk.tp3.toFixed(8)),
+    rr: Number((risk.tpPct / Math.max(risk.slPct, 0.0001)).toFixed(2)),
+    tpPct: Number(risk.tpPct.toFixed(2)),
+    slPct: Number(risk.slPct.toFixed(2)),
+  };
+}
 
-  let entry = p;
-  let tp = null;
-  let sl = null;
+function sortByStageScore() {
+  return (a, b) =>
+    n(b?.entryQuality || b?.confidence, 0) - n(a?.entryQuality || a?.confidence, 0) ||
+    n(b?.confidence, 0) - n(a?.confidence, 0) ||
+    n(b?.moonProbability || b?.dumpProbability || 0, 0) - n(a?.moonProbability || a?.dumpProbability || 0, 0) ||
+    n(b?.vm, 0) - n(a?.vm, 0);
+}
 
-  if (String(mode).toLowerCase() === "bull") {
-    tp = p * (1 + tpPctBase / 100);
-    sl = p * (1 - slPctBase / 100);
+function splitFunnels(coins) {
+  const funnel = {
+    elite_expansion: [],
+    elite_ignition: [],
+    almost: [],
+    buildup: [],
+    radar: [],
+  };
+
+  for (const c of coins) {
+    if (c.stage === "ELITE_EXPANSION" || c.stage === "ELITE_CASCADE") funnel.elite_expansion.push(c);
+    else if (c.stage === "ELITE_IGNITION") funnel.elite_ignition.push(c);
+    else if (c.stage === "ALMOST") funnel.almost.push(c);
+    else if (c.stage === "BUILDUP") funnel.buildup.push(c);
+    else funnel.radar.push(c);
+  }
+
+  const sorter = sortByStageScore();
+
+  funnel.elite_expansion.sort(sorter);
+  funnel.elite_ignition.sort(sorter);
+  funnel.almost.sort(sorter);
+  funnel.buildup.sort(sorter);
+  funnel.radar.sort(sorter);
+
+  funnel.elite_expansion = funnel.elite_expansion.slice(0, 12);
+  funnel.elite_ignition = funnel.elite_ignition.slice(0, 12);
+  funnel.almost = funnel.almost.slice(0, 20);
+  funnel.buildup = funnel.buildup.slice(0, 35);
+  funnel.radar = funnel.radar.slice(0, 80);
+
+  return funnel;
+}
+
+function makePortfolio(mode, positions) {
+  const open = Array.isArray(positions?.open) ? positions.open : [];
+  const closed = Array.isArray(positions?.closed) ? positions.closed : [];
+
+  let realizedUsd = 0;
+  let avgRealizedPct = 0;
+
+  if (closed.length) {
+    realizedUsd = closed.reduce((a, b) => a + n(b.pnlUsd), 0);
+    avgRealizedPct = closed.reduce((a, b) => a + n(b.pnlPct), 0) / closed.length;
+  }
+
+  return {
+    mode,
+    posUsd: 50,
+    openCount: open.length,
+    closedCount: closed.length,
+    realizedUsd: Number(realizedUsd.toFixed(2)),
+    avgRealizedPct: Number(avgRealizedPct.toFixed(2)),
+    updatedAt: Date.now(),
+  };
+}
+
+function isLateBullEntry(coin) {
+  const ch1h = n(coin?.change1h, 0);
+  const ch24 = n(coin?.change24, 0);
+  const vm = n(coin?.vm, 0);
+
+  if (ch1h >= 15 && ch24 >= 38) return true;
+  if (ch1h >= 11 && ch24 >= 48) return true;
+  if (ch24 >= 65 && vm < 1.1) return true;
+
+  return false;
+}
+
+function isLateBearEntry(coin) {
+  const ch1h = n(coin?.change1h, 0);
+  const ch24 = n(coin?.change24, 0);
+  const vm = n(coin?.vm, 0);
+
+  if (ch1h <= -15 && ch24 <= -38) return true;
+  if (ch1h <= -11 && ch24 <= -48) return true;
+  if (ch24 <= -65 && vm < 1.1) return true;
+
+  return false;
+}
+
+function hasEliteFollowThrough(prev, currentStage) {
+  const hist = Array.isArray(prev?.stageHist) ? prev.stageHist : [];
+  const tail = hist.concat([currentStage]).slice(-3);
+  const eliteLike = tail.filter((s) => {
+    const x = up(s);
+    return x === "ELITE_IGNITION" || x === "ELITE_EXPANSION" || x === "ELITE_CASCADE";
+  }).length;
+
+  return eliteLike >= 1 || up(currentStage) === "ELITE_EXPANSION" || up(currentStage) === "ELITE_CASCADE";
+}
+
+function decideMainStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, whaleFlow, regime }) {
+  // Gebruik MAIN_V2 voor Main-specifieke drempels
+  const baseCfg = MAIN_V2[mode];
+  const cfg = adjustMoonConfigForRegime(baseCfg, regime);
+
+  const velocity = computeVelocity(coin.change1h, coin.change24);
+  const compression = computeCompression(priceHist);
+  const breakout = computeBreakoutPressure(priceHist);
+
+  const prevVolAcc = prev?.volAcc || { short: 1, medium: 1 };
+  const volAcc = {
+    short: n(prevVolAcc.short, 1),
+    medium: n(prevVolAcc.medium, 1),
+  };
+
+  const persistenceScore = computePersistenceScore({
+    priceHist,
+    volHist,
+    stageHist: prev?.stageHist || [],
+    mode,
+  });
+
+  if (mode === "bull" && isBullExhausted(coin)) {
+    return {
+      stage: "RADAR",
+      stageWhy: "bull_exhausted",
+      moveScore: 0,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality: 0,
+    };
+  }
+
+  if (mode === "bear" && isBearBounceTrap(coin)) {
+    return {
+      stage: "RADAR",
+      stageWhy: "bear_bounce_trap",
+      moveScore: 0,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality: 0,
+    };
+  }
+
+  if (mode === "bull" && isLateBullEntry(coin)) {
+    return {
+      stage: "ALMOST",
+      stageWhy: "late_bull_entry",
+      moveScore: 0,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality: 0,
+    };
+  }
+
+  if (mode === "bear" && isLateBearEntry(coin)) {
+    return {
+      stage: "ALMOST",
+      stageWhy: "late_bear_entry",
+      moveScore: 0,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality: 0,
+    };
+  }
+
+  const moveScore =
+    mode === "bull"
+      ? computeBullMoveScore(coin, obx)
+      : computeBearMoveScore(coin, obx);
+
+  const entryQuality = computeEliteQuality({
+    moveScore,
+    velocity,
+    vm: coin.vm,
+    obScore: obx.score,
+    compression,
+    volAcc,
+    persistenceScore,
+    regime,
+    breakoutReady: breakout.ready,
+  });
+
+  const btcMomentumOk =
+    mode === "bull"
+      ? n(btc?.chg24, 0) >= 0.8 && n(btc?.range24, 0) >= 2.8
+      : n(btc?.chg24, 0) <= -0.8 && n(btc?.range24, 0) >= 2.8;
+
+  if (volAcc.short < 1.04 && volAcc.medium < 1.12 && moveScore < 76) {
+    return {
+      stage: "ALMOST",
+      stageWhy: "volume_not_accelerating",
+      moveScore,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality,
+    };
+  }
+
+  let stage = "RADAR";
+  let eliteType = null;
+
+  if (mode === "bull") {
+    if (
+      n(coin.change1h, 0) >= n(cfg.minCh1hExpansion, 0) &&
+      n(coin.change24, 0) >= n(cfg.minCh24Expansion, 0) &&
+      n(coin.vm, 0) >= n(cfg.minVmElite, 0) &&
+      n(obx.score, 0) >= n(cfg.minObStrong, 0) &&
+      velocity >= n(cfg.explosiveVelocity, 0) &&
+      entryQuality >= 76 &&
+      persistenceScore >= n(cfg.minPersistenceExpansion, 70)
+    ) {
+      stage = "ELITE_EXPANSION";
+      eliteType = "expansion";
+    } else if (
+      n(coin.change1h, 0) >= n(cfg.minCh1hIgnition, 0) &&
+      n(coin.change24, 0) >= n(cfg.minCh24Ignition, 0) &&
+      n(coin.vm, 0) >= n(cfg.minVmElite, 0) &&
+      n(obx.score, 0) >= n(cfg.minObStrong, 0) &&
+      velocity >= n(cfg.strongVelocity, 0) &&
+      entryQuality >= 66 &&
+      persistenceScore >= n(cfg.minPersistenceIgnition, 60)
+    ) {
+      stage = "ELITE_IGNITION";
+      eliteType = "ignition";
+    } else if (
+      n(coin.change1h, 0) >= n(cfg.minCh1hAlmost, 0) &&
+      n(coin.change24, 0) >= n(cfg.minCh24Almost, 0) &&
+      n(coin.vm, 0) >= n(cfg.minVmAlmost, 0) &&
+      velocity >= n(cfg.strongVelocity, 0)
+    ) {
+      stage = "ALMOST";
+    } else if (
+      n(coin.change1h, 0) >= n(cfg.minCh1hBuildup, 0) &&
+      n(coin.change24, 0) >= n(cfg.minCh24Buildup, 0) &&
+      n(coin.vm, 0) >= n(cfg.minVmBuildup, 0) &&
+      velocity >= n(cfg.minVelocity, 0)
+    ) {
+      stage = "BUILDUP";
+    }
   } else {
-    tp = p * (1 - tpPctBase / 100);
-    sl = p * (1 + slPctBase / 100);
+    if (
+      n(coin.change1h, 0) <= n(cfg.maxCh1hCascade, 0) &&
+      n(coin.change24, 0) <= n(cfg.maxCh24Cascade, 0) &&
+      n(coin.vm, 0) >= n(cfg.minVmElite, 0) &&
+      Math.abs(n(obx.score, 0)) >= n(cfg.minObStrongAbs, 0) &&
+      n(obx.score, 0) <= 0 &&
+      velocity >= n(cfg.explosiveVelocity, 0) &&
+      entryQuality >= 76 &&
+      persistenceScore >= n(cfg.minPersistenceExpansion, 70)
+    ) {
+      stage = "ELITE_CASCADE";
+      eliteType = "cascade";
+    } else if (
+      n(coin.change1h, 0) <= n(cfg.maxCh1hIgnition, 0) &&
+      n(coin.change24, 0) <= n(cfg.maxCh24Ignition, 0) &&
+      n(coin.vm, 0) >= n(cfg.minVmElite, 0) &&
+      Math.abs(n(obx.score, 0)) >= n(cfg.minObStrongAbs, 0) &&
+      n(obx.score, 0) <= 0 &&
+      velocity >= n(cfg.strongVelocity, 0) &&
+      entryQuality >= 66 &&
+      persistenceScore >= n(cfg.minPersistenceIgnition, 60)
+    ) {
+      stage = "ELITE_IGNITION";
+      eliteType = "ignition";
+    } else if (
+      n(coin.change1h, 0) <= n(cfg.maxCh1hAlmost, 0) &&
+      n(coin.change24, 0) <= n(cfg.maxCh24Almost, 0) &&
+      n(coin.vm, 0) >= n(cfg.minVmAlmost, 0) &&
+      velocity >= n(cfg.strongVelocity, 0)
+    ) {
+      stage = "ALMOST";
+    } else if (
+      n(coin.change1h, 0) <= n(cfg.maxCh1hBuildup, 0) &&
+      n(coin.change24, 0) <= n(cfg.maxCh24Buildup, 0) &&
+      n(coin.vm, 0) >= n(cfg.minVmBuildup, 0) &&
+      velocity >= n(cfg.minVelocity, 0)
+    ) {
+      stage = "BUILDUP";
+    }
+  }
+
+  if (isMainEliteStage(stage) && !breakout.ready && entryQuality < 82) {
+    stage = "ALMOST";
+    eliteType = null;
+  }
+
+  if (isMainEliteStage(stage) && !btcMomentumOk && regime !== "EXPANSION") {
+    return {
+      stage: "ALMOST",
+      stageWhy: "btc_not_expanding",
+      moveScore,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality,
+    };
+  }
+
+  if (isMainEliteStage(stage) && !hasEliteFollowThrough(prev, stage)) {
+    return {
+      stage: "ALMOST",
+      stageWhy: "elite_needs_followthrough",
+      moveScore,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality,
+    };
   }
 
   return {
-    entry: +entry.toFixed(8),
-    tp: +tp.toFixed(8),
-    sl: +sl.toFixed(8),
-    rr: +rrBase.toFixed(2),
-    tpPct: +tpPctBase.toFixed(2),
-    slPct: +slPctBase.toFixed(2),
+    stage,
+    stageWhy: "ok",
+    moveScore,
+    velocity,
+    compression,
+    breakout,
+    eliteType,
+    persistenceScore,
+    entryQuality,
   };
 }
 
-const OB_MAX_AGE_MS = 120 * 60 * 1000;
-const OB_MAX_AGE_SEC = Math.floor(OB_MAX_AGE_MS / 1000);
+async function buildUniverse(mode, whaleFlow, btc) {
+  const regime = computeMarketRegime({ btc, whaleFlow, mode });
 
-// ======================================================
-// Per-coin rolling medians & percentiles
-// ======================================================
-const COIN_STATS_TTL_SEC = 60 * 60 * 24 * 8;
-const COIN_STATS_WINDOW_SEC = 60 * 60 * 24 * 7;
-const COIN_STATS_KEEP_MAX = 700;
+  const rawCoins = await fetchCoinGeckoTopCached();
+  const bitgetSymbols = await getBitgetSpotUsdtSymbols();
 
-function kCoinStats(mode, sym) {
-  return `coin:stats:${String(mode).toLowerCase()}:${String(sym).toUpperCase()}`;
-}
+  const step1 = rawCoins.filter((c) => !isBlockedMoonAsset(c));
+  const step2 = step1.filter((c) => bitgetSymbols.has(up(c.symbol)));
 
-function medianOf(nums) {
-  const a = (Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite);
-  if (!a.length) return null;
-  a.sort((x, y) => x - y);
-  const mid = Math.floor(a.length / 2);
-  return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
-}
+  console.log("🔍 MAIN V6 DEBUG", {
+    regime,
+    rawCoins: rawCoins.length,
+    afterBlocked: step1.length,
+    bitgetSymbols: bitgetSymbols.size,
+    afterBitget: step2.length,
+  });
 
-function percentileOf(nums, p) {
-  const a = (Array.isArray(nums) ? nums : []).map(Number).filter(Number.isFinite);
-  if (!a.length) return null;
-  const q = Math.max(0, Math.min(100, Number(p))) / 100;
-  a.sort((x, y) => x - y);
-  const idx = (a.length - 1) * q;
-  const lo = Math.floor(idx);
-  const hi = Math.ceil(idx);
-  if (lo === hi) return a[lo];
-  const w = idx - lo;
-  return a[lo] * (1 - w) + a[hi] * w;
-}
+  const filtered = step2.slice(0, 220);
+  const out = [];
+  const state = (await kv.get(keyMainState(mode))) || {};
 
-async function updateCoinStatsAndGetMetrics({ mode, sym, range24, spreadPct, obScore, now }) {
-  const key = kCoinStats(mode, sym);
-  const prev = (await kv.get(key)) || [];
-  const arr = Array.isArray(prev) ? prev : [];
+  for (const coin of filtered) {
+    const sym = up(coin.symbol);
+    const prev = state?.[sym] || {};
 
-  const cutoff = now - COIN_STATS_WINDOW_SEC * 1000;
+    let ob = null;
+    if (n(coin.volume, 0) >= 600_000) {
+      ob = await fetchOrderbook(`${sym}USDT`);
+    }
 
-  const r = fnum(range24);
-  const sp = fnum(spreadPct);
-  const sc = fnum(obScore);
+    const obx = computeObScore(ob);
+    const tier = getTierForMcap(coin.marketCap);
+    const floorUsd = depthFloorUsd(coin.marketCap, tier, prev?.depthHist);
+    const depthUsd = n(obx.depthMinUsd1p, 0);
+    const depthOk = depthUsd >= floorUsd;
 
-  const row = { ts: now };
-  if (r != null) row.range24 = r;
-  if (sp != null) row.spreadPct = sp;
-  if (sc != null) {
-    row.obScore = sc;
-    row.obScoreAbs = Math.abs(sc);
+    const priceHist = Array.isArray(prev?.priceHist) ? [...prev.priceHist] : [];
+    const volHist = Array.isArray(prev?.volHist) ? [...prev.volHist] : [];
+
+    priceHist.push(n(coin.price, 0));
+    volHist.push(n(coin.volume, 0));
+
+    const priceHistNext = priceHist.slice(-120);
+    const volHistNext = volHist.slice(-120);
+
+    const volAcc = { short: 1, medium: 1 };
+    if (volHistNext.length >= 5) {
+      const nowVol = volHistNext[volHistNext.length - 1];
+      const shortAgo = volHistNext[volHistNext.length - 1 - 5] || nowVol;
+      const mediumAgo = volHistNext[volHistNext.length - 1 - 20] || nowVol;
+      volAcc.short = nowVol / Math.max(shortAgo, 1e-9);
+      volAcc.medium = nowVol / Math.max(mediumAgo, 1e-9);
+    }
+
+    const stageDecision = decideMainStageV6({
+      mode,
+      coin,
+      obx,
+      priceHist: priceHistNext,
+      volHist: volHistNext,
+      btc,
+      prev: { ...prev, volAcc },
+      whaleFlow,
+      regime,
+    });
+
+    const stage = stageDecision.stage;
+    const stageWhy = stageDecision.stageWhy;
+    const eliteType = stageDecision.eliteType;
+    const velocity = stageDecision.velocity;
+    const compression = stageDecision.compression;
+    const breakout = stageDecision.breakout;
+    const moveScore = stageDecision.moveScore;
+    const persistenceScore = stageDecision.persistenceScore;
+    const entryQuality = stageDecision.entryQuality;
+
+    const probs = computeMoonProbabilities({
+      mode,
+      coin: { ...coin, ob: obx },
+      moveScore,
+      velocity,
+      compression,
+      persistenceScore,
+    });
+
+    const tradePlan = buildTradePlan({
+      price: n(coin.price, 0),
+      mode,
+      confidence: entryQuality || moveScore,
+      range24: n(coin.range24, 0),
+      depthOk,
+      tier,
+      regime,
+      persistenceScore,
+    });
+
+    out.push({
+      id: coin.id,
+      symbol: sym,
+      name: coin.name || "",
+      image: coin.image || "",
+      price: n(coin.price, 0),
+      marketCap: n(coin.marketCap, 0),
+      volume: n(coin.volume, 0),
+      change24: n(coin.change24, 0),
+      change1h: n(coin.change1h, 0),
+      vm: n(coin.vm, 0),
+      confidence: moveScore,
+      entryQuality,
+      persistenceScore,
+      marketRegime: regime,
+      stage,
+      stageWhy,
+      eliteType,
+      tier: tier?.name || "unknown",
+      ob: {
+        spreadPct: Number(obx.spreadPct.toFixed(4)),
+        depthBidUsd: Math.round(obx.depthBidUsd),
+        depthAskUsd: Math.round(obx.depthAskUsd),
+        score: Number(obx.score.toFixed(5)),
+        depthMinUsd1p: Math.round(obx.depthMinUsd1p),
+        valid: obx.valid,
+        fresh: obx.fresh,
+        stale: obx.stale,
+        reason: obx.reason,
+        lor: Number(n(obx.lor, 0).toFixed(4)),
+      },
+      thresholds: {
+        depthFloorUsd: Math.round(floorUsd),
+        depthOk,
+      },
+      compression: {
+        isCompressed: compression.isCompressed,
+        flatPct: compression.flatPct,
+      },
+      breakout: {
+        ready: !!breakout?.ready,
+        breakoutPct: Number(n(breakout?.breakoutPct, 0).toFixed(3)),
+        pressure: Number(n(breakout?.pressure, 0).toFixed(2)),
+      },
+      volAcc: {
+        short: Number(volAcc.short.toFixed(3)),
+        medium: Number(volAcc.medium.toFixed(3)),
+      },
+      moveScore,
+      velocity: Number(velocity.toFixed(3)),
+      moonProbability: probs.moonProbability,
+      dumpProbability: probs.dumpProbability,
+      tradePlan: tradePlan
+        ? {
+            entry: Number(tradePlan.entry.toFixed(8)),
+            sl: Number(tradePlan.sl.toFixed(8)),
+            tp: Number(tradePlan.tp.toFixed(8)),
+            rr: Number(tradePlan.rr.toFixed(2)),
+            tpPct: Number(n(tradePlan.tpPct, 0).toFixed(2)),
+            slPct: Number(n(tradePlan.slPct, 0).toFixed(2)),
+          }
+        : null,
+      _state: {
+        priceHist: priceHistNext,
+        volHist: volHistNext,
+        stageHist: (prev?.stageHist || []).concat([stage]).slice(-12),
+        volAcc,
+      },
+    });
+
+    await sleep(40);
   }
 
-  const next = arr.filter((x) => Number(x?.ts || 0) >= cutoff).concat([row]).slice(-COIN_STATS_KEEP_MAX);
+  return { regime, coins: out };
+}
 
-  await kv.set(key, next, { ex: COIN_STATS_TTL_SEC });
+// ======================================================
+// FUNNEL BALANCER – Main
+// ======================================================
+function canPromoteBalancedEntry(coin, mode, regime) {
+  if (!coin) return false;
+  if (coin.tradePlan == null) return false;
+  if (up(coin.stage) !== "ALMOST") return false;
+  if (String(regime || "").toUpperCase() === "HEADWIND") return false;
 
-  const ranges = next.map((x) => x?.range24).filter(Number.isFinite);
-  const spreads = next.map((x) => x?.spreadPct).filter(Number.isFinite);
-  const scoresAbs = next.map((x) => x?.obScoreAbs).filter(Number.isFinite);
+  const eq = n(coin.entryQuality, 0);
+  const ps = n(coin.persistenceScore, 0);
+  const brReady = !!coin?.breakout?.ready;
+  const v1 = n(coin?.volAcc?.short, 1);
+  const v2 = n(coin?.volAcc?.medium, 1);
+  const ob = n(coin?.ob?.score, 0);
+
+  if (eq < 70) return false; // Main iets hogere drempel
+  if (ps < 60) return false;
+  if (!brReady) return false;
+  if (v1 < 1.04 && v2 < 1.08) return false;
+
+  if (mode === "bull" && ob < -0.01) return false;
+  if (mode === "bear" && ob > 0.01) return false;
+
+  return true;
+}
+
+function applyFunnelBalancer({ funnel, mode, regime, openCount, recentEntryCount }) {
+  if (!funnel) return funnel;
+  if (openCount >= MAX_OPEN_TRADES) return funnel;
+  if (recentEntryCount >= MIN_RECENT_ENTRIES_TARGET) return funnel;
+  if ((funnel.elite_expansion?.length || 0) + (funnel.elite_ignition?.length || 0) > 0) return funnel;
+
+  const almost = Array.isArray(funnel.almost) ? [...funnel.almost] : [];
+  if (!almost.length) return funnel;
+
+  const idx = almost.findIndex((coin) => canPromoteBalancedEntry(coin, mode, regime));
+  if (idx === -1) return funnel;
+
+  const promoted = {
+    ...almost[idx],
+    stage: "ELITE_IGNITION",
+    eliteType: "ignition",
+    stageWhy: "funnel_balancer_promoted",
+  };
+
+  almost.splice(idx, 1);
 
   return {
-    samples: next.length,
-    medRange24: medianOf(ranges),
-    p80Range24: percentileOf(ranges, 80),
-    medSpreadPct: medianOf(spreads),
-    p80SpreadPct: percentileOf(spreads, 80),
-    medObAbs: medianOf(scoresAbs),
-    p60ObAbs: percentileOf(scoresAbs, 60),
-    p70ObAbs: percentileOf(scoresAbs, 70),
-    p80ObAbs: percentileOf(scoresAbs, 80),
+    ...funnel,
+    almost,
+    elite_ignition: [promoted, ...(funnel.elite_ignition || [])].slice(0, 12),
   };
 }
 
 // ======================================================
-// BTC state / compat
+// Thesis damage voor Main
 // ======================================================
-function normBtcState(x) {
-  const s = String(x || "").toUpperCase().trim();
-  if (s === "BULL" || s === "BEAR" || s === "NEUTRAL") return s;
-  return "NEUTRAL";
-}
+function calculateThesisDamage(coin, prevState, mode) {
+  let damage = 0;
+  const reasons = {};
 
-function getBtcCfg(SETTINGS) {
-  const b = SETTINGS && SETTINGS.btc ? SETTINGS.btc : {};
-  return {
-    bullMinChg24: Number.isFinite(Number(b.bullMinChg24)) ? Number(b.bullMinChg24) : 1.0,
-    bearMaxChg24: Number.isFinite(Number(b.bearMaxChg24)) ? Number(b.bearMaxChg24) : -1.0,
-    softOpenNeutral: !!b.softOpenNeutral,
-    neutral24Pct: Number.isFinite(Number(b.neutral24Pct)) ? Number(b.neutral24Pct) : null,
-    fine1hAbsPct: Number.isFinite(Number(b.fine1hAbsPct)) ? Number(b.fine1hAbsPct) : 0.25,
-    confBoost: Number.isFinite(Number(b.confBoost)) ? Number(b.confBoost) : 4,
-  };
-}
-
-function computeBtcStateCompat(btcBase, SETTINGS) {
-  const cfg = getBtcCfg(SETTINGS);
-  const chg24 = n(btcBase?.chg24, 0);
-
-  if (cfg.neutral24Pct != null) {
-    if (chg24 >= cfg.neutral24Pct) return "BULL";
-    if (chg24 <= -cfg.neutral24Pct) return "BEAR";
-    return "NEUTRAL";
+  const obScore = n(coin?.ob?.score, 0);
+  if (mode === "bull" && obScore < -0.02) {
+    damage += 2;
+    reasons.obContra = true;
+  }
+  if (mode === "bear" && obScore > 0.02) {
+    damage += 2;
+    reasons.obContra = true;
   }
 
-  if (chg24 >= cfg.bullMinChg24) return "BULL";
-  if (chg24 <= cfg.bearMaxChg24) return "BEAR";
-  return "NEUTRAL";
-}
-
-function btcConfidenceAdjustCompat(mode, btcState, btcBase, SETTINGS) {
-  const cfg = getBtcCfg(SETTINGS);
-  const st = normBtcState(btcState);
-
-  if (st === "NEUTRAL" && cfg.softOpenNeutral) return { adj: 0, why: "BTC NEUTRAL (soft open)" };
-  if (st === "NEUTRAL") return { adj: 0, why: "BTC NEUTRAL" };
-
-  const fine1hAbs = cfg.fine1hAbsPct;
-  const boost = cfg.confBoost;
-
-  const chg1h = n(btcBase?.chg1h, 0);
-  const wantUp = String(mode).toLowerCase() === "bull";
-
-  const pos = chg1h >= fine1hAbs;
-  const neg = chg1h <= -fine1hAbs;
-
-  if (wantUp && pos) return { adj: +boost, why: `BTC 1h aligns (+${boost})` };
-  if (!wantUp && neg) return { adj: +boost, why: `BTC 1h aligns (+${boost})` };
-
-  if (wantUp && neg) return { adj: -boost, why: `BTC 1h contra (-${boost})` };
-  if (!wantUp && pos) return { adj: -boost, why: `BTC 1h contra (-${boost})` };
-
-  return { adj: 0, why: "BTC 1h small/neutral" };
-}
-
-function computeStageCap(mode, btcState) {
-  const st = normBtcState(btcState);
-  const m = String(mode || "").toLowerCase();
-
-  let capStage = "BUILDUP";
-  let allowFull = false;
-
-  if (st === "BULL" && m === "bull") allowFull = true;
-  if (st === "BEAR" && m === "bear") allowFull = true;
-
-  if (allowFull) return { cap: false, capStage: "FULL", reason: `BTC ${st}: ${m} mag door naar ALMOST/ENTRY` };
-  if (st === "NEUTRAL") return { cap: true, capStage, reason: "BTC NEUTRAL: scannen + OB door, maar max BUILDUP" };
-  return { cap: true, capStage, reason: `BTC ${st}: ${m} blijft prep-mode (max BUILDUP)` };
-}
-
-// ======================================================
-// OB ophalen
-// ======================================================
-async function getObForSymbol({ mode, symbol }) {
-  const sym = up(symbol);
-  const ob = await getObSnapshot(mode, sym, OB_MAX_AGE_SEC);
-  return obSnapshotToFlat(ob, sym);
-}
-
-function obSnapshotToFlat(ob, sym) {
-  const snap = safeObj(ob?.snap) || null;
-  return {
-    symbol: sym,
-    ok: !!ob?.ok,
-    valid: !!ob?.valid,
-    fresh: !!ob?.fresh,
-    stale: !!ob?.stale,
-    reason: String(ob?.reason || ""),
-    ageSec: ob?.ageSec ?? null,
-    ts: n(snap?.ts, 0) || null,
-    spreadPct: Number.isFinite(Number(snap?.spreadPct)) ? Number(snap.spreadPct) : null,
-    depthMinUsd1p: Number.isFinite(Number(snap?.depthMinUsd1p)) ? Number(snap.depthMinUsd1p) : null,
-    pressureDeltaUsd: Number.isFinite(Number(snap?.pressureDeltaUsd)) ? Number(snap.pressureDeltaUsd) : 0,
-    score: Number.isFinite(Number(snap?.score)) ? Number(snap.score) : null,
-  };
-}
-
-function adaptiveEntryThresholds(core, c, vm) {
-  const base = core?.SETTINGS?.entry || {};
-  const mc = n(c?.marketCap, 0);
-  const tiers = Array.isArray(base?.adaptiveTiers) ? base.adaptiveTiers : null;
-
-  const oneTier = {
-    maxMc: Infinity,
-    minConf: n(base.minConfidence, 60),
-    spreadMax: n(base.spreadMaxPct, 0.95),
-    depth1pMin: n(base.depthMinUsd1p, 45_000),
-    obScoreMin: n(base.obScoreMin, 0.05),
-  };
-
-  const list = tiers?.length ? tiers : [oneTier];
-  const t = list.find((x) => mc <= n(x.maxMc, Infinity)) || list[list.length - 1];
-
-  const vmBonus = vm >= 0.8 ? 4 : vm >= 0.5 ? 2 : 0;
-
-  const baseMinConf = n(base.minConfidence, n(t.minConf, 60));
-  const tierMinConf = n(t.minConf, baseMinConf);
-  const minConfidence = Math.max(0, Math.max(baseMinConf, tierMinConf - vmBonus));
-
-  const baseSpread = n(base.spreadMaxPct, n(t.spreadMax, 0.95));
-  const tierSpread = n(t.spreadMax, baseSpread);
-  const spreadMaxPct = Math.min(baseSpread, tierSpread);
-
-  const baseDepth = n(base.depthMinUsd1p, n(t.depth1pMin, 45_000));
-  const tierDepth = n(t.depth1pMin, baseDepth);
-  const depthMinUsd1p = Math.round(Math.max(baseDepth, tierDepth));
-
-  const baseScore = n(base.obScoreMin, n(t.obScoreMin, 0.05));
-  const tierScore = n(t.obScoreMin, baseScore);
-  const obScoreMin = Math.max(baseScore, tierScore);
-
-  return { minConfidence, spreadMaxPct, depthMinUsd1p, obScoreMin };
-}
-
-function updateStateAndConsistency(stateObj, symbol, stageFinal, core, nowTs) {
-  const S = stateObj || {};
-  const sym = up(symbol);
-  const entryCfg = core?.SETTINGS?.entry || {};
-
-  const need = Math.max(2, n(entryCfg.samplesNeed, 4));
-  const minAgree = Math.max(1, n(entryCfg.minAgree, 3));
-
-  const prev = safeObj(S[sym]) || {};
-  const scans = n(prev.scans, 0) + 1;
-
-  const histPrev = Array.isArray(prev.hist) ? prev.hist : [];
-  const st = up(stageFinal);
-  const hist = histPrev.concat([st]).slice(-Math.max(need, 12));
-
-  const same = hist.filter((x) => x === st).length;
-  const total = hist.length;
-  const ratio = total > 0 ? same / total : 0;
-
-  const ok = total >= need && same >= minAgree;
-
-  S[sym] = { ...prev, scans, hist, lastSeenAt: nowTs, stage: st };
-
-  return {
-    state: S,
-    stageScans: scans,
-    consistency: { ok, ratio, same, total, need, minAgree },
-  };
-}
-
-function spoofRiskFromSamples(samples) {
-  const a = Array.isArray(samples) ? samples : [];
-  if (a.length < TIER_CFG.samples.minForSpoof) return { ok: true, risk: 0, why: "not_enough_samples" };
-
-  const s2 = a[a.length - 1];
-  const s1 = a[a.length - 2];
-
-  const lorNow = Number(s2?.lor || 0);
-  const lorPrev = Number(s1?.lor || 0);
-
-  const wallNow = lorNow >= 0.22;
-  const wallPrev = lorPrev >= 0.22;
-
-  const toggledOff = wallPrev && !wallNow;
-
-  const scoreNow = Number(s2?.score || 0);
-  const scorePrev = Number(s1?.score || 0);
-  const scoreFlip = Math.sign(scorePrev) !== Math.sign(scoreNow);
-
-  const spreadNow = Number(s2?.spreadPct || 999);
-  const spreadPrev = Number(s1?.spreadPct || 999);
-  const spreadWorse = spreadNow > spreadPrev * 1.05;
-
-  const risk = (toggledOff ? 1 : 0) + (scoreFlip ? 1 : 0) + (spreadWorse ? 1 : 0);
-
-  return { ok: risk <= 2, risk, why: risk >= 3 ? "spoof_like_wall_behavior" : "ok" };
-}
-
-function absorptionFromSamples(samples, mode) {
-  const a = Array.isArray(samples) ? samples : [];
-  if (a.length < TIER_CFG.samples.minForAbsorption) return { ok: true, why: "not_enough_samples" };
-
-  const last = a.slice(-TIER_CFG.samples.minForAbsorption);
-
-  const scores = last.map((x) => Number(x?.score || 0));
-  const depths = last.map((x) => Number(x?.depthMinUsd1p || 0));
-
-  const avgScore = scores.reduce((p, c) => p + c, 0) / scores.length;
-  const avgDepth = depths.reduce((p, c) => p + c, 0) / depths.length;
-
-  const wantUp = String(mode) === "bull";
-  const aligned = wantUp ? avgScore > 0.03 : avgScore < -0.03;
-
-  const absorption = avgDepth > 55_000 && !aligned;
-
-  return absorption ? { ok: false, why: "liquidity_absorption_proxy" } : { ok: true, why: "ok" };
-}
-
-function stageFromSwing(mode, c, dyn) {
-  const vm = c.vm;
-  const range = c.range24;
-  const ch1h = c.change1h;
-
-  const wantUp = mode === "bull";
-  const dir1h = wantUp ? n(dyn?.dir1hMinBull, 0.08) : n(dyn?.dir1hMaxBear, -0.08);
-  const inDir = wantUp ? ch1h >= dir1h : ch1h <= dir1h;
-
-  if (vm >= 0.17 && range <= n(dyn?.maxRange24, 26) && inDir) return "ALMOST";
-  if (vm >= 0.13 && range <= n(dyn?.maxRange24, 30) + 5) return "BUILDUP";
-  return "RADAR";
-}
-
-function passRadar(core, mode, c, dyn) {
-  const vm = core.computeVm(c.volume, c.marketCap);
-  const radarCfg = core.SETTINGS.radar;
-  const wantUp = mode === "bull";
-
-  if (c.marketCap < radarCfg.mcapMin) return { ok: false, why: "mcap too low", vm };
-  if (c.marketCap > radarCfg.mcapMax) return { ok: false, why: "mcap too high", vm };
-  if (c.volume < 1_800_000) return { ok: false, why: "volume too low", vm };
-  if (vm < 0.10) return { ok: false, why: "vm too low", vm };
-  if (Math.abs(c.change24) > radarCfg.maxAbsChg24) return { ok: false, why: "chg24 too high", vm };
-  if (c.range24 > (dyn?.maxRange24 ?? radarCfg.maxRange24)) return { ok: false, why: `range24 too high (${c.range24} > ${dyn?.maxRange24 ?? radarCfg.maxRange24})`, vm };
-
-  const dir1h = wantUp ? 0.08 : -0.08;
-  const dir24 = wantUp ? 0.20 : -0.20;
-
-  if (wantUp) {
-    if (c.change1h < dir1h) return { ok: false, why: `dir fail 1h (${c.change1h} < ${dir1h})`, vm, dyn };
-    if (c.change24 < dir24) return { ok: false, why: `dir fail 24h (${c.change24} < ${dir24})`, vm, dyn };
-  } else {
-    if (c.change1h > dir1h) return { ok: false, why: `dir fail 1h (${c.change1h} > ${dir1h})`, vm, dyn };
-    if (c.change24 > dir24) return { ok: false, why: `dir fail 24h (${c.change24} > ${dir24})`, vm, dyn };
+  const v1 = n(coin?.volAcc?.short, 1);
+  const v2 = n(coin?.volAcc?.medium, 1);
+  if (v1 < 1.01 && v2 < 1.04) {
+    damage += 1;
+    reasons.volDead = true;
   }
 
-  return { ok: true, why: "passed", vm, dyn };
+  if (!coin?.breakout?.ready) {
+    damage += 1;
+    reasons.breakoutLost = true;
+  }
+
+  const ps = n(coin?.persistenceScore, 0);
+  const prevPs = n(prevState?.persistenceScore, 0);
+  if (ps < prevPs - 15) {
+    damage += 2;
+    reasons.persistDrop = true;
+  }
+
+  return { damage, reasons };
 }
 
-// ======================================================
-// MAIN HANDLER
-// ======================================================
+function isThesisStillValid(coin, prevState, mode) {
+  const { damage } = calculateThesisDamage(coin, prevState, mode);
+  return damage < 3;
+}
+
 export default async function handler(req, res) {
-  const startedAt = Date.now();
+  let mode = "bull";
+  let lockAcquired = false;
 
   try {
     if (!requireSecret(req, res)) return;
+    mode = String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
 
-    const mode = String(getMode(req)).toLowerCase().trim();
-    const coreMod = await import(`../lib/_core_${mode}.js`);
-    const core = coreMod?.default ? coreMod.default : coreMod;
-
-    const lock = await tryAcquireScanLock(mode);
+    const lock = await acquireScanLock(mode);
     if (!lock.ok) {
-      const latest = await kv.get(core.keyLatest(mode));
-      if (!latest) {
-        await kv.del(`scan:lock:${String(mode).toLowerCase()}`);
-      } else {
-        latest.meta = latest.meta || {};
-        latest.meta.scanLock = { active: true, until: lock.until, waitMs: lock.waitMs };
-        return send(res, 200, latest);
-      }
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      return res.end(
+        JSON.stringify({
+          ok: true,
+          skipped: true,
+          reason: "scan_lock_active",
+          mode,
+        })
+      );
     }
+    lockAcquired = true;
 
     const now = Date.now();
-
-    const uni = await kv.get(K_UNIVERSE_LATEST);
-    if (!uni?.ok || !Array.isArray(uni?.coins) || uni.coins.length === 0) {
-      return send(res, 200, {
-        ok: false,
-        mode,
-        error: `Universe missing/empty in KV (${K_UNIVERSE_LATEST}). Run /api/universe (cron) first.`,
-        meta: {
-          universe: { key: K_UNIVERSE_LATEST, has: !!uni, count: Array.isArray(uni?.coins) ? uni.coins.length : 0 },
-          universeLockKey: K_LOCK_UNIVERSE,
-        },
-      });
-    }
-
-    const btcBase = uni?.btc || { chg1h: 0, chg24: 0, range24: 0 };
-    const btcState = computeBtcStateCompat(btcBase, core.SETTINGS);
-    const btcTune = btcConfidenceAdjustCompat(mode, btcState, btcBase, core.SETTINGS);
-    const btc = { ...btcBase, state: btcState, tune: btcTune };
-
-    const cap = computeStageCap(mode, btc.state);
-
-    const cgTop = Number(core?.SETTINGS?.CG_TOP ?? 1500);
-    const cg = uni.coins.slice(0, Math.max(1, cgTop));
-
-    const obMapBlob = await kv.get(obMapKey(mode));
-    const obCoverageMap = obMapBlob && obMapBlob.map ? obMapBlob.map : null;
-
-    if (!obCoverageMap || typeof obCoverageMap !== "object") {
-      return send(res, 200, {
-        ok: false,
-        mode,
-        error: `No OB coverage map in KV (${obMapKey(mode)}). Run /api/ob/map_refresh first.`,
-      });
-    }
-
-    const radar = [];
-    const buildup = [];
-    const almost = [];
-    const entry = [];
-    const hold = [];
-    const sell = [];
-    const openTrades = [];
-
-    const state = (await kv.get(core.keyState(mode))) || {};
-
-    for (const c of cg) {
-      const sym = up(c.symbol);
-      if (!obCoverageMap[sym]) continue;
-
-      const prevStageBeforeScan = up(state?.[sym]?.stage || "");
-      const currentState = safeObj(state[sym]) || {};
-      const wasEliteOpen = prevStageBeforeScan === "ENTRY" || prevStageBeforeScan === "HOLD";
-
-      const pushReject = async (stageTried, rejectCode, reason, extra = {}) => {
-        await safePushEvent("scan_reject", {
-          mode,
-          symbol: sym,
-          ts: Date.now(),
-          ...makeReject(reason, stageTried, rejectCode, extra),
-        });
-      };
-
-      // ------------------------------------------------------------
-      // 1) Basisberekeningen
-      // ------------------------------------------------------------
-      const vm = core.computeVm(c.volume, c.marketCap);
-      const dyn = typeof core.dynamicRadarThresholds === "function"
-        ? core.dynamicRadarThresholds(n(c.range24, 0), core.SETTINGS)
-        : null;
-
-      const ob = await getObForSymbol({ mode, symbol: sym });
-      const obFresh = !!ob?.fresh;
-      const obValid = !!ob?.valid;
-      const spreadPct = n(ob?.spreadPct, 999);
-      const depthMinUsd1p = n(ob?.depthMinUsd1p, 0);
-      const obScore = n(ob?.score, 0);
-      const obScoreAbs = Math.abs(obScore);
-
-      // ------------------------------------------------------------
-      // 2) TP / SL check (heeft voorrang op alle gates)
-      // ------------------------------------------------------------
-      if (wasEliteOpen && currentState.entryTradePlan) {
-        const plan = currentState.entryTradePlan;
-        const entryPrice = Number(currentState.entryPrice || 0);
-        const currentPrice = n(c.price, 0);
-
-        if (entryPrice > 0 && currentPrice > 0 && plan.tp != null && plan.sl != null) {
-          const isBull = mode === 'bull';
-
-          const pnlPct = isBull
-            ? (((currentPrice - entryPrice) / entryPrice) * 100).toFixed(2)
-            : (((entryPrice - currentPrice) / entryPrice) * 100).toFixed(2);
-
-          const barsOpen = currentState.entryTs
-            ? Math.max(1, Math.floor((now - currentState.entryTs) / (30 * 60 * 1000)))
-            : null;
-
-          const hitTp = isBull ? currentPrice >= Number(plan.tp) : currentPrice <= Number(plan.tp);
-          const hitSl = isBull ? currentPrice <= Number(plan.sl) : currentPrice >= Number(plan.sl);
-
-          if (hitTp) {
-            await safePushEvent('trade_tp', {
-              symbol: sym,
-              entryPrice,
-              exitPrice: currentPrice,
-              pnlPct,
-              barsOpen,
-              reason: 'TP hit',
-            });
-
-            state[sym] = {
-              ...currentState,
-              stage: 'SELL',
-              entryActive: false,
-              entryTradePlan: null,
-              lastSeenAt: now,
-              hist: Array.isArray(currentState.hist)
-                ? [...currentState.hist, 'SELL'].slice(-12)
-                : ['SELL'],
-            };
-
-            const item = {
-              symbol: sym,
-              name: c.name || sym,
-              price: currentPrice,
-              marketCap: n(c.marketCap, 0),
-              volume: n(c.volume, 0),
-              vm: +vm.toFixed(6),
-              change1h: +n(c.change1h, 0).toFixed(3),
-              change24: +n(c.change24, 0).toFixed(3),
-              range24: +n(c.range24, 0).toFixed(3),
-              mode,
-              btcState: btc.state,
-              tradePlan: plan,
-              confidence: 0,
-              stage: 'SELL',
-              stageBase: 'SELL',
-              gates: { radar: 'n/a', almost: 'n/a', entry: 'n/a' },
-              consistency: null,
-              rationale: DESIGN_RATIONALE,
-              dyn: dyn ? {
-                maxRange24: +n(dyn.maxRange24, 0).toFixed(3),
-                dir1hMinBull: +n(dyn.dir1hMinBull, 0).toFixed(3),
-                dir24MinBull: +n(dyn.dir24MinBull, 0).toFixed(3),
-                dir1hMaxBear: +n(dyn.dir1hMaxBear, 0).toFixed(3),
-                dir24MaxBear: +n(dyn.dir24MaxBear, 0).toFixed(3),
-                scale: +n(dyn.scale, 0).toFixed(3),
-              } : null,
-              thr: null,
-              coinStats: null,
-              anomaly: null,
-              ob: {
-                fresh: obFresh,
-                valid: obValid,
-                spreadPct,
-                depthMinUsd1p,
-                score: obScore,
-                pressureDeltaUsd: ob?.pressureDeltaUsd ?? 0,
-                ts: ob?.ts ?? null,
-                ageSec: ob?.ageSec ?? null,
-                reason: ob?.reason || '',
-              },
-            };
-            sell.push(item);
-
-            await pushStageChange({
-              mode,
-              symbol: sym,
-              from: prevStageBeforeScan,
-              to: 'SELL',
-              reason: 'TP hit',
-              item: { symbol: sym, stage: 'SELL' },
-            });
-            await safePushEvent('scan_sell', {
-              ...item,
-              prevStage: prevStageBeforeScan,
-              changed: true,
-              reason: 'TP hit',
-            });
-
-            continue;
-          }
-
-          if (hitSl) {
-            await safePushEvent('trade_sl', {
-              symbol: sym,
-              entryPrice,
-              exitPrice: currentPrice,
-              pnlPct,
-              barsOpen,
-              reason: 'SL hit',
-            });
-
-            state[sym] = {
-              ...currentState,
-              stage: 'SELL',
-              entryActive: false,
-              entryTradePlan: null,
-              lastSeenAt: now,
-              hist: Array.isArray(currentState.hist)
-                ? [...currentState.hist, 'SELL'].slice(-12)
-                : ['SELL'],
-            };
-
-            const item = {
-              symbol: sym,
-              name: c.name || sym,
-              price: currentPrice,
-              marketCap: n(c.marketCap, 0),
-              volume: n(c.volume, 0),
-              vm: +vm.toFixed(6),
-              change1h: +n(c.change1h, 0).toFixed(3),
-              change24: +n(c.change24, 0).toFixed(3),
-              range24: +n(c.range24, 0).toFixed(3),
-              mode,
-              btcState: btc.state,
-              tradePlan: plan,
-              confidence: 0,
-              stage: 'SELL',
-              stageBase: 'SELL',
-              gates: { radar: 'n/a', almost: 'n/a', entry: 'n/a' },
-              consistency: null,
-              rationale: DESIGN_RATIONALE,
-              dyn: dyn ? {
-                maxRange24: +n(dyn.maxRange24, 0).toFixed(3),
-                dir1hMinBull: +n(dyn.dir1hMinBull, 0).toFixed(3),
-                dir24MinBull: +n(dyn.dir24MinBull, 0).toFixed(3),
-                dir1hMaxBear: +n(dyn.dir1hMaxBear, 0).toFixed(3),
-                dir24MaxBear: +n(dyn.dir24MaxBear, 0).toFixed(3),
-                scale: +n(dyn.scale, 0).toFixed(3),
-              } : null,
-              thr: null,
-              coinStats: null,
-              anomaly: null,
-              ob: {
-                fresh: obFresh,
-                valid: obValid,
-                spreadPct,
-                depthMinUsd1p,
-                score: obScore,
-                pressureDeltaUsd: ob?.pressureDeltaUsd ?? 0,
-                ts: ob?.ts ?? null,
-                ageSec: ob?.ageSec ?? null,
-                reason: ob?.reason || '',
-              },
-            };
-            sell.push(item);
-
-            await pushStageChange({
-              mode,
-              symbol: sym,
-              from: prevStageBeforeScan,
-              to: 'SELL',
-              reason: 'SL hit',
-              item: { symbol: sym, stage: 'SELL' },
-            });
-            await safePushEvent('scan_sell', {
-              ...item,
-              prevStage: prevStageBeforeScan,
-              changed: true,
-              reason: 'SL hit',
-            });
-
-            continue;
-          }
-        }
-      }
-
-      // ------------------------------------------------------------
-      // 3) Radar gate
-      // ------------------------------------------------------------
-      const radarGate = passRadar(core, mode, c, dyn);
-      if (!radarGate.ok) {
-        let rejectCode = "RADAR_FAIL";
-        if (radarGate.why === "mcap too low") rejectCode = "RADAR_MCAP_LOW";
-        else if (radarGate.why === "mcap too high") rejectCode = "RADAR_MCAP_HIGH";
-        else if (radarGate.why === "volume too low") rejectCode = "RADAR_VOL_LOW";
-        else if (radarGate.why === "vm too low") rejectCode = "RADAR_VM_LOW";
-        else if (radarGate.why === "chg24 too high") rejectCode = "RADAR_CHG24_HIGH";
-        else if (String(radarGate.why).startsWith("range24 too high")) rejectCode = "RADAR_RANGE_HIGH";
-        else if (String(radarGate.why).startsWith("dir fail 1h")) rejectCode = "RADAR_DIR_1H_FAIL";
-        else if (String(radarGate.why).startsWith("dir fail 24h")) rejectCode = "RADAR_DIR_24H_FAIL";
-
-        await pushReject("RADAR", rejectCode, radarGate.why, {
-          marketCap: n(c.marketCap, 0),
-          volume: n(c.volume, 0),
-          vm: n(vm, 0),
-          change1h: n(c.change1h, 0),
-          change24: n(c.change24, 0),
-          range24: n(c.range24, 0),
-        });
-
-        const finalStage = wasEliteOpen ? "SELL" : "RADAR";
-        const finalReason = wasEliteOpen ? "entry/hold invalidated before TP/SL (radar gate)" : (radarGate.why || "radar failed");
-        const finalTradePlan = wasEliteOpen ? (currentState.entryTradePlan || null) : null;
-
-        const item = {
-          symbol: sym,
-          name: c.name || sym,
-          price: n(c.price, 0),
-          marketCap: n(c.marketCap, 0),
-          volume: n(c.volume, 0),
-          vm: +n(vm, 0).toFixed(6),
-          change1h: +n(c.change1h, 0).toFixed(3),
-          change24: +n(c.change24, 0).toFixed(3),
-          range24: +n(c.range24, 0).toFixed(3),
-
-          mode,
-          btcState: btc.state,
-          tradePlan: finalTradePlan,
-
-          confidence: 0,
-          stage: finalStage,
-          stageBase: "RADAR",
-
-          gates: { radar: radarGate.why || "failed", almost: "n/a", entry: "n/a" },
-          consistency: null,
-
-          rationale: DESIGN_RATIONALE,
-          dyn: radarGate.dyn ? {
-            maxRange24: +n(radarGate.dyn.maxRange24, 0).toFixed(3),
-            dir1hMinBull: +n(radarGate.dyn.dir1hMinBull, 0).toFixed(3),
-            dir24MinBull: +n(radarGate.dyn.dir24MinBull, 0).toFixed(3),
-            dir1hMaxBear: +n(radarGate.dyn.dir1hMaxBear, 0).toFixed(3),
-            dir24MaxBear: +n(radarGate.dyn.dir24MaxBear, 0).toFixed(3),
-            scale: +n(radarGate.dyn.scale, 0).toFixed(3),
-          } : null,
-          thr: null,
-          coinStats: null,
-          anomaly: null,
-          ob: {
-            fresh: obFresh,
-            valid: obValid,
-            spreadPct,
-            depthMinUsd1p,
-            score: obScore,
-            pressureDeltaUsd: ob?.pressureDeltaUsd ?? 0,
-            ts: ob?.ts ?? null,
-            ageSec: ob?.ageSec ?? null,
-            reason: ob?.reason || '',
-          },
-        };
-
-        const newHist = Array.isArray(currentState.hist)
-          ? currentState.hist.concat([finalStage]).slice(-12)
-          : [finalStage];
-
-        if (finalStage === "SELL") {
-          state[sym] = {
-            ...currentState,
-            stage: finalStage,
-            entryActive: false,
-            entryTradePlan: null,
-            lastSeenAt: now,
-            hist: newHist,
-          };
-          sell.push(item);
-          if (wasEliteOpen) {
-            await safePushEvent('trade_exit', {
-              symbol: sym,
-              entryPrice: currentState.entryPrice || null,
-              exitPrice: n(c.price, 0),
-              pnlPct: currentState.entryPrice
-                ? (((mode === 'bull' ? 1 : -1) * (n(c.price, 0) - currentState.entryPrice) / currentState.entryPrice * 100).toFixed(2))
-                : null,
-              exitReason: finalReason,
-            });
-          }
-        } else {
-          state[sym] = {
-            ...currentState,
-            stage: finalStage,
-            entryActive: false,
-            entryTradePlan: null,
-            lastSeenAt: now,
-            hist: newHist,
-          };
-          radar.push(item);
-        }
-
-        if (prevStageBeforeScan !== finalStage) {
-          await pushStageChange({
-            mode,
-            symbol: sym,
-            from: prevStageBeforeScan || "NONE",
-            to: finalStage,
-            reason: finalReason,
-            item: {
-              symbol: sym,
-              stage: finalStage,
-              confidence: 0,
-              tradePlan: finalTradePlan,
-              gates: item.gates,
-            },
-          });
-
-          if (finalStage === "SELL") {
-            await safePushEvent("scan_sell", { ...item, prevStage: prevStageBeforeScan || null, changed: true, reason: finalReason });
-          } else {
-            await safePushEvent("scan_radar", { ...item, prevStage: prevStageBeforeScan || null, changed: true, reason: finalReason });
-          }
-        }
-
-        continue;
-      }
-
-      // ------------------------------------------------------------
-      // 4) Vanaf hier: coin voldoet aan RADAR
-      // ------------------------------------------------------------
-      const usedDyn = radarGate.dyn || dyn;
-
-      const B = TIER_CFG.buildup;
-      const A = TIER_CFG.almost;
-      const E = TIER_CFG.entry;
-
-      const buildupOk =
-        spreadPct <= B.spreadMaxPct &&
-        depthMinUsd1p >= B.depthMinUsd1p &&
-        obScoreAbs >= B.obScoreAbsMin;
-
-      if (!buildupOk) {
-        let rejectCode = "BUILDUP_OB_SANITY_FAIL";
-        if (spreadPct > B.spreadMaxPct) rejectCode = "BUILDUP_SPREAD_FAIL";
-        else if (depthMinUsd1p < B.depthMinUsd1p) rejectCode = "BUILDUP_DEPTH_FAIL";
-        else if (obScoreAbs < B.obScoreAbsMin) rejectCode = "BUILDUP_OBSCORE_FAIL";
-
-        await pushReject("BUILDUP", rejectCode, "OB sanity failed for BUILDUP", {
-          spreadPct,
-          depthMinUsd1p,
-          obScoreAbs,
-        });
-
-        const finalStage = wasEliteOpen ? "SELL" : "RADAR";
-        const finalReason = wasEliteOpen ? "entry/hold invalidated before TP/SL (BUILDUP sanity fail)" : "OB sanity failed for BUILDUP";
-        const finalTradePlan = wasEliteOpen ? (currentState.entryTradePlan || null) : null;
-
-        const item = {
-          symbol: sym,
-          name: c.name || sym,
-          price: n(c.price, 0),
-          marketCap: n(c.marketCap, 0),
-          volume: n(c.volume, 0),
-          vm: +n(vm, 0).toFixed(6),
-          change1h: +n(c.change1h, 0).toFixed(3),
-          change24: +n(c.change24, 0).toFixed(3),
-          range24: +n(c.range24, 0).toFixed(3),
-
-          mode,
-          btcState: btc.state,
-          tradePlan: finalTradePlan,
-
-          confidence: 0,
-          stage: finalStage,
-          stageBase: "RADAR",
-
-          gates: { radar: "passed", almost: "blocked: OB sanity failed for BUILDUP", entry: "blocked: OB sanity failed for BUILDUP" },
-          consistency: null,
-
-          rationale: DESIGN_RATIONALE,
-          dyn: usedDyn ? {
-            maxRange24: +n(usedDyn.maxRange24, 0).toFixed(3),
-            dir1hMinBull: +n(usedDyn.dir1hMinBull, 0).toFixed(3),
-            dir24MinBull: +n(usedDyn.dir24MinBull, 0).toFixed(3),
-            dir1hMaxBear: +n(usedDyn.dir1hMaxBear, 0).toFixed(3),
-            dir24MaxBear: +n(usedDyn.dir24MaxBear, 0).toFixed(3),
-            scale: +n(usedDyn.scale, 0).toFixed(3),
-          } : null,
-          thr: null,
-          coinStats: null,
-          anomaly: null,
-          ob: {
-            fresh: obFresh,
-            valid: obValid,
-            spreadPct,
-            depthMinUsd1p,
-            score: obScore,
-            pressureDeltaUsd: ob?.pressureDeltaUsd ?? 0,
-            ts: ob?.ts ?? null,
-            ageSec: ob?.ageSec ?? null,
-            reason: ob?.reason || '',
-          },
-        };
-
-        const newHist = Array.isArray(currentState.hist)
-          ? currentState.hist.concat([finalStage]).slice(-12)
-          : [finalStage];
-
-        if (finalStage === "SELL") {
-          state[sym] = {
-            ...currentState,
-            stage: finalStage,
-            entryActive: false,
-            entryTradePlan: null,
-            lastSeenAt: now,
-            hist: newHist,
-          };
-          sell.push(item);
-          if (wasEliteOpen) {
-            await safePushEvent('trade_exit', {
-              symbol: sym,
-              entryPrice: currentState.entryPrice || null,
-              exitPrice: n(c.price, 0),
-              pnlPct: currentState.entryPrice
-                ? (((mode === 'bull' ? 1 : -1) * (n(c.price, 0) - currentState.entryPrice) / currentState.entryPrice * 100).toFixed(2))
-                : null,
-              exitReason: finalReason,
-            });
-          }
-        } else {
-          state[sym] = {
-            ...currentState,
-            stage: finalStage,
-            entryActive: false,
-            entryTradePlan: null,
-            lastSeenAt: now,
-            hist: newHist,
-          };
-          radar.push(item);
-        }
-
-        if (prevStageBeforeScan !== finalStage) {
-          await pushStageChange({
-            mode,
-            symbol: sym,
-            from: prevStageBeforeScan || "NONE",
-            to: finalStage,
-            reason: finalReason,
-            item: {
-              symbol: sym,
-              stage: finalStage,
-              confidence: 0,
-              tradePlan: finalTradePlan,
-              gates: item.gates,
-            },
-          });
-
-          if (finalStage === "SELL") {
-            await safePushEvent("scan_sell", { ...item, prevStage: prevStageBeforeScan || null, changed: true, reason: finalReason });
-          } else {
-            await safePushEvent("scan_radar", { ...item, prevStage: prevStageBeforeScan || null, changed: true, reason: finalReason });
-          }
-        }
-
-        continue;
-      }
-
-      // ------------------------------------------------------------
-      // 5) Coin stats en verdere gates
-      // ------------------------------------------------------------
-      const coinStats = await updateCoinStatsAndGetMetrics({
-        mode,
-        sym,
-        range24: n(c.range24, 0),
-        spreadPct: Number.isFinite(spreadPct) ? spreadPct : null,
-        obScore: Number.isFinite(obScore) ? obScore : null,
-        now,
-      });
-
-      let stageBase = stageFromSwing(mode, { ...c, vm }, usedDyn);
-
-      const curRange = n(c.range24, 0);
-      const medRange = Number.isFinite(coinStats?.medRange24) ? coinStats.medRange24 : null;
-      const hasStats = n(coinStats?.samples, 0) >= 30;
-      const isSpike = hasStats && medRange && medRange > 0 && curRange > 2.2 * medRange && curRange > 10;
-
-      let anomaly = null;
-      if (isSpike) {
-        anomaly = { type: "RANGE_SPIKE", curRange, medRange, factor: +(curRange / medRange).toFixed(2) };
-        if (stageBase === "ALMOST" || stageBase === "ENTRY") stageBase = "BUILDUP";
-      }
-
-      const confidenceBase = core.computeConfidence({
-        vm,
-        change24: c.change24,
-        range24: c.range24,
-        obValid: !!obValid,
-      });
-      const confidence = Math.max(0, Math.min(100, n(confidenceBase, 0) + n(btcTune.adj, 0)));
-
-      const baseThr = adaptiveEntryThresholds(core, c, vm);
-      let thr =
-        typeof core.dynamicEntryThresholds === "function"
-          ? core.dynamicEntryThresholds({ marketCap: c.marketCap, volume: c.volume, vm }, baseThr, core.SETTINGS)
-          : baseThr;
-
-      if (thr && Number.isFinite(coinStats?.p80SpreadPct)) {
-        const hardMax = Number(core?.SETTINGS?.entry?.dyn?.spreadHardMaxPct ?? 1.6);
-        const hardMin = Number(core?.SETTINGS?.entry?.dyn?.spreadHardMinPct ?? 0.55);
-        const coinBaseline = coinStats.p80SpreadPct * 1.25;
-        const base = Number(thr.spreadMaxPct || 0);
-        thr.spreadMaxPct = 0.70 * base + 0.30 * coinBaseline;
-        thr.spreadMaxPct = Math.max(hardMin, Math.min(hardMax, thr.spreadMaxPct));
-      }
-
-      if (thr && Number.isFinite(coinStats?.p70ObAbs)) {
-        const hardMax = Number(core?.SETTINGS?.entry?.dyn?.obScoreHardMax ?? 0.075);
-        const hardMin = Number(core?.SETTINGS?.entry?.dyn?.obScoreHardMin ?? 0.04);
-        const base = Number(thr.obScoreMin || 0);
-        const coin = Number(coinStats.p70ObAbs || 0) * 0.85;
-        const blended = 0.65 * base + 0.35 * coin;
-        thr.obScoreMin = Math.max(hardMin, Math.min(hardMax, blended));
-      }
-
-      let stage = stageBase;
-      let almostGate = "n/a";
-      let entryGate = "n/a";
-
-      const tradePlan = calcTradePlan({
-        mode,
-        price: n(c.price, 0),
-        spreadPct,
-        range24: n(c.range24, 0),
-        obScore,
-      });
-
-      if (cap.cap && (stageBase === "ALMOST" || stageBase === "ENTRY")) {
-        if (stageBase === "ENTRY") {
-          stage = "ALMOST";
-          entryGate = `soft-capped: ${cap.capStage}`;
-          if (almostGate === "n/a") almostGate = "passed";
-        } else {
-          stage = "BUILDUP";
-          stageBase = "BUILDUP";
-          almostGate = `capped: ${cap.capStage}`;
-          entryGate = `capped: ${cap.capStage}`;
-        }
-      } else {
-        // ALMOST gate
-        if (stageBase === "ALMOST") {
-          if (spreadPct > A.spreadMaxPct) {
-            await pushReject("ALMOST", "ALMOST_SPREAD_FAIL", `spread>${A.spreadMaxPct}%`, { spreadPct, limit: A.spreadMaxPct });
-            stage = "BUILDUP";
-            stageBase = "BUILDUP";
-            almostGate = `blocked: spread>${A.spreadMaxPct}%`;
-          } else if (depthMinUsd1p < A.depthMinUsd1p) {
-            await pushReject("ALMOST", "ALMOST_DEPTH_FAIL", `depth1%<${A.depthMinUsd1p}`, { depthMinUsd1p, limit: A.depthMinUsd1p });
-            stage = "BUILDUP";
-            stageBase = "BUILDUP";
-            almostGate = `blocked: depth1%<${A.depthMinUsd1p}`;
-          } else if (obScoreAbs < A.obScoreAbsMin) {
-            await pushReject("ALMOST", "ALMOST_OBSCORE_FAIL", `|obScore|<${A.obScoreAbsMin}`, { obScoreAbs, limit: A.obScoreAbsMin });
-            stage = "BUILDUP";
-            stageBase = "BUILDUP";
-            almostGate = `blocked: |obScore|<${A.obScoreAbsMin}`;
-          } else {
-            const obSamples = await kv.get(core.keyObSamples(mode, sym));
-            const slopeCheck =
-              typeof core.checkObSlopeGate === "function"
-                ? core.checkObSlopeGate({ stage: "almost", mode, obSamples, settings: core.SETTINGS })
-                : { ok: true };
-
-            let slopeOk = slopeCheck.ok;
-            let slopeMsg = slopeCheck.reason || "";
-
-            if (!slopeOk) {
-              if (slopeMsg.includes("insufficient FRESH samples")) {
-                slopeOk = true;
-                slopeMsg = "passed (limited fresh samples)";
-              }
-            }
-
-            if (!slopeOk) {
-              await pushReject("ALMOST", "ALMOST_SLOPE_FAIL", slopeMsg);
-              stage = "BUILDUP";
-              stageBase = "BUILDUP";
-              almostGate = slopeMsg;
-            } else {
-              const slopeGateMsg = slopeMsg || "passed";
-
-              const spoof = spoofRiskFromSamples(obSamples);
-              if (!spoof.ok) {
-                await pushReject("ALMOST", "ALMOST_SPOOF_FAIL", `spoof risk (${spoof.why})`, { spoofRisk: spoof.risk ?? null });
-                stage = "BUILDUP";
-                stageBase = "BUILDUP";
-                almostGate = `blocked: spoof risk (${spoof.why})`;
-              } else {
-                almostGate = slopeGateMsg;
-              }
-            }
-          }
-        }
-
-        // ENTRY gate
-        if (stage === "ALMOST") {
-          if (confidence < n(thr.minConfidence, 40)) {
-            await pushReject("ENTRY", "ENTRY_CONFIDENCE_FAIL", `Confidence < ${thr.minConfidence}`, { confidence, minConfidence: n(thr.minConfidence, 40) });
-            entryGate = `Confidence < ${thr.minConfidence}`;
-          } else if (spreadPct > E.spreadMaxPct) {
-            await pushReject("ENTRY", "ENTRY_SPREAD_FAIL", `spread>${E.spreadMaxPct}%`, { spreadPct, limit: E.spreadMaxPct });
-            entryGate = `blocked: spread>${E.spreadMaxPct}%`;
-          } else if (depthMinUsd1p < E.depthMinUsd1p) {
-            await pushReject("ENTRY", "ENTRY_DEPTH_FAIL", `depth1%<${E.depthMinUsd1p}`, { depthMinUsd1p, limit: E.depthMinUsd1p });
-            entryGate = `blocked: depth1%<${E.depthMinUsd1p}`;
-          } else if (obScoreAbs < E.obScoreAbsMin) {
-            await pushReject("ENTRY", "ENTRY_OBSCORE_FAIL", `|obScore|<${E.obScoreAbsMin}`, { obScoreAbs, limit: E.obScoreAbsMin });
-            entryGate = `blocked: |obScore|<${E.obScoreAbsMin}`;
-          } else {
-            const obSamples2 = await kv.get(core.keyObSamples(mode, sym));
-            const slopeCheck2 =
-              typeof core.checkObSlopeGate === "function"
-                ? core.checkObSlopeGate({ stage: "entry", mode, obSamples: obSamples2, settings: core.SETTINGS })
-                : { ok: true };
-
-            if (!slopeCheck2.ok) {
-              await pushReject("ENTRY", "ENTRY_SLOPE_FAIL", slopeCheck2.reason || "OB slope failed at ENTRY");
-              entryGate = slopeCheck2.reason || "OB slope failed at ENTRY";
-            } else {
-              if (E.requirePressureAlign) {
-                const pressureDelta = n(ob?.pressureDeltaUsd, 0);
-                const pressureOk = mode === "bull" ? pressureDelta >= 0 : pressureDelta <= 0;
-                if (!pressureOk) {
-                  await pushReject("ENTRY", "ENTRY_PRESSURE_FAIL", "blocked: pressure contra", { pressureDeltaUsd: n(ob?.pressureDeltaUsd, 0) });
-                  entryGate = "blocked: pressure contra";
-                }
-              }
-
-              if (entryGate === "n/a" || entryGate === "passed") {
-                const absorb = absorptionFromSamples(obSamples2, mode);
-                if (!absorb.ok) {
-                  await pushReject("ENTRY", "ENTRY_ABSORPTION_FAIL", `blocked: ${absorb.why}`);
-                  entryGate = `blocked: ${absorb.why}`;
-                } else {
-                  stage = "ENTRY";
-                  entryGate = "passed";
-                }
-              }
-            }
-          }
-        }
-      }
-
-      if (anomaly?.type === "RANGE_SPIKE") {
-        await pushReject(stageBase === "ENTRY" ? "ENTRY" : "ALMOST", "ANOMALY_RANGE_SPIKE", `range spike x${anomaly.factor}`, { curRange, medRange, factor: anomaly.factor });
-        if (almostGate === "n/a") almostGate = `anomaly: range spike x${anomaly.factor}`;
-        if (entryGate === "n/a") entryGate = `anomaly: range spike x${anomaly.factor}`;
-      }
-
-      // Consistency check
-      let upd = updateStateAndConsistency(state, sym, stage, core, now);
-      let stageConsistency = upd.consistency;
-
-      if ((stage === "ALMOST" || stage === "ENTRY") && !upd.consistency?.ok) {
-        await pushReject(stage, "CONSISTENCY_FAIL", `consistency fail (${upd.consistency.same}/${upd.consistency.need}, minAgree=${upd.consistency.minAgree})`, {
-          same: upd.consistency.same,
-          need: upd.consistency.need,
-          minAgree: upd.consistency.minAgree,
-        });
-
-        if (stage === "ENTRY") {
-          stage = "ALMOST";
-          if (entryGate === "n/a" || entryGate === "passed") {
-            entryGate = `consistency degraded (${upd.consistency.same}/${upd.consistency.need})`;
-          }
-        } else {
-          stage = "BUILDUP";
-          if (almostGate === "n/a" || almostGate === "passed") {
-            almostGate = `consistency blocked (${upd.consistency.same}/${upd.consistency.need}, minAgree=${upd.consistency.minAgree})`;
-          }
-          if (entryGate === "n/a" || entryGate === "passed") {
-            entryGate = `consistency blocked (${upd.consistency.same}/${upd.consistency.need}, minAgree=${upd.consistency.minAgree})`;
-          }
-        }
-
-        if (state[sym]) {
-          state[sym].stage = stage;
-          if (Array.isArray(state[sym].hist) && state[sym].hist.length) {
-            state[sym].hist[state[sym].hist.length - 1] = stage;
-          }
-        }
-        stageConsistency = null;
-      }
-
-      const wasEliteOpenNow = prevStageBeforeScan === "ENTRY" || prevStageBeforeScan === "HOLD";
-
-      const stageChangeReason =
-        entryGate !== "n/a" && entryGate !== "passed" ? entryGate :
-        almostGate !== "n/a" && almostGate !== "passed" ? almostGate :
-        stage === "ENTRY" ? "entry passed" :
-        stage === "ALMOST" ? "almost passed" :
-        stage === "BUILDUP" ? "buildup accepted" :
-        "stage update";
-
-      let finalStage = stage;
-      let finalReason = stageChangeReason;
-      let finalConsistency = stageConsistency;
-
-      if (stage === "ENTRY") {
-        if (wasEliteOpenNow) {
-          finalStage = "HOLD";
-          finalReason = "position remains valid";
-          finalConsistency = null;
-        } else {
-          finalStage = "ENTRY";
-          finalReason = "new entry signal";
-          finalConsistency = stageConsistency;
-        }
-      } else if (wasEliteOpenNow) {
-        finalStage = "SELL";
-        finalReason = "entry/hold invalidated before TP/SL";
-        finalConsistency = null;
-      } else {
-        finalConsistency = stageConsistency;
-      }
-
-      let finalTradePlan = tradePlan;
-      if (finalStage === "HOLD" || finalStage === "SELL") {
-        finalTradePlan = state[sym]?.entryTradePlan || tradePlan;
-      }
-
-      const currentStateNow = safeObj(state[sym]) || {};
-
-      if (finalStage === "ENTRY") {
-        state[sym] = {
-          ...currentStateNow,
-          stage: finalStage,
-          entryActive: true,
-          entryPrice: n(c.price, 0),
-          entryTs: now,
-          entryTradePlan: finalTradePlan,
-          lastSeenAt: now,
-          hist: Array.isArray(currentStateNow.hist) && currentStateNow.hist.length
-            ? [...currentStateNow.hist.slice(0, -1), finalStage].slice(-12)
-            : [finalStage],
-        };
-      } else if (finalStage === "HOLD") {
-        state[sym] = {
-          ...currentStateNow,
-          stage: finalStage,
-          entryActive: true,
-          lastSeenAt: now,
-          hist: Array.isArray(currentStateNow.hist) && currentStateNow.hist.length
-            ? [...currentStateNow.hist.slice(0, -1), finalStage].slice(-12)
-            : [finalStage],
-        };
-      } else if (finalStage === "SELL") {
-        state[sym] = {
-          ...currentStateNow,
-          stage: finalStage,
-          entryActive: false,
-          entryTradePlan: null,
-          lastSeenAt: now,
-          hist: Array.isArray(currentStateNow.hist) && currentStateNow.hist.length
-            ? [...currentStateNow.hist.slice(0, -1), finalStage].slice(-12)
-            : [finalStage],
-        };
-      } else {
-        if (state[sym]) {
-          state[sym].entryActive = false;
-          state[sym].entryTradePlan = null;
-        }
-      }
-
-      stage = finalStage;
-
-      const item = {
-        symbol: sym,
-        name: c.name || sym,
-        price: n(c.price, 0),
-        marketCap: n(c.marketCap, 0),
-        volume: n(c.volume, 0),
-        vm: +n(vm, 0).toFixed(6),
-        change1h: +n(c.change1h, 0).toFixed(3),
-        change24: +n(c.change24, 0).toFixed(3),
-        range24: +n(c.range24, 0).toFixed(3),
-
-        mode,
-        btcState: btc.state,
-        tradePlan: finalTradePlan,
-
-        confidence,
-        stage,
-        stageBase,
-
-        gates: { radar: radarGate.why || "passed", almost: almostGate, entry: entryGate },
-        consistency: finalConsistency,
-
-        rationale: DESIGN_RATIONALE,
-
-        dyn: usedDyn ? {
-          maxRange24: +n(usedDyn.maxRange24, 0).toFixed(3),
-          dir1hMinBull: +n(usedDyn.dir1hMinBull, 0).toFixed(3),
-          dir24MinBull: +n(usedDyn.dir24MinBull, 0).toFixed(3),
-          dir1hMaxBear: +n(usedDyn.dir1hMaxBear, 0).toFixed(3),
-          dir24MaxBear: +n(usedDyn.dir24MaxBear, 0).toFixed(3),
-          scale: +n(usedDyn.scale, 0).toFixed(3),
-        } : null,
-
-        thr: {
-          minConfidence: thr.minConfidence,
-          spreadMaxPct: +n(thr.spreadMaxPct, 0).toFixed(3),
-          depthMinUsd1p: thr.depthMinUsd1p,
-          obScoreMin: +n(thr.obScoreMin, 0).toFixed(5),
-          liqScore: thr.liqScore != null ? +n(thr.liqScore, 0).toFixed(3) : null,
-        },
-
-        coinStats: {
-          samples: coinStats?.samples ?? 0,
-          medRange24: coinStats?.medRange24 ?? null,
-          p80Range24: coinStats?.p80Range24 ?? null,
-          medSpreadPct: coinStats?.medSpreadPct ?? null,
-          p80SpreadPct: coinStats?.p80SpreadPct ?? null,
-          medObAbs: coinStats?.medObAbs ?? null,
-          p70ObAbs: coinStats?.p70ObAbs ?? null,
-        },
-        anomaly: anomaly || null,
-
-        ob: {
-          fresh: obFresh,
-          valid: obValid,
-          spreadPct: ob?.spreadPct ?? null,
-          depthMinUsd1p: ob?.depthMinUsd1p ?? null,
-          score: ob?.score ?? null,
-          pressureDeltaUsd: ob?.pressureDeltaUsd ?? 0,
-          ts: ob?.ts ?? null,
-          ageSec: ob?.ageSec ?? null,
-          reason: ob?.reason || '',
-        },
-      };
-
-      if (stage === "ENTRY") entry.push(item);
-      else if (stage === "HOLD") hold.push(item);
-      else if (stage === "SELL") sell.push(item);
-      else if (stage === "ALMOST") almost.push(item);
-      else if (stage === "BUILDUP") buildup.push(item);
-      else radar.push(item);
-
-      if (prevStageBeforeScan !== stage) {
-        const eventItem = {
-          ...item,
-          prevStage: prevStageBeforeScan || null,
-          changed: true,
-          tradePlan: finalTradePlan,
-          reason: finalReason,
-        };
-
-        await pushStageChange({
-          mode,
-          symbol: sym,
-          from: prevStageBeforeScan || "NONE",
-          to: stage,
-          reason: finalReason,
-          item: {
-            symbol: item.symbol,
-            stage: item.stage,
-            confidence: item.confidence,
-            tradePlan: finalTradePlan,
-            gates: item.gates,
-          },
-        });
-
-        if (stage === "ENTRY") {
-          await safePushEvent("scan_entry", eventItem);
-          await sendSignal({
-            source: "main",
-            stage: "ENTRY",
-            mode,
-            coin: { ...item, tradePlan: finalTradePlan },
-            btcState: btc.state,
-            kind: "signal",
-          });
-        } else if (stage === "HOLD") {
-          await safePushEvent("scan_hold", eventItem);
-          // ❌ geen sendSignal voor HOLD
-        } else if (stage === "SELL") {
-          await safePushEvent("scan_sell", { ...eventItem, reason: finalReason });
-          // ❌ geen sendSignal voor SELL
-          if (wasEliteOpenNow) {
-            await safePushEvent('trade_exit', {
-              symbol: sym,
-              entryPrice: currentState.entryPrice || null,
-              exitPrice: n(c.price, 0),
-              pnlPct: currentState.entryPrice
-                ? (((mode === 'bull' ? 1 : -1) * (n(c.price, 0) - currentState.entryPrice) / currentState.entryPrice * 100).toFixed(2))
-                : null,
-              exitReason: finalReason,
-            });
-          }
-        } else if (stage === "ALMOST") {
-          await safePushEvent("scan_almost", eventItem);
-          await sendSignal({
-            source: "main",
-            stage: "ALMOST",
-            mode,
-            coin: { ...item, tradePlan: finalTradePlan },
-            btcState: btc.state,
-            kind: "signal",
-          });
-        } else if (stage === "BUILDUP") {
-          await safePushEvent("scan_buildup", eventItem);
-          await sendSignal({
-            source: "main",
-            stage: "BUILDUP",
-            mode,
-            coin: { ...item, tradePlan: finalTradePlan },
-            btcState: btc.state,
-            kind: "signal",
-          });
-        } else if (stage === "RADAR") {
-          await safePushEvent("scan_radar", eventItem);
-          // ❌ geen sendSignal voor RADAR
-        }
-      }
-    }
-
-    const byScore = (a, b) =>
-      (b.confidence - a.confidence) ||
-      (b.vm - a.vm) ||
-      (Math.abs(b.change24) - Math.abs(a.change24));
-
-    radar.sort(byScore);
-    buildup.sort(byScore);
-    almost.sort(byScore);
-    entry.sort(byScore);
-    hold.sort(byScore);
-    sell.sort(byScore);
-
-    const radarLimit = n(core?.SETTINGS?.RADAR_LIMIT, 60);
-    const outRadar = radar.slice(0, radarLimit);
-    const outBuildup = buildup.slice(0, radarLimit);
-    const outAlmost = almost.slice(0, radarLimit);
-    const outEntry = entry.slice(0, radarLimit);
-    const outHold = hold.slice(0, radarLimit);
-    const outSell = sell.slice(0, radarLimit);
-
-    const out = {
-      ok: true,
-      mode,
-      ts: Date.now(),
-      tookMs: Date.now() - startedAt,
-      btc,
-      cap,
-      funnel: {
-        radar: outRadar,
-        buildup: outBuildup,
-        almost: outAlmost,
-        entry: outEntry,
-        hold: outHold,
-        sell: outSell,
-      },
-      openTrades,
-      meta: {
-        scanLock: { active: false, until: lock.until, waitMs: 0 },
-        counts: {
-          cg: cg.length,
-          radar: radar.length,
-          buildup: buildup.length,
-          almost: almost.length,
-          entry: entry.length,
-          hold: hold.length,
-          sell: sell.length,
-        },
-        rationale: DESIGN_RATIONALE,
-        universe: {
-          key: K_UNIVERSE_LATEST,
-          ts: uni.ts || null,
-          pages: uni.pages || null,
-          perPage: uni.perPage || null,
-          count: uni.count || (Array.isArray(uni.coins) ? uni.coins.length : 0),
-          lockKey: K_LOCK_UNIVERSE,
-        },
-      },
+    const whaleFlow = await fetchExchangeFlows();
+    const btc = await fetchBTCGateFromUniverse();
+
+    const built = await buildUniverse(mode, whaleFlow, btc);
+    const universe = built.coins;
+    const regime = built.regime;
+
+    const prevPositions = (await kv.get(keyMainPositions(mode))) || { open: [], closed: [] };
+    const positions = {
+      open: Array.isArray(prevPositions?.open) ? [...prevPositions.open] : [],
+      closed: Array.isArray(prevPositions?.closed) ? [...prevPositions.closed] : [],
     };
 
-    const ttl = n(core?.SETTINGS?.entry?.resultTtlSec, 60 * 45);
-    await kv.set(core.keyLatest(mode), out, { ex: Math.max(60, ttl) });
-    await kv.set(core.keyState(mode), state, { ex: 60 * 60 * 24 * 7 });
+    const prevState = (await kv.get(keyMainState(mode))) || {};
+    const nextState = {};
 
-    return send(res, 200, out);
-  } catch (err) {
-    console.error("Fatal error in scan handler:", err);
-    return send(res, 200, { ok: false, error: "Internal server error", message: err.message });
-  }
-}
+    const universeMap = new Map();
+    for (const c of universe) universeMap.set(c.symbol, c);
+
+    const openMap = new Map(positions.open.map((p) => [up(p.symbol), p]));
+
+    let funnel = splitFunnels(universe);
+    const recentEntryCount = await readRecentEntryCount(mode);
+
+    funnel = applyFunnelBalancer({
+      funnel,
+      mode,
+      regime,
+      openCount: positions.open.length,
+      recentEntryCount,
+    });
+
+    // ------------------------------------------------------------
+    // 1) State‑machine voor coins zonder open positie
+    // ------------------------------------------------------------
+    for (const coin of universe) {
+      const sym = up(coin.symbol);
+      const prev = prevState?.[sym] || null;
+      const hasOpenPosition = openMap.has(sym);
+      if (hasOpenPosition) continue;
+
+      const rawStage = up(coin.stage || "");
+      const prevStage = up(prev?.stage || ""); // niet gebruikt
+
+      let strongScans = 0;
+      let weakScans = prev?.weakScans || 0;
+      let thesisInvalidScans = prev?.thesisInvalidScans || 0;
+      let entryLocked = prev?.entryLocked || false;
+      let eliteScans = 0;
+      let candidateSince = prev?.candidateSince || null;
+      let eliteSince = prev?.eliteSince || null;
+
+      if (rawStage === "RADAR") {
+        weakScans = 0;
+        thesisInvalidScans = 0;
+        candidateSince = null;
+        eliteSince = null;
+        entryLocked = false;
+      } else {
+        if (isMainEliteStage(rawStage)) {
+          strongScans = (prev?.strongScans || 0) + 1;
+          eliteScans = (prev?.eliteScans || 0) + 1;
+        } else {
+          strongScans = 0;
+          eliteScans = 0;
+        }
+
+        if (rawStage === "RADAR") {
+          weakScans = (prev?.weakScans || 0) + 1;
+        } else if (rawStage === "BUILDUP") {
+          weakScans = prev?.weakScans || 0;
+        } else {
+          weakScans = 0;
+        }
+
+        if (rawStage === "RADAR") {
+          candidateSince = null;
+        } else {
+          candidateSince = prev?.candidateSince;
+          if (!candidateSince && (rawStage === "BUILDUP" || rawStage === "ALMOST" || isMainEliteStage(rawStage))) {
+            candidateSince = now;
+          }
+        }
+
+        if (isMainEliteStage(rawStage)) {
+          if (!prev?.eliteSince || !isMainEliteStage(prev?.stage || "")) {
+            eliteSince = now;
+          } else {
+            eliteSince = prev.eliteSince;
+          }
+        } else {
+          eliteSince = null;
+        }
+
+        thesisInvalidScans = prev?.thesisInvalidScans || 0;
+        entryLocked = prev?.entryLocked || false;
+      }
+
+      let depthHist = Array.isArray(prev?.depthHist) ? [...prev.depthHist] : [];
+      const currentDepth = n(coin.ob?.depthMinUsd1p, 0);
+      if (currentDepth > 0) {
+        depthHist.push(currentDepth);
+      }
+      depthHist = depthHist.slice(-20);
+
+      const thesisInfo = calculateThesisDamage(coin, prev, mode);
+      const tradePlan = coin.tradePlan;
+
+      // Main strengere entryReady – inclusief ELITE_CASCADE en extra ob-score eis
+      let entryReady = false;
+      if (!hasOpenPosition) {
+        entryReady = (
+          (rawStage === "ELITE_IGNITION" || rawStage === "ELITE_EXPANSION" || rawStage === "ELITE_CASCADE") &&
+          strongScans >= STRONG_SCANS_NEEDED_FOR_ENTRY &&
+          eliteScans >= MIN_ELITE_SCANS_BEFORE_ENTRY &&
+          candidateSince != null &&
+          eliteSince != null &&
+          entryLocked === false &&
+          thesisInvalidScans === 0 &&
+          coin.tradePlan != null &&
+          coin.breakout?.ready === true &&
+          coin.thresholds?.depthOk === true &&
+          coin.ob?.valid === true &&
+          Math.abs(coin.ob?.score || 0) >=
