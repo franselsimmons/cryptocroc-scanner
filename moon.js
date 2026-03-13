@@ -298,7 +298,9 @@ function btcLine(btc) {
 function renderAll(data) {
   window.__LAST_DATA__ = data;
 
-  const ts = data?.ts ? new Date(data.ts) : null;
+  const ts = data?.scannedAt
+    ? new Date(data.scannedAt)
+    : (data?.ts ? new Date(data.ts) : null);
   const stamp = ts ? ts.toLocaleString() : "—";
   const counts = normalizedCounts(data);
   const funnel = normalizeMoonFunnel(data);
@@ -349,7 +351,7 @@ async function loadLatest(force = false) {
       throw new Error(j?.error || `HTTP ${r.status}`);
     }
 
-    const ts = Number(j?.ts || 0);
+    const ts = Number(j?.scannedAt || j?.ts || 0);
 
     if (!force && ts && ts === (lastTsByMode[MODE] || 0)) {
       isLoading = false;
