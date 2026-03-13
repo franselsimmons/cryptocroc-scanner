@@ -2,19 +2,19 @@
   "crons": [
     {
       "path": "/api/cron-bull",
-      "schedule": "0,30 * * * *"
+      "schedule": "1,31 * * * *"
     },
     {
       "path": "/api/cron-bear",
-      "schedule": "15,45 * * * *"
+      "schedule": "16,46 * * * *"
     },
     {
       "path": "/api/moon/cron-bull",
-      "schedule": "*/15 * * * *"
+      "schedule": "1,16,31,46 * * * *"
     },
     {
       "path": "/api/moon/cron-bear",
-      "schedule": "*/15 * * * *"
+      "schedule": "6,21,36,51 * * * *"
     }
   ]
 }
