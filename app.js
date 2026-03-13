@@ -322,9 +322,15 @@ function renderStage(targetId, arr, renderer = coinRow) {
 }
 
 // ==================== top status line ====================
-function btcLine(btc) {
-  if (!btc) return "BTC: —";
-  return `BTC: ${btc.state} | chg24 ${fmtPct(btc.chg24)} | range24 ${fmtPct(btc.range24)}`;
+function btcLine(data) {
+  const btc = data?.btc;
+  if (btc) {
+    return `BTC: ${btc.state} | chg24 ${fmtPct(btc.chg24)} | range24 ${fmtPct(btc.range24)}`;
+  }
+  if (data?.regime) {
+    return `Regime: ${data.regime}`;
+  }
+  return "BTC/Regime: —";
 }
 
 function flattenFunnel(data) {
@@ -367,7 +373,9 @@ function renderAll(data) {
   // bewaar voor modal action-tab
   window.__LAST_DATA__ = data;
 
-  const ts = data?.ts ? new Date(data.ts) : null;
+  const ts = data?.scannedAt
+    ? new Date(data.scannedAt)
+    : (data?.ts ? new Date(data.ts) : null);
   const stamp = ts ? ts.toLocaleString() : "—";
 
   const hold = pickHold(data);
@@ -378,7 +386,7 @@ function renderAll(data) {
   const statusLine = el("statusLine");
   if (statusLine) {
     statusLine.textContent =
-      `${btcLine(data.btc)} • Laatste update: ${stamp} • ` +
+      `${btcLine(data)} • Laatste update: ${stamp} • ` +
       `ENTRY ${counts.entry || 0} • HOLD ${hold.length} • SELL ${sell.length} • ` +
       `ALMOST ${counts.almost || 0} • BUILDUP ${counts.buildup || 0} • RADAR ${counts.radar || 0}`;
   }
@@ -404,7 +412,8 @@ async function loadLatest() {
 
     const j = await r.json();
 
-    const ts = Number(j?.ts || 0);
+    // Gebruik scannedAt of ts
+    const ts = Number(j?.scannedAt || j?.ts || 0);
     if (ts && ts === (lastTsByMode[MODE] || 0)) return;
     if (ts) lastTsByMode[MODE] = ts;
 
@@ -823,5 +832,6 @@ el("modeBear")?.addEventListener("click", () => setMode("bear"));
 
 setMode(MODE);
 
-// Snapshot refresh: 1x per 30 minuten
-setInterval(loadLatest, 30 * 60 * 1000);
+// Snelle eerste refresh en daarna elke minuut
+setTimeout(() => loadLatest(true), 1500);
+setInterval(() => loadLatest(false), 60 * 1000);
