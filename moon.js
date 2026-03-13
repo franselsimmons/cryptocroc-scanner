@@ -21,7 +21,6 @@ let MODE =
 const lastTsByMode = { bull: 0, bear: 0 };
 let isLoading = false;
 
-// ==================== mode ====================
 function setMode(mode) {
   MODE = mode === "bear" ? "bear" : "bull";
   localStorage.setItem("MOON_MODE", MODE);
@@ -36,7 +35,6 @@ function setMode(mode) {
   loadLatest(true);
 }
 
-// ==================== format helpers ====================
 function fmtUSD(n) {
   n = Number(n) || 0;
   if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
@@ -66,17 +64,23 @@ function pct(n, d = 2) {
 function upperStage(v) {
   return String(v || "").toUpperCase();
 }
+function arr(x) {
+  return Array.isArray(x) ? x : [];
+}
+function getSnapshotTs(data) {
+  return Number(data?.ts || data?.scannedAt || 0);
+}
 
-// ==================== stage helpers ====================
 function normalizeMoonFunnel(data) {
   const funnel = data?.funnel || {};
 
   return {
-    elite_expansion: Array.isArray(funnel.elite_expansion) ? funnel.elite_expansion : [],
-    elite_ignition: Array.isArray(funnel.elite_ignition) ? funnel.elite_ignition : [],
-    almost: Array.isArray(funnel.almost) ? funnel.almost : [],
-    buildup: Array.isArray(funnel.buildup) ? funnel.buildup : [],
-    radar: Array.isArray(funnel.radar) ? funnel.radar : [],
+    elite_expansion: arr(funnel.elite_expansion),
+    elite_ignition: arr(funnel.elite_ignition),
+    almost: arr(funnel.almost),
+    buildup: arr(funnel.buildup),
+    radar: arr(funnel.radar),
+    hold: arr(funnel.hold),
   };
 }
 
@@ -90,37 +94,21 @@ function normalizedCounts(data) {
     almost: Number(counts.almost ?? funnel.almost.length ?? 0),
     buildup: Number(counts.buildup ?? funnel.buildup.length ?? 0),
     radar: Number(counts.radar ?? funnel.radar.length ?? 0),
+    hold: Number(counts.hold ?? funnel.hold.length ?? 0),
   };
 }
 
 function stageReasonText(stage) {
   const s = upperStage(stage);
 
-  if (s === "ELITE_EXPANSION") {
-    return "Explosieve topfase. Dit zijn de hardste Moon movers.";
-  }
-  if (s === "ELITE_IGNITION") {
-    return "Vlak vóór of bij het begin van de grote move.";
-  }
-  if (s === "ALMOST") {
-    return "Bijna klaar voor ignition/expansion.";
-  }
-  if (s === "BUILDUP") {
-    return "Opbouwfase. Momentum en volume lopen op.";
-  }
+  if (s === "ELITE_EXPANSION") return "Explosieve topfase. Dit zijn de hardste Moon movers.";
+  if (s === "ELITE_IGNITION") return "Vlak vóór of bij het begin van de grote move.";
+  if (s === "ALMOST") return "Bijna klaar voor ignition/expansion.";
+  if (s === "BUILDUP") return "Opbouwfase. Momentum en volume lopen op.";
+  if (s === "HOLD") return "Open positie blijft actief.";
   return "Vroeg signaal. Vooral volgen, nog veel ruis.";
 }
 
-function stageTone(stage) {
-  const s = upperStage(stage);
-  if (s === "ELITE_EXPANSION") return "ok";
-  if (s === "ELITE_IGNITION") return "ok";
-  if (s === "ALMOST") return "warn";
-  if (s === "BUILDUP") return "warn";
-  return "no";
-}
-
-// ==================== risk ====================
 function computeFallbackRisk(c, mode) {
   const price = Number(c?.price || 0);
   if (!(price > 0)) return null;
@@ -130,7 +118,6 @@ function computeFallbackRisk(c, mode) {
   const proxy = proxyPct / 100;
 
   const isBull = String(mode || "bull").toLowerCase() === "bull";
-
   const sl = isBull ? price * (1 - proxy) : price * (1 + proxy);
   const tp = isBull ? price * (1 + proxy * 2.4) : price * (1 - proxy * 2.4);
   const rr = Math.abs((tp - price) / (price - sl || 1e-9));
@@ -166,56 +153,36 @@ function getRisk(c, mode) {
   return computeFallbackRisk(c, mode);
 }
 
-// ==================== action label ====================
-function actionForStage(c, data) {
-  const stage = upperStage(c?.stage);
-  const btcState = upperStage(data?.btc?.state || "NEUTRAL");
-
-  if (stage === "ELITE_EXPANSION") {
-    return {
-      label: "TOP PRIORITEIT",
-      sub: `Explosieve Moon-move actief. BTC is ${btcState}.`,
-      tone: "ok",
-    };
-  }
-  if (stage === "ELITE_IGNITION") {
-    return {
-      label: "FOCUS / KLAARZETTEN",
-      sub: `Vlak voor of bij ignition. BTC is ${btcState}.`,
-      tone: "ok",
-    };
-  }
-  if (stage === "ALMOST") {
-    return {
-      label: "KLAARZETTEN",
-      sub: `Bijna klaar, mist nog 1–2 checks. BTC is ${btcState}.`,
-      tone: "warn",
-    };
-  }
-  if (stage === "BUILDUP") {
-    return {
-      label: "WATCHLIST",
-      sub: "Opbouwfase. Nog niet blind instappen, wel strak volgen.",
-      tone: "warn",
-    };
-  }
-  return {
-    label: "SKIP / VOLGEN",
-    sub: "Te vroeg voor actie. Alleen watchlist.",
-    tone: "no",
-  };
-}
-
-// ==================== confidence ====================
 function scoreValue(c) {
   if (Number.isFinite(Number(c?.moveScore))) return Math.round(Number(c.moveScore));
-  if (Number.isFinite(Number(c?.edgeScore))) return Math.round(Number(c.edgeScore));
-
+  if (Number.isFinite(Number(c?.entryQuality))) return Math.round(Number(c.entryQuality));
   if (Number.isFinite(Number(c?.confidence))) {
     const v = Number(c.confidence);
     return v <= 1 ? Math.round(v * 100) : Math.round(v);
   }
   return 0;
+}
+
+function actionForStage(c, data) {
+  const stage = upperStage(c?.stage);
+  const btcState = upperStage(data?.btc?.state || "NEUTRAL");
+
+  if (stage === "ELITE_EXPANSION") {
+    return { label: "TOP PRIORITEIT", sub: `Explosieve Moon-move actief. BTC is ${btcState}.`, tone: "ok" };
+  }
+  if (stage === "ELITE_IGNITION") {
+    return { label: "FOCUS / KLAARZETTEN", sub: `Vlak voor of bij ignition. BTC is ${btcState}.`, tone: "ok" };
+  }
+  if (stage === "ALMOST") {
+    return { label: "KLAARZETTEN", sub: `Bijna klaar, mist nog 1–2 checks. BTC is ${btcState}.`, tone: "warn" };
+  }
+  if (stage === "BUILDUP") {
+    return { label: "WATCHLIST", sub: "Opbouwfase. Nog niet blind instappen, wel strak volgen.", tone: "warn" };
+  }
+  if (stage === "HOLD") {
+    return { label: "HOLD", sub: "Positie staat open.", tone: "ok" };
+  }
+  return { label: "SKIP / VOLGEN", sub: "Te vroeg voor actie. Alleen watchlist.", tone: "no" };
 }
 
 function confColor(conf) {
@@ -236,7 +203,6 @@ function confBar(conf) {
   `;
 }
 
-// ==================== rows ====================
 function coinRow(c) {
   const div = document.createElement("div");
   div.className = "coinRow";
@@ -286,7 +252,6 @@ function renderStage(targetId, arr, renderer = coinRow) {
   for (const x of arr) box.appendChild(renderer(x));
 }
 
-// ==================== status line ====================
 function btcLine(btc) {
   if (!btc) return "BTC: —";
   const state = btc.state || "—";
@@ -298,10 +263,8 @@ function btcLine(btc) {
 function renderAll(data) {
   window.__LAST_DATA__ = data;
 
-  const ts = data?.scannedAt
-    ? new Date(data.scannedAt)
-    : (data?.ts ? new Date(data.ts) : null);
-  const stamp = ts ? ts.toLocaleString() : "—";
+  const ts = getSnapshotTs(data);
+  const stamp = ts ? new Date(ts).toLocaleString() : "—";
   const counts = normalizedCounts(data);
   const funnel = normalizeMoonFunnel(data);
 
@@ -321,7 +284,6 @@ function renderAll(data) {
   renderStage("stageRadar", funnel.radar);
 }
 
-// ==================== load latest ====================
 async function loadLatest(force = false) {
   if (isLoading && !force) return;
   isLoading = true;
@@ -339,8 +301,8 @@ async function loadLatest(force = false) {
     });
 
     const text = await r.text();
-
     let j;
+
     try {
       j = JSON.parse(text);
     } catch {
@@ -351,7 +313,7 @@ async function loadLatest(force = false) {
       throw new Error(j?.error || `HTTP ${r.status}`);
     }
 
-    const ts = Number(j?.scannedAt || j?.ts || 0);
+    const ts = getSnapshotTs(j);
 
     if (!force && ts && ts === (lastTsByMode[MODE] || 0)) {
       isLoading = false;
@@ -377,7 +339,6 @@ async function loadLatest(force = false) {
   }
 }
 
-// ==================== modal helpers ====================
 function showModal(on) {
   const modal = el("modal");
   if (!modal) return;
@@ -491,7 +452,6 @@ function liquiditySummary(c) {
   };
 }
 
-// ==================== modal ====================
 function openModalMain(c) {
   showModal(true);
   setTab("Action");
@@ -545,7 +505,6 @@ function openModalMain(c) {
   if (whyList) whyList.innerHTML = "";
 
   addCheck(whyList, true, `Stage: ${stage || "—"}`, `Mode: ${MODE.toUpperCase()}`);
-
   addCheck(
     whyList,
     scoreValue(c) >= 75,
@@ -553,7 +512,6 @@ function openModalMain(c) {
     `Score: ${scoreValue(c)}/100`,
     scoreValue(c) >= 75 ? "ok" : "warn"
   );
-
   addCheck(
     whyList,
     Number(c?.vm || 0) >= 0.30,
@@ -561,7 +519,6 @@ function openModalMain(c) {
     `VM: ${safe(c.vm, 3)}`,
     Number(c?.vm || 0) >= 0.30 ? "ok" : "warn"
   );
-
   addCheck(
     whyList,
     Math.abs(Number(c?.change1h || 0)) >= 1,
@@ -569,7 +526,6 @@ function openModalMain(c) {
     `chg1h: ${fmtPct(c.change1h)}`,
     Math.abs(Number(c?.change1h || 0)) >= 1 ? "ok" : "warn"
   );
-
   addCheck(
     whyList,
     Math.abs(Number(c?.change24 || 0)) >= 6,
@@ -615,10 +571,9 @@ function openModalMain(c) {
   el("mDebug").textContent = JSON.stringify(c, null, 2);
 }
 
-// ==================== init ====================
 el("modeBull")?.addEventListener("click", () => setMode("bull"));
 el("modeBear")?.addEventListener("click", () => setMode("bear"));
 
 setMode(MODE);
-setTimeout(() => loadLatest(true), 1500);
+setTimeout(() => loadLatest(true), 1200);
 setInterval(() => loadLatest(false), 60 * 1000);
