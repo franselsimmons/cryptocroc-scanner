@@ -1,8 +1,12 @@
 {
   "crons": [
     {
-      "path": "/api/cron?mode=both&max=60&radar=200&symbols=PEPE,SONIC,TURBO",
+      "path": "/api/cron-bull",
       "schedule": "0,30 * * * *"
+    },
+    {
+      "path": "/api/cron-bear",
+      "schedule": "15,45 * * * *"
     },
     {
       "path": "/api/moon/cron-bull",
