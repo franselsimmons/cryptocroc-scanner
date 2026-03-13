@@ -115,6 +115,46 @@ function up(x) {
 }
 
 // ======================================================
+// NIEUW: BTC fallback helpers
+// ======================================================
+function isUsableBtc(btc) {
+  if (!btc) return false;
+  const price = n(btc.price, 0);
+  const chg24 = n(btc.chg24, 0);
+  const range24 = n(btc.range24, 0);
+  const state = String(btc.state || "").toUpperCase();
+
+  if (price > 0 && (Math.abs(chg24) > 0 || Math.abs(range24) > 0)) return true;
+  if (price > 0 && (state === "BULL" || state === "BEAR")) return true;
+
+  return false;
+}
+
+async function resolveBtcForMode(mode) {
+  const fresh = await fetchBTCGateFromUniverse();
+
+  if (isUsableBtc(fresh)) {
+    return fresh;
+  }
+
+  try {
+    const prevLatest = await kv.get(keyMainLatest(mode));
+    if (isUsableBtc(prevLatest?.btc)) {
+      console.warn("Main BTC fallback -> using previous latest snapshot BTC");
+      return prevLatest.btc;
+    }
+  } catch {}
+
+  return {
+    price: n(fresh?.price, 0),
+    chg24: n(fresh?.chg24, 0),
+    chg1h: n(fresh?.chg1h, 0),
+    range24: n(fresh?.range24, 0),
+    state: String(fresh?.state || "NEUTRAL").toUpperCase(),
+  };
+}
+
+// ======================================================
 // Boundary-based lock (30 min)
 // ======================================================
 function scanLockKey(mode) {
@@ -965,7 +1005,8 @@ export default async function handler(req, res) {
 
     const now = Date.now();
     const whaleFlow = await fetchExchangeFlows(); // gebruikt timeout
-    const btc = await fetchBTCGateFromUniverse(); // moet ook timeout (zie core)
+    // === GEWIJZIGD: BTC met fallback ===
+    const btc = await resolveBtcForMode(mode);
 
     const built = await buildUniverse(mode, whaleFlow, btc);
     const universe = built.coins;
@@ -1412,16 +1453,34 @@ export default async function handler(req, res) {
       hold: holdCoins.slice(0, 20),
     };
 
+    // === GEWIJZIGD: latest-object met extra velden ===
     const latest = {
       ok: true,
       mode,
       regime,
+      btc: {
+        price: n(btc?.price, 0),
+        chg24: n(btc?.chg24, 0),
+        chg1h: n(btc?.chg1h, 0),
+        range24: n(btc?.range24, 0),
+        state: String(btc?.state || "NEUTRAL").toUpperCase(),
+      },
+      whaleFlow: n(whaleFlow, 0),
       funnel: responseFunnel,
+      counts: {
+        elite_expansion: responseFunnel.elite_expansion?.length || 0,
+        elite_ignition: responseFunnel.elite_ignition?.length || 0,
+        almost: responseFunnel.almost?.length || 0,
+        buildup: responseFunnel.buildup?.length || 0,
+        radar: responseFunnel.radar?.length || 0,
+        hold: responseFunnel.hold?.length || 0,
+      },
       portfolio,
       positions: {
         open: positions.open.length,
         closed: positions.closed.length,
       },
+      ts: now,
       scannedAt: now,
     };
 
@@ -1432,5 +1491,6 @@ export default async function handler(req, res) {
     console.error("Main scan error:", err);
     res.status(500).json({ ok: false, error: err.message });
   } finally {
+    if (lockAcquired) await releaseScanLock(mode);
   }
 }
