@@ -535,7 +535,14 @@ function decideMainStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
       ? n(btc?.chg24, 0) >= 0.8 && n(btc?.range24, 0) >= 2.8
       : n(btc?.chg24, 0) <= -0.8 && n(btc?.range24, 0) >= 2.8;
 
-  if (volAcc.short < 1.04 && volAcc.medium < 1.12 && moveScore < 76) {
+  // === AANGEPASTE VOLUME-ACCELERATIE CHECK ===
+  if (
+    volAcc.short < 1.01 &&
+    volAcc.medium < 1.06 &&
+    moveScore < 70 &&
+    !breakout.ready &&
+    persistenceScore < 56
+  ) {
     return {
       stage: "ALMOST",
       stageWhy: "volume_not_accelerating",
@@ -575,11 +582,12 @@ function decideMainStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
     ) {
       stage = "ELITE_IGNITION";
       eliteType = "ignition";
+    // === AANGEPASTE BULL ALMOST ===
     } else if (
-      n(coin.change1h, 0) >= n(cfg.minCh1hAlmost, 0) &&
-      n(coin.change24, 0) >= n(cfg.minCh24Almost, 0) &&
-      n(coin.vm, 0) >= n(cfg.minVmAlmost, 0) &&
-      velocity >= n(cfg.strongVelocity, 0)
+      n(coin.change1h, 0) >= Math.max(0.7, n(cfg.minCh1hAlmost, 0) - 0.25) &&
+      n(coin.change24, 0) >= Math.max(4.8, n(cfg.minCh24Almost, 0) - 1.2) &&
+      n(coin.vm, 0) >= Math.max(0.17, n(cfg.minVmAlmost, 0) - 0.03) &&
+      velocity >= Math.max(0.09, n(cfg.strongVelocity, 0) - 0.02)
     ) {
       stage = "ALMOST";
     } else if (
@@ -615,11 +623,12 @@ function decideMainStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
     ) {
       stage = "ELITE_IGNITION";
       eliteType = "ignition";
+    // === AANGEPASTE BEAR ALMOST ===
     } else if (
-      n(coin.change1h, 0) <= n(cfg.maxCh1hAlmost, 0) &&
-      n(coin.change24, 0) <= n(cfg.maxCh24Almost, 0) &&
-      n(coin.vm, 0) >= n(cfg.minVmAlmost, 0) &&
-      velocity >= n(cfg.strongVelocity, 0)
+      n(coin.change1h, 0) <= Math.min(-0.7, n(cfg.maxCh1hAlmost, 0) + 0.25) &&
+      n(coin.change24, 0) <= Math.min(-4.8, n(cfg.maxCh24Almost, 0) + 1.2) &&
+      n(coin.vm, 0) >= Math.max(0.17, n(cfg.minVmAlmost, 0) - 0.03) &&
+      velocity >= Math.max(0.09, n(cfg.strongVelocity, 0) - 0.02)
     ) {
       stage = "ALMOST";
     } else if (
@@ -829,12 +838,13 @@ async function buildUniverse(mode, whaleFlow, btc) {
       marketScore,
     });
 
+    // === AANGEPASTE TRADE CANDIDATE DREMPELS ===
     const tradeCandidate =
-      perfectCandidateScore >= 85 &&
-      qualityScore >= 78 &&
-      timingScore >= 80 &&
-      liquidityScore >= 78 &&
-      marketScore >= 60;
+      perfectCandidateScore >= 73 &&
+      qualityScore >= 66 &&
+      timingScore >= 68 &&
+      liquidityScore >= 62 &&
+      marketScore >= 52;
 
     const scannerOnly = !tradeCandidate;
 
@@ -1256,11 +1266,11 @@ export default async function handler(req, res) {
           coin.ob?.valid === true &&
           coin.ob?.fresh === true &&
           Math.abs(coin.ob?.score || 0) >= 0.04 &&  // extra eis voor Main
-          (coin.perfectCandidateScore || 0) >= 85 &&
-          (coin.qualityScore || 0) >= 78 &&
-          (coin.timingScore || 0) >= 80 &&
-          (coin.liquidityScore || 0) >= 78 &&
-          (coin.marketScore || 0) >= 60
+          (coin.perfectCandidateScore || 0) >= 73 &&
+          (coin.qualityScore || 0) >= 66 &&
+          (coin.timingScore || 0) >= 68 &&
+          (coin.liquidityScore || 0) >= 62 &&
+          (coin.marketScore || 0) >= 52
         );
       }
 
@@ -1592,8 +1602,9 @@ export default async function handler(req, res) {
     };
 
     // Candidate lijsten voor trade pagina
+    // === AANGEPASTE PREMIUM DREMPEL ===
     const premiumCandidates = universe
-      .filter((c) => (c.perfectCandidateScore || 0) >= 90)
+      .filter((c) => (c.perfectCandidateScore || 0) >= 82)
       .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
       .slice(0, 10);
 
