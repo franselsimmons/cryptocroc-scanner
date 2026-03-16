@@ -863,15 +863,31 @@ async function buildUniverse(mode, whaleFlow, btc) {
       marketScore,
     });
 
-    // === AANGEPASTE TRADE CANDIDATE DREMPELS ===
-    const tradeCandidate =
-      perfectCandidateScore >= 71 &&
-      qualityScore >= 64 &&
-      timingScore >= 66 &&
-      liquidityScore >= 58 &&
-      marketScore >= 50;
+    // === NIEUWE TRADE CANDIDATE / SUPER SCANNER LOGICA ===
+    const superScannerCoin =
+      perfectCandidateScore >= 76 &&
+      qualityScore >= 70 &&
+      (
+        stage === "ELITE_IGNITION" ||
+        stage === "ELITE_EXPANSION" ||
+        stage === "ELITE_CASCADE" ||
+        stage === "ALMOST"
+      );
 
-    const scannerOnly = !tradeCandidate;
+    const tradeCandidate =
+      perfectCandidateScore >= 80 &&
+      qualityScore >= 72 &&
+      timingScore >= 74 &&
+      liquidityScore >= 68 &&
+      marketScore >= 52 &&
+      (
+        stage === "ELITE_IGNITION" ||
+        stage === "ELITE_EXPANSION" ||
+        stage === "ELITE_CASCADE" ||
+        stage === "ALMOST"
+      );
+
+    const scannerOnly = !superScannerCoin;
 
     // ===== TRADE ENGINE: coinForDecision =====
     const coinForDecision = {
@@ -924,6 +940,25 @@ async function buildUniverse(mode, whaleFlow, btc) {
       mode,
       coinProfile,
     });
+
+    // Bepaal tradeDeskStatus en pas execution.action aan
+    const tradeDeskStatus =
+      execution.ready === true && tradeCandidate === true
+        ? "OPEN"
+        : superScannerCoin
+          ? "WATCH"
+          : "IGNORE";
+
+    if (tradeDeskStatus === "OPEN") {
+      execution.action = "OPEN";
+      execution.ready = true;
+    } else if (tradeDeskStatus === "WATCH") {
+      execution.action = "WATCH";
+      execution.ready = false;
+    } else {
+      execution.action = "IGNORE";
+      execution.ready = false;
+    }
 
     out.push({
       id: coin.id,
@@ -994,21 +1029,14 @@ async function buildUniverse(mode, whaleFlow, btc) {
       marketScore,
       btcAlignmentScore,
       perfectCandidateScore,
+      superScannerCoin,
       tradeCandidate,
       scannerOnly,
+      tradeDeskStatus,
       // Trade engine velden
       systemType: "moon",
       coinProfile,
-      execution: {
-        ready: execution.ready,
-        action: execution.action,
-        score: execution.score,
-        side: execution.side,
-        reason: execution.reason,
-        positionSizeUsd: execution.positionSizeUsd,
-        checklist: execution.checklist,
-        thresholds: execution.thresholds,
-      },
+      execution,
       range24: n(coin.range24, 0),
       _state: {
         priceHist: priceHistNext,
@@ -1272,28 +1300,31 @@ export default async function handler(req, res) {
       const thesisInfo = calculateThesisDamage(coin, prev, mode);
       const tradePlan = coin.tradePlan;
 
-      // entryReady met tradeCandidate en scores
+      // entryReady met tradeCandidate en scores, inclusief ALMOST
       let entryReady = false;
       if (!hasOpenPosition) {
         entryReady = (
           coin.tradeCandidate === true &&
-          (rawStage === "ELITE_IGNITION" || rawStage === "ELITE_EXPANSION" || rawStage === "ELITE_CASCADE") &&
-          strongScans >= STRONG_SCANS_NEEDED_FOR_ENTRY &&
-          eliteScans >= MIN_ELITE_SCANS_BEFORE_ENTRY &&
+          (
+            rawStage === "ELITE_IGNITION" ||
+            rawStage === "ELITE_EXPANSION" ||
+            rawStage === "ELITE_CASCADE" ||
+            rawStage === "ALMOST"
+          ) &&
+          strongScans >= 1 &&
+          eliteScans >= 1 &&
           candidateSince != null &&
-          eliteSince != null &&
           entryLocked === false &&
           thesisInvalidScans === 0 &&
           coin.tradePlan != null &&
-          coin.breakout?.ready === true &&
-          coin.thresholds?.depthOk === true &&
           coin.ob?.valid === true &&
           coin.ob?.fresh === true &&
-          (coin.perfectCandidateScore || 0) >= 71 &&
-          (coin.qualityScore || 0) >= 64 &&
-          (coin.timingScore || 0) >= 66 &&
-          (coin.liquidityScore || 0) >= 58 &&
-          (coin.marketScore || 0) >= 50
+          coin.breakout?.ready === true &&
+          (coin.perfectCandidateScore || 0) >= 80 &&
+          (coin.qualityScore || 0) >= 72 &&
+          (coin.timingScore || 0) >= 74 &&
+          (coin.liquidityScore || 0) >= 68 &&
+          (coin.marketScore || 0) >= 52
         );
       }
 
@@ -1343,8 +1374,10 @@ export default async function handler(req, res) {
         marketScore: coin.marketScore,
         btcAlignmentScore: coin.btcAlignmentScore,
         perfectCandidateScore: coin.perfectCandidateScore,
+        superScannerCoin: !!coin.superScannerCoin,
         tradeCandidate: !!coin.tradeCandidate,
         scannerOnly: !!coin.scannerOnly,
+        tradeDeskStatus: coin.tradeDeskStatus || "IGNORE",
       };
     }
 
@@ -1626,19 +1659,23 @@ export default async function handler(req, res) {
     };
 
     // Candidate lijsten voor trade pagina
-    // === AANGEPASTE PREMIUM DREMPEL ===
     const premiumCandidates = universe
-      .filter((c) => (c.perfectCandidateScore || 0) >= 80)
+      .filter((c) => c.superScannerCoin === true)
       .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
-      .slice(0, 10);
+      .slice(0, 12);
 
     const tradeReadyCandidates = universe
-      .filter((c) => c.tradeCandidate === true)
+      .filter((c) => c.tradeDeskStatus === "OPEN")
+      .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
+      .slice(0, 20);
+
+    const watchCandidates = universe
+      .filter((c) => c.tradeDeskStatus === "WATCH")
       .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
       .slice(0, 20);
 
     const scannerOnlyCandidates = universe
-      .filter((c) => !c.tradeCandidate)
+      .filter((c) => c.superScannerCoin !== true)
       .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
       .slice(0, 20);
 
@@ -1666,6 +1703,7 @@ export default async function handler(req, res) {
       candidates: {
         premium: premiumCandidates,
         tradeReady: tradeReadyCandidates,
+        watch: watchCandidates,
         scannerOnly: scannerOnlyCandidates,
       },
       portfolio,
