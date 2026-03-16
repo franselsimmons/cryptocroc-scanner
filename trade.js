@@ -219,12 +219,13 @@ async function loadAll() {
 
   LAST_ROWS = rows;
 
+  // Gebruik tradeDeskStatus voor indeling
   const ready = rows
-    .filter((r) => r.coin?.execution?.ready === true && r.coin?.execution?.action === "OPEN")
+    .filter((r) => r.coin?.tradeDeskStatus === "OPEN")
     .sort((a, b) => (b.coin?.execution?.score || 0) - (a.coin?.execution?.score || 0));
 
   const watch = rows
-    .filter((r) => r.coin?.execution?.ready !== true && (r.coin?.execution?.action === "WATCH" || r.coin?.execution?.action === "HOLD"))
+    .filter((r) => r.coin?.tradeDeskStatus === "WATCH")
     .sort((a, b) => (b.coin?.execution?.score || 0) - (a.coin?.execution?.score || 0));
 
   renderList("tradeReadyList", ready);
