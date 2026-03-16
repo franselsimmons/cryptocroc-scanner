@@ -1276,20 +1276,22 @@ export default async function handler(req, res) {
       const thesisInfo = calculateThesisDamage(coin, prev, mode);
       const tradePlan = coin.tradePlan;
 
-      // Main strengere entryReady – inclusief ALMOST en lagere ob‑score
+      // ===== AANGEPASTE ENTRYREADY (ALMOST apart) =====
+      const isEliteStage =
+        rawStage === "ELITE_IGNITION" ||
+        rawStage === "ELITE_EXPANSION" ||
+        rawStage === "ELITE_CASCADE";
+      const isAlmostStage = rawStage === "ALMOST";
+
       let entryReady = false;
       if (!hasOpenPosition) {
         entryReady = (
           coin.tradeCandidate === true &&
+          (isEliteStage || isAlmostStage) &&
           (
-            rawStage === "ELITE_IGNITION" ||
-            rawStage === "ELITE_EXPANSION" ||
-            rawStage === "ELITE_CASCADE" ||
-            rawStage === "ALMOST"
+            (isEliteStage && strongScans >= 2 && eliteScans >= 1) ||
+            (isAlmostStage && candidateSince != null)
           ) &&
-          strongScans >= 2 &&
-          eliteScans >= 1 &&
-          candidateSince != null &&
           entryLocked === false &&
           thesisInvalidScans === 0 &&
           coin.tradePlan != null &&
