@@ -1507,6 +1507,7 @@ export default async function handler(req, res) {
 
         const prevPnl = coinState.pnlPct || 0;
         const stageNow = coin?.stage || coinState.stage || "";
+        // ===== AANGEPAST: position update bij significante verandering =====
         if (Math.abs(pnlPct - prevPnl) >= 2.0 || thesisDamage.damage !== (coinState.thesisDamage || 0) || stageNow !== coinState.stage) {
           await safePushEvent("scan_hold", {
             mode,
@@ -1515,6 +1516,24 @@ export default async function handler(req, res) {
             pnlPct,
             thesisDamage: thesisDamage.damage,
             reasons: thesisDamage.reasons,
+          });
+
+          await safeSendSignal({
+            source: "main",
+            stage: stageNow || "HOLD",
+            mode,
+            coin: coin || {
+              symbol: sym,
+              price: priceNow,
+              tradePlan: coinState.tradePlan,
+              pnlPct,
+            },
+            btcState: btc?.state || "NEUTRAL",
+            kind: "position_update",
+            pnl: pnlPct,
+            reason: thesisDamage.damage > 0
+              ? `Thesis damage ${thesisDamage.damage}`
+              : `Position update ${pnlPct.toFixed(2)}%`,
           });
         }
       }
