@@ -1565,12 +1565,18 @@ export default async function handler(req, res) {
     positions.open = updatedOpen;
 
     // ------------------------------------------------------------
-    // 3) Nieuwe entries openen op basis van entryReady
+    // 3) Nieuwe entries openen (alleen ELITE stages, niet ALMOST)
     // ------------------------------------------------------------
     const entryCandidates = [];
     for (const sym of Object.keys(nextState)) {
       const state = nextState[sym];
-      if (state.entryReady && state.tradeCandidate === true && !openMap.has(sym)) {
+      const isEliteStage =
+        state.stage === "ELITE_IGNITION" ||
+        state.stage === "ELITE_EXPANSION" ||
+        state.stage === "ELITE_CASCADE";
+
+      // Alleen openen als het een ELITE stage is (geen ALMOST)
+      if (state.entryReady && state.tradeCandidate === true && isEliteStage && !openMap.has(sym)) {
         const coin = universeMap.get(sym);
         if (!coin || !coin.tradePlan) continue;
 
@@ -1725,8 +1731,7 @@ export default async function handler(req, res) {
         price: n(btc?.price, 0),
         chg24: n(btc?.chg24, 0),
         chg1h: n(btc?.chg1h, 0),
-        range24: n(btc?.range24, 
-0),
+        range24: n(btc?.range24, 0),
         state: String(btc?.state || "NEUTRAL").toUpperCase(),
       },
       whaleFlow: n(whaleFlow, 0),
