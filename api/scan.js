@@ -1281,7 +1281,7 @@ export default async function handler(req, res) {
       const thesisInfo = calculateThesisDamage(coin, prev, mode);
       const tradePlan = coin.tradePlan;
 
-      // ===== AANGEPASTE ENTRYREADY (ALMOST apart) =====
+      // ===== AANGEPASTE ENTRYREADY (soepelere drempels) =====
       const isEliteStage =
         rawStage === "ELITE_IGNITION" ||
         rawStage === "ELITE_EXPANSION" ||
@@ -1304,11 +1304,12 @@ export default async function handler(req, res) {
           coin.ob?.fresh === true &&
           coin.breakout?.ready === true &&
           Math.abs(coin.ob?.score || 0) >= 0.025 &&
-          (coin.perfectCandidateScore || 0) >= 83 &&
-          (coin.qualityScore || 0) >= 74 &&
-          (coin.timingScore || 0) >= 76 &&
-          (coin.liquidityScore || 0) >= 72 &&
-          (coin.marketScore || 0) >= 55
+          // AANGEPAST: drempels verlaagd
+          (coin.perfectCandidateScore || 0) >= 78 &&   // was 83
+          (coin.qualityScore || 0) >= 70 &&            // was 74
+          (coin.timingScore || 0) >= 72 &&             // was 76
+          (coin.liquidityScore || 0) >= 68 &&          // was 72
+          (coin.marketScore || 0) >= 52                // was 55
         );
       }
 
