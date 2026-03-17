@@ -916,9 +916,14 @@ async function buildUniverse(mode, whaleFlow, btc) {
       coinProfile,
     });
 
-    // Bepaal tradeDeskStatus en pas execution.action aan
+    // ===== AANGEPAST: tradeDeskStatus alleen OPEN voor ELITE stages =====
+    const isEliteStageForDesk =
+      stage === "ELITE_IGNITION" ||
+      stage === "ELITE_EXPANSION" ||
+      stage === "ELITE_CASCADE";
+
     const tradeDeskStatus =
-      execution.ready === true && tradeCandidate === true
+      execution.ready === true && tradeCandidate === true && isEliteStageForDesk
         ? "OPEN"
         : superScannerCoin
           ? "WATCH"
