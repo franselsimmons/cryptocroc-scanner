@@ -1613,14 +1613,31 @@ export default async function handler(req, res) {
         eliteType: newPos.eliteType,
       });
 
-      await safeSendSignal({
-        source: "main",
-        stage: coin.stage,
-        mode,
-        coin: coin,
-        btcState: btc?.state || "NEUTRAL",
-        kind: "trade_opened",
-      });
+      // ===== AANGEPAST: trade_opened alleen voor ELITE, anders gewoon signaal =====
+      if (
+        coin.stage === "ELITE_IGNITION" ||
+        coin.stage === "ELITE_EXPANSION" ||
+        coin.stage === "ELITE_CASCADE"
+      ) {
+        await safeSendSignal({
+          source: "main",
+          stage: coin.stage,
+          mode,
+          coin: coin,
+          btcState: btc?.state || "NEUTRAL",
+          kind: "trade_opened",
+        });
+      } else {
+        await safeSendSignal({
+          source: "main",
+          stage: coin.stage,
+          mode,
+          coin: coin,
+          btcState: btc?.state || "NEUTRAL",
+          kind: "signal",
+          reason: "bijna klaar, nog niet blind openen",
+        });
+      }
     }
 
     // ------------------------------------------------------------
