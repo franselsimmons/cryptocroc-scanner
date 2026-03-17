@@ -1542,12 +1542,18 @@ export default async function handler(req, res) {
     positions.open = updatedOpen;
 
     // ------------------------------------------------------------
-    // 3) Nieuwe entries openen
+    // 3) Nieuwe entries openen (alleen ELITE stages, niet ALMOST)
     // ------------------------------------------------------------
     const entryCandidates = [];
     for (const sym of Object.keys(nextState)) {
       const state = nextState[sym];
-      if (state.entryReady && state.tradeCandidate === true && !openMap.has(sym)) {
+      const isEliteStage =
+        state.stage === "ELITE_IGNITION" ||
+        state.stage === "ELITE_EXPANSION" ||
+        state.stage === "ELITE_CASCADE";
+
+      // Alleen openen als het een ELITE stage is (geen ALMOST)
+      if (state.entryReady && state.tradeCandidate === true && isEliteStage && !openMap.has(sym)) {
         const coin = universeMap.get(sym);
         if (!coin || !coin.tradePlan) continue;
 
