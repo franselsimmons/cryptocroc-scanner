@@ -1387,6 +1387,37 @@ export default async function handler(req, res) {
         scannerOnly: !!coin.scannerOnly,
         tradeDeskStatus: coin.tradeDeskStatus || "IGNORE",
       };
+
+      // ===== FUNNEL SIGNALEN VOOR COINS ZONDER OPEN POSITIE =====
+      const shouldSendFunnelSignal =
+        !hasOpenPosition &&
+        (
+          rawStage === "RADAR" ||
+          rawStage === "BUILDUP" ||
+          rawStage === "ALMOST" ||
+          rawStage === "ELITE_IGNITION" ||
+          rawStage === "ELITE_EXPANSION" ||
+          rawStage === "ELITE_CASCADE"
+        );
+
+      if (shouldSendFunnelSignal) {
+        await safeSendSignal({
+          source: "moon",
+          stage: rawStage,
+          mode,
+          coin,
+          btcState: btc?.state || "NEUTRAL",
+          kind: "signal",
+          reason:
+            rawStage === "ALMOST"
+              ? "bijna klaar, nog niet blind openen"
+              : rawStage === "BUILDUP"
+                ? "setup bouwt verder op"
+                : rawStage === "RADAR"
+                  ? "verse radar setup"
+                  : "sterke setup, maar nog geen live entry",
+        });
+      }
     }
 
     // ------------------------------------------------------------
