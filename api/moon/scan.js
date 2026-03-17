@@ -1305,7 +1305,7 @@ export default async function handler(req, res) {
       const thesisInfo = calculateThesisDamage(coin, prev, mode);
       const tradePlan = coin.tradePlan;
 
-      // ===== AANGEPASTE ENTRYREADY (ALMOST apart) =====
+      // ===== AANGEPASTE ENTRYREADY (soepelere drempels) =====
       const isEliteStage =
         rawStage === "ELITE_IGNITION" ||
         rawStage === "ELITE_EXPANSION" ||
@@ -1327,11 +1327,12 @@ export default async function handler(req, res) {
           coin.ob?.valid === true &&
           coin.ob?.fresh === true &&
           coin.breakout?.ready === true &&
-          (coin.perfectCandidateScore || 0) >= 80 &&
-          (coin.qualityScore || 0) >= 72 &&
-          (coin.timingScore || 0) >= 74 &&
-          (coin.liquidityScore || 0) >= 68 &&
-          (coin.marketScore || 0) >= 52
+          // AANGEPAST: drempels verlaagd
+          (coin.perfectCandidateScore || 0) >= 74 &&   // was 80
+          (coin.qualityScore || 0) >= 66 &&            // was 72
+          (coin.timingScore || 0) >= 68 &&             // was 74
+          (coin.liquidityScore || 0) >= 64 &&          // was 68
+          (coin.marketScore || 0) >= 48                // was 52
         );
       }
 
@@ -1700,77 +1701,4 @@ export default async function handler(req, res) {
       })
       .filter(Boolean);
 
-    holdCoins.sort((a, b) => Math.abs(b.pnlPct) - Math.abs(a.pnlPct));
-
-    const responseFunnel = {
-      ...funnel,
-      hold: holdCoins.slice(0, 20),
-    };
-
-    // Candidate lijsten voor trade pagina
-    const premiumCandidates = universe
-      .filter((c) => c.superScannerCoin === true)
-      .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
-      .slice(0, 12);
-
-    const tradeReadyCandidates = universe
-      .filter((c) => c.tradeDeskStatus === "OPEN")
-      .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
-      .slice(0, 20);
-
-    const watchCandidates = universe
-      .filter((c) => c.tradeDeskStatus === "WATCH")
-      .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
-      .slice(0, 20);
-
-    const scannerOnlyCandidates = universe
-      .filter((c) => c.superScannerCoin !== true)
-      .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
-      .slice(0, 20);
-
-    const latest = {
-      ok: true,
-      mode,
-      regime,
-      btc: {
-        price: n(btc?.price, 0),
-        chg24: n(btc?.chg24, 0),
-        chg1h: n(btc?.chg1h, 0),
-        range24: n(btc?.range24, 0),
-        state: String(btc?.state || "NEUTRAL").toUpperCase(),
-      },
-      whaleFlow: n(whaleFlow, 0),
-      funnel: responseFunnel,
-      counts: {
-        elite_expansion: responseFunnel.elite_expansion?.length || 0,
-        elite_ignition: responseFunnel.elite_ignition?.length || 0,
-        almost: responseFunnel.almost?.length || 0,
-        buildup: responseFunnel.buildup?.length || 0,
-        radar: responseFunnel.radar?.length || 0,
-        hold: responseFunnel.hold?.length || 0,
-      },
-      candidates: {
-        premium: premiumCandidates,
-        tradeReady: tradeReadyCandidates,
-        watch: watchCandidates,
-        scannerOnly: scannerOnlyCandidates,
-      },
-      portfolio,
-      positions: {
-        open: positions.open.length,
-        closed: positions.closed.length,
-      },
-      ts: now,
-      scannedAt: now,
-    };
-
-    await kv.set(keyMoonLatest(mode), latest, { ex: 60 * 60 });
-
-    res.status(200).json(latest);
-  } catch (err) {
-    console.error("Moon scan error:", err);
-    res.status(500).json({ ok: false, error: err.message });
-  } finally {
-    if (lockAcquired) await releaseScanLock(mode);
-  }
-}
+    hold
