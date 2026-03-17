@@ -147,4 +147,108 @@ function setKV(container, rows) {
 
 function renderChecks(container, checks) {
   if (!container) return;
-  container.innerHTML = (checks || []).map((c
+  container.innerHTML = (checks || []).map((c) => {
+    return `
+      <div class="checkItem">
+        <div class="checkTitle">${c.ok ? "✓" : "✗"} ${c.name}</div>
+        <div class="checkSub">waarde: ${c.value} • nodig: ${c.need}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+function openModal(row) {
+  const c = row.coin;
+  const ex = c.execution || {};
+  const plan = c.tradePlan || {};
+
+  el("mTitle").textContent = `${c.symbol} • ${row.sourceLabel} • ${ex.action || "—"}`;
+  el("mSub").textContent =
+    `price $${safe(c.price, 6)} • side ${ex.side || "—"} • stage ${c.stage || "—"} • score ${ex.score || 0}`;
+
+  setKV(el("mPlan"), [
+    ["System", row.sourceLabel],
+    ["Action", ex.action || "—"],
+    ["Side", ex.side || "—"],
+    ["Position size", `$${ex.positionSizeUsd || "—"}`],
+    ["Entry", `$${safe(plan.entry, 6)}`],
+    ["SL", `$${safe(plan.sl, 6)}`],
+    ["TP", `$${safe(plan.tp, 6)}`],
+    ["RR", safe(plan.rr, 2)],
+    ["Reason", ex.reason || "—"],
+  ]);
+
+  renderChecks(el("mChecks"), ex.checklist || []);
+  el("mReason").textContent = ex.reason || "—";
+  el("mDebug").textContent = JSON.stringify(row, null, 2);
+  el("modal").classList.remove("hidden");
+}
+
+async function loadAll() {
+  const status = el("statusLine");
+  if (status) status.textContent = "Status: laden…";
+
+  const settled = await Promise.allSettled(
+    SOURCES.map(async (src) => {
+      const r = await fetch(src.url, {
+        cache: "no-store",
+        headers: { "cache-control": "no-cache" },
+      });
+      const txt = await r.text();
+      let json;
+      try {
+        json = JSON.parse(txt);
+      } catch {
+        throw new Error(`${src.label}: ongeldige JSON`);
+      }
+      if (!r.ok) throw new Error(`${src.label}: HTTP ${r.status}`);
+      return { src, json };
+    })
+  );
+
+  const rows = [];
+  const failed = [];
+
+  for (const item of settled) {
+    if (item.status === "fulfilled") {
+      rows.push(...normalizeRows(item.value.json, item.value.src));
+    } else {
+      failed.push(String(item.reason?.message || item.reason));
+    }
+  }
+
+  LAST_ROWS = rows;
+
+  // ===== AANGEPAST: toon HOLD ook als open trade =====
+  const ready = rows
+    .filter((r) => {
+      const stage = String(r.coin?.stage || "").toUpperCase();
+      return r.coin?.tradeDeskStatus === "OPEN" || stage === "HOLD";
+    })
+    .sort((a, b) => (b.coin?.execution?.score || 0) - (a.coin?.execution?.score || 0));
+
+  const watch = rows
+    .filter((r) => {
+      const stage = String(r.coin?.stage || "").toUpperCase();
+      return r.coin?.tradeDeskStatus === "WATCH" && stage !== "HOLD";
+    })
+    .sort((a, b) => (b.coin?.execution?.score || 0) - (a.coin?.execution?.score || 0));
+
+  renderList("tradeReadyList", ready);
+  renderList("watchList", watch);
+
+  if (status) {
+    status.textContent =
+      `OPEN ${ready.length} • WATCH ${watch.length}` +
+      (failed.length ? ` • fouten: ${failed.join(" | ")}` : "");
+  }
+}
+
+el("refreshBtn")?.addEventListener("click", loadAll);
+el("mClose")?.addEventListener("click", () => el("modal").classList.add("hidden"));
+el("modal")?.addEventListener("click", (e) => {
+  if (e.target.id === "modal") el("modal").classList.add("hidden");
+});
+
+loadAll();
+setInterval(loadAll, 60 * 1000);
