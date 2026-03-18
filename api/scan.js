@@ -1,3 +1,4 @@
+// api/scan.js (Main)
 import { kv } from "@vercel/kv";
 
 import {
@@ -1364,16 +1365,12 @@ export default async function handler(req, res) {
         tradeDeskStatus: coin.tradeDeskStatus || "IGNORE",
       };
 
-      // ===== FUNNEL SIGNALEN VOOR COINS ZONDER OPEN POSITIE =====
-      // Alleen RADAR, BUILDUP en ALMOST sturen; ELITE stages worden later als trade_opened gestuurd
-      if (
-        !hasOpenPosition &&
-        (
-          rawStage === "RADAR" ||
-          rawStage === "BUILDUP" ||
-          rawStage === "ALMOST"
-        )
-      ) {
+      // ===== AANGEPASTE FUNNEL SIGNALEN =====
+      const isElitePreTrade = coin.tradeDeskStatus === "WATCH";
+      const isRegularFunnelSignal = rawStage === "RADAR" || rawStage === "BUILDUP";
+
+      // Gewone funnel signalen (RADAR, BUILDUP)
+      if (!hasOpenPosition && isRegularFunnelSignal) {
         await safeSendSignal({
           source: "main",
           stage: rawStage,
@@ -1382,11 +1379,22 @@ export default async function handler(req, res) {
           btcState: btc?.state || "NEUTRAL",
           kind: "signal",
           reason:
-            rawStage === "ALMOST"
-              ? "bijna entry klaar — zet hem klaar"
-              : rawStage === "BUILDUP"
-                ? "setup bouwt op"
-                : "nieuwe radar setup",
+            rawStage === "BUILDUP"
+              ? "setup bouwt op"
+              : "nieuwe radar setup",
+        });
+      }
+
+      // Elite pre-trade (WATCH-status coins)
+      if (!hasOpenPosition && isElitePreTrade) {
+        await safeSendSignal({
+          source: "main",
+          stage: rawStage,
+          mode,
+          coin,
+          btcState: btc?.state || "NEUTRAL",
+          kind: "elite_watch",
+          reason: "bijna entry klaar — zet hem klaar",
         });
       }
     }
