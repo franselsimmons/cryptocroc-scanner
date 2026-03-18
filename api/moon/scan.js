@@ -1388,16 +1388,14 @@ export default async function handler(req, res) {
         tradeDeskStatus: coin.tradeDeskStatus || "IGNORE",
       };
 
-      // ===== FUNNEL SIGNALEN VOOR COINS ZONDER OPEN POSITIE =====
+      // ===== AANGEPASTE FUNNEL SIGNALEN VOOR COINS ZONDER OPEN POSITIE =====
+      // Alleen RADAR, BUILDUP en ALMOST sturen; ELITE stages worden later als trade_opened gestuurd
       const shouldSendFunnelSignal =
         !hasOpenPosition &&
         (
           rawStage === "RADAR" ||
           rawStage === "BUILDUP" ||
-          rawStage === "ALMOST" ||
-          rawStage === "ELITE_IGNITION" ||
-          rawStage === "ELITE_EXPANSION" ||
-          rawStage === "ELITE_CASCADE"
+          rawStage === "ALMOST"
         );
 
       if (shouldSendFunnelSignal) {
@@ -1410,12 +1408,10 @@ export default async function handler(req, res) {
           kind: "signal",
           reason:
             rawStage === "ALMOST"
-              ? "bijna klaar, nog niet blind openen"
+              ? "bijna entry klaar — zet hem klaar"
               : rawStage === "BUILDUP"
-                ? "setup bouwt verder op"
-                : rawStage === "RADAR"
-                  ? "verse radar setup"
-                  : "sterke setup, maar nog geen live entry",
+                ? "setup bouwt op"
+                : "nieuwe radar setup",
         });
       }
     }
