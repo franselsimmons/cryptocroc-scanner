@@ -1,4 +1,3 @@
-// api/scan.js (Main)
 import { kv } from "@vercel/kv";
 
 import {
@@ -1366,18 +1365,15 @@ export default async function handler(req, res) {
       };
 
       // ===== FUNNEL SIGNALEN VOOR COINS ZONDER OPEN POSITIE =====
-      const shouldSendFunnelSignal =
+      // Alleen RADAR, BUILDUP en ALMOST sturen; ELITE stages worden later als trade_opened gestuurd
+      if (
         !hasOpenPosition &&
         (
           rawStage === "RADAR" ||
           rawStage === "BUILDUP" ||
-          rawStage === "ALMOST" ||
-          rawStage === "ELITE_IGNITION" ||
-          rawStage === "ELITE_EXPANSION" ||
-          rawStage === "ELITE_CASCADE"
-        );
-
-      if (shouldSendFunnelSignal) {
+          rawStage === "ALMOST"
+        )
+      ) {
         await safeSendSignal({
           source: "main",
           stage: rawStage,
@@ -1387,12 +1383,10 @@ export default async function handler(req, res) {
           kind: "signal",
           reason:
             rawStage === "ALMOST"
-              ? "bijna klaar, nog niet blind openen"
+              ? "bijna entry klaar — zet hem klaar"
               : rawStage === "BUILDUP"
-                ? "setup bouwt verder op"
-                : rawStage === "RADAR"
-                  ? "verse radar setup"
-                  : "sterke setup, maar nog geen live entry",
+                ? "setup bouwt op"
+                : "nieuwe radar setup",
         });
       }
     }
