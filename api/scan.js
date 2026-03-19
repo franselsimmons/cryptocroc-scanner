@@ -1398,16 +1398,9 @@ export default async function handler(req, res) {
         });
       }
 
-      // ===== NIEUW: Main scanner ENTRY-signalen voor Abbo 2 =====
-      if (
-        !hasOpenPosition &&                     // geen open positie in dit symbool
-        coin.tradeCandidate === true &&          // voldoet aan de strengste eisen
-        (
-          coin.stage === "ELITE_IGNITION" ||
-          coin.stage === "ELITE_EXPANSION" ||
-          coin.stage === "ELITE_CASCADE"
-        )
-      ) {
+      // ===== NIEUW (aangepast): Main scanner ENTRY-signalen voor Abbo 2 =====
+      // Gebruik exact dezelfde set als de UI-tabel "tradeReadyCandidates" (status "OPEN")
+      if (!hasOpenPosition && coin.tradeDeskStatus === "OPEN") {
         await safeSendSignal({
           source: "main",
           stage: "ENTRY",                        // forceer stage "ENTRY" voor de router
