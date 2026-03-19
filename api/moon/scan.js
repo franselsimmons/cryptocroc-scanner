@@ -1420,6 +1420,25 @@ export default async function handler(req, res) {
           reason: "bijna entry klaar — zet hem klaar",
         });
       }
+
+      // ===== NIEUW: Moon elite scanner-signalen voor Abbo 2 =====
+      if (
+        !hasOpenPosition &&
+        (
+          coin.stage === "ELITE_IGNITION" ||
+          coin.stage === "ELITE_EXPANSION"
+        )
+      ) {
+        await safeSendSignal({
+          source: "moon",
+          stage: coin.stage,
+          mode,
+          coin,
+          btcState: btc?.state || "NEUTRAL",
+          kind: "signal",
+          reason: "Moon elite scanner setup",
+        });
+      }
     }
 
     // ------------------------------------------------------------
