@@ -850,11 +850,11 @@ async function buildUniverse(mode, whaleFlow, btc) {
       );
 
     const tradeCandidate =
-      perfectCandidateScore >= 83 &&
-      qualityScore >= 74 &&
-      timingScore >= 76 &&
-      liquidityScore >= 72 &&
-      marketScore >= 55 &&
+      perfectCandidateScore >= 80 &&
+      qualityScore >= 72 &&
+      timingScore >= 73 &&
+      liquidityScore >= 69 &&
+      marketScore >= 52 &&
       (
         stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
@@ -1294,7 +1294,7 @@ export default async function handler(req, res) {
           coin.tradeCandidate === true &&
           (isEliteStage || isAlmostStage) &&
           (
-            (isEliteStage && strongScans >= 2 && eliteScans >= 1) ||
+            (isEliteStage && strongScans >= 1 && eliteScans >= 1) ||
             (isAlmostStage && candidateSince != null)
           ) &&
           entryLocked === false &&
@@ -1303,13 +1303,12 @@ export default async function handler(req, res) {
           coin.ob?.valid === true &&
           coin.ob?.fresh === true &&
           coin.breakout?.ready === true &&
-          Math.abs(coin.ob?.score || 0) >= 0.025 &&
-          // AANGEPAST: drempels verlaagd
-          (coin.perfectCandidateScore || 0) >= 78 &&   // was 83
-          (coin.qualityScore || 0) >= 70 &&            // was 74
-          (coin.timingScore || 0) >= 72 &&             // was 76
-          (coin.liquidityScore || 0) >= 68 &&          // was 72
-          (coin.marketScore || 0) >= 52                // was 55
+          Math.abs(coin.ob?.score || 0) >= 0.015 &&
+          (coin.perfectCandidateScore || 0) >= 76 &&
+          (coin.qualityScore || 0) >= 68 &&
+          (coin.timingScore || 0) >= 70 &&
+          (coin.liquidityScore || 0) >= 66 &&
+          (coin.marketScore || 0) >= 50
         );
       }
 
