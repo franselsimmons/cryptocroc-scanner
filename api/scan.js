@@ -1397,6 +1397,27 @@ export default async function handler(req, res) {
           reason: "bijna entry klaar — zet hem klaar",
         });
       }
+
+      // ===== NIEUW: Main scanner ENTRY-signalen voor Abbo 2 =====
+      if (
+        !hasOpenPosition &&                     // geen open positie in dit symbool
+        coin.tradeCandidate === true &&          // voldoet aan de strengste eisen
+        (
+          coin.stage === "ELITE_IGNITION" ||
+          coin.stage === "ELITE_EXPANSION" ||
+          coin.stage === "ELITE_CASCADE"
+        )
+      ) {
+        await safeSendSignal({
+          source: "main",
+          stage: "ENTRY",                        // forceer stage "ENTRY" voor de router
+          mode,
+          coin,
+          btcState: btc?.state || "NEUTRAL",
+          kind: "signal",
+          reason: "Main scanner elite entry",
+        });
+      }
     }
 
     // ------------------------------------------------------------
