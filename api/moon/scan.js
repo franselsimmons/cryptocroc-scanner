@@ -974,6 +974,8 @@ async function buildUniverse(mode, whaleFlow, btc) {
     const coinForDecision = {
       ...coin,
       ob: {
+        bestBid: Number(n(obx.bestBid, 0).toFixed(8)),
+        bestAsk: Number(n(obx.bestAsk, 0).toFixed(8)),
         spreadPct: Number(obx.spreadPct.toFixed(4)),
         depthBidUsd: Math.round(obx.depthBidUsd),
         depthAskUsd: Math.round(obx.depthAskUsd),
@@ -1022,15 +1024,16 @@ async function buildUniverse(mode, whaleFlow, btc) {
       coinProfile,
     });
 
-    // ===== AANGEPAST: tradeDeskStatus alleen OPEN voor ELITE stages =====
+    // ===== AANGEPAST: tradeDeskStatus met execution.score =====
     const isEliteStageForDesk =
       stage === "ELITE_IGNITION" ||
       stage === "ELITE_EXPANSION" ||
       stage === "ELITE_CASCADE";
 
-    // ===== AANGEPASTE tradeDeskStatus (soepeler) =====
     const tradeDeskStatus =
-      tradeCandidate === true && isEliteStageForDesk
+      tradeCandidate === true &&
+      isEliteStageForDesk &&
+      execution.score >= 66   // Moon drempel
         ? "OPEN"
         : superScannerCoin
           ? "WATCH"
@@ -1067,6 +1070,8 @@ async function buildUniverse(mode, whaleFlow, btc) {
       eliteType,
       tier: tier?.name || "unknown",
       ob: {
+        bestBid: Number(n(obx.bestBid, 0).toFixed(8)),
+        bestAsk: Number(n(obx.bestAsk, 0).toFixed(8)),
         spreadPct: Number(obx.spreadPct.toFixed(4)),
         depthBidUsd: Math.round(obx.depthBidUsd),
         depthAskUsd: Math.round(obx.depthAskUsd),
@@ -1578,6 +1583,7 @@ export default async function handler(req, res) {
         barsHeld >= TIMEOUT_BARS &&
         pnlPct < TIMEOUT_MIN_PNL_PCT &&
         thesisDamage.damage >= 2 &&
+        thesisInvalidScans >= 1 &&
         coin?.breakout?.ready === false
       ) {
         exitReason = "timeout";
