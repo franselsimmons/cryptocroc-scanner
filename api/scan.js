@@ -1,4 +1,3 @@
-// api/scan.js (Main)
 import { kv } from "@vercel/kv";
 
 import {
@@ -424,15 +423,32 @@ function makePortfolio(mode, positions) {
   };
 }
 
+// ======================================================
+// NIEUWE VERSIE van hasEliteFollowThrough (aangepast)
+// ======================================================
 function hasEliteFollowThrough(prev, currentStage) {
+  const curr = up(currentStage);
+
+  if (curr === "ELITE_EXPANSION" || curr === "ELITE_CASCADE") {
+    return true;
+  }
+
+  const prevStage = up(prev?.stage || "");
+  if (
+    curr === "ELITE_IGNITION" &&
+    (prevStage === "ALMOST" || prevStage === "BUILDUP")
+  ) {
+    return true;
+  }
+
   const hist = Array.isArray(prev?.stageHist) ? prev.stageHist : [];
-  const tail = hist.concat([currentStage]).slice(-3);
+  const tail = hist.slice(-2);
   const eliteLike = tail.filter((s) => {
     const x = up(s);
     return x === "ELITE_IGNITION" || x === "ELITE_EXPANSION" || x === "ELITE_CASCADE";
   }).length;
 
-  return eliteLike >= 1 || up(currentStage) === "ELITE_EXPANSION" || up(currentStage) === "ELITE_CASCADE";
+  return eliteLike >= 1;
 }
 
 function decideMainStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, whaleFlow, regime }) {
@@ -922,8 +938,9 @@ async function buildUniverse(mode, whaleFlow, btc) {
       stage === "ELITE_EXPANSION" ||
       stage === "ELITE_CASCADE";
 
+    // ===== AANGEPASTE tradeDeskStatus (soepeler) =====
     const tradeDeskStatus =
-      execution.ready === true && tradeCandidate === true && isEliteStageForDesk
+      tradeCandidate === true && isEliteStageForDesk
         ? "OPEN"
         : superScannerCoin
           ? "WATCH"
@@ -1298,17 +1315,17 @@ export default async function handler(req, res) {
             (isAlmostStage && candidateSince != null)
           ) &&
           entryLocked === false &&
-          thesisInvalidScans === 0 &&
+          thesisInvalidScans <= 1 &&                     // soepeler: max 1 invalid scan toegestaan
           coin.tradePlan != null &&
           coin.ob?.valid === true &&
           coin.ob?.fresh === true &&
           coin.breakout?.ready === true &&
-          Math.abs(coin.ob?.score || 0) >= 0.015 &&
-          (coin.perfectCandidateScore || 0) >= 76 &&
-          (coin.qualityScore || 0) >= 68 &&
-          (coin.timingScore || 0) >= 70 &&
-          (coin.liquidityScore || 0) >= 66 &&
-          (coin.marketScore || 0) >= 50
+          Math.abs(coin.ob?.score || 0) >= 0.012 &&      // verlaagd van 0.015
+          (coin.perfectCandidateScore || 0) >= 74 &&     // verlaagd van 76
+          (coin.qualityScore || 0) >= 66 &&              // verlaagd van 68
+          (coin.timingScore || 0) >= 68 &&               // verlaagd van 70
+          (coin.liquidityScore || 0) >= 64 &&            // verlaagd van 66
+          (coin.marketScore || 0) >= 48                  // verlaagd van 50
         );
       }
 
