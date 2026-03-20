@@ -1619,7 +1619,7 @@ export default async function handler(req, res) {
           symbol: sym,
           name: coin?.name || state?.name || sym,
           image: coin?.image || state?.image || "",
-          price: n(coin?.price, 0) || n(state?.lastPrice, 0) || n(state?.price, 0) || n(p.lastPrice, 0),
+          price: n(state?.lastPrice, 0) || n(coin?.price, 0) || n(state?.price, 0) || n(p.lastPrice, 0),
           marketCap: n(coin?.marketCap, 0) || n(state?.marketCap, 0),
           volume: n(coin?.volume, 0) || n(state?.volume, 0),
           change24: n(coin?.change24, 0) || n(state?.change24, 0),
