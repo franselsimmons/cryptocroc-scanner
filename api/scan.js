@@ -948,6 +948,19 @@ async function buildUniverse(mode, whaleFlow, btc) {
     // ===== TRADE ENGINE: coinForDecision =====
     const coinForDecision = {
       ...coin,
+      // Velden die _trade_engine.js nodig heeft:
+      stage,
+      stageWhy,
+      eliteType,
+      tradeCandidate,
+      superScannerCoin,
+      scannerOnly,
+      qualityScore,
+      liquidityScore,
+      timingScore,
+      marketScore,
+      btcAlignmentScore,
+      perfectCandidateScore,
       ob: {
         bestBid: Number(n(obx.bestBid, 0).toFixed(8)),
         bestAsk: Number(n(obx.bestAsk, 0).toFixed(8)),
