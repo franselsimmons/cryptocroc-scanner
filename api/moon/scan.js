@@ -97,8 +97,8 @@ const COOLDOWN_TIMEOUT_SEC = 2 * 60 * 60;
 const COOLDOWN_EARLY_EXIT_SEC = 60 * 60;   // early exit cooldown 1 uur
 
 const MAX_OPEN_TRADES = 4;
-const TIMEOUT_BARS = 16;
-const TIMEOUT_MIN_PNL_PCT = 1.0;
+const TIMEOUT_BARS = 24;          // 24 * 15min = 6 uur
+const TIMEOUT_MIN_PNL_PCT = 0.2;
 
 const ENTRY_HISTORY_KEEP = 40;
 const ENTRY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
@@ -291,6 +291,8 @@ async function fetchOrderbook(symbol) {
       fresh: true,
       stale: false,
       reason: "",
+      bestBid,
+      bestAsk,
       spreadPct,
       depthBidUsd,
       depthAskUsd,
@@ -306,6 +308,8 @@ async function fetchOrderbook(symbol) {
 function computeObScore(ob) {
   if (!ob) {
     return {
+      bestBid: 0,
+      bestAsk: 0,
       spreadPct: 999,
       depthBidUsd: 0,
       depthAskUsd: 0,
@@ -321,6 +325,8 @@ function computeObScore(ob) {
   }
 
   return {
+    bestBid: n(ob.bestBid, 0),
+    bestAsk: n(ob.bestAsk, 0),
     spreadPct: n(ob.spreadPct, 999),
     depthBidUsd: n(ob.depthBidUsd, 0),
     depthAskUsd: n(ob.depthAskUsd, 0),
@@ -332,6 +338,65 @@ function computeObScore(ob) {
     stale: !!ob.stale,
     reason: String(ob.reason || ""),
     status: String(ob.status || "ok"),
+  };
+}
+
+// ======================================================
+// Nieuwe helper: live data voor open posities
+// ======================================================
+async function buildLivePositionCoin(symbol, fallbackState = {}, mode = "bull") {
+  const sym = up(symbol);
+  const ob = await fetchOrderbook(`${sym}USDT`);
+  const obx = computeObScore(ob);
+
+  const liveMid =
+    n(obx.bestBid, 0) > 0 && n(obx.bestAsk, 0) > 0
+      ? (n(obx.bestBid, 0) + n(obx.bestAsk, 0)) / 2
+      : 0;
+
+  const fallbackPrice =
+    n(fallbackState.lastPrice, 0) ||
+    n(fallbackState.price, 0) ||
+    0;
+
+  const price = liveMid > 0 ? liveMid : fallbackPrice;
+
+  return {
+    symbol: sym,
+    price,
+    lastPrice: price,
+    change1h: n(fallbackState.change1h, 0),
+    change24: n(fallbackState.change24, 0),
+    vm: n(fallbackState.vm, 0),
+    stage: String(fallbackState.stage || "HOLD"),
+    stageWhy: String(fallbackState.stageWhy || "open_position_live_fallback"),
+    entryQuality: n(fallbackState.entryQuality, 0),
+    persistenceScore: n(fallbackState.persistenceScore, 0),
+    moveScore: n(fallbackState.moveScore, 0),
+    velocity: n(fallbackState.velocity, 0),
+    breakout: fallbackState.breakout || { ready: false, breakoutPct: 0, pressure: 0 },
+    compression: fallbackState.compression || { isCompressed: false, flatPct: 999 },
+    volAcc: fallbackState.volAcc || { short: 1, medium: 1 },
+    tradePlan: fallbackState.tradePlan || null,
+    ob: {
+      bestBid: n(obx.bestBid, 0),
+      bestAsk: n(obx.bestAsk, 0),
+      spreadPct: Number(n(obx.spreadPct, 999).toFixed(4)),
+      depthBidUsd: Math.round(n(obx.depthBidUsd, 0)),
+      depthAskUsd: Math.round(n(obx.depthAskUsd, 0)),
+      depthMinUsd1p: Math.round(n(obx.depthMinUsd1p, 0)),
+      score: Number(n(obx.score, 0).toFixed(5)),
+      lor: Number(n(obx.lor, 0).toFixed(4)),
+      valid: !!obx.valid,
+      fresh: !!obx.fresh,
+      stale: !!obx.stale,
+      reason: String(obx.reason || ""),
+      status: String(obx.status || "ok"),
+    },
+    thresholds: fallbackState.thresholds || { depthFloorUsd: 0, depthOk: false },
+    marketCap: n(fallbackState.marketCap, 0),
+    volume: n(fallbackState.volume, 0),
+    range24: n(fallbackState.range24, 0),
   };
 }
 
@@ -1463,8 +1528,12 @@ export default async function handler(req, res) {
     const updatedOpen = [];
     for (const pos of positions.open) {
       const sym = up(pos.symbol);
-      const coin = universeMap.get(sym);
       const now = Date.now();
+
+      const scannedCoin = universeMap.get(sym);
+      const coin =
+        scannedCoin ||
+        await buildLivePositionCoin(sym, prevState?.[sym] || {}, mode);
 
       let coinState = nextState[sym] || prevState?.[sym] || {};
       const prevCoinState = prevState?.[sym] || {};
@@ -1504,7 +1573,13 @@ export default async function handler(req, res) {
       if (hit.hit && hit.kind === "SL") exitReason = "stop_loss";
       else if (hit.hit && hit.kind === "TP") exitReason = "take_profit";
 
-      if (!exitReason && barsHeld >= TIMEOUT_BARS && pnlPct < TIMEOUT_MIN_PNL_PCT) {
+      if (
+        !exitReason &&
+        barsHeld >= TIMEOUT_BARS &&
+        pnlPct < TIMEOUT_MIN_PNL_PCT &&
+        thesisDamage.damage >= 2 &&
+        coin?.breakout?.ready === false
+      ) {
         exitReason = "timeout";
       }
 
@@ -1757,12 +1832,26 @@ export default async function handler(req, res) {
     // 5) Response-funnel en latest opslaan
     // ------------------------------------------------------------
     const holdCoins = positions.open
-      .map(p => {
-        const coin = universeMap.get(p.symbol);
-        if (!coin) return null;
+      .map((p) => {
+        const sym = up(p.symbol);
+        const coin = universeMap.get(sym);
+        const state = nextState[sym] || prevState?.[sym] || {};
+
         return {
-          ...coin,
+          symbol: sym,
+          name: coin?.name || state?.name || sym,
+          image: coin?.image || state?.image || "",
+          price: n(coin?.price, 0) || n(state?.lastPrice, 0) || n(state?.price, 0) || n(p.lastPrice, 0),
+          marketCap: n(coin?.marketCap, 0) || n(state?.marketCap, 0),
+          volume: n(coin?.volume, 0) || n(state?.volume, 0),
+          change24: n(coin?.change24, 0) || n(state?.change24, 0),
+          change1h: n(coin?.change1h, 0) || n(state?.change1h, 0),
+          vm: n(coin?.vm, 0) || n(state?.vm, 0),
           stage: "HOLD",
+          breakout: coin?.breakout || state?.breakout || { ready: false, breakoutPct: 0, pressure: 0 },
+          compression: coin?.compression || state?.compression || { isCompressed: false, flatPct: 999 },
+          ob: coin?.ob || state?.ob || null,
+          tradePlan: coin?.tradePlan || state?.tradePlan || null,
           pnlPct: p.pnlPct,
           holdTime: Math.floor((now - p.entryAt) / (60 * 1000)),
         };
