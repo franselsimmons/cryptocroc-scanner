@@ -299,70 +299,6 @@ function computeObScore(ob) {
 }
 
 // ======================================================
-// Helper voor open posities: altijd live OB + prijs
-// ======================================================
-async function enrichOpenPositionCoin(scannedCoin, fallbackState = {}, symbol) {
-  const sym = up(symbol);
-  const ob = await fetchOrderbook(`${sym}USDT`);
-  const obx = computeObScore(ob);
-
-  const liveMid =
-    n(obx.bestBid, 0) > 0 && n(obx.bestAsk, 0) > 0
-      ? (n(obx.bestBid, 0) + n(obx.bestAsk, 0)) / 2
-      : 0;
-
-  const base = scannedCoin || fallbackState || {};
-  const price =
-    liveMid > 0
-      ? liveMid
-      : n(base.price, 0) ||
-        n(fallbackState.lastPrice, 0) ||
-        n(fallbackState.price, 0) ||
-        0;
-
-  return {
-    ...base,
-    symbol: sym,
-    price,
-    lastPrice: price,
-    ob: {
-      bestBid: n(obx.bestBid, 0),
-      bestAsk: n(obx.bestAsk, 0),
-      spreadPct: Number(n(obx.spreadPct, 999).toFixed(4)),
-      depthBidUsd: Math.round(n(obx.depthBidUsd, 0)),
-      depthAskUsd: Math.round(n(obx.depthAskUsd, 0)),
-      depthMinUsd1p: Math.round(n(obx.depthMinUsd1p, 0)),
-      score: Number(n(obx.score, 0).toFixed(5)),
-      lor: Number(n(obx.lor, 0).toFixed(4)),
-      valid: !!obx.valid,
-      fresh: !!obx.fresh,
-      stale: !!obx.stale,
-      reason: String(obx.reason || ""),
-      status: String(obx.status || "ok"),
-    },
-    breakout: base.breakout || { ready: false, breakoutPct: 0, pressure: 0 },
-    compression: base.compression || { isCompressed: false, flatPct: 999 },
-    volAcc: base.volAcc || { short: 1, medium: 1 },
-    thresholds: base.thresholds || { depthFloorUsd: 0, depthOk: false },
-    tradePlan: base.tradePlan || null,
-    stage: String(base.stage || "HOLD"),
-    stageWhy: String(base.stageWhy || "open_position_live_tracker"),
-    change1h: n(base.change1h, 0),
-    change24: n(base.change24, 0),
-    vm: n(base.vm, 0),
-    entryQuality: n(base.entryQuality, 0),
-    persistenceScore: n(base.persistenceScore, 0),
-    moveScore: n(base.moveScore, 0),
-    velocity: n(base.velocity, 0),
-    marketCap: n(base.marketCap, 0),
-    volume: n(base.volume, 0),
-    range24: n(base.range24, 0),
-    name: base.name || sym,
-    image: base.image || "",
-  };
-}
-
-// ======================================================
 // tradePlan, funnel, portfolio, stage logic, etc.
 // ======================================================
 function buildTradePlan({ price, mode, confidence, range24, depthOk, tier, regime, persistenceScore }) {
@@ -1010,7 +946,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
 }
 
 // ======================================================
-// Funnel balancer, thesis damage, etc.
+// Funnel balancer, thesis damage (alleen voor state‑machine)
 // ======================================================
 function canPromoteBalancedEntry(coin, mode, regime) {
   if (!coin) return false;
@@ -1327,187 +1263,7 @@ export default async function handler(req, res) {
       }
     }
     // ------------------------------------------------------------
-    // 2) Open posities verwerken (altijd live OB/price)
-    // ------------------------------------------------------------
-    const updatedOpen = [];
-    for (const pos of positions.open) {
-      const sym = up(pos.symbol);
-      const now = Date.now();
-      const scannedCoin = universeMap.get(sym);
-      const coin = await enrichOpenPositionCoin(
-        scannedCoin,
-        nextState[sym] || prevState?.[sym] || {},
-        sym
-      );
-      let coinState = nextState[sym] || prevState?.[sym] || {};
-      const prevCoinState = prevState?.[sym] || {};
-      let thesisDamage = coin ? calculateThesisDamage(coin, coinState, mode) : { damage: 0, reasons: {} };
-      if (!coin) {
-        thesisDamage = { damage: coinState.thesisDamage || 0, reasons: coinState.thesisReasons || {} };
-      }
-      let thesisInvalidScans = coinState.thesisInvalidScans || 0;
-      if (!isThesisStillValid(coin, coinState, mode)) {
-        thesisInvalidScans++;
-      } else {
-        thesisInvalidScans = Math.max(0, thesisInvalidScans - 1);
-      }
-      const priceNow = coin?.price || pos.lastPrice;
-      const pnlPct = calcPnlPct({
-        mode: pos.mode || mode,
-        entryPrice: pos.entryPrice,
-        priceNow,
-      });
-      const barsHeld = Math.floor((now - pos.entryAt) / (30 * 60 * 1000));
-      const hit = coin
-        ? hitStopOrTp({
-            mode: pos.mode || mode,
-            priceNow: coin.price,
-            sl: pos.sl,
-            tp3: pos.tp,
-          })
-        : { hit: false };
-      let exitReason = null;
-      if (hit.hit && hit.kind === "SL") exitReason = "stop_loss";
-      else if (hit.hit && hit.kind === "TP") exitReason = "take_profit";
-      if (
-        !exitReason &&
-        barsHeld >= TIMEOUT_BARS &&
-        pnlPct < TIMEOUT_MIN_PNL_PCT &&
-        thesisDamage.damage >= 2 &&
-        thesisInvalidScans >= 1 &&
-        coin?.breakout?.ready === false
-      ) {
-        exitReason = "timeout";
-      }
-      if (!exitReason && thesisInvalidScans >= THESIS_BREAK_SCANS_FOR_EXIT && barsHeld >= MIN_HOLD_BARS_BEFORE_SOFT_EXIT) {
-        exitReason = "thesis_break";
-      }
-      if (exitReason) {
-        const pnlUsd = (pos.sizeUsd * pnlPct) / 100;
-        const closedPos = {
-          ...pos,
-          exitPrice: priceNow,
-          exitAt: now,
-          pnlUsd,
-          pnlPct,
-          exitReason,
-        };
-        positions.closed.push(closedPos);
-        const cdKey = cooldownKey(mode, sym);
-        let cdSec = COOLDOWN_SL_SEC;
-        if (exitReason === "take_profit") cdSec = COOLDOWN_TP_SEC;
-        else if (exitReason === "timeout") cdSec = COOLDOWN_TIMEOUT_SEC;
-        else if (exitReason === "thesis_break") cdSec = COOLDOWN_EARLY_EXIT_SEC;
-        await kv.set(cdKey, now + cdSec * 1000, { ex: cdSec * 2 });
-        nextState[sym] = {
-          ...coinState,
-          entryActive: false,
-          entryLocked: true,
-          candidateSince: null,
-          eliteScans: 0,
-          strongScans: 0,
-          weakScans: 0,
-          thesisInvalidScans: 0,
-          entryReady: false,
-          lastExit: now,
-          lastExitReason: exitReason,
-        };
-        await safePushEvent("trade_closed", {
-          id: pos.id,
-          mode,
-          symbol: sym,
-          entry: pos.entryPrice,
-          exit: closedPos.exitPrice,
-          pnlPct: closedPos.pnlPct,
-          pnlUsd: closedPos.pnlUsd,
-          reason: exitReason,
-          holdBars: barsHeld,
-        });
-        const coinForSignal = coin || {
-          symbol: sym,
-          price: coinState.price,
-          change1h: coinState.change1h,
-          change24: coinState.change24,
-          vm: coinState.vm,
-          ob: coinState.ob,
-          tradePlan: coinState.tradePlan,
-          stage: coinState.stage,
-        };
-        await safeSendSignal({
-          source: "main",
-          stage: coinState.stage || "",
-          mode,
-          coin: coinForSignal,
-          btcState: btc?.state || "NEUTRAL",
-          kind: "trade_closed",
-          pnl: closedPos.pnlPct,
-          reason: exitReason,
-        });
-      } else {
-        const pnlUsd = (pos.sizeUsd * pnlPct) / 100;
-        const updatedPos = {
-          ...pos,
-          lastPrice: priceNow,
-          lastUpdate: now,
-          pnlPct,
-          pnlUsd,
-        };
-        updatedOpen.push(updatedPos);
-        nextState[sym] = {
-          ...coinState,
-          price: priceNow,
-          lastPrice: priceNow,
-          ob: coin?.ob || coinState.ob,
-          breakout: coin?.breakout || coinState.breakout,
-          compression: coin?.compression || coinState.compression,
-          volAcc: coin?.volAcc || coinState.volAcc,
-          thresholds: coin?.thresholds || coinState.thresholds,
-          tradePlan: coin?.tradePlan || coinState.tradePlan,
-          stage: coin?.stage || coinState.stage,
-          stageWhy: coin?.stageWhy || coinState.stageWhy,
-          thesisInvalidScans,
-          thesisDamage: thesisDamage.damage,
-          thesisReasons: thesisDamage.reasons,
-          entryLocked: true,
-          entryActive: true,
-          entryReady: false,
-          pnlPct,
-          pnlUsd,
-        };
-        const prevPnl = coinState.pnlPct || 0;
-        const stageNow = coin?.stage || coinState.stage || "";
-        if (Math.abs(pnlPct - prevPnl) >= 2.0 || thesisDamage.damage !== (coinState.thesisDamage || 0) || stageNow !== coinState.stage) {
-          await safePushEvent("scan_hold", {
-            mode,
-            symbol: sym,
-            stage: stageNow,
-            pnlPct,
-            thesisDamage: thesisDamage.damage,
-            reasons: thesisDamage.reasons,
-          });
-          await safeSendSignal({
-            source: "main",
-            stage: stageNow || "HOLD",
-            mode,
-            coin: coin || {
-              symbol: sym,
-              price: priceNow,
-              tradePlan: coinState.tradePlan,
-              pnlPct,
-            },
-            btcState: btc?.state || "NEUTRAL",
-            kind: "position_update",
-            pnl: pnlPct,
-            reason: thesisDamage.damage > 0
-              ? `Thesis damage ${thesisDamage.damage}`
-              : `Position update ${pnlPct.toFixed(2)}%`,
-          });
-        }
-      }
-    }
-    positions.open = updatedOpen;
-    // ------------------------------------------------------------
-    // 3) Nieuwe entries openen
+    // 3) Nieuwe entries openen (alleen ELITE stages, niet ALMOST)
     // ------------------------------------------------------------
     const entryCandidates = [];
     for (const sym of Object.keys(nextState)) {
@@ -1600,7 +1356,7 @@ export default async function handler(req, res) {
       }
     }
     // ------------------------------------------------------------
-    // 4) Portfolio en opslag
+    // 4) Portfolio en opslag (alleen voor de scanner, niet de positiebeheerder)
     // ------------------------------------------------------------
     const portfolio = makePortfolio(mode, positions);
     await kv.set(keyMainPortfolio(mode), portfolio, { ex: 60 * 60 * 24 * 7 });
@@ -1608,37 +1364,11 @@ export default async function handler(req, res) {
     await kv.set(keyMainState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
     await kv.set(keyMainPositions(mode), positions, { ex: 60 * 60 * 24 * 7 });
     // ------------------------------------------------------------
-    // 5) Response-funnel en latest opslaan
+    // 5) Response-funnel en latest opslaan (zonder hold‑lijst, die komt van de position manager)
     // ------------------------------------------------------------
-    const holdCoins = positions.open
-      .map((p) => {
-        const sym = up(p.symbol);
-        const coin = universeMap.get(sym);
-        const state = nextState[sym] || prevState?.[sym] || {};
-        return {
-          symbol: sym,
-          name: coin?.name || state?.name || sym,
-          image: coin?.image || state?.image || "",
-          price: n(state?.lastPrice, 0) || n(coin?.price, 0) || n(state?.price, 0) || n(p.lastPrice, 0),
-          marketCap: n(coin?.marketCap, 0) || n(state?.marketCap, 0),
-          volume: n(coin?.volume, 0) || n(state?.volume, 0),
-          change24: n(coin?.change24, 0) || n(state?.change24, 0),
-          change1h: n(coin?.change1h, 0) || n(state?.change1h, 0),
-          vm: n(coin?.vm, 0) || n(state?.vm, 0),
-          stage: "HOLD",
-          breakout: coin?.breakout || state?.breakout || { ready: false, breakoutPct: 0, pressure: 0 },
-          compression: coin?.compression || state?.compression || { isCompressed: false, flatPct: 999 },
-          ob: coin?.ob || state?.ob || null,
-          tradePlan: coin?.tradePlan || state?.tradePlan || null,
-          pnlPct: p.pnlPct,
-          holdTime: Math.floor((now - p.entryAt) / (60 * 1000)),
-        };
-      })
-      .filter(Boolean);
-    holdCoins.sort((a, b) => Math.abs(b.pnlPct) - Math.abs(a.pnlPct));
     const responseFunnel = {
       ...funnel,
-      hold: holdCoins.slice(0, 20),
+      hold: [], // hold wordt gevuld door position manager
     };
     const premiumCandidates = universe
       .filter((c) => c.superScannerCoin === true)
@@ -1675,7 +1405,7 @@ export default async function handler(req, res) {
         almost: responseFunnel.almost?.length || 0,
         buildup: responseFunnel.buildup?.length || 0,
         radar: responseFunnel.radar?.length || 0,
-        hold: responseFunnel.hold?.length || 0,
+        hold: 0, // wordt overschreven door position manager
       },
       candidates: {
         premium: premiumCandidates,
