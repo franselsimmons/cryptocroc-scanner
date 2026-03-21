@@ -1,3 +1,4 @@
+// ==================== trade.js ====================
 const el = (id) => document.getElementById(id);
 
 const SOURCES = [
@@ -27,6 +28,12 @@ function fmtUSD(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
   return n.toFixed(0);
 }
+
+// ===== NIEUWE HELPER VOOR TRADE DESK TIMESTAMP =====
+function getTradeDeskTs(data) {
+  return Number(data?.managedAt || data?.ts || data?.scannedAt || 0);
+}
+
 function flattenFunnel(funnel) {
   if (!funnel) return [];
   return []
@@ -208,10 +215,15 @@ async function loadAll() {
 
   const rows = [];
   const failed = [];
+  let latestTs = 0; // voor timestamp
 
   for (const item of settled) {
     if (item.status === "fulfilled") {
-      rows.push(...normalizeRows(item.value.json, item.value.src));
+      const { src, json } = item.value;
+      rows.push(...normalizeRows(json, src));
+      // bepaal de meest recente timestamp over alle bronnen
+      const ts = getTradeDeskTs(json);
+      if (ts > latestTs) latestTs = ts;
     } else {
       failed.push(String(item.reason?.message || item.reason));
     }
@@ -238,8 +250,9 @@ async function loadAll() {
   renderList("watchList", watch);
 
   if (status) {
+    const stamp = latestTs ? new Date(latestTs).toLocaleString() : "—";
     status.textContent =
-      `OPEN ${ready.length} • WATCH ${watch.length}` +
+      `OPEN ${ready.length} • WATCH ${watch.length} • Laatste update: ${stamp}` +
       (failed.length ? ` • fouten: ${failed.join(" | ")}` : "");
   }
 }
