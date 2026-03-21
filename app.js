@@ -1,3 +1,4 @@
+// ==================== app.js ====================
 function syncTopbarHeight() {
   const tb = document.querySelector(".topbar");
   const h = tb ? Math.ceil(tb.getBoundingClientRect().height) : 78;
@@ -69,8 +70,9 @@ function arr(x) {
   return Array.isArray(x) ? x : [];
 }
 
+// ===== AANGEPAST: scannedAt heeft voorrang =====
 function getSnapshotTs(data) {
-  return Number(data?.ts || data?.scannedAt || 0);
+  return Number(data?.scannedAt || data?.ts || 0);
 }
 
 function normalizeMainFunnel(data) {
