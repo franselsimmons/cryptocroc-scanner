@@ -781,16 +781,18 @@ async function buildUniverse(mode, whaleFlow, btc) {
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
+    // ========== AANGEPASTE tradeCandidate ==========
     const tradeCandidate =
-      perfectCandidateScore >= 77 &&
-      qualityScore >= 70 &&
-      timingScore >= 71 &&
-      liquidityScore >= 66 &&
-      marketScore >= 49 &&
+      perfectCandidateScore >= 72 &&
+      qualityScore >= 64 &&
+      timingScore >= 62 &&
+      liquidityScore >= 58 &&
+      marketScore >= 42 &&
       (stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
+    // ==============================================
     const scannerOnly = !superScannerCoin;
     const coinForDecision = {
       ...coin,
@@ -858,12 +860,14 @@ async function buildUniverse(mode, whaleFlow, btc) {
       stage === "ELITE_IGNITION" ||
       stage === "ELITE_EXPANSION" ||
       stage === "ELITE_CASCADE";
+    // ========== AANGEPASTE tradeDeskStatus ==========
     const tradeDeskStatus =
-      tradeCandidate === true && isEliteStageForDesk && execution.score >= 66
+      tradeCandidate === true && isEliteStageForDesk && execution.score >= 60
         ? "OPEN"
         : superScannerCoin
           ? "WATCH"
           : "IGNORE";
+    // ================================================
     if (tradeDeskStatus === "OPEN") {
       execution.action = "OPEN";
       execution.ready = true;
@@ -1175,22 +1179,24 @@ export default async function handler(req, res) {
       const isAlmostStage = rawStage === "ALMOST";
       let entryReady = false;
       if (!hasOpenPosition) {
+        // ========== AANGEPASTE entryReady ==========
         entryReady =
           coin.tradeCandidate === true &&
           (isEliteStage || isAlmostStage) &&
           ((isEliteStage && strongScans >= 1 && eliteScans >= 1) ||
             (isAlmostStage && candidateSince != null)) &&
           entryLocked === false &&
-          thesisInvalidScans <= 1 &&
+          thesisInvalidScans <= 2 &&
           coin.tradePlan != null &&
           coin.ob?.valid === true &&
           coin.ob?.fresh === true &&
-          (coin.breakout?.ready === true || n(coin.breakout?.pressure, 0) >= 56) &&
-          (coin.perfectCandidateScore || 0) >= 70 &&
-          (coin.qualityScore || 0) >= 62 &&
-          (coin.timingScore || 0) >= 64 &&
-          (coin.liquidityScore || 0) >= 60 &&
-          (coin.marketScore || 0) >= 44;
+          (coin.breakout?.ready === true || n(coin.breakout?.pressure, 0) >= 52) &&
+          (coin.perfectCandidateScore || 0) >= 66 &&
+          (coin.qualityScore || 0) >= 58 &&
+          (coin.timingScore || 0) >= 60 &&
+          (coin.liquidityScore || 0) >= 54 &&
+          (coin.marketScore || 0) >= 40;
+        // ==========================================
       }
       nextState[sym] = {
         ...prev,
