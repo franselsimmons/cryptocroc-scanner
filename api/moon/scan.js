@@ -774,7 +774,6 @@ async function buildUniverse(mode, whaleFlow, btc) {
       timingScore,
       marketScore,
     });
-    // ========== VERLAAGDE DRUMPELS VOOR superScannerCoin ==========
     const superScannerCoin =
       perfectCandidateScore >= 72 &&
       qualityScore >= 66 &&
@@ -782,7 +781,6 @@ async function buildUniverse(mode, whaleFlow, btc) {
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
-    // ==============================================================
     const tradeCandidate =
       perfectCandidateScore >= 72 &&
       qualityScore >= 64 &&
@@ -861,7 +859,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
       stage === "ELITE_EXPANSION" ||
       stage === "ELITE_CASCADE";
 
-    // ========== NIEUWE TRADEDESKSTATUS MET SLIMMERE STICKINESS ==========
+    // ========== TRADEDESKSTATUS MET SLIMMERE STICKINESS + ALMOST OPEN ==========
     const nearEntryWatch =
       superScannerCoin === true &&
       (
@@ -875,18 +873,32 @@ async function buildUniverse(mode, whaleFlow, btc) {
         )
       );
 
+    const stableWatchReady =
+      prev?.tradeDeskStatus === "WATCH" &&
+      (prev?.watchScans || 0) >= 2 &&
+      entryQuality >= 60 &&
+      persistenceScore >= 52 &&
+      (breakout?.ready === true || n(breakout?.pressure, 0) >= 52) &&
+      n(obx.score, 0) >= 0.008;
+
     let tradeDeskStatus = "IGNORE";
 
-    if (tradeCandidate === true && isEliteStageForDesk && execution.score >= 58) {
+    if (
+      tradeCandidate === true &&
+      (
+        (isEliteStageForDesk && execution.score >= 58) ||
+        (stage === "ALMOST" && stableWatchReady && execution.score >= 56)
+      )
+    ) {
       tradeDeskStatus = "OPEN";
     } else if (nearEntryWatch) {
       tradeDeskStatus = "WATCH";
     } else if (
       prev?.tradeDeskStatus === "WATCH" &&
       (prev?.watchScans || 0) >= 3 &&
-      entryQuality >= 60 &&
-      persistenceScore >= 52 &&
-      (breakout?.ready === true || n(breakout?.pressure, 0) >= 52)
+      entryQuality >= 58 &&
+      persistenceScore >= 50 &&
+      (breakout?.ready === true || n(breakout?.pressure, 0) >= 50)
     ) {
       tradeDeskStatus = "WATCH";
     }
@@ -1190,7 +1202,7 @@ export default async function handler(req, res) {
         thesisInvalidScans = prev?.thesisInvalidScans || 0;
         entryLocked = prev?.entryLocked || false;
 
-        // ========== NIEUWE WATCHSCANS UPDATE ==========
+        // ========== WATCHSCANS UPDATE ==========
         if (coin.tradeDeskStatus === "WATCH") {
           watchScans += 1;
         } else if (
@@ -1202,7 +1214,7 @@ export default async function handler(req, res) {
         } else {
           watchScans = 0;
         }
-        // ==========================================
+        // ======================================
       }
       let depthHist = Array.isArray(prev?.depthHist) ? [...prev.depthHist] : [];
       const currentDepth = n(coin.ob?.depthMinUsd1p, 0);
@@ -1212,20 +1224,12 @@ export default async function handler(req, res) {
       depthHist = depthHist.slice(-20);
       const thesisInfo = calculateThesisDamage(coin, prev, mode);
       const tradePlan = coin.tradePlan;
-      const isEliteStage =
-        rawStage === "ELITE_IGNITION" ||
-        rawStage === "ELITE_EXPANSION" ||
-        rawStage === "ELITE_CASCADE";
-      const isAlmostStage = rawStage === "ALMOST";
+      // ========== NIEUWE entryReady: alleen luisteren naar tradeDeskStatus === "OPEN" ==========
       let entryReady = false;
       if (!hasOpenPosition) {
         entryReady =
+          coin.tradeDeskStatus === "OPEN" &&
           coin.tradeCandidate === true &&
-          (isEliteStage || isAlmostStage) &&
-          (
-            (isEliteStage && (strongScans >= 1 || watchScans >= 2) && (eliteScans >= 1 || watchScans >= 2)) ||
-            (isAlmostStage && candidateSince != null && watchScans >= 2)
-          ) &&
           entryLocked === false &&
           thesisInvalidScans <= 2 &&
           coin.tradePlan != null &&
@@ -1238,6 +1242,7 @@ export default async function handler(req, res) {
           (coin.liquidityScore || 0) >= 54 &&
           (coin.marketScore || 0) >= 40;
       }
+      // =============================================================================
       nextState[sym] = {
         ...prev,
         stage: rawStage,
@@ -1330,16 +1335,17 @@ export default async function handler(req, res) {
       }
     }
     // ------------------------------------------------------------
-    // 3) Nieuwe entries openen (alleen ELITE stages, niet ALMOST)
+    // 3) Nieuwe entries openen (geen stage-beperking meer, alleen tradeDeskStatus === "OPEN")
     // ------------------------------------------------------------
     const entryCandidates = [];
     for (const sym of Object.keys(nextState)) {
       const state = nextState[sym];
-      const isEliteStage =
-        state.stage === "ELITE_IGNITION" ||
-        state.stage === "ELITE_EXPANSION" ||
-        state.stage === "ELITE_CASCADE";
-      if (state.entryReady && state.tradeCandidate === true && isEliteStage && !openMap.has(sym)) {
+      if (
+        state.entryReady &&
+        state.tradeCandidate === true &&
+        state.tradeDeskStatus === "OPEN" &&
+        !openMap.has(sym)
+      ) {
         const coin = universeMap.get(sym);
         if (!coin || !coin.tradePlan) continue;
         const cdKey = cooldownKey(mode, sym);
