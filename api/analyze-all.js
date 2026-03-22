@@ -1,3 +1,4 @@
+// Vereist: KV keys "latest:bull" en "latest:bear" + trade_closed events
 import { kv } from "@vercel/kv";
 import { readEvents } from "../lib/_analytics.js";
 import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
@@ -6,6 +7,7 @@ import * as moonCore from "../lib/_moon_core.js";   // VERVANGEN: named import -
 export const config = RUNTIME_CONFIG;
 
 // ===== NIEUWE FALLBACK CONSTANTS (alleen toegevoegd) =====
+const keyMainLatest = moonCore.keyMainLatest || ((mode) => `latest:${String(mode || "bull").toLowerCase()}`);
 const keyMoonDiagList = moonCore.keyMoonDiagList || ((m) => `moon:diag:${m}`);
 const keyMoonDiagSnap = moonCore.keyMoonDiagSnap || ((m) => `moon:diag_snap:${m}`);
 const keyMoonPositions = moonCore.keyMoonPositions || ((m) => `moon:positions:${m}`);
@@ -194,7 +196,7 @@ function coinRow(c) {
       <td>${kvRow("spread", ob.spreadPct != null ? n(ob.spreadPct, 0).toFixed(3) : "-")}</td>
       <td>${kvRow("depth", ob.depthMinUsd1p != null ? n(ob.depthMinUsd1p, 0) : "-")}</td>
       <td>${kvRow("score", ob.score != null ? n(ob.score, 0).toFixed(5) : "-")}</td>
-    </tr>
+     </tr>
   `;
 }
 
@@ -342,8 +344,8 @@ export default async function handler(req, res) {
     if (!requireSecret(req, res)) return;
 
     const [bullLatest, bearLatest, sessionStartMs] = await Promise.all([
-      kv.get("latest:bull"),
-      kv.get("latest:bear"),
+      kv.get(keyMainLatest("bull")),
+      kv.get(keyMainLatest("bear")),
       kv.get("analyze:sessionStartMs"),
     ]);
 
