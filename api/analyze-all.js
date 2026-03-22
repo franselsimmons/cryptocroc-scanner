@@ -1,5 +1,5 @@
 // /api/analyze-all.js
-// Vereist: KV keys "latest:bull"/"latest:bear" + readEvents("main") + Moon diag keys
+// Vereist: KV keys "latest:bull"/"latest:bear" + trade_closed events + Moon diag keys
 import { kv } from "@vercel/kv";
 import { readEvents } from "../lib/_analytics.js";
 import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
@@ -44,18 +44,26 @@ function addCounts(to, from) {
   return out;
 }
 
-// ===================== MAIN DATA FUNCTIONS =====================
+// ===================== ROBUSTE FLATTEN =====================
+function safeStage(x) {
+  if (!x) return [];
+  if (Array.isArray(x)) return x;
+  if (typeof x === "object") return Object.values(x);
+  return [];
+}
+
 function flattenMainCoins(latest) {
   const f = latest?.funnel || {};
+
   return [
-    ...safeArr(f.radar).map(c => ({ ...c, _system: "main", _stage: c.stage || "RADAR" })),
-    ...safeArr(f.buildup).map(c => ({ ...c, _system: "main", _stage: c.stage || "BUILDUP" })),
-    ...safeArr(f.almost).map(c => ({ ...c, _system: "main", _stage: c.stage || "ALMOST" })),
-    ...safeArr(f.entry).map(c => ({ ...c, _system: "main", _stage: c.stage || "ENTRY" })),
-    ...safeArr(f.elite_ignition).map(c => ({ ...c, _system: "main", _stage: c.stage || "ELITE_IGNITION" })),
-    ...safeArr(f.elite_expansion).map(c => ({ ...c, _system: "main", _stage: c.stage || "ELITE_EXPANSION" })),
-    ...safeArr(f.elite_cascade).map(c => ({ ...c, _system: "main", _stage: c.stage || "ELITE_CASCADE" })),
-    ...safeArr(f.hold).map(c => ({ ...c, _system: "main", _stage: c.stage || "HOLD" })),
+    ...safeStage(f.radar).map(c => ({ ...c, _system: "main", _stage: c?.stage || "RADAR" })),
+    ...safeStage(f.buildup).map(c => ({ ...c, _system: "main", _stage: c?.stage || "BUILDUP" })),
+    ...safeStage(f.almost).map(c => ({ ...c, _system: "main", _stage: c?.stage || "ALMOST" })),
+    ...safeStage(f.entry).map(c => ({ ...c, _system: "main", _stage: c?.stage || "ENTRY" })),
+    ...safeStage(f.elite_ignition).map(c => ({ ...c, _system: "main", _stage: c?.stage || "ELITE_IGNITION" })),
+    ...safeStage(f.elite_expansion).map(c => ({ ...c, _system: "main", _stage: c?.stage || "ELITE_EXPANSION" })),
+    ...safeStage(f.elite_cascade).map(c => ({ ...c, _system: "main", _stage: c?.stage || "ELITE_CASCADE" })),
+    ...safeStage(f.hold).map(c => ({ ...c, _system: "main", _stage: c?.stage || "HOLD" })),
   ];
 }
 
@@ -86,7 +94,10 @@ function analyzeMainBottlenecks(coins) {
 }
 
 function analyzeMainTrades(events, mode) {
-  const filtered = safeArr(events).filter(e => String(e?.mode || "").toLowerCase() === String(mode || "").toLowerCase());
+  const filtered = safeArr(events).filter(e => {
+    if (!mode) return true;
+    return String(e?.mode || "").toLowerCase() === String(mode).toLowerCase();
+  });
   const closes = filtered.filter(e => e.type === "trade_close");
   const exitReasons = {};
   let givebackSum = 0;
@@ -237,10 +248,10 @@ export default async function handler(req, res) {
     if (!requireSecret(req, res)) return;
 
     // MAIN data
-    const [bullLatest, bearLatest, mainEvents] = await Promise.all([
+    const [bullLatest, bearLatest, tradeClosed] = await Promise.all([
       kv.get(keyMainLatest("bull")),
       kv.get(keyMainLatest("bear")),
-      readEvents("main", 4000),
+      readEvents("trade_closed", 4000),
     ]);
     const mainBullCoins = flattenMainCoins(bullLatest);
     const mainBearCoins = flattenMainCoins(bearLatest);
@@ -248,8 +259,8 @@ export default async function handler(req, res) {
     const mainBearSnapshot = summarizeMainSnapshot(bearLatest);
     const mainBullBottlenecks = analyzeMainBottlenecks(mainBullCoins);
     const mainBearBottlenecks = analyzeMainBottlenecks(mainBearCoins);
-    const mainBullTradeStats = analyzeMainTrades(mainEvents, "bull");
-    const mainBearTradeStats = analyzeMainTrades(mainEvents, "bear");
+    const mainBullTradeStats = analyzeMainTrades(tradeClosed, "bull");
+    const mainBearTradeStats = analyzeMainTrades(tradeClosed, "bear");
     const mainBullAdvice = generateFilterAdvice(mainBullBottlenecks, mainBullTradeStats, "Main bull");
     const mainBearAdvice = generateFilterAdvice(mainBearBottlenecks, mainBearTradeStats, "Main bear");
 
