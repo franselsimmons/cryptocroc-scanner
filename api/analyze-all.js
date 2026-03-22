@@ -5,19 +5,14 @@ import * as moonCore from "../lib/_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
 
-// ===== SAFE FALLBACKS (voorkomt crash als named export ontbreekt) =====
+// ===== SAFE FALLBACKS (voorkomt crash bij ontbrekende named exports) =====
 const keyMoonDiagList = moonCore.keyMoonDiagList || ((m) => `moon:diag:${m}`);
 const keyMoonDiagSnap = moonCore.keyMoonDiagSnap || ((m) => `moon:diag_snap:${m}`);
 const keyMoonPositions = moonCore.keyMoonPositions || ((m) => `moon:positions:${m}`);
 
-// ===== HELPERS =====
-function n(x, d = 0) {
-  const v = Number(x);
-  return Number.isFinite(v) ? v : d;
-}
-function safeArr(x) {
-  return Array.isArray(x) ? x : [];
-}
+// ===================== HELPERS =====================
+function n(x, d = 0) { const v = Number(x); return Number.isFinite(v) ? v : d; }
+function safeArr(x) { return Array.isArray(x) ? x : []; }
 function esc(s) {
   return String(s ?? "")
     .replaceAll("&", "&amp;")
@@ -26,10 +21,7 @@ function esc(s) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
-function inc(map, key) {
-  const k = String(key || "unknown");
-  map[k] = (map[k] || 0) + 1;
-}
+function inc(map, key) { const k = String(key || "unknown"); map[k] = (map[k] || 0) + 1; }
 function topN(map, k = 12) {
   const arr = Object.entries(map || {}).map(([key, count]) => ({ key, count: n(count, 0) }));
   arr.sort((a, b) => b.count - a.count);
@@ -237,7 +229,7 @@ function modeCard(mode, latest, sessionStartMs, events) {
   };
   const snapshot = summarizeMainSnapshot(latest);
   const bottlenecks = analyzeMainBottlenecks(coins);
-  // Reject analysis not needed in this simplified version
+  // Reject analysis not used in this version
   return `
     <div class="card">
       <h2>${esc(mode.toUpperCase())}</h2>
