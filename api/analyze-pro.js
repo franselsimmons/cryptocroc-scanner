@@ -12,6 +12,7 @@ function keyMainLatest(mode) {
 export const config = RUNTIME_CONFIG;
 
 // ===== NIEUWE FALLBACK CONSTANTS (alleen toegevoegd) =====
+const keyMainLatest = moonCore.keyMainLatest || ((mode) => `latest:${String(mode || "bull").toLowerCase()}`);
 const keyMoonDiagList = moonCore.keyMoonDiagList || ((m) => `moon:diag:${m}`);
 const keyMoonDiagSnap = moonCore.keyMoonDiagSnap || ((m) => `moon:diag_snap:${m}`);
 
