@@ -840,7 +840,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
       stage === "ELITE_EXPANSION" ||
       stage === "ELITE_CASCADE";
 
-    // ========== TRADEDESKSTATUS MET SLIMMERE STICKINESS + ALMOST OPEN ==========
+    // ========== NIEUWE TRADEDESKSTATUS (ALMOST OPEN) ==========
     const nearEntryWatch =
       superScannerCoin === true &&
       (
@@ -1205,6 +1205,7 @@ export default async function handler(req, res) {
       depthHist = depthHist.slice(-20);
       const thesisInfo = calculateThesisDamage(coin, prev, mode);
       const tradePlan = coin.tradePlan;
+
       // ========== NIEUWE entryReady: alleen luisteren naar tradeDeskStatus === "OPEN" ==========
       let entryReady = false;
       if (!hasOpenPosition) {
@@ -1225,6 +1226,7 @@ export default async function handler(req, res) {
           (coin.marketScore || 0) >= 44;
       }
       // =============================================================================
+
       nextState[sym] = {
         ...prev,
         stage: rawStage,
