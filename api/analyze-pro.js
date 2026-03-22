@@ -44,7 +44,6 @@ function safeStage(x) {
 
 function flattenMainCoins(latest) {
   const f = latest?.funnel || {};
-
   return [
     ...safeStage(f.radar).map(c => ({ ...c, _stage: c?.stage || "RADAR" })),
     ...safeStage(f.buildup).map(c => ({ ...c, _stage: c?.stage || "BUILDUP" })),
