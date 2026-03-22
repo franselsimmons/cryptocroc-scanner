@@ -1,94 +1,177 @@
-export default async function handler(req, res) {
-  try {
-    const secret = req.query?.secret;
-    if (secret !== "lara-roos") {
-      return res.status(401).json({ ok: false });
-    }
+import { useEffect, useState } from "react";
 
-    const BASE = process.env.BASE_URL || "";
+const API = "/api/analyze-all?secret=lara-roos";
 
-    async function safeFetch(url) {
-      try {
-        const r = await fetch(url);
-        return await r.json();
-      } catch (e) {
-        return null;
-      }
-    }
+// =============================
+// HELPERS
+// =============================
+function getColor(score) {
+  if (score >= 8) return "bg-green-500";
+  if (score >= 6) return "bg-yellow-400";
+  return "bg-red-500";
+}
 
-    const main = await safeFetch(`${BASE}/api/analyze-main?secret=${secret}`);
-    const moonBull = await safeFetch(`${BASE}/api/moon?mode=bull&secret=${secret}`);
-    const moonBear = await safeFetch(`${BASE}/api/moon?mode=bear&secret=${secret}`);
-    const trade = await safeFetch(`${BASE}/api/trade?secret=${secret}`);
+function getTextColor(score) {
+  if (score >= 8) return "text-green-400";
+  if (score >= 6) return "text-yellow-300";
+  return "text-red-400";
+}
 
-    function scoreField(v, min, good) {
-      if (v >= good) return 9;
-      if (v >= min) return 6;
-      return 3;
-    }
+// =============================
+// AUTO INSIGHTS ENGINE
+// =============================
+function buildInsights(data) {
+  const all = [
+    ...(data?.main?.problems || []),
+    ...(data?.moon?.bull?.problems || []),
+    ...(data?.moon?.bear?.problems || []),
+    ...(data?.trade?.problems || []),
+  ];
 
-    function analyze(list = []) {
-      return list.map(c => {
-        const quality = scoreField(c.qualityScore || 0, 60, 75);
-        const liquidity = scoreField(c.liquidityScore || 0, 55, 70);
-        const timing = scoreField(c.timingScore || 0, 55, 70);
-        const market = scoreField(c.marketScore || 0, 40, 60);
+  const total = all.length || 1;
 
-        const score = Math.round((quality + liquidity + timing + market) / 4);
+  let timing = 0;
+  let liquidity = 0;
+  let quality = 0;
+  let market = 0;
 
-        const bottlenecks = [];
-        const advice = [];
-
-        if (quality < 7) {
-          bottlenecks.push("kwaliteit");
-          advice.push("Wacht op betere setup (entryQuality omhoog)");
-        }
-
-        if (liquidity < 7) {
-          bottlenecks.push("liquiditeit");
-          advice.push("Focus op coins met betere depth/spread");
-        }
-
-        if (timing < 7) {
-          bottlenecks.push("timing");
-          advice.push("Wacht op breakout + volume confirmatie");
-        }
-
-        if (market < 7) {
-          bottlenecks.push("markt");
-          advice.push("Trade alleen met BTC richting");
-        }
-
-        return {
-          symbol: c.symbol,
-          stage: c.stage,
-          score,
-          bottlenecks,
-          advice,
-        };
-      }).filter(c => c.score < 8);
-    }
-
-    res.status(200).json({
-      ok: true,
-      main: {
-        problems: analyze(main?.candidates?.premium || []),
-      },
-      moon: {
-        bull: {
-          problems: analyze(moonBull?.candidates?.premium || []),
-        },
-        bear: {
-          problems: analyze(moonBear?.candidates?.premium || []),
-        },
-      },
-      trade: {
-        problems: analyze(trade?.candidates?.premium || []),
-      },
+  all.forEach(c => {
+    c.bottlenecks?.forEach(b => {
+      if (b.includes("timing")) timing++;
+      if (b.includes("liquiditeit")) liquidity++;
+      if (b.includes("kwaliteit")) quality++;
+      if (b.includes("markt")) market++;
     });
+  });
 
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ ok: false, error: err.message });
+  return [
+    {
+      label: `${Math.round((timing / total) * 100)}% faalt op timing`,
+      advice: "Wacht vaker op breakout + volume confirmatie",
+    },
+    {
+      label: `${Math.round((liquidity / total) * 100)}% liquidity probleem`,
+      advice: "Focus op coins met sterke orderbook depth",
+    },
+    {
+      label: `${Math.round((quality / total) * 100)}% slechte kwaliteit`,
+      advice: "Alleen high conviction setups traden",
+    },
+    {
+      label: `${Math.round((market / total) * 100)}% markt tegen`,
+      advice: "Trade alleen met BTC trend mee",
+    },
+  ];
+}
+
+// =============================
+// COMPONENTS
+// =============================
+function CoinCard({ coin }) {
+  return (
+    <div className="bg-zinc-900 p-4 rounded-xl border border-zinc-800">
+      <div className="flex justify-between items-center mb-2">
+        <h3 className="font-bold">{coin.symbol}</h3>
+        <span className={`px-2 py-1 rounded ${getColor(coin.score)}`}>
+          {coin.score}
+        </span>
+      </div>
+
+      <div className="text-xs text-gray-400 mb-2">{coin.stage}</div>
+
+      <div className="mb-2">
+        {coin.bottlenecks.map((b, i) => (
+          <div key={i} className="text-red-400 text-sm">
+            ⚠ {b}
+          </div>
+        ))}
+      </div>
+
+      <div>
+        {coin.advice.map((a, i) => (
+          <div key={i} className="text-green-400 text-sm">
+            ✔ {a}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Section({ title, list }) {
+  return (
+    <div className="mb-10">
+      <h2 className="text-xl font-bold mb-4">{title}</h2>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {list.length === 0 ? (
+          <div className="text-green-400">Geen problemen 🚀</div>
+        ) : (
+          list.map((c, i) => <CoinCard key={i} coin={c} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+// =============================
+// MAIN
+// =============================
+export default function Dashboard() {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    fetch(API)
+      .then(r => r.json())
+      .then(setData);
+  }, []);
+
+  if (!data) {
+    return (
+      <div className="p-10 text-white bg-black min-h-screen">
+        Laden...
+      </div>
+    );
   }
+
+  const insights = buildInsights(data);
+
+  return (
+    <div className="bg-black text-white min-h-screen p-6">
+
+      {/* HEADER */}
+      <h1 className="text-3xl font-bold mb-6">
+        🚀 CryptoCroc AI Dashboard
+      </h1>
+
+      {/* INSIGHTS */}
+      <div className="mb-10">
+        <h2 className="text-xl font-bold mb-4">🔥 Auto Insights</h2>
+
+        <div className="grid md:grid-cols-2 gap-4">
+          {insights.map((i, idx) => (
+            <div key={idx} className="bg-zinc-900 p-4 rounded-xl border border-zinc-800">
+              <div className="font-semibold text-yellow-300">
+                {i.label}
+              </div>
+              <div className="text-sm text-gray-400 mt-1">
+                {i.advice}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* MAIN */}
+      <Section title="📊 MAIN Funnel" list={data.main.problems} />
+
+      {/* MOON */}
+      <Section title="🌙 MOON Bull" list={data.moon.bull.problems} />
+      <Section title="🌙 MOON Bear" list={data.moon.bear.problems} />
+
+      {/* TRADE */}
+      <Section title="💰 TRADE Funnel" list={data.trade.problems} />
+
+    </div>
+  );
 }
