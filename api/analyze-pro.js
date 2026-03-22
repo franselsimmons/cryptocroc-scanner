@@ -2,7 +2,7 @@
 import { kv } from "@vercel/kv";
 import { readEvents } from "../lib/_analytics.js";
 import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
-import * as moonCore from "../lib/_moon_core.js";
+import * as moonCore from "../lib/_moon_core.js";   // VERVANGEN: named import -> namespace import
 
 // Helper voor main latest key
 function keyMainLatest(mode) {
@@ -11,7 +11,7 @@ function keyMainLatest(mode) {
 
 export const config = RUNTIME_CONFIG;
 
-// ===== SAFE FALLBACKS (voorkomt crash) =====
+// ===== NIEUWE FALLBACK CONSTANTS (alleen toegevoegd) =====
 const keyMoonDiagList = moonCore.keyMoonDiagList || ((m) => `moon:diag:${m}`);
 const keyMoonDiagSnap = moonCore.keyMoonDiagSnap || ((m) => `moon:diag_snap:${m}`);
 
