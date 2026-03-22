@@ -1,6 +1,5 @@
 // /api/analyze-main.js
-// Vereist: KV keys "latest:bull" en "latest:bear" (of via keyMainLatest) + event streams:
-// scan_radar, scan_buildup, scan_almost, scan_transition, scan_reject
+// Vereist: KV keys "latest:bull" en "latest:bear" + scan_reject events
 import { kv } from "@vercel/kv";
 import { readEvents } from "../lib/_analytics.js";
 import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
@@ -92,7 +91,11 @@ function analyzeMainBottlenecks(coins) {
 }
 
 function summarizeRejects(events, sinceMs, mode) {
-  const rejects = safeArr(events).filter(e => e?.type === "scan_reject" && n(e?.ts,0) >= sinceMs && (!mode || e?.mode === mode));
+  // events are already from scan_reject stream
+  const rejects = safeArr(events).filter(e =>
+    n(e?.ts, 0) >= sinceMs &&
+    (!mode || String(e?.mode || "").toLowerCase() === String(mode).toLowerCase())
+  );
   const byStage = { RADAR: {}, BUILDUP: {}, ALMOST: {}, ENTRY: {} };
   const byCode = {};
   for (const e of rejects) {
@@ -115,16 +118,16 @@ function coinRow(c) {
   const kv = (k, v) => `<div class="kv"><span>${esc(k)}</span><b>${esc(v)}</b></div>`;
   return `
     <tr class="coin-row" data-symbol="${esc(c?.symbol || "")}" data-name="${esc(c?.name || "")}">
-       <td><b>${esc(c?.symbol || "?")}</b><div class="muted">${esc(c?.name || "")}</div></td>
-       <td>${esc(c?.stage || c?._stage || "-")}</td>
-       <td>${n(c?.entryQuality,0)}</td>
-       <td>${n(c?.persistenceScore,0)}</td>
-       <td>${esc(c?.tradeDeskStatus || "-")}</td>
-       <td>${esc(ex?.reason || "-")}</td>
-       <td>${kv("spread", ob.spreadPct != null ? n(ob.spreadPct,0).toFixed(3) : "-")}</td>
-       <td>${kv("depth", ob.depthMinUsd1p != null ? n(ob.depthMinUsd1p,0) : "-")}</td>
-       <td>${kv("score", ob.score != null ? n(ob.score,0).toFixed(5) : "-")}</td>
-     </tr>
+        <td><b>${esc(c?.symbol || "?")}</b><div class="muted">${esc(c?.name || "")}</div>}
+        <td>${esc(c?.stage || c?._stage || "-")}’
+        <td>${n(c?.entryQuality,0)}’
+        <td>${n(c?.persistenceScore,0)}’
+        <td>${esc(c?.tradeDeskStatus || "-")}’
+        <td>${esc(ex?.reason || "-")}’
+        <td>${kv("spread", ob.spreadPct != null ? n(ob.spreadPct,0).toFixed(3) : "-")}’
+        <td>${kv("depth", ob.depthMinUsd1p != null ? n(ob.depthMinUsd1p,0) : "-")}’
+        <td>${kv("score", ob.score != null ? n(ob.score,0).toFixed(5) : "-")}’
+      </tr>
   `;
 }
 
@@ -132,10 +135,10 @@ function stageTable(title, arr) {
   return `
     <div class="stage">
       <h3>${esc(title)} (${arr.length})</h3>
-      <div style="overflow-x:auto"><table>
-        <thead><tr><th>Coin</th><th>Stage</th><th>EntryQ</th><th>Persist</th><th>Status</th><th>Exec reason</th><th>Spread</th><th>Depth</th><th>OB score</th></tr></thead>
-        <tbody>${arr.map(coinRow).join("") || `<tr><td colspan="9">n/a</td></tr>`}</tbody>
-      </table></div>
+      <div style="overflow-x:auto">`
+        <thead>?:<th>Coin</th><th>Stage</th><th>EntryQ</th><th>Persist</th><th>Status</th><th>Exec reason</th><th>Spread</th><th>Depth</th><th>OB score</th>;</thead>
+        <tbody>${arr.map(coinRow).join("") || `?:<td colspan="9">n/a</td>`}</tbody>
+      </div>
     </div>
   `;
 }
@@ -243,24 +246,14 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    const [bullLatest, bearLatest, radar, buildup, almost, transition, reject, sessionStartMs] = await Promise.all([
+    const [bullLatest, bearLatest, reject, sessionStartMs] = await Promise.all([
       kv.get(keyMainLatest("bull")),
       kv.get(keyMainLatest("bear")),
-      readEvents("scan_radar", 3000),
-      readEvents("scan_buildup", 3000),
-      readEvents("scan_almost", 3000),
-      readEvents("scan_transition", 8000),
       readEvents("scan_reject", 8000),
       kv.get("analyze:sessionStartMs"),
     ]);
 
-    const events = [
-      ...safeArr(radar),
-      ...safeArr(buildup),
-      ...safeArr(almost),
-      ...safeArr(transition),
-      ...safeArr(reject),
-    ];
+    const rejectEvents = safeArr(reject);
     const sess = n(sessionStartMs, 0) || (Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     if (String(req.query?.format || "").toLowerCase() === "json") {
@@ -273,12 +266,12 @@ export default async function handler(req, res) {
           bull: {
             snapshot: summarizeMainSnapshot(bullLatest),
             bottlenecks: analyzeMainBottlenecks(flattenMainCoins(bullLatest)),
-            rejects: summarizeRejects(events, sess, "bull"),
+            rejects: summarizeRejects(rejectEvents, sess, "bull"),
           },
           bear: {
             snapshot: summarizeMainSnapshot(bearLatest),
             bottlenecks: analyzeMainBottlenecks(flattenMainCoins(bearLatest)),
-            rejects: summarizeRejects(events, sess, "bear"),
+            rejects: summarizeRejects(rejectEvents, sess, "bear"),
           },
         },
       });
@@ -287,7 +280,7 @@ export default async function handler(req, res) {
 
     res.setHeader("content-type", "text/html; charset=utf-8");
     res.setHeader("cache-control", "no-store");
-    res.status(200).end(htmlPage({ bullLatest, bearLatest, events, sessionStartMs: sess }));
+    res.status(200).end(htmlPage({ bullLatest, bearLatest, events: rejectEvents, sessionStartMs: sess }));
   } catch (err) {
     console.error(err);
     res.status(500).json({ ok: false, error: String(err.message) });
