@@ -1,9 +1,8 @@
-// /api/analyze-pro.js
 // Vereist: KV keys "latest:bull" en "latest:bear" + trade_closed events
 import { kv } from "@vercel/kv";
 import { readEvents } from "../lib/_analytics.js";
 import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
-import { keyMoonDiagList, keyMoonDiagSnap } from "../lib/_moon_core.js";
+import * as moonCore from "../lib/_moon_core.js";
 
 // Helper voor main latest key
 function keyMainLatest(mode) {
@@ -11,6 +10,10 @@ function keyMainLatest(mode) {
 }
 
 export const config = RUNTIME_CONFIG;
+
+// ===== SAFE FALLBACKS (voorkomt crash) =====
+const keyMoonDiagList = moonCore.keyMoonDiagList || ((m) => `moon:diag:${m}`);
+const keyMoonDiagSnap = moonCore.keyMoonDiagSnap || ((m) => `moon:diag_snap:${m}`);
 
 // ===================== HELPERS =====================
 function n(x, d = 0) { const v = Number(x); return Number.isFinite(v) ? v : d; }
