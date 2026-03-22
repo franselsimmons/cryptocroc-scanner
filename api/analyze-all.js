@@ -14,30 +14,30 @@ function n(x, d = 0) {
 }
 
 // ===============================
-// SCORING (LERAAR SYSTEEM)
+// SCORE ENGINE (LERAAR)
 // ===============================
 function scoreFilter(fails, total) {
-  if (total === 0) return 10;
+  if (!total) return 10;
 
-  const ratio = fails / total;
+  const r = fails / total;
 
-  if (ratio > 0.9) return 1;
-  if (ratio > 0.75) return 2;
-  if (ratio > 0.6) return 3;
-  if (ratio > 0.5) return 4;
-  if (ratio > 0.4) return 5;
-  if (ratio > 0.3) return 6;
-  if (ratio > 0.2) return 7;
-  if (ratio > 0.1) return 8;
+  if (r > 0.9) return 1;
+  if (r > 0.75) return 2;
+  if (r > 0.6) return 3;
+  if (r > 0.5) return 4;
+  if (r > 0.4) return 5;
+  if (r > 0.3) return 6;
+  if (r > 0.2) return 7;
+  if (r > 0.1) return 8;
 
   return 9;
 }
 
-function adviceMap(key) {
+function advice(key) {
   const map = {
-    btc: "Versoepel BTC confirmatie (te streng → weinig trades)",
-    breakout: "Verlaag breakout threshold (te weinig triggers)",
-    persistence: "Verlaag persistence 5–10% (te streng)",
+    btc: "Versoepel BTC alignment (te streng)",
+    breakout: "Verlaag breakout threshold",
+    persistence: "Verlaag persistence 5-10%",
     entry: "Verlaag entryQuality licht",
     liquidity: "Verlaag depth/spread eisen",
   };
@@ -45,9 +45,9 @@ function adviceMap(key) {
 }
 
 // ===============================
-// GENERIC FUNNEL ANALYZER
+// FUNNEL ANALYSE
 // ===============================
-function analyzeFunnel(coins = []) {
+function analyze(coins = []) {
   const total = coins.length || 1;
 
   const fails = {
@@ -58,31 +58,29 @@ function analyzeFunnel(coins = []) {
     liquidity: coins.filter(c => !c.thresholds?.depthOk).length,
   };
 
-  return Object.entries(fails).map(([key, value]) => ({
-    filter: key,
-    score: scoreFilter(value, total),
-    fails: value,
+  return Object.entries(fails).map(([k, v]) => ({
+    filter: k,
+    score: scoreFilter(v, total),
+    fails: v,
     total,
-    advice: adviceMap(key),
+    advice: advice(k),
   }));
 }
 
 // ===============================
-// MAIN HANDLER
+// HANDLER
 // ===============================
 export default async function handler(req, res) {
   try {
-    // ===============================
-    // DATA OPHALEN (BELANGRIJK FIX)
-    // ===============================
+    // 🔥 DATA (HIER ZAT JE BUG)
     const [mainBull, moonBull, trade] = await Promise.all([
       kv.get(keyMainLatest("bull")),
-      kv.get(keyMoonLatest("bull")), // ✅ FIX → Moon werkt nu
+      kv.get(keyMoonLatest("bull")), // ✅ FIX → MOON WERKT
       kv.get(keyTradeLatest()),
     ]);
 
     // ===============================
-    // COINS UIT FUNNELS HALEN
+    // COINS
     // ===============================
     const mainCoins = [
       ...(mainBull?.funnel?.radar || []),
@@ -96,14 +94,14 @@ export default async function handler(req, res) {
       ...(moonBull?.funnel?.almost || []),
     ];
 
-    const tradeCoins = trade?.trades || [];
+    const trades = trade?.trades || [];
 
     // ===============================
     // ANALYSE
     // ===============================
-    const mainAnalysis = analyzeFunnel(mainCoins);
-    const moonAnalysis = analyzeFunnel(moonCoins);
-    const tradeAnalysis = analyzeFunnel(tradeCoins);
+    const mainAnalysis = analyze(mainCoins);
+    const moonAnalysis = analyze(moonCoins);
+    const tradeAnalysis = analyze(trades);
 
     // ===============================
     // RESPONSE
@@ -113,9 +111,9 @@ export default async function handler(req, res) {
       ts: Date.now(),
 
       summary: {
-        mainCoins: mainCoins.length,
-        moonCoins: moonCoins.length,
-        trades: tradeCoins.length,
+        main: mainCoins.length,
+        moon: moonCoins.length,
+        trades: trades.length,
       },
 
       funnels: {
@@ -126,7 +124,7 @@ export default async function handler(req, res) {
     });
 
   } catch (err) {
-    console.error("SYSTEM ANALYZE ERROR:", err);
+    console.error("ANALYZE-ALL ERROR:", err);
 
     return res.status(500).json({
       ok: false,
