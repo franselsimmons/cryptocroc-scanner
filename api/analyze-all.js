@@ -14,10 +14,11 @@ function n(x, d = 0) {
 }
 
 // ===============================
-// SCORING ENGINE (LERAAR MODE)
+// SCORING (LERAAR SYSTEEM)
 // ===============================
 function scoreFilter(fails, total) {
   if (total === 0) return 10;
+
   const ratio = fails / total;
 
   if (ratio > 0.9) return 1;
@@ -34,25 +35,19 @@ function scoreFilter(fails, total) {
 
 function adviceMap(key) {
   const map = {
-    btc: "Versoepel BTC confirmatie / regime-check",
-    breakout: "Verlaag breakout threshold",
-    persistence: "Verlaag persistence met 5–10%",
+    btc: "Versoepel BTC confirmatie (te streng → weinig trades)",
+    breakout: "Verlaag breakout threshold (te weinig triggers)",
+    persistence: "Verlaag persistence 5–10% (te streng)",
     entry: "Verlaag entryQuality licht",
-    liquidity: "Verlaag depth requirement of spread filter",
+    liquidity: "Verlaag depth/spread eisen",
   };
-  return map[key] || "Optimaliseer filter licht";
+  return map[key] || "Optimaliseer filter";
 }
 
 // ===============================
-// MAIN FUNNEL ANALYSE
+// GENERIC FUNNEL ANALYZER
 // ===============================
-function analyzeMain(latest) {
-  const coins = [
-    ...(latest?.funnel?.radar || []),
-    ...(latest?.funnel?.buildup || []),
-    ...(latest?.funnel?.almost || []),
-  ];
-
+function analyzeFunnel(coins = []) {
   const total = coins.length || 1;
 
   const fails = {
@@ -63,63 +58,12 @@ function analyzeMain(latest) {
     liquidity: coins.filter(c => !c.thresholds?.depthOk).length,
   };
 
-  return Object.entries(fails).map(([k, v]) => ({
-    key: k,
-    score: scoreFilter(v, total),
-    fails: v,
+  return Object.entries(fails).map(([key, value]) => ({
+    filter: key,
+    score: scoreFilter(value, total),
+    fails: value,
     total,
-    advice: adviceMap(k),
-  }));
-}
-
-// ===============================
-// MOON FUNNEL ANALYSE (FIX)
-// ===============================
-function analyzeMoon(latest) {
-  const coins = [
-    ...(latest?.funnel?.radar || []),
-    ...(latest?.funnel?.buildup || []),
-    ...(latest?.funnel?.almost || []),
-  ];
-
-  const total = coins.length || 1;
-
-  const fails = {
-    btc: coins.filter(c => n(c.btcAlignmentScore) < 50).length,
-    breakout: coins.filter(c => !c.breakout?.ready).length,
-    persistence: coins.filter(c => n(c.persistenceScore) < 55).length,
-    entry: coins.filter(c => n(c.entryQuality) < 60).length,
-    liquidity: coins.filter(c => !c.thresholds?.depthOk).length,
-  };
-
-  return Object.entries(fails).map(([k, v]) => ({
-    key: k,
-    score: scoreFilter(v, total),
-    fails: v,
-    total,
-    advice: adviceMap(k),
-  }));
-}
-
-// ===============================
-// TRADE FUNNEL ANALYSE
-// ===============================
-function analyzeTrade(latest) {
-  const trades = latest?.trades || [];
-  const total = trades.length || 1;
-
-  const fails = {
-    entry: trades.filter(t => n(t.entryQuality) < 60).length,
-    persistence: trades.filter(t => n(t.persistenceScore) < 55).length,
-    btc: trades.filter(t => n(t.btcAlignmentScore) < 50).length,
-  };
-
-  return Object.entries(fails).map(([k, v]) => ({
-    key: k,
-    score: scoreFilter(v, total),
-    fails: v,
-    total,
-    advice: adviceMap(k),
+    advice: adviceMap(key),
   }));
 }
 
@@ -128,34 +72,65 @@ function analyzeTrade(latest) {
 // ===============================
 export default async function handler(req, res) {
   try {
+    // ===============================
+    // DATA OPHALEN (BELANGRIJK FIX)
+    // ===============================
     const [mainBull, moonBull, trade] = await Promise.all([
       kv.get(keyMainLatest("bull")),
-      kv.get(keyMoonLatest("bull")), // 🔥 FIX HIER
+      kv.get(keyMoonLatest("bull")), // ✅ FIX → Moon werkt nu
       kv.get(keyTradeLatest()),
     ]);
 
-    const mainAnalysis = analyzeMain(mainBull || {});
-    const moonAnalysis = analyzeMoon(moonBull || {}); // 🔥 NU WERKT MOON
-    const tradeAnalysis = analyzeTrade(trade || {});
+    // ===============================
+    // COINS UIT FUNNELS HALEN
+    // ===============================
+    const mainCoins = [
+      ...(mainBull?.funnel?.radar || []),
+      ...(mainBull?.funnel?.buildup || []),
+      ...(mainBull?.funnel?.almost || []),
+    ];
 
+    const moonCoins = [
+      ...(moonBull?.funnel?.radar || []),
+      ...(moonBull?.funnel?.buildup || []),
+      ...(moonBull?.funnel?.almost || []),
+    ];
+
+    const tradeCoins = trade?.trades || [];
+
+    // ===============================
+    // ANALYSE
+    // ===============================
+    const mainAnalysis = analyzeFunnel(mainCoins);
+    const moonAnalysis = analyzeFunnel(moonCoins);
+    const tradeAnalysis = analyzeFunnel(tradeCoins);
+
+    // ===============================
+    // RESPONSE
+    // ===============================
     return res.status(200).json({
       ok: true,
+      ts: Date.now(),
+
       summary: {
-        mainCoins: mainBull?.counts?.radar || 0,
-        moonCoins: moonBull?.counts?.radar || 0,
-        trades: trade?.trades?.length || 0,
+        mainCoins: mainCoins.length,
+        moonCoins: moonCoins.length,
+        trades: tradeCoins.length,
       },
+
       funnels: {
         main: mainAnalysis,
         moon: moonAnalysis,
         trade: tradeAnalysis,
       },
     });
-  } catch (e) {
-    console.error(e);
+
+  } catch (err) {
+    console.error("SYSTEM ANALYZE ERROR:", err);
+
     return res.status(500).json({
       ok: false,
-      error: e.message,
+      error: err.message,
     });
   }
 }
