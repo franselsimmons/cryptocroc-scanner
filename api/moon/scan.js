@@ -774,14 +774,15 @@ async function buildUniverse(mode, whaleFlow, btc) {
       timingScore,
       marketScore,
     });
+    // ========== VERLAAGDE DRUMPELS VOOR superScannerCoin ==========
     const superScannerCoin =
-      perfectCandidateScore >= 76 &&
-      qualityScore >= 70 &&
+      perfectCandidateScore >= 72 &&
+      qualityScore >= 66 &&
       (stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
-    // ========== AANGEPASTE tradeCandidate ==========
+    // ==============================================================
     const tradeCandidate =
       perfectCandidateScore >= 72 &&
       qualityScore >= 64 &&
@@ -792,7 +793,6 @@ async function buildUniverse(mode, whaleFlow, btc) {
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
-    // ==============================================
     const scannerOnly = !superScannerCoin;
     const coinForDecision = {
       ...coin,
@@ -860,14 +860,17 @@ async function buildUniverse(mode, whaleFlow, btc) {
       stage === "ELITE_IGNITION" ||
       stage === "ELITE_EXPANSION" ||
       stage === "ELITE_CASCADE";
-    // ========== AANGEPASTE tradeDeskStatus ==========
-    const tradeDeskStatus =
-      tradeCandidate === true && isEliteStageForDesk && execution.score >= 60
-        ? "OPEN"
-        : superScannerCoin
-          ? "WATCH"
-          : "IGNORE";
-    // ================================================
+    // ========== TRADEDESKSTATUS MET STICKINESS ==========
+    let tradeDeskStatus = "IGNORE";
+    if (tradeCandidate === true && isEliteStageForDesk && execution.score >= 60) {
+      tradeDeskStatus = "OPEN";
+    } else if (superScannerCoin) {
+      tradeDeskStatus = "WATCH";
+    } else if (prev?.tradeDeskStatus === "WATCH" && (prev?.watchScans || 0) >= 2) {
+      // Blijf nog even in WATCH hangen, ook al is superScannerCoin nu false
+      tradeDeskStatus = "WATCH";
+    }
+    // ====================================================
     if (tradeDeskStatus === "OPEN") {
       execution.action = "OPEN";
       execution.ready = true;
@@ -1123,12 +1126,16 @@ export default async function handler(req, res) {
       let eliteScans = 0;
       let candidateSince = prev?.candidateSince || null;
       let eliteSince = prev?.eliteSince || null;
+      // ========== WATCHSCANS toevoegen ==========
+      let watchScans = prev?.watchScans || 0;
+      // ==========================================
       if (rawStage === "RADAR") {
         weakScans = 0;
         thesisInvalidScans = 0;
         candidateSince = null;
         eliteSince = null;
         entryLocked = false;
+        watchScans = 0; // reset bij RADAR
       } else {
         if (isMoonEliteStage(rawStage)) {
           strongScans = (prev?.strongScans || 0) + 1;
@@ -1163,6 +1170,13 @@ export default async function handler(req, res) {
         }
         thesisInvalidScans = prev?.thesisInvalidScans || 0;
         entryLocked = prev?.entryLocked || false;
+        // ========== WATCHSCANS bijwerken ==========
+        if (coin.tradeDeskStatus === "WATCH") {
+          watchScans += 1;
+        } else {
+          watchScans = 0;
+        }
+        // ==========================================
       }
       let depthHist = Array.isArray(prev?.depthHist) ? [...prev.depthHist] : [];
       const currentDepth = n(coin.ob?.depthMinUsd1p, 0);
@@ -1179,7 +1193,6 @@ export default async function handler(req, res) {
       const isAlmostStage = rawStage === "ALMOST";
       let entryReady = false;
       if (!hasOpenPosition) {
-        // ========== AANGEPASTE entryReady ==========
         entryReady =
           coin.tradeCandidate === true &&
           (isEliteStage || isAlmostStage) &&
@@ -1196,7 +1209,6 @@ export default async function handler(req, res) {
           (coin.timingScore || 0) >= 60 &&
           (coin.liquidityScore || 0) >= 54 &&
           (coin.marketScore || 0) >= 40;
-        // ==========================================
       }
       nextState[sym] = {
         ...prev,
@@ -1249,8 +1261,13 @@ export default async function handler(req, res) {
         tradeDeskStatus: coin.tradeDeskStatus || "IGNORE",
         name: coin.name,
         image: coin.image,
+        // ========== WATCHSCANS opslaan ==========
+        watchScans,
+        // ======================================
       };
-      const isElitePreTrade = coin.tradeDeskStatus === "WATCH";
+      const isElitePreTrade =
+        coin.tradeDeskStatus === "WATCH" &&
+        (watchScans >= 2); // minimaal 2 scans stabiel
       const isRegularFunnelSignal = rawStage === "RADAR" || rawStage === "BUILDUP";
       if (!hasOpenPosition && isRegularFunnelSignal) {
         await safeSendSignal({
