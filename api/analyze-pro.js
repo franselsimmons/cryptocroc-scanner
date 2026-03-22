@@ -67,19 +67,22 @@ function analyzeMainBottlenecks(coins) {
 }
 
 function analyzeMainTrades(events, mode) {
-  const filtered = safeArr(events).filter(e => {
-    if (!mode) return true;
-    return String(e?.mode || "").toLowerCase() === String(mode).toLowerCase();
+  // events are already trade_closed stream
+  const closes = safeArr(events).filter(e => {
+    const modeOk = !mode || String(e?.mode || "").toLowerCase() === String(mode).toLowerCase();
+    return modeOk;
   });
-  const closes = filtered.filter(e => e.type === "trade_close");
+
   const exitReasons = {};
   let givebackSum = 0;
+
   for (const t of closes) {
     inc(exitReasons, t?.reason || "UNKNOWN");
     const max = n(t?.maxPnlPct, 0);
     const pnl = n(t?.pnlPct, 0);
     givebackSum += Math.max(0, max - pnl);
   }
+
   const avgGiveback = closes.length ? givebackSum / closes.length : 0;
   return { exitReasons: topN(exitReasons, 5), avgGiveback, totalTrades: closes.length };
 }
