@@ -1487,15 +1487,3 @@ export default async function handler(req, res) {
     if (lockAcquired) await releaseScanLock(mode);
   }
 }
-
-// ======================================================
-// Hulpfuncties
-// ======================================================
-function n(x, d = 0) {
-  const v = Number(x);
-  return Number.isFinite(v) ? v : d;
-}
-
-function up(x) {
-  return String(x || "").toUpperCase();
-}
