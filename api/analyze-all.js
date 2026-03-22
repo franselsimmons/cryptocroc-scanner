@@ -1,132 +1,76 @@
 import { kv } from "@vercel/kv";
-import {
-  keyMainLatest,
-  keyMoonLatest,
-  keyTradeLatest,
-} from "../../lib/keys.js";
 
-// ===============================
-// Helpers
-// ===============================
-function n(x, d = 0) {
-  const v = Number(x);
-  return Number.isFinite(v) ? v : d;
+// =============================
+// ✅ GEEN keys.js meer!
+// =============================
+const SECRET = process.env.SECRET || "lara-roos";
+
+// =============================
+// Helper: auth check
+// =============================
+function requireSecret(req, res) {
+  const s = req.query?.secret;
+  if (!s || s !== SECRET) {
+    res.status(401).json({ ok: false, error: "unauthorized" });
+    return false;
+  }
+  return true;
 }
 
-// ===============================
-// SCORE ENGINE (LERAAR)
-// ===============================
-function scoreFilter(fails, total) {
-  if (!total) return 10;
-
-  const r = fails / total;
-
-  if (r > 0.9) return 1;
-  if (r > 0.75) return 2;
-  if (r > 0.6) return 3;
-  if (r > 0.5) return 4;
-  if (r > 0.4) return 5;
-  if (r > 0.3) return 6;
-  if (r > 0.2) return 7;
-  if (r > 0.1) return 8;
-
-  return 9;
-}
-
-function advice(key) {
-  const map = {
-    btc: "Versoepel BTC alignment (te streng)",
-    breakout: "Verlaag breakout threshold",
-    persistence: "Verlaag persistence 5-10%",
-    entry: "Verlaag entryQuality licht",
-    liquidity: "Verlaag depth/spread eisen",
-  };
-  return map[key] || "Optimaliseer filter";
-}
-
-// ===============================
-// FUNNEL ANALYSE
-// ===============================
-function analyze(coins = []) {
-  const total = coins.length || 1;
-
-  const fails = {
-    btc: coins.filter(c => n(c.btcAlignmentScore) < 50).length,
-    breakout: coins.filter(c => !c.breakout?.ready).length,
-    persistence: coins.filter(c => n(c.persistenceScore) < 55).length,
-    entry: coins.filter(c => n(c.entryQuality) < 60).length,
-    liquidity: coins.filter(c => !c.thresholds?.depthOk).length,
-  };
-
-  return Object.entries(fails).map(([k, v]) => ({
-    filter: k,
-    score: scoreFilter(v, total),
-    fails: v,
-    total,
-    advice: advice(k),
-  }));
-}
-
-// ===============================
-// HANDLER
-// ===============================
+// =============================
+// MAIN HANDLER
+// =============================
 export default async function handler(req, res) {
   try {
-    // 🔥 DATA (HIER ZAT JE BUG)
-    const [mainBull, moonBull, trade] = await Promise.all([
-      kv.get(keyMainLatest("bull")),
-      kv.get(keyMoonLatest("bull")), // ✅ FIX → MOON WERKT
-      kv.get(keyTradeLatest()),
-    ]);
+    if (!requireSecret(req, res)) return;
 
-    // ===============================
-    // COINS
-    // ===============================
-    const mainCoins = [
-      ...(mainBull?.funnel?.radar || []),
-      ...(mainBull?.funnel?.buildup || []),
-      ...(mainBull?.funnel?.almost || []),
-    ];
+    // =============================
+    // MAIN ophalen
+    // =============================
+    const main = await fetch(
+      `${process.env.BASE_URL}/api/analyze-main?secret=${SECRET}`
+    ).then(r => r.json()).catch(() => null);
 
-    const moonCoins = [
-      ...(moonBull?.funnel?.radar || []),
-      ...(moonBull?.funnel?.buildup || []),
-      ...(moonBull?.funnel?.almost || []),
-    ];
+    // =============================
+    // MOON ophalen (BULL + BEAR)
+    // =============================
+    const moonBull = await fetch(
+      `${process.env.BASE_URL}/api/moon?mode=bull&secret=${SECRET}`
+    ).then(r => r.json()).catch(() => null);
 
-    const trades = trade?.trades || [];
+    const moonBear = await fetch(
+      `${process.env.BASE_URL}/api/moon?mode=bear&secret=${SECRET}`
+    ).then(r => r.json()).catch(() => null);
 
-    // ===============================
-    // ANALYSE
-    // ===============================
-    const mainAnalysis = analyze(mainCoins);
-    const moonAnalysis = analyze(moonCoins);
-    const tradeAnalysis = analyze(trades);
+    // =============================
+    // TRADE ophalen
+    // =============================
+    const trade = await fetch(
+      `${process.env.BASE_URL}/api/trade?secret=${SECRET}`
+    ).then(r => r.json()).catch(() => null);
 
-    // ===============================
-    // RESPONSE
-    // ===============================
-    return res.status(200).json({
+    // =============================
+    // RESULTAAT (ALLES SAMEN)
+    // =============================
+    const result = {
       ok: true,
       ts: Date.now(),
 
-      summary: {
-        main: mainCoins.length,
-        moon: moonCoins.length,
-        trades: trades.length,
+      main: main || { error: "main_failed" },
+
+      moon: {
+        bull: moonBull || { error: "moon_bull_failed" },
+        bear: moonBear || { error: "moon_bear_failed" },
       },
 
-      funnels: {
-        main: mainAnalysis,
-        moon: moonAnalysis,
-        trade: tradeAnalysis,
-      },
-    });
+      trade: trade || { error: "trade_failed" },
+    };
+
+    res.status(200).json(result);
 
   } catch (err) {
-    console.error("ANALYZE-ALL ERROR:", err);
-
-    return res.status(500).json({
+    console.error("analyze-all error:", err);
+    res.status(500).json({
       ok: false,
       error: err.message,
     });
