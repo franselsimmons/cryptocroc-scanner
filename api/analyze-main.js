@@ -1,4 +1,3 @@
-// /api/analyze-main.js
 // Vereist: KV keys "latest:bull" en "latest:bear" + scan_reject events
 import { kv } from "@vercel/kv";
 import { readEvents } from "../lib/_analytics.js";
