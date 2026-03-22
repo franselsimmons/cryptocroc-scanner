@@ -38,18 +38,26 @@ function fmtDate(ms) {
   });
 }
 
-// ===================== DATA =====================
+// ===================== ROBUSTE FLATTEN =====================
+function safeStage(x) {
+  if (!x) return [];
+  if (Array.isArray(x)) return x;
+  if (typeof x === "object") return Object.values(x);
+  return [];
+}
+
 function flattenMainCoins(latest) {
   const f = latest?.funnel || {};
+
   return [
-    ...safeArr(f.radar).map(c => ({ ...c, _system: "main", _stage: c.stage || "RADAR" })),
-    ...safeArr(f.buildup).map(c => ({ ...c, _system: "main", _stage: c.stage || "BUILDUP" })),
-    ...safeArr(f.almost).map(c => ({ ...c, _system: "main", _stage: c.stage || "ALMOST" })),
-    ...safeArr(f.entry).map(c => ({ ...c, _system: "main", _stage: c.stage || "ENTRY" })),
-    ...safeArr(f.elite_ignition).map(c => ({ ...c, _system: "main", _stage: c.stage || "ELITE_IGNITION" })),
-    ...safeArr(f.elite_expansion).map(c => ({ ...c, _system: "main", _stage: c.stage || "ELITE_EXPANSION" })),
-    ...safeArr(f.elite_cascade).map(c => ({ ...c, _system: "main", _stage: c.stage || "ELITE_CASCADE" })),
-    ...safeArr(f.hold).map(c => ({ ...c, _system: "main", _stage: c.stage || "HOLD" })),
+    ...safeStage(f.radar).map(c => ({ ...c, _system: "main", _stage: c?.stage || "RADAR" })),
+    ...safeStage(f.buildup).map(c => ({ ...c, _system: "main", _stage: c?.stage || "BUILDUP" })),
+    ...safeStage(f.almost).map(c => ({ ...c, _system: "main", _stage: c?.stage || "ALMOST" })),
+    ...safeStage(f.entry).map(c => ({ ...c, _system: "main", _stage: c?.stage || "ENTRY" })),
+    ...safeStage(f.elite_ignition).map(c => ({ ...c, _system: "main", _stage: c?.stage || "ELITE_IGNITION" })),
+    ...safeStage(f.elite_expansion).map(c => ({ ...c, _system: "main", _stage: c?.stage || "ELITE_EXPANSION" })),
+    ...safeStage(f.elite_cascade).map(c => ({ ...c, _system: "main", _stage: c?.stage || "ELITE_CASCADE" })),
+    ...safeStage(f.hold).map(c => ({ ...c, _system: "main", _stage: c?.stage || "HOLD" })),
   ];
 }
 
@@ -107,16 +115,16 @@ function coinRow(c) {
   const kv = (k, v) => `<div class="kv"><span>${esc(k)}</span><b>${esc(v)}</b></div>`;
   return `
     <tr class="coin-row" data-symbol="${esc(c?.symbol || "")}" data-name="${esc(c?.name || "")}">
-      <td><b>${esc(c?.symbol || "?")}</b><div class="muted">${esc(c?.name || "")}</div>}
-      <td>${esc(c?.stage || c?._stage || "-")}’
-      <td>${n(c?.entryQuality,0)}’
-      <td>${n(c?.persistenceScore,0)}’
-      <td>${esc(c?.tradeDeskStatus || "-")}’
-      <td>${esc(ex?.reason || "-")}’
-      <td>${kv("spread", ob.spreadPct != null ? n(ob.spreadPct,0).toFixed(3) : "-")}’
-      <td>${kv("depth", ob.depthMinUsd1p != null ? n(ob.depthMinUsd1p,0) : "-")}’
-      <td>${kv("score", ob.score != null ? n(ob.score,0).toFixed(5) : "-")}’
-    }
+       <td><b>${esc(c?.symbol || "?")}</b><div class="muted">${esc(c?.name || "")}</div></td>
+       <td>${esc(c?.stage || c?._stage || "-")}</td>
+       <td>${n(c?.entryQuality,0)}</td>
+       <td>${n(c?.persistenceScore,0)}</td>
+       <td>${esc(c?.tradeDeskStatus || "-")}</td>
+       <td>${esc(ex?.reason || "-")}</td>
+       <td>${kv("spread", ob.spreadPct != null ? n(ob.spreadPct,0).toFixed(3) : "-")}</td>
+       <td>${kv("depth", ob.depthMinUsd1p != null ? n(ob.depthMinUsd1p,0) : "-")}</td>
+       <td>${kv("score", ob.score != null ? n(ob.score,0).toFixed(5) : "-")}</td>
+     </tr>
   `;
 }
 
@@ -124,10 +132,10 @@ function stageTable(title, arr) {
   return `
     <div class="stage">
       <h3>${esc(title)} (${arr.length})</h3>
-      <div style="overflow-x:auto">`
-        <thead>?:<th>Coin</th><th>Stage</th><th>EntryQ</th><th>Persist</th><th>Status</th><th>Exec reason</th><th>Spread</th><th>Depth</th><th>OB score</th>;</thead>
-        <tbody>${arr.map(coinRow).join("") || `?:<td colspan="9">n/a</td>;`}</tbody>
-      </div>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Coin</th><th>Stage</th><th>EntryQ</th><th>Persist</th><th>Status</th><th>Exec reason</th><th>Spread</th><th>Depth</th><th>OB score</th></tr></thead>
+        <tbody>${arr.map(coinRow).join("") || `<tr><td colspan="9">n/a</td></tr>`}</tbody>
+      </table></div>
     </div>
   `;
 }
