@@ -1,18 +1,23 @@
 import { kv } from "@vercel/kv";
 import { readEvents } from "../lib/_analytics.js";
 import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
-import * as moonCore from "../lib/_moon_core.js";
+import * as moonCore from "../lib/_moon_core.js";   // VERVANGEN: named import -> namespace import
 
 export const config = RUNTIME_CONFIG;
 
-// ===== SAFE FALLBACKS (voorkomt crash bij ontbrekende named exports) =====
+// ===== NIEUWE FALLBACK CONSTANTS (alleen toegevoegd) =====
 const keyMoonDiagList = moonCore.keyMoonDiagList || ((m) => `moon:diag:${m}`);
 const keyMoonDiagSnap = moonCore.keyMoonDiagSnap || ((m) => `moon:diag_snap:${m}`);
 const keyMoonPositions = moonCore.keyMoonPositions || ((m) => `moon:positions:${m}`);
 
 // ===================== HELPERS =====================
-function n(x, d = 0) { const v = Number(x); return Number.isFinite(v) ? v : d; }
-function safeArr(x) { return Array.isArray(x) ? x : []; }
+function n(x, d = 0) {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : d;
+}
+function safeArr(x) {
+  return Array.isArray(x) ? x : [];
+}
 function esc(s) {
   return String(s ?? "")
     .replaceAll("&", "&amp;")
@@ -21,7 +26,10 @@ function esc(s) {
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
 }
-function inc(map, key) { const k = String(key || "unknown"); map[k] = (map[k] || 0) + 1; }
+function inc(map, key) {
+  const k = String(key || "unknown");
+  map[k] = (map[k] || 0) + 1;
+}
 function topN(map, k = 12) {
   const arr = Object.entries(map || {}).map(([key, count]) => ({ key, count: n(count, 0) }));
   arr.sort((a, b) => b.count - a.count);
