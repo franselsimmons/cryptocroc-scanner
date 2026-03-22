@@ -4,10 +4,6 @@ import { readEvents } from "../lib/_analytics.js";
 import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
 import * as moonCore from "../lib/_moon_core.js";   // VERVANGEN: named import -> namespace import
 
-// Helper voor main latest key
-function keyMainLatest(mode) {
-  return `latest:${String(mode || "bull").toLowerCase()}`;
-}
 
 export const config = RUNTIME_CONFIG;
 
