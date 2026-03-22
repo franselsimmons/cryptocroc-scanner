@@ -1,4 +1,3 @@
-// /api/moon/analyze-plus.js
 // Vereist: Moon diag keys (keyMoonDiagList, keyMoonDiagSnap, keyMoonPositions, keyMoonPortfolio) en MOON config
 import { kv } from "@vercel/kv";
 import { requireSecret, RUNTIME_CONFIG } from "../../lib/_runtime.js";
