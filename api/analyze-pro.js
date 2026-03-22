@@ -1,5 +1,5 @@
 // /api/analyze-pro.js
-// Vereist: KV keys "latest:bull" en "latest:bear" + readEvents("main") die trade_close events levert
+// Vereist: KV keys "latest:bull" en "latest:bear" + trade_closed events
 import { kv } from "@vercel/kv";
 import { readEvents } from "../lib/_analytics.js";
 import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
@@ -31,18 +31,26 @@ function topN(map, k = 5) {
 }
 function addCounts(to, from) { const out = to || {}; const src = from || {}; for (const k of Object.keys(src)) out[k] = (out[k] || 0) + n(src[k], 0); return out; }
 
-// Main data helpers
+// ===================== ROBUSTE FLATTEN =====================
+function safeStage(x) {
+  if (!x) return [];
+  if (Array.isArray(x)) return x;
+  if (typeof x === "object") return Object.values(x);
+  return [];
+}
+
 function flattenMainCoins(latest) {
   const f = latest?.funnel || {};
+
   return [
-    ...safeArr(f.radar).map(c => ({ ...c, _stage: c.stage || "RADAR" })),
-    ...safeArr(f.buildup).map(c => ({ ...c, _stage: c.stage || "BUILDUP" })),
-    ...safeArr(f.almost).map(c => ({ ...c, _stage: c.stage || "ALMOST" })),
-    ...safeArr(f.entry).map(c => ({ ...c, _stage: c.stage || "ENTRY" })),
-    ...safeArr(f.elite_ignition).map(c => ({ ...c, _stage: c.stage || "ELITE_IGNITION" })),
-    ...safeArr(f.elite_expansion).map(c => ({ ...c, _stage: c.stage || "ELITE_EXPANSION" })),
-    ...safeArr(f.elite_cascade).map(c => ({ ...c, _stage: c.stage || "ELITE_CASCADE" })),
-    ...safeArr(f.hold).map(c => ({ ...c, _stage: c.stage || "HOLD" })),
+    ...safeStage(f.radar).map(c => ({ ...c, _stage: c?.stage || "RADAR" })),
+    ...safeStage(f.buildup).map(c => ({ ...c, _stage: c?.stage || "BUILDUP" })),
+    ...safeStage(f.almost).map(c => ({ ...c, _stage: c?.stage || "ALMOST" })),
+    ...safeStage(f.entry).map(c => ({ ...c, _stage: c?.stage || "ENTRY" })),
+    ...safeStage(f.elite_ignition).map(c => ({ ...c, _stage: c?.stage || "ELITE_IGNITION" })),
+    ...safeStage(f.elite_expansion).map(c => ({ ...c, _stage: c?.stage || "ELITE_EXPANSION" })),
+    ...safeStage(f.elite_cascade).map(c => ({ ...c, _stage: c?.stage || "ELITE_CASCADE" })),
+    ...safeStage(f.hold).map(c => ({ ...c, _stage: c?.stage || "HOLD" })),
   ];
 }
 
@@ -59,7 +67,10 @@ function analyzeMainBottlenecks(coins) {
 }
 
 function analyzeMainTrades(events, mode) {
-  const filtered = safeArr(events).filter(e => String(e?.mode || "").toLowerCase() === String(mode || "").toLowerCase());
+  const filtered = safeArr(events).filter(e => {
+    if (!mode) return true;
+    return String(e?.mode || "").toLowerCase() === String(mode).toLowerCase();
+  });
   const closes = filtered.filter(e => e.type === "trade_close");
   const exitReasons = {};
   let givebackSum = 0;
@@ -117,17 +128,17 @@ export default async function handler(req, res) {
     if (!requireSecret(req, res)) return;
 
     // MAIN
-    const [bullLatest, bearLatest, mainEvents] = await Promise.all([
+    const [bullLatest, bearLatest, tradeClosed] = await Promise.all([
       kv.get(keyMainLatest("bull")),
       kv.get(keyMainLatest("bear")),
-      readEvents("main", 4000),
+      readEvents("trade_closed", 4000),
     ]);
     const mainBullCoins = flattenMainCoins(bullLatest);
     const mainBearCoins = flattenMainCoins(bearLatest);
     const mainBullBottleneck = analyzeMainBottlenecks(mainBullCoins);
     const mainBearBottleneck = analyzeMainBottlenecks(mainBearCoins);
-    const mainBullTrades = analyzeMainTrades(mainEvents, "bull");
-    const mainBearTrades = analyzeMainTrades(mainEvents, "bear");
+    const mainBullTrades = analyzeMainTrades(tradeClosed, "bull");
+    const mainBearTrades = analyzeMainTrades(tradeClosed, "bear");
 
     // MOON
     const [moonBullDiags, moonBearDiags] = await Promise.all([readMoonDiags("bull", 20), readMoonDiags("bear", 20)]);
