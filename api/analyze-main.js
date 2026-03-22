@@ -2,11 +2,9 @@
 import { kv } from "@vercel/kv";
 import { readEvents } from "../lib/_analytics.js";
 import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
+import { keyMainLatest } from "../lib/_moon_core.js";   // <-- TOEGEVOEGD
 
-// Helper voor main latest key (fallback)
-function keyMainLatest(mode) {
-  return `latest:${String(mode || "bull").toLowerCase()}`;
-}
+// Helper voor main latest key (fallback) — VERWIJDERD
 
 export const config = RUNTIME_CONFIG;
 
