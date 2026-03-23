@@ -72,6 +72,13 @@ function scoreClass(score10) {
   return "bad";
 }
 
+function severityFromPct(pctValue) {
+  const p = n(pctValue, 0);
+  if (p >= 40) return "bad";
+  if (p >= 20) return "warn";
+  return "good";
+}
+
 function scoreLabel(score10) {
   if (score10 >= 8) return "perfect";
   if (score10 >= 6) return "bijna goed";
@@ -361,33 +368,40 @@ function buildAutoInsights(payload) {
 
   const pct = (x) => Math.round((n(x, 0) / denom) * 100);
 
-  return [
+  const list = [
     {
       label: `${pct(totalBottlenecks.timing)}% faalt op timing`,
       advice: "Wacht vaker op breakout + volume confirmatie",
-      severity: scoreClass(toScore10(100 - pct(totalBottlenecks.timing))),
+      severity: severityFromPct(pct(totalBottlenecks.timing)),
+      priority: pct(totalBottlenecks.timing),
     },
     {
       label: `${pct(totalBottlenecks.liquidity)}% liquidity grootste bottleneck`,
       advice: "Focus op sterkere depth en lagere spread",
-      severity: scoreClass(toScore10(100 - pct(totalBottlenecks.liquidity))),
+      severity: severityFromPct(pct(totalBottlenecks.liquidity)),
+      priority: pct(totalBottlenecks.liquidity),
     },
     {
       label: `${pct(totalBottlenecks.quality)}% kwaliteit onder drempel`,
       advice: "Laat alleen high conviction setups door",
-      severity: scoreClass(toScore10(100 - pct(totalBottlenecks.quality))),
+      severity: severityFromPct(pct(totalBottlenecks.quality)),
+      priority: pct(totalBottlenecks.quality),
     },
     {
       label: `${pct(totalBottlenecks.market)}% markt werkt tegen`,
       advice: "Trade strakker met BTC trend/regime mee",
-      severity: scoreClass(toScore10(100 - pct(totalBottlenecks.market))),
+      severity: severityFromPct(pct(totalBottlenecks.market)),
+      priority: pct(totalBottlenecks.market),
     },
     {
       label: `${totalProblems} probleemkaarten gedetecteerd`,
       advice: "Los de grootste bottleneck eerst per funnel op",
       severity: totalProblems > 20 ? "bad" : totalProblems > 8 ? "warn" : "good",
+      priority: totalProblems,
     },
   ];
+
+  return list.sort((a, b) => n(b.priority, 0) - n(a.priority, 0));
 }
 
 // =============================
@@ -437,8 +451,11 @@ function renderMetricCard(title, value, sub, score10) {
 function renderInsightCard(x) {
   return `
     <div class="insight ${esc(x.severity || "warn")}">
-      <div class="insight-label">${esc(x.label)}</div>
-      <div class="insight-advice">${esc(x.advice)}</div>
+      <div class="insight-bar ${esc(x.severity || "warn")}"></div>
+      <div class="insight-body">
+        <div class="insight-label">${esc(x.label)}</div>
+        <div class="insight-advice">${esc(x.advice)}</div>
+      </div>
     </div>
   `;
 }
@@ -500,6 +517,13 @@ function renderSection(title, subtitle, problems) {
 
 function htmlPage(payload) {
   const insights = safeArr(payload?.insights);
+  const topPriorities = insights.slice(0, 2);
+  const overallScore = avg([
+    n(payload?.summary?.mainAvg, 0),
+    n(payload?.summary?.moonBullAvg, 0),
+    n(payload?.summary?.moonBearAvg, 0),
+    n(payload?.summary?.tradeAvg, 0),
+  ]);
 
   const healthCards = [
     renderMetricCard(
@@ -573,7 +597,7 @@ function htmlPage(payload) {
     }
     .meta b{color:#fff}
     .metrics{
-      display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:18px;
+      display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;margin-bottom:18px;
     }
     .metric{
       border:1px solid var(--line);
@@ -596,14 +620,63 @@ function htmlPage(payload) {
       border:1px solid var(--line);
       border-left-width:5px;
       border-radius:14px;
-      padding:16px;
       box-shadow:var(--shadow);
+    }
+    .insight{
+      display:flex;
+      gap:14px;
+      align-items:stretch;
+      padding:0;
+      overflow:hidden;
     }
     .insight.good{border-left-color:var(--green)}
     .insight.warn{border-left-color:var(--yellow)}
     .insight.bad{border-left-color:var(--red)}
+    .insight-bar{
+      width:6px;
+      min-width:6px;
+    }
+    .insight-bar.good{background:var(--green)}
+    .insight-bar.warn{background:var(--yellow)}
+    .insight-bar.bad{background:var(--red)}
+    .insight-body{
+      padding:16px;
+      flex:1;
+    }
     .insight-label{font-weight:700;margin-bottom:6px}
     .insight-advice{color:var(--muted)}
+    .priority-grid{
+      display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:14px;
+      margin-bottom:18px;
+    }
+    .priority-card{
+      border-radius:14px;
+      padding:16px;
+      border:1px solid var(--line);
+      background:linear-gradient(180deg,var(--panel) 0%,#101722 100%);
+      box-shadow:var(--shadow);
+    }
+    .priority-card.good{outline:1px solid rgba(34,197,94,.25)}
+    .priority-card.warn{outline:1px solid rgba(250,204,21,.22)}
+    .priority-card.bad{outline:1px solid rgba(239,68,68,.22)}
+    .priority-rank{
+      font-size:12px;
+      font-weight:700;
+      letter-spacing:.08em;
+      color:var(--muted);
+      margin-bottom:8px;
+    }
+    .priority-label{
+      font-size:18px;
+      font-weight:800;
+      margin-bottom:8px;
+    }
+    .priority-advice{
+      color:var(--muted);
+      line-height:1.5;
+    }
     .section{
       background:rgba(17,24,38,.72);
       border:1px solid var(--line);
@@ -673,11 +746,11 @@ function htmlPage(payload) {
       margin-top:22px;color:var(--muted);font-size:13px;text-align:center;
     }
     @media (max-width: 1100px){
-      .metrics,.problems-grid,.insights{grid-template-columns:repeat(2,minmax(0,1fr))}
+      .metrics,.problems-grid,.insights,.priority-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
     }
     @media (max-width: 720px){
       body{padding:14px}
-      .metrics,.problems-grid,.insights{grid-template-columns:1fr}
+      .metrics,.problems-grid,.insights,.priority-grid{grid-template-columns:1fr}
       .title h1{font-size:26px}
     }
   </style>
@@ -698,7 +771,15 @@ function htmlPage(payload) {
       </div>
     </div>
 
-    <div class="metrics">${healthCards}</div>
+    <div class="metrics">
+      ${renderMetricCard(
+        "Overall systeem score",
+        `${overallScore.toFixed(1)}/10`,
+        scoreLabel(overallScore),
+        overallScore
+      )}
+      ${healthCards}
+    </div>
 
     <section class="section">
       <div class="section-head">
@@ -707,6 +788,21 @@ function htmlPage(payload) {
           <div class="section-sub">Automatische diagnose van waar het systeem het vaakst vastloopt.</div>
         </div>
       </div>
+
+      <div class="priority-grid">
+        ${topPriorities
+          .map(
+            (x, i) => `
+            <div class="priority-card ${esc(x.severity || "warn")}">
+              <div class="priority-rank">PRIORITY #${i + 1}</div>
+              <div class="priority-label">${esc(x.label)}</div>
+              <div class="priority-advice">${esc(x.advice)}</div>
+            </div>
+          `
+          )
+          .join("")}
+      </div>
+
       <div class="insights">
         ${insights.map(renderInsightCard).join("")}
       </div>
