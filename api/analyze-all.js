@@ -5,7 +5,7 @@ import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
 export const config = RUNTIME_CONFIG;
 
 // =============================
-// NIEUWE THRESHOLD CONSTANTEN
+// THRESHOLD CONSTANTEN (v4.1)
 // =============================
 const CURRENT_THRESHOLDS = {
   market: 45,
@@ -36,6 +36,51 @@ const THRESHOLD_LOCATIONS = {
     "trade manager / execution bestand",
     "bestand waar trade_closed / exits gebeuren",
   ],
+};
+
+const THRESHOLD_SEARCH_HINTS = {
+  market: [
+    "marketScore < 45",
+    "Trade met BTC trend mee",
+    "marketScore",
+    "btc trend",
+  ],
+  timing: [
+    "timingScore < 60",
+    "Wacht op breakout + volume confirmatie",
+    "timingScore",
+    "breakout",
+    "volume confirmatie",
+  ],
+  quality: [
+    "qualityScore < 60",
+    "Alleen high conviction setups",
+    "qualityScore",
+    "high conviction",
+  ],
+  liquidity: [
+    "liquidityScore < 60",
+    "Focus op coins met betere depth/spread",
+    "liquidityScore",
+    "depth",
+    "spread",
+  ],
+  exit: [
+    "Trailing TP strakker na TP1",
+    "Laat zwakke setups sneller los",
+    "trade_closed",
+    "maxPnlPct",
+    "pnlPct",
+    "reason",
+  ],
+};
+
+const THRESHOLD_CODE_HINTS = {
+  market: `if (marketScore < 45) { ... }`,
+  timing: `if (timingScore < 60) { ... }`,
+  quality: `if (qualityScore < 60) { ... }`,
+  liquidity: `if (liquidityScore < 60) { ... }`,
+  exit: `if (giveback > 1.5) { ... } // of if (/weak|quality/i.test(reason))`,
 };
 
 // =============================
@@ -322,7 +367,7 @@ function buildGlobalSummary(sections) {
 }
 
 // =============================
-// NIEUWE V4 FUNCTIES VOOR AI IMPROVEMENTS
+// V4.1 AI IMPROVEMENTS
 // =============================
 function buildAIImprovements(problems) {
   const map = {};
@@ -370,6 +415,8 @@ function buildAIImprovements(problems) {
       const current = type ? CURRENT_THRESHOLDS[type] ?? null : null;
       const advised = type ? ADVISED_THRESHOLDS[type] ?? null : null;
       const files = type ? safeArr(THRESHOLD_LOCATIONS[type]) : [];
+      const searchHints = type ? safeArr(THRESHOLD_SEARCH_HINTS[type]) : [];
+      const codeHint = type ? THRESHOLD_CODE_HINTS[type] : null;
 
       return {
         ...x,
@@ -382,6 +429,8 @@ function buildAIImprovements(problems) {
             ? advised - current
             : null,
         files,
+        searchHints,
+        codeHint,
       };
     })
     .sort((a, b) => b.priority - a.priority)
@@ -416,6 +465,26 @@ function renderImprovements(improvements) {
                 <div style="margin-top: 6px; font-size: 13px; color: #666;">
                   <strong>Aanpassen in:</strong><br>
                   ${imp.files.map(f => `• ${esc(f)}`).join("<br>")}
+                </div>
+              `
+              : ""
+          }
+          ${
+            imp.searchHints?.length
+              ? `
+                <div style="margin-top: 6px; font-size: 13px; color: #666;">
+                  <strong>Zoek in bestand op:</strong><br>
+                  ${imp.searchHints.map(h => `• ${esc(h)}`).join("<br>")}
+                </div>
+              `
+              : ""
+          }
+          ${
+            imp.codeHint
+              ? `
+                <div style="margin-top: 6px; font-size: 13px; color: #666;">
+                  <strong>Waarschijnlijk codefragment:</strong><br>
+                  <code style="background:#1e293b; padding:4px 8px; border-radius:6px; display:inline-block;">${esc(imp.codeHint)}</code>
                 </div>
               `
               : ""
@@ -797,7 +866,7 @@ function renderHtml(payload) {
       ${renderTopWinsTable(global.topWins)}
     </section>
 
-    <!-- NIEUW: AI-verbeterpunten met threshold advies -->
+    <!-- NIEUW: AI-verbeterpunten met thresholds + zoekhints + codefragment -->
     <div class="improvements-panel">
       <div class="improvements-title">🤖 AI‑gestuurde verbetersuggesties (met thresholds)</div>
       ${renderImprovements(improvements)}
