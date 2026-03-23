@@ -47,6 +47,9 @@ import {
   buildMainExecutionDecision,
 } from "../lib/_trade_engine.js";
 
+import { THRESHOLDS } from "../lib/_thresholds.js";
+import { getAdaptiveThreshold, getAdaptivePositionSize } from "../lib/_adaptive.js";
+
 export const config = RUNTIME_CONFIG;
 
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
@@ -105,7 +108,7 @@ const THESIS_BREAK_SCANS_FOR_EXIT = 3;
 const MIN_HOLD_BARS_BEFORE_SOFT_EXIT = 3;
 const MIN_ELITE_SCANS_BEFORE_ENTRY = 1;
 
-const POSITION_SIZE_USD = 50;
+const BASE_POSITION_SIZE_USD = 50;
 
 function n(x, d = 0) {
   const v = Number(x);
@@ -116,6 +119,18 @@ function sleep(ms) {
 }
 function up(x) {
   return String(x || "").toUpperCase();
+}
+
+// ======================================================
+// Performance helper
+// ======================================================
+async function getPerformance(mode) {
+  try {
+    const perf = await kv.get(`main:performance`);
+    return perf || { winRate: 50, drawdown: 0 }; // defaults
+  } catch {
+    return { winRate: 50, drawdown: 0 };
+  }
 }
 
 // ======================================================
@@ -629,7 +644,7 @@ function decideMainStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
 // ======================================================
 // Universe bouwen (scanner)
 // ======================================================
-async function buildUniverse(mode, whaleFlow, btc) {
+async function buildUniverse(mode, whaleFlow, btc, performance) {
   const regime = computeMarketRegime({ btc, whaleFlow, mode });
   const rawCoins = await fetchCoinGeckoTopCached();
   const bitgetSymbols = await getBitgetSpotUsdtSymbols();
@@ -645,6 +660,50 @@ async function buildUniverse(mode, whaleFlow, btc) {
   const filtered = step2.slice(0, 120);
   const out = [];
   const state = (await kv.get(keyMainState(mode))) || {};
+
+  // Adaptieve drempels voor kritische scores
+  const adaptiveTimingBase = THRESHOLDS.main.timingScore;
+  const adaptiveEntryQualityBase = THRESHOLDS.main.nearEntryWatch.entryQuality;
+  const adaptiveBreakoutPressureBase = THRESHOLDS.main.nearEntryWatch.breakoutPressure;
+  const adaptiveEliteOpenBase = THRESHOLDS.main.executionScore.eliteOpen;
+  const adaptiveAlmostOpenBase = THRESHOLDS.main.executionScore.almostOpen;
+
+  const adaptiveTiming = getAdaptiveThreshold({
+    base: adaptiveTimingBase,
+    regime,
+    performance,
+    min: adaptiveTimingBase - 5,
+    max: adaptiveTimingBase + 5,
+  });
+  const adaptiveEntryQuality = getAdaptiveThreshold({
+    base: adaptiveEntryQualityBase,
+    regime,
+    performance,
+    min: adaptiveEntryQualityBase - 5,
+    max: adaptiveEntryQualityBase + 5,
+  });
+  const adaptiveBreakoutPressure = getAdaptiveThreshold({
+    base: adaptiveBreakoutPressureBase,
+    regime,
+    performance,
+    min: adaptiveBreakoutPressureBase - 5,
+    max: adaptiveBreakoutPressureBase + 5,
+  });
+  const adaptiveEliteOpen = getAdaptiveThreshold({
+    base: adaptiveEliteOpenBase,
+    regime,
+    performance,
+    min: adaptiveEliteOpenBase - 5,
+    max: adaptiveEliteOpenBase + 5,
+  });
+  const adaptiveAlmostOpen = getAdaptiveThreshold({
+    base: adaptiveAlmostOpenBase,
+    regime,
+    performance,
+    min: adaptiveAlmostOpenBase - 5,
+    max: adaptiveAlmostOpenBase + 5,
+  });
+
   for (const coin of filtered) {
     const sym = up(coin.symbol);
     const prev = state?.[sym] || {};
@@ -755,24 +814,29 @@ async function buildUniverse(mode, whaleFlow, btc) {
       timingScore,
       marketScore,
     });
+
+    const mainTh = THRESHOLDS.main;
+
     const superScannerCoin =
-      perfectCandidateScore >= 74 &&
-      qualityScore >= 68 &&
+      perfectCandidateScore >= mainTh.superScanner.perfectCandidate &&
+      qualityScore >= mainTh.superScanner.qualityScore &&
       (stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
+
     const tradeCandidate =
-      perfectCandidateScore >= 76 &&
-      qualityScore >= 68 &&
-      timingScore >= 71 &&               // gewijzigd van 66 naar 71
-      liquidityScore >= 66 &&            // gewijzigd van 62 naar 66 (depth/spread)
-      marketScore >= 56 &&               // gewijzigd van 46 naar 56
-      btcAlignmentScore >= 55 &&         // nieuw
+      perfectCandidateScore >= mainTh.perfectCandidate &&
+      qualityScore >= mainTh.qualityScore &&
+      timingScore >= adaptiveTiming &&      // adaptief
+      liquidityScore >= mainTh.liquidityScore &&
+      marketScore >= mainTh.marketScore &&
+      btcAlignmentScore >= mainTh.btcAlignmentScore &&
       (stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
+
     const scannerOnly = !superScannerCoin;
     const coinForDecision = {
       ...coin,
@@ -848,28 +912,28 @@ async function buildUniverse(mode, whaleFlow, btc) {
         isEliteStageForDesk ||
         (
           stage === "ALMOST" &&
-          entryQuality >= 70 &&
-          persistenceScore >= 60 &&
-          (breakout?.ready === true || n(breakout?.pressure, 0) >= 63) &&   // gewijzigd 58 -> 63
-          n(obx.score, 0) >= 0.01
+          entryQuality >= adaptiveEntryQuality &&           // adaptief
+          persistenceScore >= mainTh.nearEntryWatch.persistenceScore &&
+          (breakout?.ready === true || n(breakout?.pressure, 0) >= adaptiveBreakoutPressure) && // adaptief
+          n(obx.score, 0) >= mainTh.nearEntryWatch.obScore
         )
       );
 
     const stableWatchReady =
       prev?.tradeDeskStatus === "WATCH" &&
       (prev?.watchScans || 0) >= 2 &&
-      entryQuality >= 64 &&
-      persistenceScore >= 56 &&
-      (breakout?.ready === true || n(breakout?.pressure, 0) >= 59) &&   // gewijzigd 54 -> 59
-      n(obx.score, 0) >= 0.008;
+      entryQuality >= mainTh.stableWatch.entryQuality &&
+      persistenceScore >= mainTh.stableWatch.persistence &&
+      (breakout?.ready === true || n(breakout?.pressure, 0) >= mainTh.stableWatch.breakoutPressure) &&
+      n(obx.score, 0) >= mainTh.filters.obScore;
 
     let tradeDeskStatus = "IGNORE";
 
     if (
       tradeCandidate === true &&
       (
-        (isEliteStageForDesk && execution.score >= 62) ||
-        (stage === "ALMOST" && stableWatchReady && execution.score >= 60)
+        (isEliteStageForDesk && execution.score >= adaptiveEliteOpen) ||
+        (stage === "ALMOST" && stableWatchReady && execution.score >= adaptiveAlmostOpen)
       )
     ) {
       tradeDeskStatus = "OPEN";
@@ -1103,7 +1167,8 @@ export default async function handler(req, res) {
     const now = Date.now();
     const whaleFlow = await fetchExchangeFlows();
     const btc = await resolveBtcForMode(mode);
-    const built = await buildUniverse(mode, whaleFlow, btc);
+    const performance = await getPerformance(mode); // haal performance op
+    const built = await buildUniverse(mode, whaleFlow, btc, performance);
     const universe = built.coins;
     const regime = built.regime;
     const prevPositions = (await kv.get(keyMainPositions(mode))) || { open: [], closed: [] };
@@ -1210,6 +1275,7 @@ export default async function handler(req, res) {
       // ========== NIEUWE entryReady: alleen luisteren naar tradeDeskStatus === "OPEN" ==========
       let entryReady = false;
       if (!hasOpenPosition) {
+        const er = THRESHOLDS.main.entryReady;
         entryReady =
           coin.tradeDeskStatus === "OPEN" &&
           coin.tradeCandidate === true &&
@@ -1218,13 +1284,13 @@ export default async function handler(req, res) {
           coin.tradePlan != null &&
           coin.ob?.valid === true &&
           coin.ob?.fresh === true &&
-          (coin.breakout?.ready === true || n(coin.breakout?.pressure, 0) >= 54) &&
-          Math.abs(coin.ob?.score || 0) >= 0.008 &&
-          (coin.perfectCandidateScore || 0) >= 70 &&
-          (coin.qualityScore || 0) >= 62 &&
-          (coin.timingScore || 0) >= 64 &&
-          (coin.liquidityScore || 0) >= 58 &&
-          (coin.marketScore || 0) >= 44;
+          (coin.breakout?.ready === true || n(coin.breakout?.pressure, 0) >= er.breakoutPressure) &&
+          Math.abs(coin.ob?.score || 0) >= THRESHOLDS.main.filters.obScore &&
+          (coin.perfectCandidateScore || 0) >= er.perfectCandidate &&
+          (coin.qualityScore || 0) >= er.qualityScore &&
+          (coin.timingScore || 0) >= er.timingScore &&
+          (coin.liquidityScore || 0) >= er.liquidityScore &&
+          (coin.marketScore || 0) >= er.marketScore;
       }
       // =============================================================================
 
@@ -1345,6 +1411,11 @@ export default async function handler(req, res) {
     for (const candidate of toOpen) {
       const { sym, coin, state } = candidate;
       const id = uid("main");
+      // Dynamische position size op basis van winrate
+      const positionSize = getAdaptivePositionSize({
+        baseSize: BASE_POSITION_SIZE_USD,
+        performance,
+      });
       const newPos = {
         id,
         symbol: sym,
@@ -1353,7 +1424,7 @@ export default async function handler(req, res) {
         entryAt: now,
         entryPrice: coin.tradePlan.entry,
         lastPrice: coin.price,
-        sizeUsd: POSITION_SIZE_USD,
+        sizeUsd: positionSize,
         pnlPct: 0,
         pnlUsd: 0,
         tp: coin.tradePlan.tp,
