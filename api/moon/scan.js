@@ -776,17 +776,18 @@ async function buildUniverse(mode, whaleFlow, btc) {
     });
     const superScannerCoin =
       perfectCandidateScore >= 72 &&
-      qualityScore >= 66 &&
+      qualityScore >= 68 &&            // gewijzigd van 66 naar 68
       (stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
     const tradeCandidate =
       perfectCandidateScore >= 72 &&
-      qualityScore >= 64 &&
-      timingScore >= 62 &&
-      liquidityScore >= 58 &&
-      marketScore >= 42 &&
+      qualityScore >= 68 &&            // gewijzigd van 64 naar 68
+      timingScore >= 67 &&             // gewijzigd van 62 naar 67
+      liquidityScore >= 62 &&          // gewijzigd van 58 naar 62
+      marketScore >= 52 &&             // gewijzigd van 42 naar 52
+      btcAlignmentScore >= 55 &&       // nieuw
       (stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
@@ -868,7 +869,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
           stage === "ALMOST" &&
           entryQuality >= 66 &&
           persistenceScore >= 56 &&
-          (breakout?.ready === true || n(breakout?.pressure, 0) >= 56) &&
+          (breakout?.ready === true || n(breakout?.pressure, 0) >= 61) &&   // gewijzigd 56 -> 61
           n(obx.score, 0) >= 0.008
         )
       );
@@ -878,7 +879,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
       (prev?.watchScans || 0) >= 2 &&
       entryQuality >= 60 &&
       persistenceScore >= 52 &&
-      (breakout?.ready === true || n(breakout?.pressure, 0) >= 52) &&
+      (breakout?.ready === true || n(breakout?.pressure, 0) >= 57) &&   // gewijzigd 52 -> 57
       n(obx.score, 0) >= 0.008;
 
     let tradeDeskStatus = "IGNORE";
