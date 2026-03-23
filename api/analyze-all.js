@@ -494,8 +494,33 @@ function renderProblemCard(c) {
   `;
 }
 
+// ------------------------------
+// NEW HELPER: Top 5 verbeteringen
+// ------------------------------
+function buildTop5Improvements(items) {
+  const counts = {};
+
+  for (const item of safeArr(items)) {
+    for (const advice of safeArr(item?.advice)) {
+      const key = String(advice || "").trim();
+      if (!key) continue;
+      inc(counts, key);
+    }
+  }
+
+  return Object.entries(counts)
+    .map(([advice, count]) => ({ advice, count }))
+    .sort((a, b) => b.count - a.count || a.advice.localeCompare(b.advice))
+    .slice(0, 5);
+}
+
+// ------------------------------
+// UPDATED renderSection
+// ------------------------------
 function renderSection(title, subtitle, problems) {
   const items = safeArr(problems);
+  const top5 = buildTop5Improvements(items);
+
   return `
     <section class="section">
       <div class="section-head">
@@ -506,10 +531,40 @@ function renderSection(title, subtitle, problems) {
         <div class="section-count">${items.length} problemen</div>
       </div>
 
+      <div class="top5-block">
+        <div class="top5-title">🎯 Top 5 verbeteringen</div>
+        ${
+          top5.length
+            ? `
+              <div class="top5-grid">
+                ${top5
+                  .map(
+                    (x, i) => `
+                      <div class="top5-card">
+                        <div class="top5-rank">#${i + 1}</div>
+                        <div class="top5-advice">${esc(x.advice)}</div>
+                        <div class="top5-count">${x.count}x genoemd</div>
+                      </div>
+                    `
+                  )
+                  .join("")}
+              </div>
+            `
+            : `<div class="empty">Geen verbeteringen gevonden 🚀</div>`
+        }
+      </div>
+
       ${
         items.length
-          ? `<div class="problems-grid">${items.map(renderProblemCard).join("")}</div>`
-          : `<div class="empty">Geen problemen gevonden 🚀</div>`
+          ? `
+            <details class="details-block">
+              <summary>Bekijk probleemkaarten (${items.length})</summary>
+              <div class="problems-grid">
+                ${items.map(renderProblemCard).join("")}
+              </div>
+            </details>
+          `
+          : ""
       }
     </section>
   `;
@@ -745,12 +800,75 @@ function htmlPage(payload) {
     .footer{
       margin-top:22px;color:var(--muted);font-size:13px;text-align:center;
     }
+
+    /* NEW STYLES FOR TOP5 AND DETAILS */
+    .top5-block{
+      margin-bottom:16px;
+    }
+
+    .top5-title{
+      font-size:14px;
+      font-weight:800;
+      margin-bottom:12px;
+      color:#fff;
+    }
+
+    .top5-grid{
+      display:grid;
+      grid-template-columns:repeat(5,minmax(0,1fr));
+      gap:12px;
+    }
+
+    .top5-card{
+      background:#0c1320;
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:14px;
+    }
+
+    .top5-rank{
+      font-size:12px;
+      font-weight:800;
+      color:var(--muted);
+      margin-bottom:8px;
+    }
+
+    .top5-advice{
+      font-size:14px;
+      font-weight:700;
+      line-height:1.4;
+      margin-bottom:8px;
+    }
+
+    .top5-count{
+      font-size:12px;
+      color:var(--muted);
+    }
+
+    .details-block{
+      margin-top:10px;
+      background:#0c1320;
+      border:1px solid var(--line);
+      border-radius:14px;
+      padding:12px;
+    }
+
+    .details-block summary{
+      cursor:pointer;
+      font-weight:700;
+      margin-bottom:12px;
+    }
+
+    .details-block[open] summary{
+      margin-bottom:14px;
+    }
+
     @media (max-width: 1100px){
-      .metrics,.problems-grid,.insights,.priority-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+      .metrics,.problems-grid,.insights,.priority-grid,.top5-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
     }
     @media (max-width: 720px){
       body{padding:14px}
-      .metrics,.problems-grid,.insights,.priority-grid{grid-template-columns:1fr}
+      .metrics,.problems-grid,.insights,.priority-grid,.top5-grid{grid-template-columns:1fr}
       .title h1{font-size:26px}
     }
   </style>
