@@ -6,298 +6,298 @@ import * as moonCore from "../lib/_moon_core.js";
 export const config = RUNTIME_CONFIG;
 
 // =============================
-// KEYS
+// SAFE KEY FALLBACKS
 // =============================
 const keyMainLatest =
-  moonCore.keyMainLatest || ((mode) => `latest:${String(mode || "bull")}`);
+  moonCore.keyMainLatest || ((mode) => `latest:${String(mode || "bull").toLowerCase()}`);
 const keyMoonLatest =
-  moonCore.keyMoonLatest || ((mode) => `moon:latest:${String(mode || "bull")}`);
+  moonCore.keyMoonLatest || ((mode) => `moon:latest:${String(mode || "bull").toLowerCase()}`);
 const keyMoonDiagList =
-  moonCore.keyMoonDiagList || ((mode) => `moon:diag:${String(mode || "bull")}`);
+  moonCore.keyMoonDiagList || ((mode) => `moon:diag:${String(mode || "bull").toLowerCase()}`);
 const keyMoonPositions =
-  moonCore.keyMoonPositions || ((mode) => `moon:positions:${String(mode || "bull")}`);
+  moonCore.keyMoonPositions || ((mode) => `moon:positions:${String(mode || "bull").toLowerCase()}`);
 
 // =============================
 // HELPERS
 // =============================
-const n = (x, d = 0) => (Number.isFinite(Number(x)) ? Number(x) : d);
-const safeArr = (x) => (Array.isArray(x) ? x : []);
-const avg = (arr) => {
-  const v = safeArr(arr).map(Number).filter(Number.isFinite);
-  return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0;
-};
+function n(x, d = 0) {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : d;
+}
+
+function safeArr(x) {
+  return Array.isArray(x) ? x : [];
+}
 
 function esc(s) {
   return String(s ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function fmtDate(ms) {
   const d = new Date(Number(ms || 0));
-  return Number.isFinite(d.getTime())
-    ? d.toLocaleString("nl-NL")
-    : "n/a";
+  if (!Number.isFinite(d.getTime())) return "n/a";
+  return d.toLocaleString("nl-NL", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
-function scoreClass(s) {
-  if (s >= 8) return "good";
-  if (s >= 6) return "warn";
+function inc(map, key, add = 1) {
+  const k = String(key || "unknown");
+  map[k] = (map[k] || 0) + add;
+}
+
+function avg(arr) {
+  const vals = safeArr(arr).map((x) => n(x, NaN)).filter(Number.isFinite);
+  if (!vals.length) return 0;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+function scoreClass(score10) {
+  if (score10 >= 8) return "good";
+  if (score10 >= 6) return "warn";
   return "bad";
 }
 
-// =============================
-// FLATTEN
-// =============================
-function flatten(latest) {
+function severityFromPct(pctValue) {
+  const p = n(pctValue, 0);
+  if (p >= 40) return "bad";
+  if (p >= 20) return "warn";
+  return "good";
+}
+
+function scoreLabel(score10) {
+  if (score10 >= 8) return "perfect";
+  if (score10 >= 6) return "bijna goed";
+  return "probleem";
+}
+
+function toScore10(pct100) {
+  const s = Math.max(0, Math.min(10, n(pct100, 0) / 10));
+  return Math.round(s * 10) / 10;
+}
+
+function safeStage(x) {
+  if (!x) return [];
+  if (Array.isArray(x)) return x;
+  if (typeof x === "object") return Object.values(x);
+  return [];
+}
+
+function flattenMainCoins(latest) {
   const f = latest?.funnel || {};
   return [
-    ...safeArr(f.radar),
-    ...safeArr(f.buildup),
-    ...safeArr(f.almost),
-    ...safeArr(f.entry),
-    ...safeArr(f.elite_ignition),
-    ...safeArr(f.elite_expansion),
-    ...safeArr(f.elite_cascade),
-    ...safeArr(f.hold),
+    ...safeStage(f.radar).map((c) => ({ ...c, _stage: c?.stage || "RADAR" })),
+    ...safeStage(f.buildup).map((c) => ({ ...c, _stage: c?.stage || "BUILDUP" })),
+    ...safeStage(f.almost).map((c) => ({ ...c, _stage: c?.stage || "ALMOST" })),
+    ...safeStage(f.entry).map((c) => ({ ...c, _stage: c?.stage || "ENTRY" })),
+    ...safeStage(f.elite_ignition).map((c) => ({ ...c, _stage: c?.stage || "ELITE_IGNITION" })),
+    ...safeStage(f.elite_expansion).map((c) => ({ ...c, _stage: c?.stage || "ELITE_EXPANSION" })),
+    ...safeStage(f.elite_cascade).map((c) => ({ ...c, _stage: c?.stage || "ELITE_CASCADE" })),
+    ...safeStage(f.hold).map((c) => ({ ...c, _stage: c?.stage || "HOLD" })),
+  ];
+}
+
+function flattenMoonCoins(latest) {
+  const f = latest?.funnel || {};
+  return [
+    ...safeStage(f.radar).map((c) => ({ ...c, _stage: c?.stage || "RADAR" })),
+    ...safeStage(f.buildup).map((c) => ({ ...c, _stage: c?.stage || "BUILDUP" })),
+    ...safeStage(f.almost).map((c) => ({ ...c, _stage: c?.stage || "ALMOST" })),
+    ...safeStage(f.entry).map((c) => ({ ...c, _stage: c?.stage || "ENTRY" })),
+    ...safeStage(f.elite_ignition).map((c) => ({ ...c, _stage: c?.stage || "ELITE_IGNITION" })),
+    ...safeStage(f.elite_expansion).map((c) => ({ ...c, _stage: c?.stage || "ELITE_EXPANSION" })),
+    ...safeStage(f.elite_cascade).map((c) => ({ ...c, _stage: c?.stage || "ELITE_CASCADE" })),
+    ...safeStage(f.hold).map((c) => ({ ...c, _stage: c?.stage || "HOLD" })),
   ];
 }
 
 // =============================
-// BOTTLENECKS
+// BOTTLENECK ANALYSIS
 // =============================
-function analyzeCoin(c) {
+function analyzeCoinBottlenecks(coin) {
   const out = [];
-  const adv = [];
+  const advice = [];
 
-  if (n(c.timingScore) < 60) {
-    out.push("timing");
-    adv.push("Wacht op breakout + volume confirmatie");
+  const timingScore = n(coin?.timingScore, 0);
+  const liquidityScore = n(coin?.liquidityScore, 0);
+  const qualityScore = n(coin?.qualityScore, 0);
+  const marketScore = n(coin?.marketScore, 0);
+  const eq = n(coin?.entryQuality, 0);
+  const ps = n(coin?.persistenceScore, 0);
+  const obScore = n(coin?.ob?.score, 0);
+  const spreadPct = n(coin?.ob?.spreadPct, 999);
+  const depth = n(coin?.ob?.depthMinUsd1p, 0);
+  const breakoutReady = !!coin?.breakout?.ready;
+  const breakoutPressure = n(coin?.breakout?.pressure, 0);
+  const status = String(coin?.tradeDeskStatus || "UNKNOWN").toUpperCase();
+  const exReason = String(coin?.execution?.reason || "").toLowerCase();
+
+  if (timingScore < 60 || (!breakoutReady && breakoutPressure < 55)) {
+    out.push("timing faalt");
+    advice.push("Wacht op breakout + volume confirmatie");
   }
 
-  if (n(c.liquidityScore) < 60) {
-    out.push("liquidity");
-    adv.push("Focus op coins met betere depth/spread");
+  if (liquidityScore < 60 || spreadPct > 1.2 || depth < 2500) {
+    out.push("liquidity bottleneck");
+    advice.push("Focus op coins met sterkere depth en lagere spread");
   }
 
-  if (n(c.qualityScore) < 60) {
-    out.push("quality");
-    adv.push("Alleen high conviction setups");
+  if (qualityScore < 60 || eq < 60 || ps < 55) {
+    out.push("kwaliteit te laag");
+    advice.push("Alleen high conviction setups doorlaten");
   }
 
-  if (n(c.marketScore) < 45) {
-    out.push("market");
-    adv.push("Trade met BTC trend mee");
+  if (marketScore < 45) {
+    out.push("markt tegen");
+    advice.push("Trade meer met BTC trend en regime mee");
   }
 
-  return { out, adv };
+  if (status === "WATCH") {
+    out.push("blijft hangen in watch");
+    advice.push("Verlaag entry-frictie pas als kwaliteit en timing stabiel zijn");
+  }
+
+  if (status === "IGNORE") {
+    out.push("komt niet door trade desk");
+    advice.push("Check strengste execution filters en drempels");
+  }
+
+  if (exReason.includes("breakout")) {
+    out.push("breakout niet sterk genoeg");
+    advice.push("Verlaag breakout eis licht of wacht op sterkere pressure");
+  }
+
+  if (exReason.includes("liquidity") || exReason.includes("depth") || exReason.includes("spread")) {
+    out.push("execution blokkeert op liquiditeit");
+    advice.push("Verlaag spread/depth filter licht of trade alleen diepere coins");
+  }
+
+  if (Math.abs(obScore) < 0.008) {
+    out.push("orderbook overtuigt niet");
+    advice.push("Wacht op sterker orderbook voordeel");
+  }
+
+  return {
+    bottlenecks: Array.from(new Set(out)),
+    advice: Array.from(new Set(advice)),
+  };
 }
 
-// =============================
-// TOP 5 IMPROVEMENTS ENGINE
-// =============================
-function buildTopImprovements(problems) {
-  const map = {};
-
-  for (const p of safeArr(problems)) {
-    for (const adv of safeArr(p.advice)) {
-      const key = adv.toLowerCase().trim();
-      if (!map[key]) {
-        map[key] = { label: adv, count: 0 };
-      }
-      map[key].count++;
-    }
-  }
-
-  return Object.values(map)
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 5);
-}
-
-// =============================
-// PROBLEM SAMENVATTING
-// =============================
 function summarizeProblemCoins(coins, sectionName) {
-  const problems = [];
+  const list = [];
+  const counters = {
+    timing: 0,
+    liquidity: 0,
+    quality: 0,
+    market: 0,
+    watch: 0,
+    ignored: 0,
+  };
+
   for (const coin of safeArr(coins)) {
-    const { adv } = analyzeCoin(coin);
-    if (adv.length) {
-      problems.push({ advice: adv });
+    const b = analyzeCoinBottlenecks(coin);
+    const scoreRaw = avg([
+      n(coin?.timingScore, 0),
+      n(coin?.liquidityScore, 0),
+      n(coin?.qualityScore, 0),
+      n(coin?.marketScore, 0),
+    ]);
+
+    const score = toScore10(scoreRaw);
+
+    if (!b.bottlenecks.length) continue;
+
+    for (const x of b.bottlenecks) {
+      const t = x.toLowerCase();
+      if (t.includes("timing")) counters.timing++;
+      if (t.includes("liquidity")) counters.liquidity++;
+      if (t.includes("kwaliteit")) counters.quality++;
+      if (t.includes("markt")) counters.market++;
+      if (t.includes("watch")) counters.watch++;
+      if (t.includes("trade desk")) counters.ignored++;
     }
-  }
-  return { problems };
-}
 
-// =============================
-// TRADE ANALYSE (PLACEHOLDER)
-// =============================
-function analyzeTrades(trades) {
-  // Hier kan later echte trade‑analyse komen
-  return { problems: [] };
-}
-
-// =============================
-// TOP 5 (oude, nog gebruikt in HTML)
-// =============================
-function buildTop5(list) {
-  const map = {};
-
-  for (const c of list) {
-    const a = analyzeCoin(c);
-    for (const adv of a.adv) {
-      map[adv] = (map[adv] || 0) + 1;
-    }
+    list.push({
+      id: `${sectionName}:${coin?.symbol || "unknown"}`,
+      symbol: coin?.symbol || "UNKNOWN",
+      stage: coin?.stage || coin?._stage || "-",
+      score,
+      scoreRaw,
+      bottlenecks: b.bottlenecks,
+      advice: b.advice,
+      tradeDeskStatus: coin?.tradeDeskStatus || "-",
+      entryQuality: n(coin?.entryQuality, 0),
+      persistenceScore: n(coin?.persistenceScore, 0),
+      timingScore: n(coin?.timingScore, 0),
+      liquidityScore: n(coin?.liquidityScore, 0),
+      qualityScore: n(coin?.qualityScore, 0),
+      marketScore: n(coin?.marketScore, 0),
+    });
   }
 
-  return Object.entries(map)
-    .map(([text, count]) => ({ text, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 5);
+  list.sort((a, b) => a.score - b.score || a.symbol.localeCompare(b.symbol));
+
+  return { problems: list.slice(0, 24), counters };
 }
 
-// =============================
-// SECTION RENDER (blijft ongewijzigd)
-// =============================
-function renderSection(title, data) {
-  const top5 = buildTop5(data);
-
-  return `
-  <div class="section">
-    <h2>${esc(title)}</h2>
-
-    <div class="top5">
-      ${top5
-        .map(
-          (x, i) => `
-        <div class="card">
-          <b>#${i + 1}</b>
-          <div>${esc(x.text)}</div>
-          <small>${x.count}x genoemd</small>
-        </div>`
-        )
-        .join("")}
-    </div>
-  </div>`;
-}
-
-// =============================
-// HTML (blijft ongewijzigd, werkt nog met arrays)
-// =============================
-function html(payload) {
-  return `
-  <html>
-  <head>
-    <style>
-      body { font-family: sans-serif; background:#0b0f18; color:white; padding:20px }
-      .section { margin-bottom:30px }
-      .top5 { display:grid; gap:10px }
-      .card { background:#111827; padding:15px; border-radius:10px }
-    </style>
-  </head>
-  <body>
-
-  <h1>🚀 Dashboard</h1>
-
-  ${renderSection("📈 MAIN Bull", payload.main.bull.coins)}
-  ${renderSection("📉 MAIN Bear", payload.main.bear.coins)}
-  ${renderSection("🌙 MOON Bull", payload.moon.bull.coins)}
-  ${renderSection("🌙 MOON Bear", payload.moon.bear.coins)}
-  ${renderSection("💰 TRADE", payload.trade.coins || [])}
-
-  </body>
-  </html>
-  `;
-}
-
-// =============================
-// MAIN HANDLER
-// =============================
-export default async function handler(req, res) {
-  if (!requireSecret(req, res)) return;
-
-  const [
-    mainBullLatest,
-    mainBearLatest,
-    moonBullLatest,
-    moonBearLatest,
-    moonBullDiags,
-    moonBearDiags,
-    moonBullPos,
-    moonBearPos,
-    trades,
-  ] = await Promise.all([
-    kv.get(keyMainLatest("bull")),
-    kv.get(keyMainLatest("bear")),
-    kv.get(keyMoonLatest("bull")),
-    kv.get(keyMoonLatest("bear")),
-    kv.get(keyMoonDiagList("bull")),
-    kv.get(keyMoonDiagList("bear")),
-    kv.get(keyMoonPositions("bull")),
-    kv.get(keyMoonPositions("bear")),
-    readEvents("trade_closed", 2000).catch(() => []),
-  ]);
-
-  // Coins per funnel
-  const mainBullCoins = flatten(mainBullLatest);
-  const mainBearCoins = flatten(mainBearLatest);
-  const moonBullCoins = flatten(moonBullLatest);
-  const moonBearCoins = flatten(moonBearLatest);
-
-  // Probleem analyse
-  const mainBullSummary = summarizeProblemCoins(mainBullCoins, "main-bull");
-  const mainBearSummary = summarizeProblemCoins(mainBearCoins, "main-bear");
-  const moonBullSummary = summarizeProblemCoins(moonBullCoins, "moon-bull");
-  const moonBearSummary = summarizeProblemCoins(moonBearCoins, "moon-bear");
-  const tradeSummary = analyzeTrades(trades);
-
-  // Payload met nieuwe velden
-  const payload = {
-    main: {
-      bull: {
-        coins: mainBullCoins,
-        problems: mainBullSummary.problems,
-        topImprovements: buildTopImprovements(mainBullSummary.problems),
-      },
-      bear: {
-        coins: mainBearCoins,
-        problems: mainBearSummary.problems,
-        topImprovements: buildTopImprovements(mainBearSummary.problems),
-      },
-    },
-    moon: {
-      bull: {
-        coins: moonBullCoins,
-        problems: moonBullSummary.problems,
-        topImprovements: buildTopImprovements(moonBullSummary.problems),
-        diagCount: safeArr(moonBullDiags).length,
-        positions: {
-          open: safeArr(moonBullPos?.open).length,
-          closed: safeArr(moonBullPos?.closed).length,
-        },
-      },
-      bear: {
-        coins: moonBearCoins,
-        problems: moonBearSummary.problems,
-        topImprovements: buildTopImprovements(moonBearSummary.problems),
-        diagCount: safeArr(moonBearDiags).length,
-        positions: {
-          open: safeArr(moonBearPos?.open).length,
-          closed: safeArr(moonBearPos?.closed).length,
-        },
-      },
-    },
-    trade: {
-      coins: safeArr(trades),
-      problems: tradeSummary.problems,
-      topImprovements: buildTopImprovements(tradeSummary.problems),
+function analyzeTrades(events) {
+  const closes = safeArr(events);
+  const out = {
+    totalTrades: closes.length,
+    avgGiveback: 0,
+    reasons: {},
+    problems: [],
+    counters: {
+      timing: 0,
+      liquidity: 0,
+      quality: 0,
+      market: 0,
     },
   };
 
-  if (req.query.format === "json") {
-    return res.json(payload);
-  }
+  if (!closes.length) return out;
 
-  res.setHeader("content-type", "text/html");
-  res.end(html(payload));
-}
+  let givebackSum = 0;
+
+  for (const t of closes) {
+    const reason = String(t?.reason || "UNKNOWN");
+    inc(out.reasons, reason);
+
+    const max = n(t?.maxPnlPct, 0);
+    const pnl = n(t?.pnlPct, 0);
+    const giveback = Math.max(0, max - pnl);
+    givebackSum += giveback;
+
+    const bottlenecks = [];
+    const advice = [];
+
+    if (giveback > 1.5) {
+      bottlenecks.push("timing exit te laat");
+      advice.push("Trailing TP strakker na TP1");
+      out.counters.timing++;
+    }
+
+    if (/slippage|spread|depth|liquid/i.test(reason)) {
+      bottlenecks.push("liquidity exit probleem");
+      advice.push("Trade alleen coins met betere liquiditeit");
+      out.counters.liquidity++;
+    }
+
+    if (/timeout|weak|quality|invalid/i.test(reason)) {
+      bottlenecks.push("kwaliteit setup zwak");
+      advice.push("Laat zwakke setups sneller los");
+      out.counters.quality++;
+    }
+
+    if (/btc|market|regime/i.test(reason)) {
+      bottlenecks.push("
