@@ -765,9 +765,10 @@ async function buildUniverse(mode, whaleFlow, btc) {
     const tradeCandidate =
       perfectCandidateScore >= 76 &&
       qualityScore >= 68 &&
-      timingScore >= 66 &&
-      liquidityScore >= 62 &&
-      marketScore >= 46 &&
+      timingScore >= 71 &&               // gewijzigd van 66 naar 71
+      liquidityScore >= 66 &&            // gewijzigd van 62 naar 66 (depth/spread)
+      marketScore >= 56 &&               // gewijzigd van 46 naar 56
+      btcAlignmentScore >= 55 &&         // nieuw
       (stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
@@ -849,7 +850,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
           stage === "ALMOST" &&
           entryQuality >= 70 &&
           persistenceScore >= 60 &&
-          (breakout?.ready === true || n(breakout?.pressure, 0) >= 58) &&
+          (breakout?.ready === true || n(breakout?.pressure, 0) >= 63) &&   // gewijzigd 58 -> 63
           n(obx.score, 0) >= 0.01
         )
       );
@@ -859,7 +860,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
       (prev?.watchScans || 0) >= 2 &&
       entryQuality >= 64 &&
       persistenceScore >= 56 &&
-      (breakout?.ready === true || n(breakout?.pressure, 0) >= 54) &&
+      (breakout?.ready === true || n(breakout?.pressure, 0) >= 59) &&   // gewijzigd 54 -> 59
       n(obx.score, 0) >= 0.008;
 
     let tradeDeskStatus = "IGNORE";
