@@ -5,6 +5,40 @@ import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
 export const config = RUNTIME_CONFIG;
 
 // =============================
+// NIEUWE THRESHOLD CONSTANTEN
+// =============================
+const CURRENT_THRESHOLDS = {
+  market: 45,
+  timing: 60,
+  quality: 60,
+};
+
+const ADVISED_THRESHOLDS = {
+  market: 55,
+  timing: 65,
+  quality: 68,
+};
+
+const THRESHOLD_LOCATIONS = {
+  market: [
+    "lib/_moon_core.js",
+    "scanner / funnel bronbestand",
+  ],
+  timing: [
+    "lib/_moon_core.js",
+    "scanner / entry logic bestand",
+  ],
+  quality: [
+    "lib/_moon_core.js",
+    "scanner / filter logic bestand",
+  ],
+  exit: [
+    "trade manager / execution bestand",
+    "bestand waar trade_closed / exits gebeuren",
+  ],
+};
+
+// =============================
 // HELPERS
 // =============================
 function n(x, d = 0) {
@@ -288,6 +322,111 @@ function buildGlobalSummary(sections) {
 }
 
 // =============================
+// NIEUWE V4 FUNCTIES VOOR AI IMPROVEMENTS
+// =============================
+function buildAIImprovements(problems) {
+  const map = {};
+
+  for (const p of safeArr(problems)) {
+    const severity = 10 - n(p.score, 0);
+
+    for (const adv of safeArr(p.advice)) {
+      const key = adv.toLowerCase().trim();
+
+      if (!map[key]) {
+        map[key] = {
+          label: adv,
+          count: 0,
+          impact: 0,
+        };
+      }
+
+      map[key].count++;
+      map[key].impact += severity;
+    }
+  }
+
+  return Object.values(map)
+    .map((x) => {
+      const label = String(x.label || "").toLowerCase();
+
+      let type = null;
+
+      if (label.includes("btc") || label.includes("trend") || label.includes("markt")) {
+        type = "market";
+      } else if (label.includes("breakout") || label.includes("timing") || label.includes("volume")) {
+        type = "timing";
+      } else if (label.includes("conviction") || label.includes("kwaliteit")) {
+        type = "quality";
+      } else if (
+        label.includes("trailing") ||
+        label.includes("zwakke setups") ||
+        label.includes("stop") ||
+        label.includes("exit")
+      ) {
+        type = "exit";
+      }
+
+      const current = type ? CURRENT_THRESHOLDS[type] ?? null : null;
+      const advised = type ? ADVISED_THRESHOLDS[type] ?? null : null;
+      const files = type ? safeArr(THRESHOLD_LOCATIONS[type]) : [];
+
+      return {
+        ...x,
+        priority: x.impact + x.count * 2,
+        type,
+        current,
+        advised,
+        delta:
+          current != null && advised != null
+            ? advised - current
+            : null,
+        files,
+      };
+    })
+    .sort((a, b) => b.priority - a.priority)
+    .slice(0, 5);
+}
+
+function renderImprovements(improvements) {
+  if (!improvements.length) return '<p><em>Geen verbeterpunten</em></p>';
+
+  return `
+    <ul style="list-style: none; padding-left: 0;">
+      ${improvements.map(imp => `
+        <li style="margin-bottom: 14px; border-left: 4px solid #ff9800; padding-left: 12px;">
+          <strong>${esc(imp.label)}</strong><br>
+          <small>
+            prioriteit: ${esc(String(imp.priority))} · aantal: ${esc(String(imp.count))} · impact: ${esc(String(imp.impact.toFixed(1)))}
+          </small>
+          ${
+            imp.current != null || imp.advised != null
+              ? `
+                <div style="margin-top: 6px; font-size: 13px; color: #444;">
+                  ${imp.current != null ? `<div><strong>Huidig:</strong> ${esc(String(imp.current))}</div>` : ""}
+                  ${imp.advised != null ? `<div><strong>Advies:</strong> ${esc(String(imp.advised))}</div>` : ""}
+                  ${imp.delta != null ? `<div><strong>Verschil:</strong> ${imp.delta > 0 ? "+" : ""}${esc(String(imp.delta))}</div>` : ""}
+                </div>
+              `
+              : ""
+          }
+          ${
+            imp.files?.length
+              ? `
+                <div style="margin-top: 6px; font-size: 13px; color: #666;">
+                  <strong>Aanpassen in:</strong><br>
+                  ${imp.files.map(f => `• ${esc(f)}`).join("<br>")}
+                </div>
+              `
+              : ""
+          }
+        </li>
+      `).join('')}
+    </ul>
+  `;
+}
+
+// =============================
 // HTML
 // =============================
 function renderSummaryCards(sections) {
@@ -386,6 +525,16 @@ function renderHtml(payload) {
   ].filter(Boolean);
 
   const global = payload.global || { bestOverall: null, topWins: [] };
+
+  // Verzamel alle bottlenecks voor AI improvements
+  const allProblems = [];
+  for (const section of sections) {
+    for (const coin of section?.rawCoins || []) {
+      const result = analyzeCoin(coin);
+      allProblems.push({ score: result.score, advice: result.bottlenecks.map(b => b.advice) });
+    }
+  }
+  const improvements = buildAIImprovements(allProblems);
 
   return `<!DOCTYPE html>
 <html lang="nl">
@@ -578,6 +727,20 @@ function renderHtml(payload) {
       color: #e5e7eb;
     }
 
+    .improvements-panel {
+      background: #0f172a;
+      border: 1px solid #2d3a5e;
+      border-radius: 20px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .improvements-title {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: #fbbf24;
+    }
+
     .footer {
       text-align: center;
       color: #64748b;
@@ -634,6 +797,12 @@ function renderHtml(payload) {
       ${renderTopWinsTable(global.topWins)}
     </section>
 
+    <!-- NIEUW: AI-verbeterpunten met threshold advies -->
+    <div class="improvements-panel">
+      <div class="improvements-title">🤖 AI‑gestuurde verbetersuggesties (met thresholds)</div>
+      ${renderImprovements(improvements)}
+    </div>
+
     ${renderFunnelTable(payload.main?.bull)}
     ${renderFunnelTable(payload.main?.bear)}
     ${renderFunnelTable(payload.moon?.bull)}
@@ -669,11 +838,26 @@ export default async function handler(req, res) {
       readEvents("trade_closed", 2000).catch(() => []),
     ]);
 
-    const mainBull = summarize(flatten(mainBullLatest), "Main Bull");
-    const mainBear = summarize(flatten(mainBearLatest), "Main Bear");
-    const moonBull = summarize(flatten(moonBullLatest), "Moon Bull");
-    const moonBear = summarize(flatten(moonBearLatest), "Moon Bear");
+    // Extra data nodig voor raw coins in improvements (alleen de coins)
+    const allRawCoins = {
+      mainBull: flatten(mainBullLatest),
+      mainBear: flatten(mainBearLatest),
+      moonBull: flatten(moonBullLatest),
+      moonBear: flatten(moonBearLatest),
+    };
+
+    const mainBull = summarize(allRawCoins.mainBull, "Main Bull");
+    const mainBear = summarize(allRawCoins.mainBear, "Main Bear");
+    const moonBull = summarize(allRawCoins.moonBull, "Moon Bull");
+    const moonBear = summarize(allRawCoins.moonBear, "Moon Bear");
     const trade = summarizeTrades(tradeClosed);
+
+    // Stop raw coins in de secties voor later gebruik in renderHtml
+    mainBull.rawCoins = allRawCoins.mainBull;
+    mainBear.rawCoins = allRawCoins.mainBear;
+    moonBull.rawCoins = allRawCoins.moonBull;
+    moonBear.rawCoins = allRawCoins.moonBear;
+    trade.rawCoins = [];
 
     const sections = [mainBull, mainBear, moonBull, moonBear, trade];
     const global = buildGlobalSummary(sections);
