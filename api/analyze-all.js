@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-const API = "/api/analyze-all?secret=lara-roos";
+const API = "/api/analyze-all?format=json&secret=lara-roos";
 
 // =============================
 // HELPERS
