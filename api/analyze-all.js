@@ -95,7 +95,50 @@ function analyzeCoin(c) {
 }
 
 // =============================
-// TOP 5 ENGINE
+// TOP 5 IMPROVEMENTS ENGINE
+// =============================
+function buildTopImprovements(problems) {
+  const map = {};
+
+  for (const p of safeArr(problems)) {
+    for (const adv of safeArr(p.advice)) {
+      const key = adv.toLowerCase().trim();
+      if (!map[key]) {
+        map[key] = { label: adv, count: 0 };
+      }
+      map[key].count++;
+    }
+  }
+
+  return Object.values(map)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+}
+
+// =============================
+// PROBLEM SAMENVATTING
+// =============================
+function summarizeProblemCoins(coins, sectionName) {
+  const problems = [];
+  for (const coin of safeArr(coins)) {
+    const { adv } = analyzeCoin(coin);
+    if (adv.length) {
+      problems.push({ advice: adv });
+    }
+  }
+  return { problems };
+}
+
+// =============================
+// TRADE ANALYSE (PLACEHOLDER)
+// =============================
+function analyzeTrades(trades) {
+  // Hier kan later echte trade‑analyse komen
+  return { problems: [] };
+}
+
+// =============================
+// TOP 5 (oude, nog gebruikt in HTML)
 // =============================
 function buildTop5(list) {
   const map = {};
@@ -114,7 +157,7 @@ function buildTop5(list) {
 }
 
 // =============================
-// SECTION RENDER
+// SECTION RENDER (blijft ongewijzigd)
 // =============================
 function renderSection(title, data) {
   const top5 = buildTop5(data);
@@ -139,7 +182,7 @@ function renderSection(title, data) {
 }
 
 // =============================
-// HTML
+// HTML (blijft ongewijzigd, werkt nog met arrays)
 // =============================
 function html(payload) {
   return `
@@ -156,11 +199,11 @@ function html(payload) {
 
   <h1>🚀 Dashboard</h1>
 
-  ${renderSection("📈 MAIN Bull", payload.main.bull)}
-  ${renderSection("📉 MAIN Bear", payload.main.bear)}
-  ${renderSection("🌙 MOON Bull", payload.moon.bull)}
-  ${renderSection("🌙 MOON Bear", payload.moon.bear)}
-  ${renderSection("💰 TRADE", payload.trade)}
+  ${renderSection("📈 MAIN Bull", payload.main.bull.coins)}
+  ${renderSection("📉 MAIN Bear", payload.main.bear.coins)}
+  ${renderSection("🌙 MOON Bull", payload.moon.bull.coins)}
+  ${renderSection("🌙 MOON Bear", payload.moon.bear.coins)}
+  ${renderSection("💰 TRADE", payload.trade.coins || [])}
 
   </body>
   </html>
@@ -168,7 +211,7 @@ function html(payload) {
 }
 
 // =============================
-// MAIN
+// MAIN HANDLER
 // =============================
 export default async function handler(req, res) {
   if (!requireSecret(req, res)) return;
@@ -178,25 +221,77 @@ export default async function handler(req, res) {
     mainBearLatest,
     moonBullLatest,
     moonBearLatest,
+    moonBullDiags,
+    moonBearDiags,
+    moonBullPos,
+    moonBearPos,
     trades,
   ] = await Promise.all([
     kv.get(keyMainLatest("bull")),
     kv.get(keyMainLatest("bear")),
     kv.get(keyMoonLatest("bull")),
     kv.get(keyMoonLatest("bear")),
+    kv.get(keyMoonDiagList("bull")),
+    kv.get(keyMoonDiagList("bear")),
+    kv.get(keyMoonPositions("bull")),
+    kv.get(keyMoonPositions("bear")),
     readEvents("trade_closed", 2000).catch(() => []),
   ]);
 
+  // Coins per funnel
+  const mainBullCoins = flatten(mainBullLatest);
+  const mainBearCoins = flatten(mainBearLatest);
+  const moonBullCoins = flatten(moonBullLatest);
+  const moonBearCoins = flatten(moonBearLatest);
+
+  // Probleem analyse
+  const mainBullSummary = summarizeProblemCoins(mainBullCoins, "main-bull");
+  const mainBearSummary = summarizeProblemCoins(mainBearCoins, "main-bear");
+  const moonBullSummary = summarizeProblemCoins(moonBullCoins, "moon-bull");
+  const moonBearSummary = summarizeProblemCoins(moonBearCoins, "moon-bear");
+  const tradeSummary = analyzeTrades(trades);
+
+  // Payload met nieuwe velden
   const payload = {
     main: {
-      bull: flatten(mainBullLatest),
-      bear: flatten(mainBearLatest),
+      bull: {
+        coins: mainBullCoins,
+        problems: mainBullSummary.problems,
+        topImprovements: buildTopImprovements(mainBullSummary.problems),
+      },
+      bear: {
+        coins: mainBearCoins,
+        problems: mainBearSummary.problems,
+        topImprovements: buildTopImprovements(mainBearSummary.problems),
+      },
     },
     moon: {
-      bull: flatten(moonBullLatest),
-      bear: flatten(moonBearLatest),
+      bull: {
+        coins: moonBullCoins,
+        problems: moonBullSummary.problems,
+        topImprovements: buildTopImprovements(moonBullSummary.problems),
+        diagCount: safeArr(moonBullDiags).length,
+        positions: {
+          open: safeArr(moonBullPos?.open).length,
+          closed: safeArr(moonBullPos?.closed).length,
+        },
+      },
+      bear: {
+        coins: moonBearCoins,
+        problems: moonBearSummary.problems,
+        topImprovements: buildTopImprovements(moonBearSummary.problems),
+        diagCount: safeArr(moonBearDiags).length,
+        positions: {
+          open: safeArr(moonBearPos?.open).length,
+          closed: safeArr(moonBearPos?.closed).length,
+        },
+      },
     },
-    trade: safeArr(trades),
+    trade: {
+      coins: safeArr(trades),
+      problems: tradeSummary.problems,
+      topImprovements: buildTopImprovements(tradeSummary.problems),
+    },
   };
 
   if (req.query.format === "json") {
