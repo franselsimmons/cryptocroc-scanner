@@ -5,7 +5,7 @@ import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
 export const config = RUNTIME_CONFIG;
 
 // =============================
-// THRESHOLD CONSTANTEN (v4.1)
+// THRESHOLD CONSTANTEN (v4.1 – real code mapping)
 // =============================
 const CURRENT_THRESHOLDS = {
   market: 45,
@@ -21,66 +21,64 @@ const ADVISED_THRESHOLDS = {
 
 const THRESHOLD_LOCATIONS = {
   market: [
+    "api/main/scan.js",
+    "api/moon/scan.js",
     "lib/_moon_core.js",
-    "scanner / funnel bronbestand",
+    "lib/_trade_engine.js",
   ],
   timing: [
+    "api/main/scan.js",
+    "api/moon/scan.js",
     "lib/_moon_core.js",
-    "scanner / entry logic bestand",
+    "lib/_trade_engine.js",
   ],
   quality: [
+    "api/main/scan.js",
+    "api/moon/scan.js",
     "lib/_moon_core.js",
-    "scanner / filter logic bestand",
+    "lib/_trade_engine.js",
   ],
   exit: [
-    "trade manager / execution bestand",
-    "bestand waar trade_closed / exits gebeuren",
+    "api/analyze-all.js",   // exit analyse zit in dit bestand
   ],
 };
 
 const THRESHOLD_SEARCH_HINTS = {
   market: [
-    "marketScore < 45",
-    "Trade met BTC trend mee",
-    "marketScore",
-    "btc trend",
+    "marketScore >= 46",          // in scan.js: tradeCandidate check
+    "btcAlignmentScore",          // in _moon_core.js
+    "isBtcAligned",               // in _trade_engine.js
+    "btc.state === 'BULL'",       // in _trade_engine.js
   ],
   timing: [
-    "timingScore < 60",
-    "Wacht op breakout + volume confirmatie",
-    "timingScore",
-    "breakout",
-    "volume confirmatie",
+    "timingScore >= 66",          // in main/scan.js (bull)
+    "timingScore >= 62",          // in moon/scan.js (bull)
+    "breakout.ready === true",    // overal in scanners
+    "breakoutPressure >= 58",     // in _trade_engine.js (Main)
+    "volAcc.short",               // in _moon_core.js computeTimingScore
   ],
   quality: [
-    "qualityScore < 60",
-    "Alleen high conviction setups",
-    "qualityScore",
-    "high conviction",
-  ],
-  liquidity: [
-    "liquidityScore < 60",
-    "Focus op coins met betere depth/spread",
-    "liquidityScore",
-    "depth",
-    "spread",
+    "qualityScore >= 68",         // in main/scan.js tradeCandidate
+    "qualityScore >= 66",         // in moon/scan.js tradeCandidate
+    "entryQuality >= 64",         // in _trade_engine.js (Main)
+    "entryQuality >= 60",         // in _trade_engine.js (Moon)
+    "persistenceScore >= 56",     // in _trade_engine.js (Main)
+    "persistenceScore >= 50",     // in _trade_engine.js (Moon)
+    "high conviction",            // in _moon_core.js computeQualityScore
   ],
   exit: [
-    "Trailing TP strakker na TP1",
-    "Laat zwakke setups sneller los",
-    "trade_closed",
-    "maxPnlPct",
-    "pnlPct",
-    "reason",
+    "giveback > 1.5",             // in analyze-all.js summarizeTrades
+    "weak_setup",                 // regex /timeout|weak|invalid|quality/
+    "trade_closed",               // event name
+    "pnlPct", "maxPnlPct",        // trade data
   ],
 };
 
 const THRESHOLD_CODE_HINTS = {
-  market: `if (marketScore < 45) { ... }`,
-  timing: `if (timingScore < 60) { ... }`,
-  quality: `if (qualityScore < 60) { ... }`,
-  liquidity: `if (liquidityScore < 60) { ... }`,
-  exit: `if (giveback > 1.5) { ... } // of if (/weak|quality/i.test(reason))`,
+  market: `if (marketScore >= 46) { ... } // in api/main/scan.js\nif (!isBtcAligned(...)) return false; // in lib/_trade_engine.js`,
+  timing: `if (timingScore >= 66) { ... } // in api/main/scan.js\nif (breakoutPressure >= 58 && breakoutReady) { ... } // in lib/_trade_engine.js`,
+  quality: `if (qualityScore >= 68) { ... } // in api/main/scan.js\nif (entryQuality >= 64 && persistenceScore >= 56) { ... } // in lib/_trade_engine.js`,
+  exit: `if (giveback > 1.5) { ... } // in api/analyze-all.js (summarizeTrades)`,
 };
 
 // =============================
@@ -534,7 +532,7 @@ function renderTopWinsTable(rows) {
       </thead>
       <tbody>
         ${rows.map((r) => `
-          <tr>
+           <tr>
             <td>${esc(r.funnel)}</td>
             <td><strong>${esc(r.filter)}</strong></td>
             <td>${esc(r.advice)}</td>
