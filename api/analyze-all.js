@@ -10,7 +10,7 @@ import {
   keyMoonPositions,
 } from "../lib/_moon_core.js";
 
-import { THRESHOLDS } from "../lib/_thresholds.js";
+import { THRESHOLDS, buildAdaptiveThresholds } from "../lib/_thresholds.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -27,14 +27,15 @@ function safeArr(x) {
 
 function flattenLatest(latest) {
   const f = latest?.funnel || {};
-  // match exact funnel keys used in your scanners
   return [
     ...safeArr(f.radar),
     ...safeArr(f.buildup),
     ...safeArr(f.almost),
     ...safeArr(f.elite_ignition),
     ...safeArr(f.elite_expansion),
+    ...safeArr(f.elite_cascade),
     ...safeArr(f.hold),
+    ...safeArr(f.entry),
   ];
 }
 
@@ -67,7 +68,6 @@ function analyzeCoin(coin) {
       severity: (THRESHOLDS.market.current - marketScore) / 10,
     });
   }
-  // liquidity: keep as generic sanity line
   if (liquidityScore < 60) {
     bottlenecks.push({
       key: "liquidity",
@@ -181,9 +181,7 @@ async function maybeUpdatePerformanceOnce() {
   }
 }
 
-function pickAdaptiveMeta(latest) {
-  // Optional: if you add latest.meta.adaptiveThresholds in scan.js,
-  // analyze-all can expose it for UI visibility.
+function pickMeta(latest) {
   const m = latest?.meta || {};
   return {
     regime: latest?.regime || null,
@@ -192,6 +190,23 @@ function pickAdaptiveMeta(latest) {
     performance: m.performance || null,
     adaptiveThresholds: m.adaptiveThresholds || null,
     positionSizeUsd: m.positionSizeUsd || null,
+  };
+}
+
+function explainAdaptive(performance, regime) {
+  const adaptive = buildAdaptiveThresholds({ performance, regime });
+  return {
+    adaptive,
+    meaning: {
+      timing: `TimingScore moet >= ${adaptive.timing}`,
+      quality: `QualityScore moet >= ${adaptive.quality}`,
+      market: `MarketScore moet >= ${adaptive.market} (HEADWIND is extra streng)`,
+    },
+    why: {
+      winRate: performance?.winRate ?? 50,
+      drawdown: performance?.drawdown ?? 0,
+      regime: String(regime || "TREND").toUpperCase(),
+    },
   };
 }
 
@@ -213,12 +228,7 @@ export default async function handler(req, res) {
       kv.get(keyMoonLatest("bear")),
     ]);
 
-    const [
-      perfMainBull,
-      perfMainBear,
-      perfMoonBull,
-      perfMoonBear,
-    ] = await Promise.all([
+    const [perfMainBull, perfMainBear, perfMoonBull, perfMoonBear] = await Promise.all([
       kv.get("main:performance:bull"),
       kv.get("main:performance:bear"),
       kv.get("moon:performance:bull"),
@@ -232,22 +242,26 @@ export default async function handler(req, res) {
       main: {
         bull: {
           ...summarize(flattenLatest(mainBull), "Main Bull"),
-          meta: pickAdaptiveMeta(mainBull),
+          meta: pickMeta(mainBull),
+          explain: explainAdaptive(perfMainBull, mainBull?.regime),
         },
         bear: {
           ...summarize(flattenLatest(mainBear), "Main Bear"),
-          meta: pickAdaptiveMeta(mainBear),
+          meta: pickMeta(mainBear),
+          explain: explainAdaptive(perfMainBear, mainBear?.regime),
         },
       },
 
       moon: {
         bull: {
           ...summarize(flattenLatest(moonBull), "Moon Bull"),
-          meta: pickAdaptiveMeta(moonBull),
+          meta: pickMeta(moonBull),
+          explain: explainAdaptive(perfMoonBull, moonBull?.regime),
         },
         bear: {
           ...summarize(flattenLatest(moonBear), "Moon Bear"),
-          meta: pickAdaptiveMeta(moonBear),
+          meta: pickMeta(moonBear),
+          explain: explainAdaptive(perfMoonBear, moonBear?.regime),
         },
       },
 
