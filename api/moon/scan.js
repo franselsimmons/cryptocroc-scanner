@@ -1,9 +1,9 @@
 // api/moon/scan.js – volledige moon scanner met:
-// ✅ Bitget fallback
+// ✅ Bitget fallback (safe)
 // ✅ HEADWIND case‑insensitive
 // ✅ Adaptive thresholds (timing/quality/market) voor tradeCandidate & entryReady
 // ✅ Volledige state‑machine, signals, entry‑logica (zoals origineel)
-// ✅ decideMoonStageV6 ingesloten (geen dummy)
+// ✅ decideMoonStageV6 ingesloten
 
 import { kv } from "@vercel/kv";
 
@@ -60,7 +60,7 @@ export const config = RUNTIME_CONFIG;
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 
 // ======================================================
-// Hulpfuncties (identiek aan main)
+// Hulpfuncties (identiek aan origineel)
 // ======================================================
 async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
   const controller = new AbortController();
@@ -124,7 +124,7 @@ function up(x) {
 }
 
 // ======================================================
-// Performance (identiek aan main)
+// Performance (identiek)
 // ======================================================
 function computePerformance(closedTrades) {
   const tradesArr = Array.isArray(closedTrades) ? closedTrades : [];
@@ -464,7 +464,7 @@ function makePortfolio(mode, positions) {
 }
 
 // ======================================================
-// Moon stage decision (origineel – niet versimpeld)
+// Moon stage decision (origineel)
 // ======================================================
 function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, whaleFlow, regime }) {
   const baseCfg = MOON_V2[mode];
@@ -666,7 +666,7 @@ function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
 }
 
 // ======================================================
-// Universe bouwen (scanner) – met Bitget fallback, HEADWIND case-insensitive, adaptive thresholds
+// Universe bouwen – met veilige Bitget fallback
 // ======================================================
 async function buildUniverse(mode, whaleFlow, btc, performance) {
   const regime = computeMarketRegime({ btc, whaleFlow, mode });
@@ -676,11 +676,25 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
   const bitgetSymbols = await getBitgetSpotUsdtSymbols();
   const step1 = rawCoins.filter((c) => !isBlockedMoonAsset(c));
 
-  // ✅ Bitget fallback
-  const step2 =
-    bitgetSymbols && bitgetSymbols.size > 0
-      ? step1.filter((c) => bitgetSymbols.has(up(c.symbol)))
-      : step1;
+  // ✅ Veilige Bitget fallback: alleen filteren als er genoeg overblijft
+  let step2 = step1;
+  if (bitgetSymbols && bitgetSymbols.size > 20) {
+    const filtered = step1.filter((c) => bitgetSymbols.has(up(c.symbol)));
+    if (filtered.length > 10) {
+      step2 = filtered;
+      console.log(`🔍 Bitget filter applied: ${step1.length} -> ${filtered.length}`);
+    } else {
+      console.warn("⚠️ Bitget filter skipped: too few matches", {
+        bitgetSymbols: bitgetSymbols.size,
+        before: step1.length,
+        after: filtered.length,
+      });
+    }
+  } else {
+    console.warn("⚠️ Bitget symbols missing/too small, skipping filter", {
+      bitgetSymbols: bitgetSymbols?.size || 0,
+    });
+  }
 
   console.log("🔍 MOON V6 DEBUG", {
     regime,
@@ -689,7 +703,7 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
     afterBlocked: step1.length,
     bitgetSymbols: bitgetSymbols?.size || 0,
     afterBitget: step2.length,
-    bitgetFilterApplied: !!(bitgetSymbols && bitgetSymbols.size > 0),
+    bitgetFilterApplied: step2 !== step1,
   });
 
   const filtered = step2.slice(0, 140);
@@ -814,7 +828,7 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
 
-    // ✅ Adaptive thresholds in tradeCandidate
+    // Adaptive thresholds in tradeCandidate
     let tradeCandidate =
       perfectCandidateScore >= moonTh.perfectCandidate &&
       liquidityScore >= moonTh.liquidityScore &&
@@ -827,7 +841,7 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
 
-    // ✅ HEADWIND case‑insensitive
+    // HEADWIND case‑insensitive
     const reg = String(regime || "").toUpperCase();
     if (reg === "HEADWIND" && marketScore < adaptive.market + 4) {
       tradeCandidate = false;
@@ -835,16 +849,12 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
 
     const scannerOnly = !superScannerCoin;
 
-    // ======================================================
-    // Watch / deskstatus – origineel (moon)
-    // ======================================================
+    // Watch / deskstatus – origineel
     let tradeDeskStatus = "IGNORE";
     if (tradeCandidate === true) tradeDeskStatus = "OPEN";
     else if (superScannerCoin === true) tradeDeskStatus = "WATCH";
 
-    // ======================================================
     // Execution decision – origineel
-    // ======================================================
     const coinForDecision = {
       ...coin,
       stage,
@@ -991,7 +1001,7 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
 }
 
 // ======================================================
-// Handler (volledig, zoals origineel)
+// Handler (alleen moon)
 // ======================================================
 export default async function handler(req, res) {
   let mode = "bull";
@@ -1137,7 +1147,7 @@ export default async function handler(req, res) {
       const thesisInfo = calculateThesisDamage(coin, prev, mode);
       const tradePlan = coin.tradePlan;
 
-      // ✅ entryReady met adaptive thresholds (moon)
+      // entryReady met adaptive thresholds (moon)
       let entryReady = false;
       if (!hasOpenPosition) {
         const er = THRESHOLDS.moon.entryReady;
