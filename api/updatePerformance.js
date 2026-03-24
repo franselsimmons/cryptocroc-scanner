@@ -1,7 +1,12 @@
 // api/updatePerformance.js
 import { kv } from "@vercel/kv";
-import { requireSecret, RUNTIME_CONFIG } from "../lib/_runtime.js";
-import { keyMainPositions, keyMoonPositions } from "../lib/_moon_core.js";
+
+import {
+  RUNTIME_CONFIG,
+  requireSecret,
+  keyMainPositions,
+  keyMoonPositions,
+} from "../lib/_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
 
