@@ -10,29 +10,6 @@ import {
 
 export const config = RUNTIME_CONFIG;
 
-export default async function handler(req, res) {
-  try {
-    if (!requireSecret(req, res)) return;
-
-    const modes = ["bull", "bear"];
-
-    for (const mode of modes) {
-      const mainPositions = (await kv.get(keyMainPositions(mode))) || { open: [], closed: [] };
-      const mainStats = computePerformance(mainPositions.closed);
-      await kv.set(`main:performance:${mode}`, mainStats, { ex: 60 * 60 * 24 * 7 });
-
-      const moonPositions = (await kv.get(keyMoonPositions(mode))) || { open: [], closed: [] };
-      const moonStats = computePerformance(moonPositions.closed);
-      await kv.set(`moon:performance:${mode}`, moonStats, { ex: 60 * 60 * 24 * 7 });
-    }
-
-    return res.status(200).json({ ok: true, message: "Performance updated" });
-  } catch (err) {
-    console.error("Performance update error:", err);
-    return res.status(500).json({ ok: false, error: String(err?.message || err) });
-  }
-}
-
 function n(x, d = 0) {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
@@ -42,15 +19,7 @@ function computePerformance(closedTrades) {
   const tradesArr = Array.isArray(closedTrades) ? closedTrades : [];
 
   if (!tradesArr.length) {
-    return {
-      trades: 0,
-      wins: 0,
-      losses: 0,
-      winRate: 50,
-      avgRR: 0,
-      drawdown: 0,
-      updatedAt: Date.now(),
-    };
+    return { trades: 0, wins: 0, losses: 0, winRate: 50, avgRR: 0, drawdown: 0, updatedAt: Date.now() };
   }
 
   let wins = 0;
@@ -87,4 +56,25 @@ function computePerformance(closedTrades) {
     drawdown: Number(maxDrawdownPct.toFixed(1)),
     updatedAt: Date.now(),
   };
+}
+
+export default async function handler(req, res) {
+  try {
+    if (!requireSecret(req, res)) return;
+
+    const modes = ["bull", "bear"];
+
+    for (const mode of modes) {
+      const mainPositions = (await kv.get(keyMainPositions(mode))) || { open: [], closed: [] };
+      await kv.set(`main:performance:${mode}`, computePerformance(mainPositions.closed), { ex: 60 * 60 * 24 * 7 });
+
+      const moonPositions = (await kv.get(keyMoonPositions(mode))) || { open: [], closed: [] };
+      await kv.set(`moon:performance:${mode}`, computePerformance(moonPositions.closed), { ex: 60 * 60 * 24 * 7 });
+    }
+
+    return res.status(200).json({ ok: true, message: "Performance updated" });
+  } catch (err) {
+    console.error("Performance update error:", err);
+    return res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
 }
