@@ -1,6 +1,6 @@
 // api/main/scan.js – volledige main scanner met:
 // ✅ Bitget fallback (safe)
-// ✅ HEADWIND case‑insensitive
+// ✅ HEADWIND case-insensitive
 // ✅ Adaptive thresholds (timing/quality/market) voor tradeCandidate & entryReady
 // ✅ Originele watch/deskstatus logica behouden
 
@@ -19,8 +19,6 @@ import {
   getTierForMcap,
   depthFloorUsd,
   computeMoonRisk,
-  calcPnlPct,
-  hitStopOrTp,
   isBlockedMoonAsset,
   MAIN_V2,
   computeVelocity,
@@ -48,13 +46,9 @@ import {
 import { pushEvent, uid } from "../lib/_analytics.js";
 import { sendSignal } from "../lib/discordRouter.js";
 
-import {
-  buildCoinProfile,
-  buildMainExecutionDecision,
-} from "../lib/_trade_engine.js";
+import { buildCoinProfile, buildMainExecutionDecision } from "../lib/_trade_engine.js";
 
 import { THRESHOLDS, buildAdaptiveThresholds } from "../lib/_thresholds.js";
-import { getAdaptivePositionSize } from "../lib/_adaptive.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -549,8 +543,7 @@ function decideMainStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
     };
   }
 
-  const moveScore =
-    mode === "bull" ? computeBullMoveScore(coin, obx) : computeBearMoveScore(coin, obx);
+  const moveScore = mode === "bull" ? computeBullMoveScore(coin, obx) : computeBearMoveScore(coin, obx);
 
   const entryQuality = computeEliteQuality({
     moveScore,
@@ -569,13 +562,7 @@ function decideMainStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
       ? n(btc?.chg24, 0) >= 0.8 && n(btc?.range24, 0) >= 2.8
       : n(btc?.chg24, 0) <= -0.8 && n(btc?.range24, 0) >= 2.8;
 
-  if (
-    volAcc.short < 1.01 &&
-    volAcc.medium < 1.06 &&
-    moveScore < 70 &&
-    !breakout.ready &&
-    persistenceScore < 56
-  ) {
+  if (volAcc.short < 1.01 && volAcc.medium < 1.06 && moveScore < 70 && !breakout.ready && persistenceScore < 56) {
     return {
       stage: "ALMOST",
       stageWhy: "volume_not_accelerating",
@@ -896,7 +883,7 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
 
-    // HEADWIND case‑insensitive
+    // HEADWIND case-insensitive
     const reg = String(regime || "").toUpperCase();
     if (reg === "HEADWIND" && marketScore < adaptive.market + 4) {
       tradeCandidate = false;
@@ -998,7 +985,8 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
       coin: coinForDecision,
     });
 
-    const positionSize = getAdaptivePositionSize({ baseSize: BASE_POSITION_SIZE_USD, performance });
+    // (main) position sizing blijft constant zoals in jouw file
+    const positionSize = BASE_POSITION_SIZE_USD;
 
     const execution = buildMainExecutionDecision({
       coin: coinForDecision,
@@ -1299,11 +1287,7 @@ export default async function handler(req, res) {
 
         if (coin.tradeDeskStatus === "WATCH") {
           watchScans += 1;
-        } else if (
-          prev?.tradeDeskStatus === "WATCH" &&
-          rawStage === "ALMOST" &&
-          n(coin.entryQuality, 0) >= 62
-        ) {
+        } else if (prev?.tradeDeskStatus === "WATCH" && rawStage === "ALMOST" && n(coin.entryQuality, 0) >= 62) {
           watchScans = Math.max(0, (prev?.watchScans || 0) - 1);
         } else {
           watchScans = 0;
@@ -1443,12 +1427,7 @@ export default async function handler(req, res) {
     const entryCandidates = [];
     for (const sym of Object.keys(nextState)) {
       const state = nextState[sym];
-      if (
-        state.entryReady &&
-        state.tradeCandidate === true &&
-        state.tradeDeskStatus === "OPEN" &&
-        !openMap.has(sym)
-      ) {
+      if (state.entryReady && state.tradeCandidate === true && state.tradeDeskStatus === "OPEN" && !openMap.has(sym)) {
         const coin = universeMap.get(sym);
         if (!coin || !coin.tradePlan) continue;
         const cdKey = cooldownKey(mode, sym);
@@ -1467,11 +1446,6 @@ export default async function handler(req, res) {
       const { sym, coin, state } = candidate;
       const id = uid("main");
 
-      const positionSize = getAdaptivePositionSize({
-        baseSize: BASE_POSITION_SIZE_USD,
-        performance,
-      });
-
       const newPos = {
         id,
         symbol: sym,
@@ -1480,7 +1454,7 @@ export default async function handler(req, res) {
         entryAt: now,
         entryPrice: coin.tradePlan.entry,
         lastPrice: coin.price,
-        sizeUsd: positionSize,
+        sizeUsd: BASE_POSITION_SIZE_USD,
         pnlPct: 0,
         pnlUsd: 0,
         tp: coin.tradePlan.tp,
@@ -1578,11 +1552,9 @@ export default async function handler(req, res) {
       .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
       .slice(0, 20);
 
-    const positionSize = getAdaptivePositionSize({ baseSize: BASE_POSITION_SIZE_USD, performance });
-
     const adaptiveMeta = {
       performance,
-      positionSizeUsd: positionSize,
+      positionSizeUsd: BASE_POSITION_SIZE_USD,
       adaptiveThresholds: adaptive,
       thresholdsCurrent: THRESHOLDS.main,
     };
