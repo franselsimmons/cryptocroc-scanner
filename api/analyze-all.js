@@ -14,8 +14,8 @@ import { THRESHOLDS } from "../lib/_thresholds.js";
 
 export const config = RUNTIME_CONFIG;
 
-const PERF_STALE_MS = 6 * 60 * 60 * 1000; // 6 uur
-const PERF_LOCK_TTL_SEC = 60; // voorkomt stampede
+const PERF_STALE_MS = 6 * 60 * 60 * 1000; // 6h
+const PERF_LOCK_TTL_SEC = 60;
 
 function n(x, d = 0) {
   const v = Number(x);
@@ -30,7 +30,6 @@ function avg(arr) {
 }
 
 function flattenLatest(latest) {
-  // jouw scanners zetten funnel.{radar,buildup,almost,elite_*} etc.
   const f = latest?.funnel || {};
   return [
     ...safeArr(f.radar),
@@ -53,20 +52,19 @@ function analyzeCoin(coin) {
   const marketScore = n(coin?.marketScore, 0);
 
   if (timingScore < THRESHOLDS.timing.current) {
-    bottlenecks.push({ key: "timing", label: "Timing", hits: 1, severity: (THRESHOLDS.timing.current - timingScore) / 10 });
+    bottlenecks.push({ key: "timing", label: "Timing", severity: (THRESHOLDS.timing.current - timingScore) / 10 });
   }
   if (qualityScore < THRESHOLDS.quality.current) {
-    bottlenecks.push({ key: "quality", label: "Quality", hits: 1, severity: (THRESHOLDS.quality.current - qualityScore) / 10 });
+    bottlenecks.push({ key: "quality", label: "Quality", severity: (THRESHOLDS.quality.current - qualityScore) / 10 });
   }
   if (marketScore < THRESHOLDS.market.current) {
-    bottlenecks.push({ key: "market", label: "Market", hits: 1, severity: (THRESHOLDS.market.current - marketScore) / 10 });
+    bottlenecks.push({ key: "market", label: "Market", severity: (THRESHOLDS.market.current - marketScore) / 10 });
   }
   if (liquidityScore < 60) {
-    bottlenecks.push({ key: "liquidity", label: "Liquidity", hits: 1, severity: (60 - liquidityScore) / 10 });
+    bottlenecks.push({ key: "liquidity", label: "Liquidity", severity: (60 - liquidityScore) / 10 });
   }
 
-  const score = avg([timingScore, liquidityScore, qualityScore, marketScore]) / 10;
-  return { score, bottlenecks };
+  return { bottlenecks };
 }
 
 function summarize(coins, name) {
@@ -90,18 +88,22 @@ function summarize(coins, name) {
     }))
     .sort((a, b) => b.expectedGainPct - a.expectedGainPct);
 
-  return {
-    name,
-    totalCoins: safeArr(coins).length,
-    topFix: table[0] || null,
-    table,
-  };
+  return { name, totalCoins: safeArr(coins).length, topFix: table[0] || null, table };
 }
 
 function computePerformance(closedTrades) {
   const tradesArr = Array.isArray(closedTrades) ? closedTrades : [];
+
   if (!tradesArr.length) {
-    return { trades: 0, wins: 0, losses: 0, winRate: 50, avgRR: 0, drawdown: 0, updatedAt: Date.now() };
+    return {
+      trades: 0,
+      wins: 0,
+      losses: 0,
+      winRate: 50,
+      avgRR: 0,
+      drawdown: 0,
+      updatedAt: Date.now(),
+    };
   }
 
   let wins = 0;
@@ -141,12 +143,12 @@ function computePerformance(closedTrades) {
 }
 
 async function maybeUpdatePerformanceOnce() {
-  // eenvoudige stampede guard
   const lockKey = "analyzeAll:perf:updateLock";
   const got = await kv.set(lockKey, { ts: Date.now() }, { nx: true, ex: PERF_LOCK_TTL_SEC });
   if (!got) return;
 
   const modes = ["bull", "bear"];
+
   for (const mode of modes) {
     const mainKey = `main:performance:${mode}`;
     const moonKey = `moon:performance:${mode}`;
@@ -158,13 +160,11 @@ async function maybeUpdatePerformanceOnce() {
 
     if (mainStale) {
       const mainPositions = (await kv.get(keyMainPositions(mode))) || { open: [], closed: [] };
-      const stats = computePerformance(mainPositions.closed);
-      await kv.set(mainKey, stats, { ex: 60 * 60 * 24 * 7 });
+      await kv.set(mainKey, computePerformance(mainPositions.closed), { ex: 60 * 60 * 24 * 7 });
     }
     if (moonStale) {
       const moonPositions = (await kv.get(keyMoonPositions(mode))) || { open: [], closed: [] };
-      const stats = computePerformance(moonPositions.closed);
-      await kv.set(moonKey, stats, { ex: 60 * 60 * 24 * 7 });
+      await kv.set(moonKey, computePerformance(moonPositions.closed), { ex: 60 * 60 * 24 * 7 });
     }
   }
 }
@@ -173,16 +173,12 @@ export default async function handler(req, res) {
   try {
     if (!requireSecret(req, res)) return;
 
-    // no cache → altijd “live”
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
     res.setHeader("Pragma", "no-cache");
     res.setHeader("Expires", "0");
     res.setHeader("Surrogate-Control", "no-store");
 
-    // auto-update performance indien stale/missing
     await maybeUpdatePerformanceOnce();
-
-    const modes = ["bull", "bear"];
 
     const [mainBull, mainBear, moonBull, moonBear] = await Promise.all([
       kv.get(keyMainLatest("bull")),
