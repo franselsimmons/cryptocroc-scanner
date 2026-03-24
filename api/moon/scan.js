@@ -660,7 +660,7 @@ function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
 }
 
 // ======================================================
-// Universe bouwen (scanner)
+// Universe bouwen (scanner) – aangepast: geeft nu ook adaptive waarden terug
 // ======================================================
 async function buildUniverse(mode, whaleFlow, btc, performance) {
   const regime = computeMarketRegime({ btc, whaleFlow, mode });
@@ -1057,7 +1057,17 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
     });
     await sleep(10);
   }
-  return { regime, coins: out };
+  return {
+    regime,
+    coins: out,
+    adaptive: {
+      adaptiveTiming,
+      adaptiveEntryQuality,
+      adaptiveBreakoutPressure,
+      adaptiveEliteOpen,
+      adaptiveAlmostOpen,
+    },
+  };
 }
 
 // ======================================================
@@ -1147,6 +1157,9 @@ export default async function handler(req, res) {
   let lockAcquired = false;
   try {
     if (!requireSecret(req, res)) return;
+    // No-cache header
+    res.setHeader("Cache-Control", "no-store");
+
     mode = String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
     const lock = await acquireScanLock(mode);
     if (!lock.ok) {
@@ -1181,6 +1194,7 @@ export default async function handler(req, res) {
     const built = await buildUniverse(mode, whaleFlow, btc, performance);
     const universe = built.coins;
     const regime = built.regime;
+    const adaptive = built.adaptive;
     const prevPositions = (await kv.get(keyMoonPositions(mode))) || { open: [], closed: [] };
     const positions = {
       open: Array.isArray(prevPositions?.open) ? [...prevPositions.open] : [],
@@ -1497,7 +1511,7 @@ export default async function handler(req, res) {
     await kv.set(keyMoonState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
     await kv.set(keyMoonPositions(mode), positions, { ex: 60 * 60 * 24 * 7 });
     // ------------------------------------------------------------
-    // 5) Response-funnel
+    // 5) Response-funnel met meta
     // ------------------------------------------------------------
     const responseFunnel = { ...funnel, hold: [] };
     const premiumCandidates = universe
@@ -1516,6 +1530,15 @@ export default async function handler(req, res) {
       .filter((c) => c.superScannerCoin !== true)
       .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
       .slice(0, 20);
+
+    const positionSize = getAdaptivePositionSize({ baseSize: BASE_POSITION_SIZE_USD, performance });
+
+    const adaptiveMeta = {
+      performance,
+      positionSizeUsd: positionSize,
+      adaptiveThresholds: adaptive,
+    };
+
     const latest = {
       ok: true,
       mode,
@@ -1548,6 +1571,7 @@ export default async function handler(req, res) {
         open: positions.open.length,
         closed: positions.closed.length,
       },
+      meta: adaptiveMeta,
       ts: now,
       scannedAt: now,
     };
