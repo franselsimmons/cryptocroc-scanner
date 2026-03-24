@@ -24,22 +24,17 @@ function n(x, d = 0) {
 function safeArr(x) {
   return Array.isArray(x) ? x : [];
 }
-function avg(arr) {
-  const vals = safeArr(arr).map((x) => n(x, NaN)).filter(Number.isFinite);
-  return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
-}
 
 function flattenLatest(latest) {
   const f = latest?.funnel || {};
+  // match exact funnel keys used in your scanners
   return [
     ...safeArr(f.radar),
     ...safeArr(f.buildup),
     ...safeArr(f.almost),
     ...safeArr(f.elite_ignition),
     ...safeArr(f.elite_expansion),
-    ...safeArr(f.elite_cascade),
     ...safeArr(f.hold),
-    ...safeArr(f.entry),
   ];
 }
 
@@ -52,16 +47,33 @@ function analyzeCoin(coin) {
   const marketScore = n(coin?.marketScore, 0);
 
   if (timingScore < THRESHOLDS.timing.current) {
-    bottlenecks.push({ key: "timing", label: "Timing", severity: (THRESHOLDS.timing.current - timingScore) / 10 });
+    bottlenecks.push({
+      key: "timing",
+      label: "Timing",
+      severity: (THRESHOLDS.timing.current - timingScore) / 10,
+    });
   }
   if (qualityScore < THRESHOLDS.quality.current) {
-    bottlenecks.push({ key: "quality", label: "Quality", severity: (THRESHOLDS.quality.current - qualityScore) / 10 });
+    bottlenecks.push({
+      key: "quality",
+      label: "Quality",
+      severity: (THRESHOLDS.quality.current - qualityScore) / 10,
+    });
   }
   if (marketScore < THRESHOLDS.market.current) {
-    bottlenecks.push({ key: "market", label: "Market", severity: (THRESHOLDS.market.current - marketScore) / 10 });
+    bottlenecks.push({
+      key: "market",
+      label: "Market",
+      severity: (THRESHOLDS.market.current - marketScore) / 10,
+    });
   }
+  // liquidity: keep as generic sanity line
   if (liquidityScore < 60) {
-    bottlenecks.push({ key: "liquidity", label: "Liquidity", severity: (60 - liquidityScore) / 10 });
+    bottlenecks.push({
+      key: "liquidity",
+      label: "Liquidity",
+      severity: (60 - liquidityScore) / 10,
+    });
   }
 
   return { bottlenecks };
@@ -155,8 +167,8 @@ async function maybeUpdatePerformanceOnce() {
 
     const [mainPerf, moonPerf] = await Promise.all([kv.get(mainKey), kv.get(moonKey)]);
 
-    const mainStale = !mainPerf || (Date.now() - n(mainPerf.updatedAt, 0) > PERF_STALE_MS);
-    const moonStale = !moonPerf || (Date.now() - n(moonPerf.updatedAt, 0) > PERF_STALE_MS);
+    const mainStale = !mainPerf || Date.now() - n(mainPerf.updatedAt, 0) > PERF_STALE_MS;
+    const moonStale = !moonPerf || Date.now() - n(moonPerf.updatedAt, 0) > PERF_STALE_MS;
 
     if (mainStale) {
       const mainPositions = (await kv.get(keyMainPositions(mode))) || { open: [], closed: [] };
@@ -167,6 +179,20 @@ async function maybeUpdatePerformanceOnce() {
       await kv.set(moonKey, computePerformance(moonPositions.closed), { ex: 60 * 60 * 24 * 7 });
     }
   }
+}
+
+function pickAdaptiveMeta(latest) {
+  // Optional: if you add latest.meta.adaptiveThresholds in scan.js,
+  // analyze-all can expose it for UI visibility.
+  const m = latest?.meta || {};
+  return {
+    regime: latest?.regime || null,
+    mode: latest?.mode || null,
+    scannedAt: latest?.scannedAt || latest?.ts || null,
+    performance: m.performance || null,
+    adaptiveThresholds: m.adaptiveThresholds || null,
+    positionSizeUsd: m.positionSizeUsd || null,
+  };
 }
 
 export default async function handler(req, res) {
@@ -187,27 +213,55 @@ export default async function handler(req, res) {
       kv.get(keyMoonLatest("bear")),
     ]);
 
+    const [
+      perfMainBull,
+      perfMainBear,
+      perfMoonBull,
+      perfMoonBear,
+    ] = await Promise.all([
+      kv.get("main:performance:bull"),
+      kv.get("main:performance:bear"),
+      kv.get("moon:performance:bull"),
+      kv.get("moon:performance:bear"),
+    ]);
+
     const payload = {
       ok: true,
       thresholds: THRESHOLDS,
+
       main: {
-        bull: summarize(flattenLatest(mainBull), "Main Bull"),
-        bear: summarize(flattenLatest(mainBear), "Main Bear"),
+        bull: {
+          ...summarize(flattenLatest(mainBull), "Main Bull"),
+          meta: pickAdaptiveMeta(mainBull),
+        },
+        bear: {
+          ...summarize(flattenLatest(mainBear), "Main Bear"),
+          meta: pickAdaptiveMeta(mainBear),
+        },
       },
+
       moon: {
-        bull: summarize(flattenLatest(moonBull), "Moon Bull"),
-        bear: summarize(flattenLatest(moonBear), "Moon Bear"),
+        bull: {
+          ...summarize(flattenLatest(moonBull), "Moon Bull"),
+          meta: pickAdaptiveMeta(moonBull),
+        },
+        bear: {
+          ...summarize(flattenLatest(moonBear), "Moon Bear"),
+          meta: pickAdaptiveMeta(moonBear),
+        },
       },
+
       performance: {
         main: {
-          bull: (await kv.get("main:performance:bull")) || { winRate: 50, drawdown: 0 },
-          bear: (await kv.get("main:performance:bear")) || { winRate: 50, drawdown: 0 },
+          bull: perfMainBull || { winRate: 50, drawdown: 0, updatedAt: 0 },
+          bear: perfMainBear || { winRate: 50, drawdown: 0, updatedAt: 0 },
         },
         moon: {
-          bull: (await kv.get("moon:performance:bull")) || { winRate: 50, drawdown: 0 },
-          bear: (await kv.get("moon:performance:bear")) || { winRate: 50, drawdown: 0 },
+          bull: perfMoonBull || { winRate: 50, drawdown: 0, updatedAt: 0 },
+          bear: perfMoonBear || { winRate: 50, drawdown: 0, updatedAt: 0 },
         },
       },
+
       updatedAt: Date.now(),
     };
 
