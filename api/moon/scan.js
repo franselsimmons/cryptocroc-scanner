@@ -133,6 +133,83 @@ async function getPerformance(mode) {
 }
 
 // ======================================================
+// Performance berekening (zelfde als updatePerformance)
+// ======================================================
+function computePerformance(closedTrades) {
+  const tradesArr = Array.isArray(closedTrades) ? closedTrades : [];
+
+  if (!tradesArr.length) {
+    return {
+      trades: 0,
+      wins: 0,
+      losses: 0,
+      winRate: 50,
+      avgRR: 0,
+      drawdown: 0,
+      updatedAt: Date.now(),
+    };
+  }
+
+  let wins = 0;
+  let totalRR = 0;
+
+  let equity = 1000;
+  let peakEquity = equity;
+  let maxDrawdownPct = 0;
+
+  for (const t of tradesArr) {
+    const pnlPct = n(t?.pnlPct, 0);
+    const rr = n(t?.rr, 0);
+
+    if (pnlPct > 0) wins += 1;
+    totalRR += rr;
+
+    equity = equity * (1 + pnlPct / 100);
+    peakEquity = Math.max(peakEquity, equity);
+
+    const ddPct = peakEquity > 0 ? ((peakEquity - equity) / peakEquity) * 100 : 0;
+    maxDrawdownPct = Math.max(maxDrawdownPct, ddPct);
+  }
+
+  const trades = tradesArr.length;
+  const winRate = trades ? (wins / trades) * 100 : 50;
+  const avgRR = trades ? totalRR / trades : 0;
+
+  return {
+    trades,
+    wins,
+    losses: trades - wins,
+    winRate: Number(winRate.toFixed(1)),
+    avgRR: Number(avgRR.toFixed(2)),
+    drawdown: Number(maxDrawdownPct.toFixed(1)),
+    updatedAt: Date.now(),
+  };
+}
+
+// ======================================================
+// Force performance refresh als ouder dan 6h
+// ======================================================
+async function ensureFreshPerformance(prefix, mode) {
+  const key = `${prefix}:performance:${mode}`;
+  const perf = await kv.get(key);
+  const now = Date.now();
+  const MAX_AGE = 6 * 60 * 60 * 1000;
+
+  if (!perf || now - (perf.updatedAt || 0) > MAX_AGE) {
+    const positionsKey =
+      prefix === "moon" ? keyMoonPositions(mode) : keyMainPositions(mode);
+    const positions = (await kv.get(positionsKey)) || { open: [], closed: [] };
+    const updated = {
+      ...computePerformance(positions.closed),
+      updatedAt: now,
+    };
+    await kv.set(key, updated, { ex: 60 * 60 * 24 * 7 });
+    return updated;
+  }
+  return perf;
+}
+
+// ======================================================
 // BTC fallback helpers
 // ======================================================
 function isUsableBtc(btc) {
@@ -1190,7 +1267,7 @@ export default async function handler(req, res) {
     const now = Date.now();
     const whaleFlow = await fetchExchangeFlows();
     const btc = await resolveBtcForMode(mode);
-    const performance = await getPerformance(mode);
+    const performance = await ensureFreshPerformance("moon", mode);
     const built = await buildUniverse(mode, whaleFlow, btc, performance);
     const universe = built.coins;
     const regime = built.regime;
@@ -1537,6 +1614,7 @@ export default async function handler(req, res) {
       performance,
       positionSizeUsd: positionSize,
       adaptiveThresholds: adaptive,
+      thresholdsCurrent: THRESHOLDS.moon,
     };
 
     const latest = {
