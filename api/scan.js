@@ -643,7 +643,7 @@ function decideMainStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
 }
 
 // ======================================================
-// Universe bouwen (scanner) – aangepast: geeft nu ook adaptive waarden terug
+// Universe bouwen (scanner) – geeft nu ook adaptive waarden terug
 // ======================================================
 async function buildUniverse(mode, whaleFlow, btc, performance) {
   const regime = computeMarketRegime({ btc, whaleFlow, mode });
