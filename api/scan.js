@@ -1,5 +1,5 @@
 // api/main/scan.js – volledige main scanner met:
-// ✅ Bitget fallback
+// ✅ Bitget fallback (safe)
 // ✅ HEADWIND case‑insensitive
 // ✅ Adaptive thresholds (timing/quality/market) voor tradeCandidate & entryReady
 // ✅ Originele watch/deskstatus logica behouden
@@ -91,7 +91,7 @@ async function safeSendSignal(payload) {
 }
 
 // ======================================================
-// Constantes (ongewijzigd)
+// Constantes (main)
 // ======================================================
 const COOLDOWN_SL_SEC = 4 * 60 * 60;
 const COOLDOWN_TP_SEC = 90 * 60;
@@ -375,7 +375,7 @@ function computeObScore(ob) {
 }
 
 // ======================================================
-// tradePlan (ongewijzigd)
+// tradePlan (main)
 // ======================================================
 function buildTradePlan({ price, mode, confidence, range24, depthOk, tier, regime, persistenceScore, performance }) {
   const risk = computeMoonRisk({
@@ -459,7 +459,7 @@ function makePortfolio(mode, positions) {
 }
 
 // ======================================================
-// hasEliteFollowThrough (ongewijzigd)
+// hasEliteFollowThrough (main)
 // ======================================================
 function hasEliteFollowThrough(prev, currentStage) {
   const curr = up(currentStage);
@@ -717,7 +717,7 @@ function decideMainStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
 }
 
 // ======================================================
-// Universe bouwen (scanner) – met Bitget fallback, HEADWIND case-insensitive, adaptive thresholds
+// Universe bouwen – met veilige Bitget fallback
 // ======================================================
 async function buildUniverse(mode, whaleFlow, btc, performance) {
   const regime = computeMarketRegime({ btc, whaleFlow, mode });
@@ -727,11 +727,25 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
   const bitgetSymbols = await getBitgetSpotUsdtSymbols();
   const step1 = rawCoins.filter((c) => !isBlockedMoonAsset(c));
 
-  // ✅ Bitget fallback
-  const step2 =
-    bitgetSymbols && bitgetSymbols.size > 0
-      ? step1.filter((c) => bitgetSymbols.has(up(c.symbol)))
-      : step1;
+  // ✅ Veilige Bitget fallback: alleen filteren als er genoeg overblijft
+  let step2 = step1;
+  if (bitgetSymbols && bitgetSymbols.size > 20) {
+    const filtered = step1.filter((c) => bitgetSymbols.has(up(c.symbol)));
+    if (filtered.length > 10) {
+      step2 = filtered;
+      console.log(`🔍 Bitget filter applied: ${step1.length} -> ${filtered.length}`);
+    } else {
+      console.warn("⚠️ Bitget filter skipped: too few matches", {
+        bitgetSymbols: bitgetSymbols.size,
+        before: step1.length,
+        after: filtered.length,
+      });
+    }
+  } else {
+    console.warn("⚠️ Bitget symbols missing/too small, skipping filter", {
+      bitgetSymbols: bitgetSymbols?.size || 0,
+    });
+  }
 
   console.log("🔍 MAIN V6 DEBUG", {
     regime,
@@ -740,7 +754,7 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
     afterBlocked: step1.length,
     bitgetSymbols: bitgetSymbols?.size || 0,
     afterBitget: step2.length,
-    bitgetFilterApplied: !!(bitgetSymbols && bitgetSymbols.size > 0),
+    bitgetFilterApplied: step2 !== step1,
   });
 
   const filtered = step2.slice(0, 120);
@@ -869,7 +883,7 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
 
-    // ✅ Adaptive thresholds in tradeCandidate
+    // Adaptive thresholds in tradeCandidate
     let tradeCandidate =
       perfectCandidateScore >= mainTh.perfectCandidate &&
       liquidityScore >= mainTh.liquidityScore &&
@@ -882,7 +896,7 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
 
-    // ✅ HEADWIND case‑insensitive
+    // HEADWIND case‑insensitive
     const reg = String(regime || "").toUpperCase();
     if (reg === "HEADWIND" && marketScore < adaptive.market + 4) {
       tradeCandidate = false;
@@ -890,9 +904,7 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
 
     const scannerOnly = !superScannerCoin;
 
-    // ======================================================
-    // Watch / deskstatus logica – origineel (niet versimpeld)
-    // ======================================================
+    // Watch / deskstatus logica – origineel
     const isEliteStageForDesk =
       stage === "ELITE_IGNITION" || stage === "ELITE_EXPANSION" || stage === "ELITE_CASCADE";
 
@@ -928,9 +940,7 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
       tradeDeskStatus = "WATCH";
     }
 
-    // ======================================================
-    // Execution decision – originele logica (met score)
-    // ======================================================
+    // Execution decision – origineel
     const coinForDecision = {
       ...coin,
       stage,
@@ -1156,7 +1166,7 @@ function isThesisStillValid(coin, prevState, mode) {
 }
 
 // ======================================================
-// Handler
+// Handler (alleen main)
 // ======================================================
 export default async function handler(req, res) {
   let mode = "bull";
@@ -1308,7 +1318,7 @@ export default async function handler(req, res) {
       const thesisInfo = calculateThesisDamage(coin, prev, mode);
       const tradePlan = coin.tradePlan;
 
-      // ✅ entryReady met adaptive thresholds
+      // entryReady met adaptive thresholds
       let entryReady = false;
       if (!hasOpenPosition) {
         const er = THRESHOLDS.main.entryReady;
