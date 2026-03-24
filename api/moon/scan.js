@@ -1,9 +1,15 @@
 // api/moon/scan.js – volledige moon scanner met:
 // ✅ Bitget fallback (safe)
-// ✅ HEADWIND case‑insensitive
+// ✅ HEADWIND case-insensitive
 // ✅ Adaptive thresholds (timing/quality/market) voor tradeCandidate & entryReady
-// ✅ Volledige state‑machine, signals, entry‑logica (zoals origineel)
+// ✅ Volledige state-machine, signals, entry-logica (zoals origineel)
 // ✅ decideMoonStageV6 ingesloten
+//
+// FIXES:
+// - calculateThesisDamage + isThesisStillValid toegevoegd (werd gebruikt maar ontbrak)
+// - buildUniverse maar 1x (geen duplicates)
+// - unused imports verwijderd (calcPnlPct, hitStopOrTp)
+// - unused constants (cooldowns/timeout/etc) behouden maar niet verplicht gebruikt (compile ok)
 
 import { kv } from "@vercel/kv";
 
@@ -20,8 +26,6 @@ import {
   getTierForMcap,
   depthFloorUsd,
   computeMoonRisk,
-  calcPnlPct,
-  hitStopOrTp,
   isBlockedMoonAsset,
   MOON_V2,
   computeVelocity,
@@ -47,10 +51,7 @@ import {
 import { pushEvent, uid } from "../../lib/_analytics.js";
 import { sendSignal } from "../../lib/discordRouter.js";
 
-import {
-  buildCoinProfile,
-  buildMoonExecutionDecision,
-} from "../../lib/_trade_engine.js";
+import { buildCoinProfile, buildMoonExecutionDecision } from "../../lib/_trade_engine.js";
 
 import { THRESHOLDS, buildAdaptiveThresholds } from "../../lib/_thresholds.js";
 import { getAdaptivePositionSize } from "../../lib/_adaptive.js";
@@ -464,6 +465,49 @@ function makePortfolio(mode, positions) {
 }
 
 // ======================================================
+// Thesis damage helpers (FIX: ontbrak in jouw moon file)
+// ======================================================
+function calculateThesisDamage(coin, prevState, mode) {
+  let damage = 0;
+  const reasons = {};
+
+  const obScore = n(coin?.ob?.score, 0);
+  if (mode === "bull" && obScore < -0.02) {
+    damage += 2;
+    reasons.obContra = true;
+  }
+  if (mode === "bear" && obScore > 0.02) {
+    damage += 2;
+    reasons.obContra = true;
+  }
+
+  const v1 = n(coin?.volAcc?.short, 1);
+  const v2 = n(coin?.volAcc?.medium, 1);
+  if (v1 < 1.01 && v2 < 1.04) {
+    damage += 1;
+    reasons.volDead = true;
+  }
+
+  if (!coin?.breakout?.ready) {
+    damage += 1;
+    reasons.breakoutLost = true;
+  }
+
+  const ps = n(coin?.persistenceScore, 0);
+  const prevPs = n(prevState?.persistenceScore, 0);
+  if (ps < prevPs - 15) {
+    damage += 2;
+    reasons.persistDrop = true;
+  }
+
+  return { damage, reasons };
+}
+function isThesisStillValid(coin, prevState, mode) {
+  const { damage } = calculateThesisDamage(coin, prevState, mode);
+  return damage < 3;
+}
+
+// ======================================================
 // Moon stage decision (origineel)
 // ======================================================
 function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, whaleFlow, regime }) {
@@ -511,8 +555,7 @@ function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
     };
   }
 
-  const moveScore =
-    mode === "bull" ? computeBullMoveScore(coin, obx) : computeBearMoveScore(coin, obx);
+  const moveScore = mode === "bull" ? computeBullMoveScore(coin, obx) : computeBearMoveScore(coin, obx);
 
   const entryQuality = computeEliteQuality({
     moveScore,
@@ -531,13 +574,7 @@ function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
       ? n(btc?.chg24, 0) >= 0.8 && n(btc?.range24, 0) >= 2.8
       : n(btc?.chg24, 0) <= -0.8 && n(btc?.range24, 0) >= 2.8;
 
-  if (
-    volAcc.short < 1.01 &&
-    volAcc.medium < 1.06 &&
-    moveScore < 70 &&
-    !breakout.ready &&
-    persistenceScore < 56
-  ) {
+  if (volAcc.short < 1.01 && volAcc.medium < 1.06 && moveScore < 70 && !breakout.ready && persistenceScore < 56) {
     return {
       stage: "ALMOST",
       stageWhy: "volume_not_accelerating",
@@ -679,15 +716,15 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
   // ✅ Veilige Bitget fallback: alleen filteren als er genoeg overblijft
   let step2 = step1;
   if (bitgetSymbols && bitgetSymbols.size > 20) {
-    const filtered = step1.filter((c) => bitgetSymbols.has(up(c.symbol)));
-    if (filtered.length > 10) {
-      step2 = filtered;
-      console.log(`🔍 Bitget filter applied: ${step1.length} -> ${filtered.length}`);
+    const filtered2 = step1.filter((c) => bitgetSymbols.has(up(c.symbol)));
+    if (filtered2.length > 10) {
+      step2 = filtered2;
+      console.log(`🔍 Bitget filter applied: ${step1.length} -> ${filtered2.length}`);
     } else {
       console.warn("⚠️ Bitget filter skipped: too few matches", {
         bitgetSymbols: bitgetSymbols.size,
         before: step1.length,
-        after: filtered.length,
+        after: filtered2.length,
       });
     }
   } else {
@@ -757,8 +794,6 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
     const stage = stageDecision.stage;
     const stageWhy = stageDecision.stageWhy;
     const eliteType = stageDecision.eliteType;
-    const velocity = stageDecision.velocity;
-    const compression = stageDecision.compression;
     const breakout = stageDecision.breakout;
     const moveScore = stageDecision.moveScore;
     const persistenceScore = stageDecision.persistenceScore;
@@ -768,8 +803,8 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
       mode,
       coin: { ...coin, ob: obx },
       moveScore,
-      velocity,
-      compression,
+      velocity: stageDecision.velocity,
+      compression: stageDecision.compression,
       persistenceScore,
     });
 
@@ -790,8 +825,8 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
       moveScore,
       entryQuality,
       persistenceScore,
-      velocity,
-      compression,
+      velocity: stageDecision.velocity,
+      compression: stageDecision.compression,
       breakout,
     });
     const liquidityScore = computeLiquidityScore({
@@ -823,10 +858,7 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
     const superScannerCoin =
       perfectCandidateScore >= moonTh.superScanner.perfectCandidate &&
       qualityScore >= moonTh.superScanner.qualityScore &&
-      (stage === "ELITE_IGNITION" ||
-        stage === "ELITE_EXPANSION" ||
-        stage === "ELITE_CASCADE" ||
-        stage === "ALMOST");
+      (stage === "ELITE_IGNITION" || stage === "ELITE_EXPANSION" || stage === "ELITE_CASCADE" || stage === "ALMOST");
 
     // Adaptive thresholds in tradeCandidate
     let tradeCandidate =
@@ -836,12 +868,9 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
       timingScore >= adaptive.timing &&
       qualityScore >= adaptive.quality &&
       marketScore >= adaptive.market &&
-      (stage === "ELITE_IGNITION" ||
-        stage === "ELITE_EXPANSION" ||
-        stage === "ELITE_CASCADE" ||
-        stage === "ALMOST");
+      (stage === "ELITE_IGNITION" || stage === "ELITE_EXPANSION" || stage === "ELITE_CASCADE" || stage === "ALMOST");
 
-    // HEADWIND case‑insensitive
+    // HEADWIND case-insensitive
     const reg = String(regime || "").toUpperCase();
     if (reg === "HEADWIND" && marketScore < adaptive.market + 4) {
       tradeCandidate = false;
@@ -893,14 +922,14 @@ async function buildUniverse(mode, whaleFlow, btc, performance) {
         pressure: Number(n(breakout?.pressure, 0).toFixed(2)),
       },
       compression: {
-        isCompressed: compression.isCompressed,
-        flatPct: compression.flatPct,
+        isCompressed: stageDecision.compression.isCompressed,
+        flatPct: stageDecision.compression.flatPct,
       },
       volAcc: {
         short: Number(volAcc.short.toFixed(3)),
         medium: Number(volAcc.medium.toFixed(3)),
       },
-      velocity: Number(velocity.toFixed(3)),
+      velocity: Number(stageDecision.velocity.toFixed(3)),
       entryQuality,
       persistenceScore,
       tradePlan,
@@ -1057,8 +1086,6 @@ export default async function handler(req, res) {
     for (const c of universe) universeMap.set(c.symbol, c);
 
     const openMap = new Map(positions.open.map((p) => [up(p.symbol), p]));
-    let funnel = splitFunnels(universe);
-
     const recentEntryCount = await readRecentEntryCount(mode);
 
     // ------------------------------------------------------------
@@ -1128,11 +1155,7 @@ export default async function handler(req, res) {
 
         if (coin.tradeDeskStatus === "WATCH") {
           watchScans += 1;
-        } else if (
-          prev?.tradeDeskStatus === "WATCH" &&
-          rawStage === "ALMOST" &&
-          n(coin.entryQuality, 0) >= 62
-        ) {
+        } else if (prev?.tradeDeskStatus === "WATCH" && rawStage === "ALMOST" && n(coin.entryQuality, 0) >= 62) {
           watchScans = Math.max(0, (prev?.watchScans || 0) - 1);
         } else {
           watchScans = 0;
@@ -1145,7 +1168,6 @@ export default async function handler(req, res) {
       depthHist = depthHist.slice(-20);
 
       const thesisInfo = calculateThesisDamage(coin, prev, mode);
-      const tradePlan = coin.tradePlan;
 
       // entryReady met adaptive thresholds (moon)
       let entryReady = false;
@@ -1195,7 +1217,7 @@ export default async function handler(req, res) {
         compression: coin.compression,
         breakout: coin.breakout,
         volAcc: coin.volAcc,
-        tradePlan: tradePlan,
+        tradePlan: coin.tradePlan,
         thesisDamage: thesisInfo.damage,
         thesisReasons: thesisInfo.reasons,
         priceHist: coin._state.priceHist,
@@ -1272,12 +1294,7 @@ export default async function handler(req, res) {
     const entryCandidates = [];
     for (const sym of Object.keys(nextState)) {
       const state = nextState[sym];
-      if (
-        state.entryReady &&
-        state.tradeCandidate === true &&
-        state.tradeDeskStatus === "OPEN" &&
-        !openMap.has(sym)
-      ) {
+      if (state.entryReady && state.tradeCandidate === true && state.tradeDeskStatus === "OPEN" && !openMap.has(sym)) {
         const coin = universeMap.get(sym);
         if (!coin || !coin.tradePlan) continue;
         const cdKey = cooldownKey(mode, sym);
