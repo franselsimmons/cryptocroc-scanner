@@ -29,15 +29,21 @@
     </section>
 
     <section class="panel">
-      <div class="panelTitle">OPEN NU</div>
-      <div class="panelHint">Coins die volgens execution-engine direct tradeable zijn.</div>
+      <div class="panelTitle">LIVE TRADES</div>
+      <div class="panelHint">Open, hold en weak-hold posities die de trade engine actief wil laten lopen.</div>
       <div id="tradeReadyList" class="list"></div>
     </section>
 
     <section class="panel">
-      <div class="panelTitle">WATCH / BIJNA KLAAR</div>
-      <div class="panelHint">Sterke setups, maar nog niet blind openen.</div>
+      <div class="panelTitle">WATCHLIST</div>
+      <div class="panelHint">Sterke setups die bijna klaar zijn voor uitvoering.</div>
       <div id="watchList" class="list"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panelTitle">RECENTE CLOSE SIGNALEN</div>
+      <div class="panelHint">Coins die door de execution engine bewust zijn afgewezen of gesloten.</div>
+      <div id="closedList" class="list"></div>
     </section>
   </main>
 
@@ -52,9 +58,16 @@
       </div>
 
       <div class="modalBody">
-        <div class="modalBox">
-          <div class="modalBoxTitle">Trade plan</div>
-          <div class="kv" id="mPlan"></div>
+        <div class="modalGrid">
+          <div class="modalBox">
+            <div class="modalBoxTitle">Trade plan</div>
+            <div class="kv" id="mPlan"></div>
+          </div>
+
+          <div class="modalBox">
+            <div class="modalBoxTitle">Execution state</div>
+            <div class="kv" id="mState"></div>
+          </div>
         </div>
 
         <div class="modalBox">
