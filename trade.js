@@ -1,4 +1,3 @@
-// ==================== trade.js ====================
 const el = (id) => document.getElementById(id);
 
 const SOURCES = [
@@ -28,8 +27,6 @@ function fmtUSD(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
   return n.toFixed(0);
 }
-
-// ===== NIEUWE HELPER VOOR TRADE DESK TIMESTAMP =====
 function getTradeDeskTs(data) {
   return Number(data?.managedAt || data?.ts || data?.scannedAt || 0);
 }
@@ -55,9 +52,16 @@ function scoreTone(score) {
 }
 
 function actionTone(action) {
-  if (action === "OPEN") return "ok";
-  if (action === "WATCH" || action === "HOLD") return "warn";
+  if (action === "OPEN" || action === "HOLD") return "ok";
+  if (action === "WEAK_HOLD") return "soft";
+  if (action === "WATCH") return "warn";
   return "no";
+}
+
+function displayAction(action) {
+  const a = String(action || "").toUpperCase();
+  if (a === "WEAK_HOLD") return "WEAK HOLD";
+  return a || "—";
 }
 
 function normalizeRows(payload, source) {
@@ -75,6 +79,7 @@ function normalizeRows(payload, source) {
       mode: source.mode,
       btc: payload?.btc || null,
       regime: payload?.regime || "—",
+      managedAt: payload?.managedAt || payload?.ts || payload?.scannedAt || 0,
       coin,
     });
   }
@@ -87,21 +92,23 @@ function rowHtml(row) {
   const ex = c.execution || {};
   const plan = c.tradePlan || {};
   const tone = actionTone(ex.action);
+  const meta = ex.meta || {};
 
   return `
     <div class="row" data-key="${row.sourceKey}:${c.symbol}">
       <div class="rowTop">
         <div>
-          <div class="rowSym">${c.symbol} • ${ex.side || "—"} • ${ex.action || "—"}</div>
+          <div class="rowSym">${c.symbol} • ${ex.side || "—"} • ${displayAction(ex.action)}</div>
           <div class="rowTag">
             ${row.sourceLabel} • stage ${c.stage || "—"} • regime ${row.regime || "—"} • ${c.coinProfile?.tradabilityBand || "—"}
           </div>
         </div>
 
         <div class="badges">
-          <div class="badge ${tone}">${ex.action || "—"}</div>
+          <div class="badge ${tone}">${displayAction(ex.action)}</div>
           <div class="badge ${scoreTone(ex.score)}">score ${ex.score || 0}</div>
           <div class="badge">size $${ex.positionSizeUsd || "—"}</div>
+          ${meta.holdState ? `<div class="badge">${meta.holdState}</div>` : ""}
         </div>
       </div>
 
@@ -118,10 +125,12 @@ function rowHtml(row) {
         <span>PS ${c.persistenceScore ?? 0}</span>
         <span>SL $${safe(plan.sl, 6)}</span>
         <span>TP $${safe(plan.tp, 6)}</span>
+        <span>cycles ${meta.cyclesInTrade ?? 0}</span>
+        <span>weak ${meta.weakHoldCount ?? 0}</span>
       </div>
 
-      <div class="rowTag" style="margin-top:8px;">
-        ${ex.reason || "—"}
+      <div class="rowReason">
+        <strong>${ex.reasonCode || "—"}</strong> • ${ex.reason || "—"}
       </div>
     </div>
   `;
@@ -147,9 +156,9 @@ function renderList(id, rows) {
 
 function setKV(container, rows) {
   if (!container) return;
-  container.innerHTML = rows.map(([k, v]) => {
-    return `<div class="kvRow"><div class="kvKey">${k}</div><div class="kvVal">${v}</div></div>`;
-  }).join("");
+  container.innerHTML = rows
+    .map(([k, v]) => `<div class="kvRow"><div class="kvKey">${k}</div><div class="kvVal">${v}</div></div>`)
+    .join("");
 }
 
 function renderChecks(container, checks) {
@@ -168,14 +177,15 @@ function openModal(row) {
   const c = row.coin;
   const ex = c.execution || {};
   const plan = c.tradePlan || {};
+  const meta = ex.meta || {};
 
-  el("mTitle").textContent = `${c.symbol} • ${row.sourceLabel} • ${ex.action || "—"}`;
+  el("mTitle").textContent = `${c.symbol} • ${row.sourceLabel} • ${displayAction(ex.action)}`;
   el("mSub").textContent =
     `price $${safe(c.price, 6)} • side ${ex.side || "—"} • stage ${c.stage || "—"} • score ${ex.score || 0}`;
 
   setKV(el("mPlan"), [
     ["System", row.sourceLabel],
-    ["Action", ex.action || "—"],
+    ["Action", displayAction(ex.action)],
     ["Side", ex.side || "—"],
     ["Position size", `$${ex.positionSizeUsd || "—"}`],
     ["Entry", `$${safe(plan.entry, 6)}`],
@@ -183,10 +193,20 @@ function openModal(row) {
     ["TP", `$${safe(plan.tp, 6)}`],
     ["RR", safe(plan.rr, 2)],
     ["Reason", ex.reason || "—"],
+    ["Reason code", ex.reasonCode || "—"],
+  ]);
+
+  setKV(el("mState"), [
+    ["Hold state", meta.holdState || "—"],
+    ["Grace active", meta.graceActive ? "ja" : "nee"],
+    ["Cycles in trade", meta.cyclesInTrade ?? 0],
+    ["Weak hold count", meta.weakHoldCount ?? 0],
+    ["Breakout ready", meta.breakoutReady ? "ja" : "nee"],
+    ["Breakout pressure", safe(meta.breakoutPressure, 1)],
   ]);
 
   renderChecks(el("mChecks"), ex.checklist || []);
-  el("mReason").textContent = ex.reason || "—";
+  el("mReason").textContent = `${ex.reasonCode || "—"} • ${ex.reason || "—"}`;
   el("mDebug").textContent = JSON.stringify(row, null, 2);
   el("modal").classList.remove("hidden");
 }
@@ -215,13 +235,12 @@ async function loadAll() {
 
   const rows = [];
   const failed = [];
-  let latestTs = 0; // voor timestamp
+  let latestTs = 0;
 
   for (const item of settled) {
     if (item.status === "fulfilled") {
       const { src, json } = item.value;
       rows.push(...normalizeRows(json, src));
-      // bepaal de meest recente timestamp over alle bronnen
       const ts = getTradeDeskTs(json);
       if (ts > latestTs) latestTs = ts;
     } else {
@@ -231,28 +250,27 @@ async function loadAll() {
 
   LAST_ROWS = rows;
 
-  // ===== AANGEPAST: toon HOLD ook als open trade =====
-  const ready = rows
-    .filter((r) => {
-      const stage = String(r.coin?.stage || "").toUpperCase();
-      return r.coin?.tradeDeskStatus === "OPEN" || stage === "HOLD";
-    })
+  const live = rows
+    .filter((r) => ["OPEN", "HOLD", "WEAK_HOLD"].includes(String(r.coin?.execution?.action || "").toUpperCase()))
     .sort((a, b) => (b.coin?.execution?.score || 0) - (a.coin?.execution?.score || 0));
 
   const watch = rows
-    .filter((r) => {
-      const stage = String(r.coin?.stage || "").toUpperCase();
-      return r.coin?.tradeDeskStatus === "WATCH" && stage !== "HOLD";
-    })
+    .filter((r) => String(r.coin?.execution?.action || "").toUpperCase() === "WATCH")
     .sort((a, b) => (b.coin?.execution?.score || 0) - (a.coin?.execution?.score || 0));
 
-  renderList("tradeReadyList", ready);
+  const closed = rows
+    .filter((r) => ["CLOSE", "IGNORE"].includes(String(r.coin?.execution?.action || "").toUpperCase()))
+    .sort((a, b) => (b.managedAt || 0) - (a.managedAt || 0))
+    .slice(0, 20);
+
+  renderList("tradeReadyList", live);
   renderList("watchList", watch);
+  renderList("closedList", closed);
 
   if (status) {
     const stamp = latestTs ? new Date(latestTs).toLocaleString() : "—";
     status.textContent =
-      `OPEN ${ready.length} • WATCH ${watch.length} • Laatste update: ${stamp}` +
+      `LIVE ${live.length} • WATCH ${watch.length} • CLOSED ${closed.length} • Laatste update: ${stamp}` +
       (failed.length ? ` • fouten: ${failed.join(" | ")}` : "");
   }
 }
