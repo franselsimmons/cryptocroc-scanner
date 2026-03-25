@@ -10,6 +10,7 @@
   --ok:#22c55e;
   --warn:#f59e0b;
   --no:#ef4444;
+  --soft:#8b5cf6;
 }
 
 *{ box-sizing:border-box; }
@@ -112,9 +113,11 @@ body{
   border-radius:14px;
   padding:12px;
   cursor:pointer;
+  transition: border-color .15s ease, transform .15s ease;
 }
 .row:hover{
   border-color: rgba(61,124,255,.6);
+  transform: translateY(-1px);
 }
 
 .rowTop{
@@ -140,6 +143,12 @@ body{
   color:var(--muted);
   font-size:12px;
 }
+.rowReason{
+  margin-top:10px;
+  color:var(--text);
+  font-size:13px;
+  line-height:1.35;
+}
 
 .badges{
   display:flex;
@@ -164,6 +173,10 @@ body{
   border-color:rgba(239,68,68,.45);
   background:rgba(239,68,68,.12);
 }
+.badge.soft{
+  border-color:rgba(139,92,246,.45);
+  background:rgba(139,92,246,.12);
+}
 
 .empty{
   color:var(--muted);
@@ -185,7 +198,7 @@ body{
 .modal.hidden{ display:none; }
 
 .modalCard{
-  width:min(980px,100%);
+  width:min(1080px,100%);
   max-height:90vh;
   overflow:auto;
   background:var(--card);
@@ -221,6 +234,11 @@ body{
   flex-direction:column;
   gap:12px;
 }
+.modalGrid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+  gap:12px;
+}
 .modalBox{
   background:var(--card2);
   border:1px solid var(--line);
@@ -252,6 +270,7 @@ body{
 .kvVal{
   text-align:right;
   font-variant-numeric: tabular-nums;
+  word-break:break-word;
 }
 
 .checkList{
