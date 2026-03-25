@@ -776,18 +776,17 @@ async function buildUniverse(mode, whaleFlow, btc) {
     });
     const superScannerCoin =
       perfectCandidateScore >= 72 &&
-      qualityScore >= 68 &&            // gewijzigd van 66 naar 68
+      qualityScore >= 66 &&
       (stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
     const tradeCandidate =
       perfectCandidateScore >= 72 &&
-      qualityScore >= 68 &&            // gewijzigd van 64 naar 68
-      timingScore >= 67 &&             // gewijzigd van 62 naar 67
-      liquidityScore >= 62 &&          // gewijzigd van 58 naar 62
-      marketScore >= 52 &&             // gewijzigd van 42 naar 52
-      btcAlignmentScore >= 55 &&       // nieuw
+      qualityScore >= 64 &&
+      timingScore >= 62 &&
+      liquidityScore >= 58 &&
+      marketScore >= 42 &&
       (stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
@@ -860,7 +859,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
       stage === "ELITE_EXPANSION" ||
       stage === "ELITE_CASCADE";
 
-    // ========== NIEUWE TRADEDESKSTATUS (ALMOST OPEN) ==========
+    // ========== TRADEDESKSTATUS MET SLIMMERE STICKINESS + ALMOST OPEN ==========
     const nearEntryWatch =
       superScannerCoin === true &&
       (
@@ -869,7 +868,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
           stage === "ALMOST" &&
           entryQuality >= 66 &&
           persistenceScore >= 56 &&
-          (breakout?.ready === true || n(breakout?.pressure, 0) >= 61) &&   // gewijzigd 56 -> 61
+          (breakout?.ready === true || n(breakout?.pressure, 0) >= 56) &&
           n(obx.score, 0) >= 0.008
         )
       );
@@ -879,7 +878,7 @@ async function buildUniverse(mode, whaleFlow, btc) {
       (prev?.watchScans || 0) >= 2 &&
       entryQuality >= 60 &&
       persistenceScore >= 52 &&
-      (breakout?.ready === true || n(breakout?.pressure, 0) >= 57) &&   // gewijzigd 52 -> 57
+      (breakout?.ready === true || n(breakout?.pressure, 0) >= 52) &&
       n(obx.score, 0) >= 0.008;
 
     let tradeDeskStatus = "IGNORE";
@@ -1225,7 +1224,6 @@ export default async function handler(req, res) {
       depthHist = depthHist.slice(-20);
       const thesisInfo = calculateThesisDamage(coin, prev, mode);
       const tradePlan = coin.tradePlan;
-
       // ========== NIEUWE entryReady: alleen luisteren naar tradeDeskStatus === "OPEN" ==========
       let entryReady = false;
       if (!hasOpenPosition) {
@@ -1245,7 +1243,6 @@ export default async function handler(req, res) {
           (coin.marketScore || 0) >= 40;
       }
       // =============================================================================
-
       nextState[sym] = {
         ...prev,
         stage: rawStage,
