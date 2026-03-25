@@ -828,13 +828,17 @@ async function buildUniverse(mode, whaleFlow, btc) {
       systemType: "main",
       coin: coinForDecision,
     });
+    // execution wordt hier aangeroepen MET scannerGate en positionState
     const execution = buildMainExecutionDecision({
       coin: coinForDecision,
       btc,
       regime,
       mode,
       coinProfile,
+      positionState: prev?.positionState || {},     // <-- toegevoegd
+      scannerGate: tradeDeskStatus,                 // <-- toegevoegd
     });
+
     const isEliteStageForDesk =
       stage === "ELITE_IGNITION" ||
       stage === "ELITE_EXPANSION" ||
@@ -885,16 +889,13 @@ async function buildUniverse(mode, whaleFlow, btc) {
     }
     // ============================================================
 
-    if (tradeDeskStatus === "OPEN") {
-      execution.action = "OPEN";
-      execution.ready = true;
-    } else if (tradeDeskStatus === "WATCH") {
-      execution.action = "WATCH";
-      execution.ready = false;
-    } else {
-      execution.action = "IGNORE";
-      execution.ready = false;
-    }
+    // 🚫 OUDE CODE: execution.action overrulen – verwijderd
+    // Nu alleen scannerGate vullen (geen execution.action/ready overschrijven)
+    execution.scannerGate = tradeDeskStatus;
+    execution.scannerReady = tradeDeskStatus === "OPEN";
+    execution.scannerWatch = tradeDeskStatus === "WATCH";
+    execution.scannerIgnore = tradeDeskStatus === "IGNORE";
+
     out.push({
       id: coin.id,
       symbol: sym,
@@ -1279,6 +1280,7 @@ export default async function handler(req, res) {
         name: coin.name,
         image: coin.image,
         watchScans,
+        positionState: coin.execution?.meta?.holdState ? { ...coin.execution.meta } : {}, // bewaar state voor volgende keer
       };
       const isElitePreTrade =
         coin.tradeDeskStatus === "WATCH" &&
