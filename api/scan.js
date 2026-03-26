@@ -1476,6 +1476,23 @@ export default async function handler(req, res) {
       positions: {
         open: positions.open.length,
         closed: positions.closed.length,
+        // ** NIEUW: openItems voor frontend **
+        openItems: positions.open.map((p) => ({
+          id: p.id,
+          symbol: p.symbol,
+          mode: p.mode,
+          status: p.status,
+          entryAt: p.entryAt,
+          entryPrice: p.entryPrice,
+          lastPrice: p.lastPrice,
+          pnlPct: p.pnlPct,
+          pnlUsd: p.pnlUsd,
+          tp: p.tp,
+          sl: p.sl,
+          rr: p.rr,
+          stage: p.stage,
+          eliteType: p.eliteType,
+        })),
       },
       ts: now,
       scannedAt: now,
