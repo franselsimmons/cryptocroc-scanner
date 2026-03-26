@@ -64,13 +64,24 @@ function displayAction(action) {
   return a || "—";
 }
 
+// ========== AANGEPAST: normalizeRows met openSet ==========
 function normalizeRows(payload, source) {
   const all = flattenFunnel(payload?.funnel);
   const unique = new Map();
 
+  const openPositions = Array.isArray(payload?.positions?.openItems)
+    ? payload.positions.openItems
+    : [];
+
+  const openSet = new Set(
+    openPositions.map((p) => String(p?.symbol || "").toUpperCase())
+  );
+
   for (const coin of all) {
     const key = `${source.key}:${coin.symbol}`;
     if (!coin?.execution) continue;
+
+    const symbol = String(coin.symbol || "").toUpperCase();
 
     unique.set(key, {
       sourceKey: source.key,
@@ -80,6 +91,8 @@ function normalizeRows(payload, source) {
       btc: payload?.btc || null,
       regime: payload?.regime || "—",
       managedAt: payload?.managedAt || payload?.ts || payload?.scannedAt || 0,
+      openPositions,
+      isActuallyOpen: openSet.has(symbol),
       coin,
     });
   }
@@ -87,6 +100,7 @@ function normalizeRows(payload, source) {
   return [...unique.values()];
 }
 
+// ========== AANGEPAST: rowHtml toont LIVE badge ==========
 function rowHtml(row) {
   const c = row.coin;
   const ex = c.execution || {};
@@ -105,7 +119,9 @@ function rowHtml(row) {
         </div>
 
         <div class="badges">
-          <div class="badge ${tone}">${displayAction(ex.action)}</div>
+          <div class="badge ${row.isActuallyOpen ? "ok" : tone}">
+            ${row.isActuallyOpen ? "LIVE" : displayAction(ex.action)}
+          </div>
           <div class="badge ${scoreTone(ex.score)}">score ${ex.score || 0}</div>
           <div class="badge">size $${ex.positionSizeUsd || "—"}</div>
           ${meta.holdState ? `<div class="badge">${meta.holdState}</div>` : ""}
@@ -130,7 +146,9 @@ function rowHtml(row) {
       </div>
 
       <div class="rowReason">
-        <strong>${ex.reasonCode || "—"}</strong> • ${ex.reason || "—"}
+        <strong>${row.isActuallyOpen ? "live_position" : (ex.reasonCode || "—")}</strong>
+        •
+        ${row.isActuallyOpen ? "Deze coin staat echt open in de positie-administratie" : (ex.reason || "—")}
       </div>
     </div>
   `;
@@ -173,6 +191,7 @@ function renderChecks(container, checks) {
   }).join("");
 }
 
+// ========== AANGEPAST: modal toont "Actually open" ==========
 function openModal(row) {
   const c = row.coin;
   const ex = c.execution || {};
@@ -197,6 +216,7 @@ function openModal(row) {
   ]);
 
   setKV(el("mState"), [
+    ["Actually open", row.isActuallyOpen ? "ja" : "nee"],
     ["Hold state", meta.holdState || "—"],
     ["Grace active", meta.graceActive ? "ja" : "nee"],
     ["Cycles in trade", meta.cyclesInTrade ?? 0],
@@ -211,6 +231,7 @@ function openModal(row) {
   el("modal").classList.remove("hidden");
 }
 
+// ========== AANGEPAST: loadAll met nieuwe filtering ==========
 async function loadAll() {
   const status = el("statusLine");
   if (status) status.textContent = "Status: laden…";
@@ -250,16 +271,24 @@ async function loadAll() {
 
   LAST_ROWS = rows;
 
+  // LIVE = alleen echte open posities
   const live = rows
-    .filter((r) => ["OPEN", "HOLD", "WEAK_HOLD"].includes(String(r.coin?.execution?.action || "").toUpperCase()))
+    .filter((r) => r.isActuallyOpen === true)
     .sort((a, b) => (b.coin?.execution?.score || 0) - (a.coin?.execution?.score || 0));
 
+  // WATCH = scanner/trade candidates (geen echte open positie, maar actie OPEN of WATCH)
   const watch = rows
-    .filter((r) => String(r.coin?.execution?.action || "").toUpperCase() === "WATCH")
+    .filter((r) => {
+      const action = String(r.coin?.execution?.action || "").toUpperCase();
+      return r.isActuallyOpen !== true && (action === "OPEN" || action === "WATCH");
+    })
     .sort((a, b) => (b.coin?.execution?.score || 0) - (a.coin?.execution?.score || 0));
 
   const closed = rows
-    .filter((r) => ["CLOSE", "IGNORE"].includes(String(r.coin?.execution?.action || "").toUpperCase()))
+    .filter((r) => {
+      const action = String(r.coin?.execution?.action || "").toUpperCase();
+      return r.isActuallyOpen !== true && (action === "CLOSE" || action === "IGNORE");
+    })
     .sort((a, b) => (b.managedAt || 0) - (a.managedAt || 0))
     .slice(0, 20);
 
