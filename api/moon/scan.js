@@ -848,7 +848,16 @@ async function buildUniverse(mode, whaleFlow, btc) {
       coin: coinForDecision,
     });
 
-    // ========== TRADEDESKSTATUS MET SLIMMERE STICKINESS + ALMOST OPEN ==========
+    // ===== NIEUW: positionState opbouwen voor engine =====
+    const prevPositionState = prev?.positionState || {};
+    const positionState = {
+      inPosition: !!prev?.entryActive,
+      cyclesInTrade: n(prevPositionState.cyclesInTrade, 0),
+      minHoldCycles: n(prevPositionState.minHoldCycles, 6),
+      weakHoldCount: n(prevPositionState.weakHoldCount, 0),
+      maxWeakHoldCycles: n(prevPositionState.maxWeakHoldCycles, 3),
+    };
+
     const isEliteStageForDesk =
       stage === "ELITE_IGNITION" ||
       stage === "ELITE_EXPANSION" ||
@@ -879,33 +888,29 @@ async function buildUniverse(mode, whaleFlow, btc) {
 
     if (
       tradeCandidate === true &&
-      (
-        (isEliteStageForDesk && (entryQuality >= 68 || persistenceScore >= 58)) ||
-        (stage === "ALMOST" && stableWatchReady && entryQuality >= 62)
-      )
+      isEliteStageForDesk &&
+      tradePlan != null
     ) {
       tradeDeskStatus = "OPEN";
     } else if (nearEntryWatch) {
       tradeDeskStatus = "WATCH";
     } else if (
       prev?.tradeDeskStatus === "WATCH" &&
-      (prev?.watchScans || 0) >= 3 &&
-      entryQuality >= 58 &&
-      persistenceScore >= 50 &&
-      (breakout?.ready === true || n(breakout?.pressure, 0) >= 50)
+      (prev?.watchScans || 0) >= 2 &&
+      entryQuality >= 56 &&
+      persistenceScore >= 48
     ) {
       tradeDeskStatus = "WATCH";
     }
-    // ============================================================
 
-    // ========== EXECUTION WORDT AANGEROEPEN MET scannerGate EN positionState ==========
+    // ========== EXECUTION WORDT AANGEROEPEN MET positionState en scannerGate ==========
     const execution = buildMoonExecutionDecision({
       coin: coinForDecision,
       btc,
       regime,
       mode,
       coinProfile,
-      positionState: prev?.positionState || {},
+      positionState,
       scannerGate: tradeDeskStatus,
     });
 
@@ -1230,20 +1235,28 @@ export default async function handler(req, res) {
       if (!hasOpenPosition) {
         entryReady =
           coin.tradeDeskStatus === "OPEN" &&
-          coin.tradeCandidate === true &&
           entryLocked === false &&
-          thesisInvalidScans <= 2 &&
-          coin.tradePlan != null &&
-          coin.ob?.valid === true &&
-          coin.ob?.fresh === true &&
-          (coin.breakout?.ready === true || n(coin.breakout?.pressure, 0) >= 52) &&
-          (coin.perfectCandidateScore || 0) >= 66 &&
-          (coin.qualityScore || 0) >= 58 &&
-          (coin.timingScore || 0) >= 60 &&
-          (coin.liquidityScore || 0) >= 54 &&
-          (coin.marketScore || 0) >= 40;
+          coin.tradePlan != null;
       }
       // =============================================================================
+
+      // ===== NIEUW: positionState uit execution halen =====
+      const execMeta = coin.execution?.meta || {};
+      const positionStateForStore = {
+        inPosition: !!prev?.entryActive,
+        cyclesInTrade: !!prev?.entryActive
+          ? n((prev?.positionState?.cyclesInTrade || 0) + 1, 1)
+          : 0,
+        minHoldCycles: n(prev?.positionState?.minHoldCycles, 6),
+        weakHoldCount:
+          execMeta.action === "WEAK_HOLD"
+            ? n(execMeta.weakHoldCount, 1)
+            : execMeta.action === "HOLD"
+              ? 0
+              : n(prev?.positionState?.weakHoldCount, 0),
+        maxWeakHoldCycles: n(prev?.positionState?.maxWeakHoldCycles, 3),
+      };
+
       nextState[sym] = {
         ...prev,
         stage: rawStage,
@@ -1296,7 +1309,7 @@ export default async function handler(req, res) {
         name: coin.name,
         image: coin.image,
         watchScans,
-        positionState: coin.execution?.meta?.holdState ? { ...coin.execution.meta } : {},
+        positionState: positionStateForStore,
       };
       const isElitePreTrade =
         coin.tradeDeskStatus === "WATCH" &&
@@ -1391,6 +1404,13 @@ export default async function handler(req, res) {
         entryLocked: true,
         entryReady: false,
         lastEntryAt: now,
+        positionState: {
+          inPosition: true,
+          cyclesInTrade: 0,
+          minHoldCycles: 6,
+          weakHoldCount: 0,
+          maxWeakHoldCycles: 3,
+        },
       };
       await appendEntryHistory(mode);
       await safePushEvent("trade_opened", {
