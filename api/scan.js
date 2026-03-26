@@ -828,16 +828,16 @@ async function buildUniverse(mode, whaleFlow, btc) {
       systemType: "main",
       coin: coinForDecision,
     });
-    // execution wordt hier aangeroepen MET scannerGate en positionState
-    const execution = buildMainExecutionDecision({
-      coin: coinForDecision,
-      btc,
-      regime,
-      mode,
-      coinProfile,
-      positionState: prev?.positionState || {},     // <-- toegevoegd
-      scannerGate: tradeDeskStatus,                 // <-- toegevoegd
-    });
+
+    // ===== NIEUW: positionState opbouwen voor engine =====
+    const prevPositionState = prev?.positionState || {};
+    const positionState = {
+      inPosition: !!prev?.entryActive,
+      cyclesInTrade: n(prevPositionState.cyclesInTrade, 0),
+      minHoldCycles: n(prevPositionState.minHoldCycles, 5),
+      weakHoldCount: n(prevPositionState.weakHoldCount, 0),
+      maxWeakHoldCycles: n(prevPositionState.maxWeakHoldCycles, 2),
+    };
 
     const isEliteStageForDesk =
       stage === "ELITE_IGNITION" ||
@@ -870,27 +870,34 @@ async function buildUniverse(mode, whaleFlow, btc) {
 
     if (
       tradeCandidate === true &&
-      (
-        (isEliteStageForDesk && execution.score >= 62) ||
-        (stage === "ALMOST" && stableWatchReady && execution.score >= 60)
-      )
+      isEliteStageForDesk &&
+      tradePlan != null
     ) {
       tradeDeskStatus = "OPEN";
     } else if (nearEntryWatch) {
       tradeDeskStatus = "WATCH";
     } else if (
       prev?.tradeDeskStatus === "WATCH" &&
-      (prev?.watchScans || 0) >= 3 &&
-      entryQuality >= 62 &&
-      persistenceScore >= 54 &&
-      (breakout?.ready === true || n(breakout?.pressure, 0) >= 52)
+      (prev?.watchScans || 0) >= 2 &&
+      entryQuality >= 60 &&
+      persistenceScore >= 52
     ) {
       tradeDeskStatus = "WATCH";
     }
     // ============================================================
 
-    // 🚫 OUDE CODE: execution.action overrulen – verwijderd
-    // Nu alleen scannerGate vullen (geen execution.action/ready overschrijven)
+    // ========== EXECUTION WORDT AANGEROEPEN MET positionState en scannerGate ==========
+    const execution = buildMainExecutionDecision({
+      coin: coinForDecision,
+      btc,
+      regime,
+      mode,
+      coinProfile,
+      positionState,
+      scannerGate: tradeDeskStatus,
+    });
+
+    // ========== SCANNER GEEFT ALLEEN DE GATE DOOR – GEEN ACTION OVERSCHRIJVING ==========
     execution.scannerGate = tradeDeskStatus;
     execution.scannerReady = tradeDeskStatus === "OPEN";
     execution.scannerWatch = tradeDeskStatus === "WATCH";
@@ -1212,21 +1219,27 @@ export default async function handler(req, res) {
       if (!hasOpenPosition) {
         entryReady =
           coin.tradeDeskStatus === "OPEN" &&
-          coin.tradeCandidate === true &&
           entryLocked === false &&
-          thesisInvalidScans <= 2 &&
-          coin.tradePlan != null &&
-          coin.ob?.valid === true &&
-          coin.ob?.fresh === true &&
-          (coin.breakout?.ready === true || n(coin.breakout?.pressure, 0) >= 54) &&
-          Math.abs(coin.ob?.score || 0) >= 0.008 &&
-          (coin.perfectCandidateScore || 0) >= 70 &&
-          (coin.qualityScore || 0) >= 62 &&
-          (coin.timingScore || 0) >= 64 &&
-          (coin.liquidityScore || 0) >= 58 &&
-          (coin.marketScore || 0) >= 44;
+          coin.tradePlan != null;
       }
       // =============================================================================
+
+      // ===== NIEUW: positionState uit execution halen =====
+      const execMeta = coin.execution?.meta || {};
+      const positionStateForStore = {
+        inPosition: !!prev?.entryActive,
+        cyclesInTrade: !!prev?.entryActive
+          ? n((prev?.positionState?.cyclesInTrade || 0) + 1, 1)
+          : 0,
+        minHoldCycles: n(prev?.positionState?.minHoldCycles, 5),
+        weakHoldCount:
+          execMeta.action === "WEAK_HOLD"
+            ? n(execMeta.weakHoldCount, 1)
+            : execMeta.action === "HOLD"
+              ? 0
+              : n(prev?.positionState?.weakHoldCount, 0),
+        maxWeakHoldCycles: n(prev?.positionState?.maxWeakHoldCycles, 2),
+      };
 
       nextState[sym] = {
         ...prev,
@@ -1280,7 +1293,7 @@ export default async function handler(req, res) {
         name: coin.name,
         image: coin.image,
         watchScans,
-        positionState: coin.execution?.meta?.holdState ? { ...coin.execution.meta } : {}, // bewaar state voor volgende keer
+        positionState: positionStateForStore,
       };
       const isElitePreTrade =
         coin.tradeDeskStatus === "WATCH" &&
@@ -1375,6 +1388,13 @@ export default async function handler(req, res) {
         entryLocked: true,
         entryReady: false,
         lastEntryAt: now,
+        positionState: {
+          inPosition: true,
+          cyclesInTrade: 0,
+          minHoldCycles: 5,
+          weakHoldCount: 0,
+          maxWeakHoldCycles: 2,
+        },
       };
       await appendEntryHistory(mode);
       await safePushEvent("trade_opened", {
