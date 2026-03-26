@@ -847,19 +847,13 @@ async function buildUniverse(mode, whaleFlow, btc) {
       systemType: "moon",
       coin: coinForDecision,
     });
-    const execution = buildMoonExecutionDecision({
-      coin: coinForDecision,
-      btc,
-      regime,
-      mode,
-      coinProfile,
-    });
+
+    // ========== TRADEDESKSTATUS MET SLIMMERE STICKINESS + ALMOST OPEN ==========
     const isEliteStageForDesk =
       stage === "ELITE_IGNITION" ||
       stage === "ELITE_EXPANSION" ||
       stage === "ELITE_CASCADE";
 
-    // ========== TRADEDESKSTATUS MET SLIMMERE STICKINESS + ALMOST OPEN ==========
     const nearEntryWatch =
       superScannerCoin === true &&
       (
@@ -886,8 +880,8 @@ async function buildUniverse(mode, whaleFlow, btc) {
     if (
       tradeCandidate === true &&
       (
-        (isEliteStageForDesk && execution.score >= 58) ||
-        (stage === "ALMOST" && stableWatchReady && execution.score >= 56)
+        (isEliteStageForDesk && (entryQuality >= 68 || persistenceScore >= 58)) ||
+        (stage === "ALMOST" && stableWatchReady && entryQuality >= 62)
       )
     ) {
       tradeDeskStatus = "OPEN";
@@ -904,16 +898,23 @@ async function buildUniverse(mode, whaleFlow, btc) {
     }
     // ============================================================
 
-    if (tradeDeskStatus === "OPEN") {
-      execution.action = "OPEN";
-      execution.ready = true;
-    } else if (tradeDeskStatus === "WATCH") {
-      execution.action = "WATCH";
-      execution.ready = false;
-    } else {
-      execution.action = "IGNORE";
-      execution.ready = false;
-    }
+    // ========== EXECUTION WORDT AANGEROEPEN MET scannerGate EN positionState ==========
+    const execution = buildMoonExecutionDecision({
+      coin: coinForDecision,
+      btc,
+      regime,
+      mode,
+      coinProfile,
+      positionState: prev?.positionState || {},
+      scannerGate: tradeDeskStatus,
+    });
+
+    // ========== SCANNER GEEFT ALLEEN DE GATE DOOR – GEEN ACTION OVERSCHRIJVING ==========
+    execution.scannerGate = tradeDeskStatus;
+    execution.scannerReady = tradeDeskStatus === "OPEN";
+    execution.scannerWatch = tradeDeskStatus === "WATCH";
+    execution.scannerIgnore = tradeDeskStatus === "IGNORE";
+
     out.push({
       id: coin.id,
       symbol: sym,
@@ -1295,6 +1296,7 @@ export default async function handler(req, res) {
         name: coin.name,
         image: coin.image,
         watchScans,
+        positionState: coin.execution?.meta?.holdState ? { ...coin.execution.meta } : {},
       };
       const isElitePreTrade =
         coin.tradeDeskStatus === "WATCH" &&
@@ -1322,15 +1324,15 @@ export default async function handler(req, res) {
           reason: "bijna entry klaar — zet hem klaar",
         });
       }
-      if (!hasOpenPosition && (coin.stage === "ELITE_IGNITION" || coin.stage === "ELITE_EXPANSION")) {
+      if (!hasOpenPosition && coin.tradeDeskStatus === "OPEN") {
         await safeSendSignal({
           source: "moon",
-          stage: coin.stage,
+          stage: "ENTRY",
           mode,
           coin,
           btcState: btc?.state || "NEUTRAL",
           kind: "signal",
-          reason: "Moon elite scanner setup",
+          reason: "Moon scanner elite entry",
         });
       }
     }
@@ -1490,6 +1492,22 @@ export default async function handler(req, res) {
       positions: {
         open: positions.open.length,
         closed: positions.closed.length,
+        openItems: positions.open.map((p) => ({
+          id: p.id,
+          symbol: p.symbol,
+          mode: p.mode,
+          status: p.status,
+          entryAt: p.entryAt,
+          entryPrice: p.entryPrice,
+          lastPrice: p.lastPrice,
+          pnlPct: p.pnlPct,
+          pnlUsd: p.pnlUsd,
+          tp: p.tp,
+          sl: p.sl,
+          rr: p.rr,
+          stage: p.stage,
+          eliteType: p.eliteType,
+        })),
       },
       ts: now,
       scannedAt: now,
