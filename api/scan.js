@@ -755,23 +755,25 @@ async function buildUniverse(mode, whaleFlow, btc) {
       timingScore,
       marketScore,
     });
+    // ========== VERLAGDE SCANNER DRUMPELS (versoepeld) ==========
     const superScannerCoin =
-      perfectCandidateScore >= 74 &&
-      qualityScore >= 68 &&
+      perfectCandidateScore >= 73 &&
+      qualityScore >= 67 &&
       (stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
     const tradeCandidate =
-      perfectCandidateScore >= 76 &&
-      qualityScore >= 68 &&
-      timingScore >= 66 &&
-      liquidityScore >= 62 &&
-      marketScore >= 46 &&
+      perfectCandidateScore >= 74 &&
+      qualityScore >= 66 &&
+      timingScore >= 64 &&
+      liquidityScore >= 60 &&
+      marketScore >= 45 &&
       (stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
+    // ============================================================
     const scannerOnly = !superScannerCoin;
     const coinForDecision = {
       ...coin,
@@ -844,27 +846,30 @@ async function buildUniverse(mode, whaleFlow, btc) {
       stage === "ELITE_EXPANSION" ||
       stage === "ELITE_CASCADE";
 
-    // ========== NIEUWE TRADEDESKSTATUS (ALMOST OPEN) ==========
+    // ========== VERLAGDE NEARENTRYWATCH DRUMPELS (versoepeld) ==========
     const nearEntryWatch =
       superScannerCoin === true &&
       (
         isEliteStageForDesk ||
         (
           stage === "ALMOST" &&
-          entryQuality >= 70 &&
-          persistenceScore >= 60 &&
-          (breakout?.ready === true || n(breakout?.pressure, 0) >= 58) &&
-          n(obx.score, 0) >= 0.01
+          entryQuality >= 68 &&
+          persistenceScore >= 58 &&
+          (breakout?.ready === true || n(breakout?.pressure, 0) >= 56) &&
+          n(obx.score, 0) >= 0.008
         )
       );
+    // =================================================================
 
+    // ========== VERLAGDE STABLEWATCHREADY DRUMPELS (versoepeld) ==========
     const stableWatchReady =
       prev?.tradeDeskStatus === "WATCH" &&
       (prev?.watchScans || 0) >= 2 &&
-      entryQuality >= 64 &&
-      persistenceScore >= 56 &&
-      (breakout?.ready === true || n(breakout?.pressure, 0) >= 54) &&
-      n(obx.score, 0) >= 0.008;
+      entryQuality >= 62 &&
+      persistenceScore >= 54 &&
+      (breakout?.ready === true || n(breakout?.pressure, 0) >= 52) &&
+      n(obx.score, 0) >= 0.007;
+    // ====================================================================
 
     let tradeDeskStatus = "IGNORE";
 
@@ -876,15 +881,16 @@ async function buildUniverse(mode, whaleFlow, btc) {
       tradeDeskStatus = "OPEN";
     } else if (nearEntryWatch) {
       tradeDeskStatus = "WATCH";
+    // ========== VERLAGDE WATCH BEHOUD DRUMPELS (versoepeld) ==========
     } else if (
       prev?.tradeDeskStatus === "WATCH" &&
       (prev?.watchScans || 0) >= 2 &&
-      entryQuality >= 60 &&
-      persistenceScore >= 52
+      entryQuality >= 58 &&
+      persistenceScore >= 50
     ) {
       tradeDeskStatus = "WATCH";
     }
-    // ============================================================
+    // =================================================================
 
     // ========== EXECUTION WORDT AANGEROEPEN MET positionState en scannerGate ==========
     const execution = buildMainExecutionDecision({
