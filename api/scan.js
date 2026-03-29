@@ -757,18 +757,18 @@ async function buildUniverse(mode, whaleFlow, btc) {
     });
     // ========== VERLAGDE SCANNER DRUMPELS (versoepeld) ==========
     const superScannerCoin =
-      perfectCandidateScore >= 73 &&
-      qualityScore >= 67 &&
+      perfectCandidateScore >= 70 &&
+      qualityScore >= 64 &&
       (stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
         stage === "ALMOST");
     const tradeCandidate =
-      perfectCandidateScore >= 74 &&
-      qualityScore >= 66 &&
-      timingScore >= 64 &&
-      liquidityScore >= 60 &&
-      marketScore >= 45 &&
+      perfectCandidateScore >= 71 &&
+      qualityScore >= 63 &&
+      timingScore >= 61 &&
+      liquidityScore >= 57 &&
+      marketScore >= 41 &&
       (stage === "ELITE_IGNITION" ||
         stage === "ELITE_EXPANSION" ||
         stage === "ELITE_CASCADE" ||
@@ -853,10 +853,10 @@ async function buildUniverse(mode, whaleFlow, btc) {
         isEliteStageForDesk ||
         (
           stage === "ALMOST" &&
-          entryQuality >= 68 &&
-          persistenceScore >= 58 &&
-          (breakout?.ready === true || n(breakout?.pressure, 0) >= 56) &&
-          n(obx.score, 0) >= 0.008
+          entryQuality >= 65 &&
+          persistenceScore >= 54 &&
+          (breakout?.ready === true || n(breakout?.pressure, 0) >= 52) &&
+          n(obx.score, 0) >= 0.006
         )
       );
     // =================================================================
@@ -865,10 +865,10 @@ async function buildUniverse(mode, whaleFlow, btc) {
     const stableWatchReady =
       prev?.tradeDeskStatus === "WATCH" &&
       (prev?.watchScans || 0) >= 2 &&
-      entryQuality >= 62 &&
-      persistenceScore >= 54 &&
-      (breakout?.ready === true || n(breakout?.pressure, 0) >= 52) &&
-      n(obx.score, 0) >= 0.007;
+      entryQuality >= 60 &&
+      persistenceScore >= 50 &&
+      (breakout?.ready === true || n(breakout?.pressure, 0) >= 48) &&
+      n(obx.score, 0) >= 0.006;
     // ====================================================================
 
     let tradeDeskStatus = "IGNORE";
@@ -885,8 +885,8 @@ async function buildUniverse(mode, whaleFlow, btc) {
     } else if (
       prev?.tradeDeskStatus === "WATCH" &&
       (prev?.watchScans || 0) >= 2 &&
-      entryQuality >= 58 &&
-      persistenceScore >= 50
+      entryQuality >= 55 &&
+      persistenceScore >= 47
     ) {
       tradeDeskStatus = "WATCH";
     }
@@ -1013,10 +1013,10 @@ function canPromoteBalancedEntry(coin, mode, regime) {
   const v1 = n(coin?.volAcc?.short, 1);
   const v2 = n(coin?.volAcc?.medium, 1);
   const ob = n(coin?.ob?.score, 0);
-  if (eq < 70) return false;
-  if (ps < 60) return false;
+  if (eq < 67) return false;
+  if (ps < 55) return false;
   if (!brReady) return false;
-  if (v1 < 1.04 && v2 < 1.08) return false;
+  if (v1 < 1.02 && v2 < 1.06) return false;
   if (mode === "bull" && ob < -0.01) return false;
   if (mode === "bear" && ob > 0.01) return false;
   return true;
