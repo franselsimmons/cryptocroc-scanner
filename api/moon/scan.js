@@ -886,22 +886,45 @@ async function buildUniverse(mode, whaleFlow, btc) {
 
     let tradeDeskStatus = "IGNORE";
 
-    if (
-      tradeCandidate === true &&
-      isEliteStageForDesk &&
-      tradePlan != null
-    ) {
-      tradeDeskStatus = "OPEN";
-    } else if (nearEntryWatch) {
-      tradeDeskStatus = "WATCH";
-    } else if (
-      prev?.tradeDeskStatus === "WATCH" &&
-      (prev?.watchScans || 0) >= 2 &&
-      entryQuality >= 56 &&
-      persistenceScore >= 48
-    ) {
-      tradeDeskStatus = "WATCH";
-    }
+// ========== ELITE = OPEN ==========
+if (
+  tradeCandidate === true &&
+  isEliteStageForDesk &&
+  tradePlan != null
+) {
+  tradeDeskStatus = "OPEN";
+}
+
+// ========== ALMOST → OPEN (NIEUW) ==========
+else if (
+  stage === "ALMOST" &&
+  tradePlan != null &&
+  superScannerCoin === true &&
+  entryQuality >= 66 &&
+  persistenceScore >= 55 &&
+  (breakout?.ready === true || n(breakout?.pressure, 0) >= 58) &&
+  (
+    depthOk === true ||
+    n(obx.depthMinUsd1p, 0) >= (n(floorUsd, 0) * 0.85)
+  )
+) {
+  tradeDeskStatus = "OPEN";
+}
+
+// ========== WATCH ==========
+else if (nearEntryWatch) {
+  tradeDeskStatus = "WATCH";
+}
+
+// ========== WATCH BEHOUD ==========
+else if (
+  prev?.tradeDeskStatus === "WATCH" &&
+  (prev?.watchScans || 0) >= 2 &&
+  entryQuality >= 56 &&
+  persistenceScore >= 48
+) {
+  tradeDeskStatus = "WATCH";
+}
 
     // ========== EXECUTION WORDT AANGEROEPEN MET positionState en scannerGate ==========
     const execution = buildMoonExecutionDecision({
