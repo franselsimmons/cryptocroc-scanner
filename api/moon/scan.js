@@ -111,6 +111,21 @@ const MIN_RECENT_ENTRIES_TARGET = 2;
 const POSITION_SIZE_USD = 50;
 
 // ======================================================
+// HARPOEN A+ GATE (MOON)
+// ======================================================
+const APLUS_BTC_ALIGN = 65;
+const APLUS_LIQ = 70;
+const APLUS_PERF = 80;
+const APLUS_TIMING = 75;
+
+const NEAR_LIQ = 68;
+const NEAR_PERF = 78;
+const NEAR_TIMING = 72;
+
+const WATCH_CONFIRM_TO_OPEN = 3;
+const IMMEDIATE_OPEN_TIMING = 84; // MOON nóg strenger voor direct-open
+
+// ======================================================
 // Anti-flip / Gate Hysteresis (STOP FLIPPEN IN UI)
 // - Watch/Open hebben confirm-scans + minHold tijd
 // - Exit thresholds ruimer dan enter thresholds
@@ -915,22 +930,68 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       marketScore,
     });
 
-    const superScannerCoin =
-      perfectCandidateScore >= 75 &&
-      qualityScore >= 68 &&
-      liquidityScore >= 60 &&
-      marketScore >= 45 &&
-      (stage === "ELITE_IGNITION" || stage === "ELITE_EXPANSION" || stage === "ELITE_CASCADE" || stage === "ALMOST");
+    // -------------------------
+    // HARPOEN: macro switch (binair)
+    // -------------------------
+    const regimeUp = String(regime || "").toUpperCase();
+    const macroOk =
+      regimeUp === "EXPANSION" &&
+      n(btcAlignmentScore, 0) >= APLUS_BTC_ALIGN;
 
-    const tradeCandidate =
-      perfectCandidateScore >= 76 &&
-      qualityScore >= 67 &&
-      timingScore >= 64 &&
-      liquidityScore >= 60 &&
-      marketScore >= 45 &&
-      (stage === "ELITE_IGNITION" || stage === "ELITE_EXPANSION" || stage === "ELITE_CASCADE" || stage === "ALMOST");
+    // -------------------------
+    // HARPOEN: A+ gate (alles-of-niets)
+    // -------------------------
+    const aPlus =
+      macroOk === true &&
+      liquidityScore >= APLUS_LIQ &&
+      perfectCandidateScore >= APLUS_PERF &&
+      timingScore >= APLUS_TIMING &&
+      tradePlan != null;
 
+    // “bijna A+” voor WATCH (nog steeds streng)
+    const nearAPlus =
+      macroOk === true &&
+      liquidityScore >= NEAR_LIQ &&
+      perfectCandidateScore >= NEAR_PERF &&
+      timingScore >= NEAR_TIMING &&
+      tradePlan != null;
+
+    // Stages (optioneel): je wil entry pas bij echte setups
+    const isEliteStageForDesk =
+      stage === "ELITE_IGNITION" ||
+      stage === "ELITE_EXPANSION" ||
+      stage === "ELITE_CASCADE" ||
+      stage === "ALMOST";
+
+    // Scanner labels
+    const superScannerCoin = aPlus;     // scanner = alleen A+ tonen
+    const tradeCandidate = aPlus;       // trade engine krijgt alleen A+
     const scannerOnly = !superScannerCoin;
+
+    // -------------------------
+    // HARPOEN: hysteresis gate
+    // - OPEN alleen als A+
+    // - meestal pas na 3 confirm scans
+    // - uitzonderlijk direct OPEN bij ELITE + super timing
+    // -------------------------
+    let tradeDeskStatus = "IGNORE";
+
+    // direct OPEN alleen bij super timing + elite-achtig stage
+    const immediateOpen = aPlus && isEliteStageForDesk && timingScore >= IMMEDIATE_OPEN_TIMING;
+
+    // confirm OPEN: coin moet WATCH zijn geweest en 3x bevestigd
+    const confirmOpen =
+      aPlus &&
+      prev?.tradeDeskStatus === "WATCH" &&
+      (prev?.watchScans || 0) >= (WATCH_CONFIRM_TO_OPEN - 1); // want watchScans wordt later +1
+
+    if (immediateOpen || confirmOpen) {
+      tradeDeskStatus = "OPEN";
+    } else if (nearAPlus) {
+      tradeDeskStatus = "WATCH";
+    } else {
+      tradeDeskStatus = "IGNORE";
+    }
 
     const coinForDecision = {
       ...coin,
@@ -999,28 +1060,6 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       maxWeakHoldCycles: n(prevPositionState.maxWeakHoldCycles, 3),
     };
 
-    const isEliteStageForDesk = isMoonEliteStage(stage);
-    const prevGate = prev?.deskGate || prev?.tradeDeskStatus || "IGNORE";
-    const prevDeskMeta = prev?.deskMeta || {};
-
-    // ✅ HYSTERESIS gate: STOP flippen in UI (WATCH/OPEN/IGNORE)
-    const desk = decideDeskGateHysteresis({
-      prevGate,
-      prevMeta: prevDeskMeta,
-      now,
-      isEliteStageForDesk,
-      hasTradePlan: tradePlan != null,
-      tradeCandidate,
-      superScannerCoin,
-      entryQuality,
-      persistenceScore,
-      breakout: coinForDecision.breakout,
-      obScore: n(obx.score, 0),
-      T: DESK_THRESHOLDS_MOON,
-    });
-
-    let tradeDeskStatus = desk.gate;
-
     const execution = buildMoonExecutionDecision({
       coin: coinForDecision,
       btc,
@@ -1088,7 +1127,7 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       // ✅ stable desk fields
       tradeDeskStatus,
       deskGate: tradeDeskStatus,
-      deskMeta: desk.meta,
+      deskMeta: null, // geen hysteresis meta nodig, gate wordt hard bepaald
 
       systemType: "moon",
       coinProfile,
@@ -1319,6 +1358,14 @@ export default async function handler(req, res) {
         else watchScans = 0;
       }
 
+      // HARPOEN: als macro uit is, geen WATCH-opbouw en alles terug naar IGNORE
+      const regimeUp = String(regime || "").toUpperCase();
+      const btcAlign = n(coin.btcAlignmentScore, 0);
+      const macroOkNow = regimeUp === "EXPANSION" && btcAlign >= APLUS_BTC_ALIGN;
+      if (!macroOkNow) {
+        watchScans = 0;
+      }
+
       let depthHist = Array.isArray(prev?.depthHist) ? [...prev.depthHist] : [];
       const currentDepth = n(coin.ob?.depthMinUsd1p, 0);
       if (currentDepth > 0) depthHist.push(currentDepth);
@@ -1469,7 +1516,8 @@ export default async function handler(req, res) {
     entryCandidates.sort((a, b) => (b.coin.entryQuality || 0) - (a.coin.entryQuality || 0));
 
     const slotsLeft = MAX_OPEN_TRADES - positions.open.length;
-    const toOpen = entryCandidates.slice(0, slotsLeft);
+    // CAPACITY: maximaal 1 nieuwe entry per scan
+    const toOpen = entryCandidates.slice(0, Math.min(slotsLeft, 1));
 
     for (const candidate of toOpen) {
       const { sym, coin, state } = candidate;
