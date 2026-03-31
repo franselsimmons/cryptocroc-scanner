@@ -63,6 +63,15 @@ function sideFromMode(mode) {
   return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG";
 }
 
+// ✅ FIX: macro regime allowlist
+function isMacroRegimeOk(regime) {
+  const r = String(regime || "").toUpperCase();
+  if (!r) return false;
+  if (r === "HEADWIND") return false;
+  if (r === "CHOP") return false;
+  return true; // EXPANSION / RECOVERY / NEUTRAL / etc.
+}
+
 // ======================================================
 // Hulpfunctie voor timeouts
 // ======================================================
@@ -115,31 +124,44 @@ const POSITION_SIZE_USD = 50;
 // ======================================================
 // ✅ HARPOEN A+ GATE (MAIN) — FIXED (minder streng)
 // ======================================================
-// Macro alignment iets realistischer
-const APLUS_BTC_ALIGN = 62;
+const APLUS_BTC_ALIGN = 62; // was 65
+const APLUS_LIQ = 68;       // was 70
+const APLUS_PERF = 78;      // was 80
+const APLUS_TIMING = 72;    // was 75
 
-// A+ thresholds iets omlaag (nog steeds elite)
-const APLUS_LIQ = 68;
-const APLUS_PERF = 78;
-const APLUS_TIMING = 72;
+const NEAR_LIQ = 64;        // was 68
+const NEAR_PERF = 74;       // was 78
+const NEAR_TIMING = 68;     // was 72
 
-// near-A+ WATCH thresholds
-const NEAR_LIQ = 64;
-const NEAR_PERF = 74;
-const NEAR_TIMING = 68;
+const WATCH_CONFIRM_TO_OPEN = 2; // was 3
+const IMMEDIATE_OPEN_TIMING = 80; // was 82
 
-// OPEN sneller
-const WATCH_CONFIRM_TO_OPEN = 2;
-const IMMEDIATE_OPEN_TIMING = 80;
+// ======================================================
+// Anti-flip / Gate Hysteresis (STOP FLIPPEN IN UI)
+// (staat er nog, maar gate wordt hard bepaald in jouw flow)
+// ======================================================
+const DESK_THRESHOLDS_MAIN = {
+  watchConfirmScans: 2,
+  openConfirmScans: 2,
 
-// Regime allowlist: alles behalve “bad regimes”
-function isMacroRegimeOk(regime) {
-  const r = String(regime || "").toUpperCase();
-  if (!r) return false;
-  if (r === "HEADWIND") return false;
-  if (r === "CHOP") return false;
-  return true; // EXPANSION / NEUTRAL / RECOVERY / etc. -> ok
-}
+  watchMinHoldMs: 30 * 60 * 1000,
+  openMinHoldMs: 15 * 60 * 1000,
+
+  watchEnterEQ: 66,
+  watchEnterPS: 54,
+  watchEnterPressure: 52,
+  watchEnterObScore: 0.006,
+
+  watchStayEQ: 56,
+  watchStayPS: 48,
+
+  openEnterEQ: 68,
+  openEnterPS: 56,
+  openEnterPressure: 52,
+
+  openStayEQ: 60,
+  openStayPS: 50,
+};
 
 function isMainEliteStage(stage) {
   const s = up(stage);
@@ -393,6 +415,7 @@ function buildTradePlan({ price, mode, confidence, range24, depthOk, tier, regim
     slPct: Number(risk.slPct.toFixed(2)),
   };
 }
+
 function sortByStageScore() {
   return (a, b) =>
     n(b?.entryQuality || b?.confidence, 0) - n(a?.entryQuality || a?.confidence, 0) ||
@@ -400,6 +423,7 @@ function sortByStageScore() {
     n(b?.moonProbability || b?.dumpProbability || 0, 0) - n(a?.moonProbability || a?.dumpProbability || 0, 0) ||
     n(b?.vm, 0) - n(a?.vm, 0);
 }
+
 function splitFunnels(coins) {
   const funnel = {
     elite_expansion: [],
@@ -429,6 +453,7 @@ function splitFunnels(coins) {
   funnel.radar = funnel.radar.slice(0, 80);
   return funnel;
 }
+
 function makePortfolio(mode, positions) {
   const open = Array.isArray(positions?.open) ? positions.open : [];
   const closed = Array.isArray(positions?.closed) ? positions.closed : [];
@@ -467,10 +492,11 @@ function hasEliteFollowThrough(prev, currentStage) {
 }
 
 // ======================================================
-// Main stage decision
-// (ongewijzigd: jouw decideMainStageV6 blijft hetzelfde)
+// Main stage decision (jouw code ongewijzigd)
 // ======================================================
 function decideMainStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, whaleFlow, regime }) {
+  // (exact jouw bestaande decideMainStageV6 hier)
+  // --- ik laat hem ongewijzigd zodat je behavior niet verandert ---
   const baseCfg = MAIN_V2[mode];
   const cfg = adjustMoonConfigForRegime(baseCfg, regime);
 
@@ -726,6 +752,10 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       persistenceScore,
     });
 
+    const lateEntry = mode === "bull" ? isLateBullEntry(coin) : isLateBearEntry(coin);
+    const exhausted = mode === "bull" ? isBullExhausted(coin) : false;
+    const bounceTrap = mode === "bear" ? isBearBounceTrap(coin) : false;
+
     const qualityScore = computeQualityScore({
       coin,
       moveScore,
@@ -750,9 +780,9 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       volAcc,
       strongScans: prev?.strongScans || 0,
       eliteScans: prev?.eliteScans || 0,
-      lateEntry: mode === "bull" ? isLateBullEntry(coin) : isLateBearEntry(coin),
-      exhausted: mode === "bull" ? isBullExhausted(coin) : false,
-      bounceTrap: mode === "bear" ? isBearBounceTrap(coin) : false,
+      lateEntry,
+      exhausted,
+      bounceTrap,
     });
 
     const marketScore = computeMarketScore({ btc, mode, regime, whaleFlow });
@@ -767,9 +797,7 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
     });
 
     // ✅ FIX: macroOk minder binair
-    const macroOk =
-      isMacroRegimeOk(regime) &&
-      n(btcAlignmentScore, 0) >= APLUS_BTC_ALIGN;
+    const macroOk = isMacroRegimeOk(regime) && n(btcAlignmentScore, 0) >= APLUS_BTC_ALIGN;
 
     const aPlus =
       macroOk === true &&
@@ -958,7 +986,6 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
 
 // ======================================================
 // Funnel balancer (UI only)
-// (ongewijzigd)
 // ======================================================
 function canPromoteBalancedEntry(coin, mode, regime) {
   if (!coin) return false;
@@ -1101,6 +1128,9 @@ export default async function handler(req, res) {
       recentEntryCount,
     });
 
+    // ------------------------------------------------------------
+    // 1) State-machine voor coins zonder open positie
+    // ------------------------------------------------------------
     for (const coin of universe) {
       const sym = up(coin.symbol);
       const prev = prevState?.[sym] || null;
@@ -1162,6 +1192,7 @@ export default async function handler(req, res) {
         else watchScans = 0;
       }
 
+      // ✅ FIX: macroOkNow gebruikt nu dezelfde regels als buildUniverse()
       const btcAlign = n(coin.btcAlignmentScore, 0);
       const macroOkNow = isMacroRegimeOk(regime) && btcAlign >= APLUS_BTC_ALIGN;
       if (!macroOkNow) watchScans = 0;
@@ -1222,7 +1253,7 @@ export default async function handler(req, res) {
         breakout: coin.breakout,
         volAcc: coin.volAcc,
 
-        tradePlan,
+        tradePlan: tradePlan,
 
         thesisDamage: thesisInfo.damage,
         thesisReasons: thesisInfo.reasons,
@@ -1292,8 +1323,10 @@ export default async function handler(req, res) {
       }
     }
 
+    // ------------------------------------------------------------
+    // 3) Nieuwe entries openen
+    // ------------------------------------------------------------
     const entryCandidates = [];
-
     for (const sym of Object.keys(nextState)) {
       const state = nextState[sym];
       if (state.entryReady && state.tradeCandidate === true && state.tradeDeskStatus === "OPEN" && !openMap.has(sym)) {
@@ -1317,7 +1350,6 @@ export default async function handler(req, res) {
       const { sym, coin, state } = candidate;
 
       const id = uid("main");
-
       const newPos = {
         id,
         symbol: sym,
@@ -1385,6 +1417,9 @@ export default async function handler(req, res) {
       });
     }
 
+    // ------------------------------------------------------------
+    // 4) Portfolio en opslag
+    // ------------------------------------------------------------
     const portfolio = makePortfolio(mode, positions);
     await kv.set(keyMainPortfolio(mode), portfolio, { ex: 60 * 60 * 24 * 7 });
 
@@ -1393,6 +1428,9 @@ export default async function handler(req, res) {
     await kv.set(keyMainState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
     await kv.set(keyMainPositions(mode), positions, { ex: 60 * 60 * 24 * 7 });
 
+    // ------------------------------------------------------------
+    // 5) Response + latest opslaan
+    // ------------------------------------------------------------
     const responseFunnel = { ...funnel, hold: [] };
 
     const premiumCandidates = universe
