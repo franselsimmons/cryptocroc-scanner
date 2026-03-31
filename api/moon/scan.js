@@ -61,6 +61,15 @@ function sideFromMode(mode) {
   return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG";
 }
 
+// ✅ FIX: macro regime allowlist (zelfde idee als MAIN fix)
+function isMacroRegimeOk(regime) {
+  const r = String(regime || "").toUpperCase();
+  if (!r) return false;
+  if (r === "HEADWIND") return false;
+  if (r === "CHOP") return false;
+  return true;
+}
+
 // ======================================================
 // Hulpfunctie voor timeouts
 // ======================================================
@@ -111,50 +120,42 @@ const MIN_RECENT_ENTRIES_TARGET = 2;
 const POSITION_SIZE_USD = 50;
 
 // ======================================================
-// HARPOEN A+ GATE (MOON)
+// ✅ HARPOEN A+ GATE (MOON) — FIXED (nog steeds streng, maar niet “dood”)
 // ======================================================
-const APLUS_BTC_ALIGN = 65;
-const APLUS_LIQ = 70;
-const APLUS_PERF = 80;
-const APLUS_TIMING = 75;
+const APLUS_BTC_ALIGN = 60; // was 65
+const APLUS_LIQ = 68;       // was 70
+const APLUS_PERF = 79;      // was 80
+const APLUS_TIMING = 73;    // was 75
 
-const NEAR_LIQ = 68;
-const NEAR_PERF = 78;
-const NEAR_TIMING = 72;
+const NEAR_LIQ = 64;        // was 68
+const NEAR_PERF = 75;       // was 78
+const NEAR_TIMING = 69;     // was 72
 
-const WATCH_CONFIRM_TO_OPEN = 3;
-const IMMEDIATE_OPEN_TIMING = 84; // MOON nóg strenger voor direct-open
+const WATCH_CONFIRM_TO_OPEN = 2; // was 3
+const IMMEDIATE_OPEN_TIMING = 82; // was 84
 
 // ======================================================
-// Anti-flip / Gate Hysteresis (STOP FLIPPEN IN UI)
-// - Watch/Open hebben confirm-scans + minHold tijd
-// - Exit thresholds ruimer dan enter thresholds
+// Anti-flip / Gate Hysteresis (staat er nog, maar gate wordt hard bepaald)
 // ======================================================
 const DESK_THRESHOLDS_MOON = {
-  // confirm scans
   watchConfirmScans: 2,
   openConfirmScans: 2,
 
-  // minimum hold time (ms)
-  watchMinHoldMs: 25 * 60 * 1000, // 25 min WATCH vasthouden
-  openMinHoldMs: 12 * 60 * 1000, // 12 min OPEN vasthouden
+  watchMinHoldMs: 25 * 60 * 1000,
+  openMinHoldMs: 12 * 60 * 1000,
 
-  // WATCH enter
   watchEnterEQ: 66,
   watchEnterPS: 56,
   watchEnterPressure: 56,
   watchEnterObScore: 0.008,
 
-  // WATCH stay (ruimer)
   watchStayEQ: 56,
   watchStayPS: 48,
 
-  // OPEN enter (strakker)
   openEnterEQ: 68,
   openEnterPS: 56,
   openEnterPressure: 56,
 
-  // OPEN stay (ruimer)
   openStayEQ: 60,
   openStayPS: 50,
 };
@@ -162,114 +163,6 @@ const DESK_THRESHOLDS_MOON = {
 function isMoonEliteStage(stage) {
   const s = up(stage);
   return s === "ELITE_IGNITION" || s === "ELITE_EXPANSION" || s === "ELITE_CASCADE";
-}
-
-function decideDeskGateHysteresis({
-  prevGate = "IGNORE",
-  prevMeta = {},
-  now,
-  isEliteStageForDesk,
-  hasTradePlan,
-  // live metrics
-  tradeCandidate,
-  superScannerCoin,
-  entryQuality,
-  persistenceScore,
-  breakout,
-  obScore,
-  // thresholds
-  T,
-}) {
-  const prev = String(prevGate || "IGNORE").toUpperCase();
-
-  const prevSince = n(prevMeta.deskGateSince, 0);
-  const prevHoldUntil = n(prevMeta.deskHoldUntil, 0);
-  const prevOpenStreak = n(prevMeta.openStreak, 0);
-  const prevWatchStreak = n(prevMeta.watchStreak, 0);
-
-  const brReady = !!breakout?.ready;
-  const brPressure = n(breakout?.pressure, 0);
-
-  // Enter WATCH
-  const wantWatch =
-    superScannerCoin === true &&
-    hasTradePlan === true &&
-    (isEliteStageForDesk ||
-      (n(entryQuality, 0) >= T.watchEnterEQ &&
-        n(persistenceScore, 0) >= T.watchEnterPS &&
-        (brReady || brPressure >= T.watchEnterPressure) &&
-        n(obScore, 0) >= T.watchEnterObScore));
-
-  // Stay WATCH (ruimer)
-  const canStayWatch =
-    hasTradePlan === true &&
-    n(entryQuality, 0) >= T.watchStayEQ &&
-    n(persistenceScore, 0) >= T.watchStayPS;
-
-  // Enter OPEN (strakker)
-  const wantOpen =
-    tradeCandidate === true &&
-    isEliteStageForDesk &&
-    hasTradePlan === true &&
-    n(entryQuality, 0) >= T.openEnterEQ &&
-    n(persistenceScore, 0) >= T.openEnterPS &&
-    (brReady || brPressure >= T.openEnterPressure);
-
-  // Stay OPEN (ruimer)
-  const canStayOpen =
-    hasTradePlan === true &&
-    n(entryQuality, 0) >= T.openStayEQ &&
-    n(persistenceScore, 0) >= T.openStayPS;
-
-  // Hold window actief? dan niet omlaag flippen.
-  const holdActive = prevHoldUntil > now;
-
-  // streaks
-  let openStreak = wantOpen ? prevOpenStreak + 1 : 0;
-  let watchStreak = wantWatch ? prevWatchStreak + 1 : 0;
-
-  let gate = prev;
-
-  // OPEN logic
-  if (prev === "OPEN") {
-    if (holdActive) gate = "OPEN";
-    else if (canStayOpen) gate = "OPEN";
-    else gate = "WATCH";
-  } else {
-    if (wantOpen && openStreak >= T.openConfirmScans) gate = "OPEN";
-  }
-
-  // WATCH logic
-  if (gate !== "OPEN") {
-    if (prev === "WATCH") {
-      if (holdActive) gate = "WATCH";
-      else if (canStayWatch) gate = "WATCH";
-      else gate = "IGNORE";
-    } else {
-      if (wantWatch && watchStreak >= T.watchConfirmScans) gate = "WATCH";
-    }
-  }
-
-  // meta updates
-  let deskGateSince = prevSince;
-  let deskHoldUntil = prevHoldUntil;
-
-  if (gate !== prev) {
-    deskGateSince = now;
-    if (gate === "WATCH") deskHoldUntil = now + T.watchMinHoldMs;
-    else if (gate === "OPEN") deskHoldUntil = now + T.openMinHoldMs;
-    else deskHoldUntil = 0;
-  }
-
-  return {
-    gate,
-    meta: {
-      deskGateSince,
-      deskHoldUntil,
-      openStreak,
-      watchStreak,
-    },
-  };
 }
 
 // ======================================================
@@ -525,6 +418,7 @@ function buildTradePlan({ price, mode, confidence, range24, depthOk, tier, regim
     slPct: Number(risk.slPct.toFixed(2)),
   };
 }
+
 function sortByStageScore() {
   return (a, b) =>
     n(b?.entryQuality || b?.confidence, 0) - n(a?.entryQuality || a?.confidence, 0) ||
@@ -532,6 +426,7 @@ function sortByStageScore() {
     n(b?.moonProbability || b?.dumpProbability || 0, 0) - n(a?.moonProbability || a?.dumpProbability || 0, 0) ||
     n(b?.vm, 0) - n(a?.vm, 0);
 }
+
 function splitFunnels(coins) {
   const funnel = {
     elite_expansion: [],
@@ -561,6 +456,7 @@ function splitFunnels(coins) {
   funnel.radar = funnel.radar.slice(0, 80);
   return funnel;
 }
+
 function makePortfolio(mode, positions) {
   const open = Array.isArray(positions?.open) ? positions.open : [];
   const closed = Array.isArray(positions?.closed) ? positions.closed : [];
@@ -618,9 +514,11 @@ function isLateBearEntry(coin) {
 }
 
 // ======================================================
-// Moon stage decision
+// Moon stage decision (jouw code ongewijzigd)
 // ======================================================
 function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, whaleFlow, regime }) {
+  // (exact jouw bestaande decideMoonStageV6 hier)
+  // --- ik laat hem ongewijzigd zodat je behavior niet verandert ---
   const baseCfg = MOON_V2[mode];
   const cfg = adjustMoonConfigForRegime(baseCfg, regime);
 
@@ -910,18 +808,9 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       bounceTrap,
     });
 
-    const marketScore = computeMarketScore({
-      btc,
-      mode,
-      regime,
-      whaleFlow,
-    });
+    const marketScore = computeMarketScore({ btc, mode, regime, whaleFlow });
 
-    const btcAlignmentScore = computeBtcAlignmentScore({
-      btc,
-      mode,
-      regime,
-    });
+    const btcAlignmentScore = computeBtcAlignmentScore({ btc, mode, regime });
 
     const perfectCandidateScore = computePerfectCandidateScore({
       qualityScore,
@@ -930,17 +819,9 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       marketScore,
     });
 
-    // -------------------------
-    // HARPOEN: macro switch (binair)
-    // -------------------------
-    const regimeUp = String(regime || "").toUpperCase();
-    const macroOk =
-      regimeUp === "EXPANSION" &&
-      n(btcAlignmentScore, 0) >= APLUS_BTC_ALIGN;
+    // ✅ FIX: macroOk minder binair (zelfde als MAIN fix)
+    const macroOk = isMacroRegimeOk(regime) && n(btcAlignmentScore, 0) >= APLUS_BTC_ALIGN;
 
-    // -------------------------
-    // HARPOEN: A+ gate (alles-of-niets)
-    // -------------------------
     const aPlus =
       macroOk === true &&
       liquidityScore >= APLUS_LIQ &&
@@ -948,7 +829,6 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       timingScore >= APLUS_TIMING &&
       tradePlan != null;
 
-    // “bijna A+” voor WATCH (nog steeds streng)
     const nearAPlus =
       macroOk === true &&
       liquidityScore >= NEAR_LIQ &&
@@ -956,42 +836,28 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       timingScore >= NEAR_TIMING &&
       tradePlan != null;
 
-    // Stages (optioneel): je wil entry pas bij echte setups
     const isEliteStageForDesk =
       stage === "ELITE_IGNITION" ||
       stage === "ELITE_EXPANSION" ||
       stage === "ELITE_CASCADE" ||
       stage === "ALMOST";
 
-    // Scanner labels
-    const superScannerCoin = aPlus;     // scanner = alleen A+ tonen
-    const tradeCandidate = aPlus;       // trade engine krijgt alleen A+
+    const superScannerCoin = aPlus;
+    const tradeCandidate = aPlus;
     const scannerOnly = !superScannerCoin;
 
-    // -------------------------
-    // HARPOEN: hysteresis gate
-    // - OPEN alleen als A+
-    // - meestal pas na 3 confirm scans
-    // - uitzonderlijk direct OPEN bij ELITE + super timing
-    // -------------------------
     let tradeDeskStatus = "IGNORE";
 
-    // direct OPEN alleen bij super timing + elite-achtig stage
     const immediateOpen = aPlus && isEliteStageForDesk && timingScore >= IMMEDIATE_OPEN_TIMING;
 
-    // confirm OPEN: coin moet WATCH zijn geweest en 3x bevestigd
     const confirmOpen =
       aPlus &&
       prev?.tradeDeskStatus === "WATCH" &&
-      (prev?.watchScans || 0) >= (WATCH_CONFIRM_TO_OPEN - 1); // want watchScans wordt later +1
+      (prev?.watchScans || 0) >= (WATCH_CONFIRM_TO_OPEN - 1);
 
-    if (immediateOpen || confirmOpen) {
-      tradeDeskStatus = "OPEN";
-    } else if (nearAPlus) {
-      tradeDeskStatus = "WATCH";
-    } else {
-      tradeDeskStatus = "IGNORE";
-    }
+    if (immediateOpen || confirmOpen) tradeDeskStatus = "OPEN";
+    else if (nearAPlus) tradeDeskStatus = "WATCH";
+    else tradeDeskStatus = "IGNORE";
 
     const coinForDecision = {
       ...coin,
@@ -1046,10 +912,7 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       range24: n(coin.range24, 0),
     };
 
-    const coinProfile = buildCoinProfile({
-      systemType: "moon",
-      coin: coinForDecision,
-    });
+    const coinProfile = buildCoinProfile({ systemType: "moon", coin: coinForDecision });
 
     const prevPositionState = prev?.positionState || {};
     const positionState = {
@@ -1124,10 +987,9 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       tradeCandidate,
       scannerOnly,
 
-      // ✅ stable desk fields
       tradeDeskStatus,
       deskGate: tradeDeskStatus,
-      deskMeta: null, // geen hysteresis meta nodig, gate wordt hard bepaald
+      deskMeta: null,
 
       systemType: "moon",
       coinProfile,
@@ -1148,7 +1010,7 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
 }
 
 // ======================================================
-// Funnel balancer, thesis damage (scanner-side state)
+// Funnel balancer, thesis damage (ongewijzigd)
 // ======================================================
 function canPromoteBalancedEntry(coin, mode, regime) {
   if (!coin) return false;
@@ -1266,10 +1128,8 @@ export default async function handler(req, res) {
       closed: Array.isArray(prevPositions?.closed) ? [...prevPositions.closed] : [],
     };
 
-    // ✅ anti-flip: cooldowns uit CLOSED trades doorzetten
     await applyCooldownsFromClosed(mode, positions, now);
 
-    // ✅ buildUniverse gebruikt KV state om hysteresis gate stabiel te maken
     const built = await buildUniverse(mode, whaleFlow, btc, now);
     const universe = built.coins;
     const regime = built.regime;
@@ -1352,19 +1212,15 @@ export default async function handler(req, res) {
         thesisInvalidScans = prev?.thesisInvalidScans || 0;
         entryLocked = prev?.entryLocked || false;
 
-        // WATCHSCANS: nu gate is stabiel -> simpel tellen
         if (coin.tradeDeskStatus === "WATCH") watchScans = (prev?.watchScans || 0) + 1;
         else if (prev?.tradeDeskStatus === "WATCH") watchScans = Math.max(0, (prev?.watchScans || 0) - 1);
         else watchScans = 0;
       }
 
-      // HARPOEN: als macro uit is, geen WATCH-opbouw en alles terug naar IGNORE
-      const regimeUp = String(regime || "").toUpperCase();
+      // ✅ FIX: macroOkNow gebruikt nu dezelfde regels als buildUniverse()
       const btcAlign = n(coin.btcAlignmentScore, 0);
-      const macroOkNow = regimeUp === "EXPANSION" && btcAlign >= APLUS_BTC_ALIGN;
-      if (!macroOkNow) {
-        watchScans = 0;
-      }
+      const macroOkNow = isMacroRegimeOk(regime) && btcAlign >= APLUS_BTC_ALIGN;
+      if (!macroOkNow) watchScans = 0;
 
       let depthHist = Array.isArray(prev?.depthHist) ? [...prev.depthHist] : [];
       const currentDepth = n(coin.ob?.depthMinUsd1p, 0);
@@ -1454,10 +1310,9 @@ export default async function handler(req, res) {
         tradeCandidate: !!coin.tradeCandidate,
         scannerOnly: !!coin.scannerOnly,
 
-        // ✅ persist stable gate + meta
         tradeDeskStatus: coin.tradeDeskStatus || "IGNORE",
-        deskGate: coin.deskGate || coin.tradeDeskStatus || "IGNORE",
-        deskMeta: coin.deskMeta || prev?.deskMeta || null,
+        deskGate: coin.tradeDeskStatus || "IGNORE",
+        deskMeta: null,
 
         name: coin.name,
         image: coin.image,
@@ -1476,7 +1331,7 @@ export default async function handler(req, res) {
           coin,
           btcState: btc?.state || "NEUTRAL",
           kind: "elite_watch",
-          reason: "WATCH bevestigd — gate blijft stabiel (anti-flip)",
+          reason: "WATCH bevestigd — klaar voor OPEN bij volgende confirm",
         });
       }
 
@@ -1516,7 +1371,6 @@ export default async function handler(req, res) {
     entryCandidates.sort((a, b) => (b.coin.entryQuality || 0) - (a.coin.entryQuality || 0));
 
     const slotsLeft = MAX_OPEN_TRADES - positions.open.length;
-    // CAPACITY: maximaal 1 nieuwe entry per scan
     const toOpen = entryCandidates.slice(0, Math.min(slotsLeft, 1));
 
     for (const candidate of toOpen) {
