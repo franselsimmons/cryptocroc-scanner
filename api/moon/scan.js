@@ -123,16 +123,147 @@ const POSITION_SIZE_USD = 50;
 // ✅ HARPOEN A+ GATE (MOON) — FIXED (nog steeds streng, maar niet “dood”)
 // ======================================================
 const APLUS_BTC_ALIGN = 60; // was 65
-const APLUS_LIQ = 68;       // was 70
-const APLUS_PERF = 79;      // was 80
-const APLUS_TIMING = 73;    // was 75
+const APLUS_LIQ = 68; // was 70
+const APLUS_PERF = 79; // was 80
+const APLUS_TIMING = 73; // was 75
 
-const NEAR_LIQ = 64;        // was 68
-const NEAR_PERF = 75;       // was 78
-const NEAR_TIMING = 69;     // was 72
+const NEAR_LIQ = 64; // was 68
+const NEAR_PERF = 75; // was 78
+const NEAR_TIMING = 69; // was 72
 
 const WATCH_CONFIRM_TO_OPEN = 2; // was 3
 const IMMEDIATE_OPEN_TIMING = 82; // was 84
+
+// ======================================================
+// ✅ FIX: Sticky Trade Funnel Locks (UI anti-flip)
+// - Live gate blijft voor entry logic.
+// - Funnel gate wordt "opgesloten" (WATCH/OPEN) en zakt alleen bij HARD BREAK.
+// ======================================================
+const FUNNEL_WATCH_MIN_MS = 25 * 60 * 1000; // 25 min minimaal zichtbaar
+const FUNNEL_OPEN_MIN_MS = 90 * 60 * 1000; // 90 min minimaal zichtbaar
+const FUNNEL_HARD_TTL_MS = 6 * 60 * 60 * 1000; // max 6 uur in funnel zonder entry
+const FUNNEL_BREAKOUT_MIN_PRESSURE = 45;
+const FUNNEL_MIN_PERSISTENCE = 45;
+const FUNNEL_OB_EXTREME_ABS = 0.06;
+
+function keyMoonFunnelLocks(mode) {
+  return `moon:funnel:locks:${String(mode || "bull").toLowerCase()}`;
+}
+
+function gateRank(g) {
+  const x = up(g);
+  if (x === "OPEN") return 2;
+  if (x === "WATCH") return 1;
+  return 0;
+}
+
+function isHardInvalidation({
+  mode,
+  macroOk,
+  tradePlan,
+  depthOk,
+  breakout,
+  persistenceScore,
+  obScore,
+}) {
+  if (!macroOk) return true;
+  if (!tradePlan) return true;
+  if (depthOk === false) return true;
+
+  const ps = n(persistenceScore, 0);
+  if (ps > 0 && ps < FUNNEL_MIN_PERSISTENCE) return true;
+
+  const brReady = !!breakout?.ready;
+  const brPressure = n(breakout?.pressure, 0);
+  if (!brReady && brPressure < FUNNEL_BREAKOUT_MIN_PRESSURE) return true;
+
+  const ob = n(obScore, 0);
+  const abs = Math.abs(ob);
+  if (abs >= FUNNEL_OB_EXTREME_ABS) {
+    const side = sideFromMode(mode);
+    if (side === "LONG" && ob < 0) return true;
+    if (side === "SHORT" && ob > 0) return true;
+  }
+
+  return false;
+}
+
+async function readFunnelLocks(mode) {
+  const raw = (await kv.get(keyMoonFunnelLocks(mode))) || {};
+  return raw && typeof raw === "object" ? raw : {};
+}
+
+async function writeFunnelLocks(mode, locks) {
+  await kv.set(keyMoonFunnelLocks(mode), locks, { ex: 60 * 60 * 48 });
+}
+
+function normalizeLock(lock) {
+  const L = lock || {};
+  return {
+    gate: up(L.gate || "IGNORE"),
+    since: n(L.since, 0),
+    holdUntil: n(L.holdUntil, 0),
+    hardUntil: n(L.hardUntil, 0),
+    reason: String(L.reason || ""),
+    lastSnapshot: L.lastSnapshot || null,
+  };
+}
+
+function applyStickyFunnelLock({ now, prevLock, liveGate, hardBreak, snapshot }) {
+  const prev = prevLock ? normalizeLock(prevLock) : null;
+
+  if (prev && prev.hardUntil > 0 && now > prev.hardUntil) {
+    return { lock: null, funnelGate: up(liveGate || "IGNORE"), changed: true, change: "expired" };
+  }
+
+  if (hardBreak) {
+    if (prev) return { lock: null, funnelGate: up(liveGate || "IGNORE"), changed: true, change: "hard_break" };
+    return { lock: null, funnelGate: up(liveGate || "IGNORE"), changed: false, change: "none" };
+  }
+
+  const live = up(liveGate || "IGNORE");
+
+  if (!prev) {
+    if (live === "WATCH" || live === "OPEN") {
+      const holdMs = live === "OPEN" ? FUNNEL_OPEN_MIN_MS : FUNNEL_WATCH_MIN_MS;
+      const lock = {
+        gate: live,
+        since: now,
+        holdUntil: now + holdMs,
+        hardUntil: now + FUNNEL_HARD_TTL_MS,
+        reason: live === "OPEN" ? "live_open" : "live_watch",
+        lastSnapshot: snapshot || null,
+      };
+      return { lock, funnelGate: live, changed: true, change: "created" };
+    }
+    return { lock: null, funnelGate: live, changed: false, change: "none" };
+  }
+
+  const prevRank = gateRank(prev.gate);
+  const liveRank = gateRank(live);
+
+  if (liveRank > prevRank) {
+    const holdMs = live === "OPEN" ? FUNNEL_OPEN_MIN_MS : FUNNEL_WATCH_MIN_MS;
+    const lock = {
+      ...prev,
+      gate: live,
+      since: now,
+      holdUntil: now + holdMs,
+      hardUntil: Math.max(prev.hardUntil || 0, now + FUNNEL_HARD_TTL_MS),
+      reason: live === "OPEN" ? "upgrade_to_open" : "upgrade_to_watch",
+      lastSnapshot: snapshot || prev.lastSnapshot || null,
+    };
+    return { lock, funnelGate: lock.gate, changed: true, change: "upgraded" };
+  }
+
+  const lock = { ...prev, lastSnapshot: snapshot || prev.lastSnapshot || null };
+
+  if (prev.holdUntil > now) {
+    return { lock, funnelGate: prev.gate, changed: false, change: "hold" };
+  }
+
+  return { lock, funnelGate: prev.gate, changed: false, change: "sticky" };
+}
 
 // ======================================================
 // Anti-flip / Gate Hysteresis (staat er nog, maar gate wordt hard bepaald)
@@ -517,8 +648,6 @@ function isLateBearEntry(coin) {
 // Moon stage decision (jouw code ongewijzigd)
 // ======================================================
 function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, whaleFlow, regime }) {
-  // (exact jouw bestaande decideMoonStageV6 hier)
-  // --- ik laat hem ongewijzigd zodat je behavior niet verandert ---
   const baseCfg = MOON_V2[mode];
   const cfg = adjustMoonConfigForRegime(baseCfg, regime);
 
@@ -699,6 +828,10 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
   const out = [];
   const state = (await kv.get(keyMoonState(mode))) || {};
 
+  // ✅ FIX: sticky funnel locks are stored separately from coin state
+  const funnelLocksPrev = await readFunnelLocks(mode);
+  const funnelLocksNext = { ...funnelLocksPrev };
+
   for (const coin of filtered) {
     const sym = up(coin.symbol);
     const prev = state?.[sym] || {};
@@ -819,7 +952,6 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       marketScore,
     });
 
-    // ✅ FIX: macroOk minder binair (zelfde als MAIN fix)
     const macroOk = isMacroRegimeOk(regime) && n(btcAlignmentScore, 0) >= APLUS_BTC_ALIGN;
 
     const aPlus =
@@ -846,6 +978,9 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
     const tradeCandidate = aPlus;
     const scannerOnly = !superScannerCoin;
 
+    // -------------------------
+    // LIVE gate (trading logic)
+    // -------------------------
     let tradeDeskStatus = "IGNORE";
 
     const immediateOpen = aPlus && isEliteStageForDesk && timingScore >= IMMEDIATE_OPEN_TIMING;
@@ -858,6 +993,61 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
     if (immediateOpen || confirmOpen) tradeDeskStatus = "OPEN";
     else if (nearAPlus) tradeDeskStatus = "WATCH";
     else tradeDeskStatus = "IGNORE";
+
+    // -------------------------
+    // ✅ FIX: Sticky funnel gate (UI only)
+    // -------------------------
+    const hardBreak = isHardInvalidation({
+      mode,
+      macroOk,
+      tradePlan,
+      depthOk,
+      breakout,
+      persistenceScore,
+      obScore: obx.score,
+    });
+
+    const snapshot = {
+      liveGate: tradeDeskStatus,
+      macroOk,
+      depthOk,
+      ps: n(persistenceScore, 0),
+      brReady: !!breakout?.ready,
+      brPressure: n(breakout?.pressure, 0),
+      liq: n(liquidityScore, 0),
+      perf: n(perfectCandidateScore, 0),
+      timing: n(timingScore, 0),
+      ob: n(obx.score, 0),
+    };
+
+    const prevLock = funnelLocksPrev?.[sym];
+    const locked = applyStickyFunnelLock({
+      now,
+      prevLock,
+      liveGate: tradeDeskStatus,
+      hardBreak,
+      snapshot,
+    });
+
+    if (locked.lock) funnelLocksNext[sym] = locked.lock;
+    else if (funnelLocksNext[sym]) delete funnelLocksNext[sym];
+
+    const funnelGate = up(locked.funnelGate || tradeDeskStatus);
+
+    if (prevLock) {
+      const pg = up(prevLock?.gate || "IGNORE");
+      if (pg !== funnelGate) {
+        console.log("📌 MOON FUNNEL GATE CHANGE", {
+          symbol: sym,
+          prev: pg,
+          next: funnelGate,
+          change: locked.change,
+          hardBreak,
+        });
+      }
+    } else if (funnelGate === "WATCH" || funnelGate === "OPEN") {
+      console.log("📌 MOON FUNNEL GATE CREATE", { symbol: sym, gate: funnelGate, reason: locked.change });
+    }
 
     const coinForDecision = {
       ...coin,
@@ -910,6 +1100,11 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       persistenceScore,
       tradePlan,
       range24: n(coin.range24, 0),
+
+      // ✅ FIX: expose funnel gate to UI
+      funnelGate,
+      funnelMeta: locked.lock ? normalizeLock(locked.lock) : null,
+      liveGate: tradeDeskStatus,
     };
 
     const coinProfile = buildCoinProfile({ systemType: "moon", coin: coinForDecision });
@@ -930,7 +1125,7 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       mode,
       coinProfile,
       positionState,
-      scannerGate: tradeDeskStatus,
+      scannerGate: tradeDeskStatus, // ✅ trading uses LIVE gate
     });
 
     execution.scannerGate = tradeDeskStatus;
@@ -987,9 +1182,15 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       tradeCandidate,
       scannerOnly,
 
+      // ✅ LIVE desk fields (engine)
       tradeDeskStatus,
       deskGate: tradeDeskStatus,
       deskMeta: null,
+
+      // ✅ STICKY funnel fields (UI)
+      funnelGate,
+      funnelMeta: coinForDecision.funnelMeta,
+      liveGate: tradeDeskStatus,
 
       systemType: "moon",
       coinProfile,
@@ -1005,6 +1206,9 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
 
     await sleep(8);
   }
+
+  // ✅ FIX: persist updated locks
+  await writeFunnelLocks(mode, funnelLocksNext);
 
   return { regime, coins: out };
 }
@@ -1217,7 +1421,6 @@ export default async function handler(req, res) {
         else watchScans = 0;
       }
 
-      // ✅ FIX: macroOkNow gebruikt nu dezelfde regels als buildUniverse()
       const btcAlign = n(coin.btcAlignmentScore, 0);
       const macroOkNow = isMacroRegimeOk(regime) && btcAlign >= APLUS_BTC_ALIGN;
       if (!macroOkNow) watchScans = 0;
@@ -1232,6 +1435,7 @@ export default async function handler(req, res) {
 
       let entryReady = false;
       if (!hasOpenPosition) {
+        // ✅ IMPORTANT: entry is based on LIVE gate, not funnelGate
         entryReady = coin.tradeDeskStatus === "OPEN" && entryLocked === false && coin.tradePlan != null;
       }
 
@@ -1310,9 +1514,14 @@ export default async function handler(req, res) {
         tradeCandidate: !!coin.tradeCandidate,
         scannerOnly: !!coin.scannerOnly,
 
+        // LIVE gate (engine)
         tradeDeskStatus: coin.tradeDeskStatus || "IGNORE",
         deskGate: coin.tradeDeskStatus || "IGNORE",
         deskMeta: null,
+
+        // ✅ STICKY funnel for UI
+        funnelGate: coin.funnelGate || "IGNORE",
+        funnelMeta: coin.funnelMeta || null,
 
         name: coin.name,
         image: coin.image,
@@ -1331,7 +1540,7 @@ export default async function handler(req, res) {
           coin,
           btcState: btc?.state || "NEUTRAL",
           kind: "elite_watch",
-          reason: "WATCH bevestigd — klaar voor OPEN bij volgende confirm",
+          reason: "WATCH bevestigd — klaar voor OPEN bij volgende confirm (LIVE gate)",
         });
       }
 
@@ -1343,7 +1552,7 @@ export default async function handler(req, res) {
           coin,
           btcState: btc?.state || "NEUTRAL",
           kind: "signal",
-          reason: "Scanner OPEN gate — trade engine mag activeren",
+          reason: "LIVE gate OPEN — entry kan openen (UI blijft sticky via funnelGate)",
         });
       }
     }
@@ -1466,13 +1675,14 @@ export default async function handler(req, res) {
       .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
       .slice(0, 12);
 
+    // ✅ FIX: UI uses funnelGate (sticky), not live tradeDeskStatus
     const tradeReadyCandidates = universe
-      .filter((c) => c.tradeDeskStatus === "OPEN")
+      .filter((c) => up(c.funnelGate) === "OPEN")
       .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
       .slice(0, 20);
 
     const watchCandidates = universe
-      .filter((c) => c.tradeDeskStatus === "WATCH")
+      .filter((c) => up(c.funnelGate) === "WATCH")
       .sort((a, b) => (b.perfectCandidateScore || 0) - (a.perfectCandidateScore || 0))
       .slice(0, 20);
 
@@ -1532,6 +1742,10 @@ export default async function handler(req, res) {
       },
       ts: now,
       scannedAt: now,
+
+      meta: {
+        funnelLocks: { key: keyMoonFunnelLocks(mode) },
+      },
     };
 
     await kv.set(keyMoonLatest(mode), latest, { ex: 60 * 60 });
