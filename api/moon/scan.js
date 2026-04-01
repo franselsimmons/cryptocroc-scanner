@@ -130,7 +130,7 @@ const APLUS_TIMING = 80;             // was 76
 const APLUS_MIN_EQ = 78;             // was 74
 const APLUS_MIN_PS = 62;             // was 58
 const APLUS_MIN_BREAKOUT_PRESSURE = 61; // was 56
-const APLUS_MAX_SPREAD = 0.85;        // was 1.2
+const APLUS_MAX_SPREAD = 0.9;        // was 1.2
 
 // Near A+ (WATCH) – strakker
 const NEAR_LIQ = 72;     // was 68
@@ -146,7 +146,7 @@ const IMMEDIATE_OPEN_TIMING = 92; // was 86
 // ======================================================
 const DESK_THRESHOLDS_MOON = {
   watchConfirmScans: 3,      // was 2
-  openConfirmScans: 4,       // was 2
+  openConfirmScans: 3,       // was 2
 
   watchMinHoldMs: 35 * 60 * 1000, // was 28m
   openMinHoldMs: 22 * 60 * 1000,  // was 16m
