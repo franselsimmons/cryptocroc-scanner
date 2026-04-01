@@ -125,56 +125,56 @@ const MIN_RECENT_ENTRIES_TARGET = 3;
 const POSITION_SIZE_USD = 50;
 
 // ======================================================
-// ✅ QUALITY UP: strengere A+ gate (MAIN) — Level 2
+// ✅ QUALITY UP: strengere A+ gate (MAIN)
 // ======================================================
-const APLUS_BTC_ALIGN = 70;   // was 66
-const APLUS_LIQ = 74;         // was 70
-const APLUS_PERF = 87;        // was 82
-const APLUS_TIMING = 79;      // was 75
+const APLUS_BTC_ALIGN = 66;
+const APLUS_LIQ = 70;
+const APLUS_PERF = 82;
+const APLUS_TIMING = 75;
 
-// Near A+ (WATCH) — Level 2
-const NEAR_LIQ = 72;          // was 68
-const NEAR_PERF = 82;         // was 78
-const NEAR_TIMING = 75;       // was 72
+// Near A+ (WATCH)
+const NEAR_LIQ = 68;
+const NEAR_PERF = 78;
+const NEAR_TIMING = 72;
 
-// Extra quality hard filters — Level 2
-const APLUS_MIN_EQ = 76;      // was 72
-const APLUS_MIN_PS = 62;      // was 58
-const APLUS_MIN_BREAKOUT_PRESSURE = 61; // was 54
-const APLUS_MAX_SPREAD = 0.8; // was 1.0
+// Extra quality hard filters
+const APLUS_MIN_EQ = 72;
+const APLUS_MIN_PS = 58;
+const APLUS_MIN_BREAKOUT_PRESSURE = 54;
+const APLUS_MAX_SPREAD = 1.0;
 
-// Confirm logic — Level 2
-const WATCH_CONFIRM_TO_OPEN = 4;   // was 3
-const IMMEDIATE_OPEN_TIMING = 90;  // was 84
+// Confirm logic
+const WATCH_CONFIRM_TO_OPEN = 3;
+const IMMEDIATE_OPEN_TIMING = 84;
 
 // ======================================================
-// ✅ Anti-flip / Sticky gate hysteresis (REAL) — Level 2
+// ✅ Anti-flip / Sticky gate hysteresis (REAL)
 // ======================================================
 const DESK_THRESHOLDS_MAIN = {
-  watchConfirmScans: 3,     // was 2
-  openConfirmScans: 3,      // was 2
+  watchConfirmScans: 2,
+  openConfirmScans: 2,
 
-  watchMinHoldMs: 35 * 60 * 1000, // was 30m
-  openMinHoldMs: 22 * 60 * 1000,  // was 18m
+  watchMinHoldMs: 30 * 60 * 1000, // 30m
+  openMinHoldMs: 18 * 60 * 1000, // 18m
 
   // Watch enter
-  watchEnterEQ: 70,         // was 68
-  watchEnterPS: 58,         // was 56
-  watchEnterPressure: 56,   // was 52
-  watchEnterObScore: 0.008, // was 0.006
+  watchEnterEQ: 68,
+  watchEnterPS: 56,
+  watchEnterPressure: 52,
+  watchEnterObScore: 0.006,
 
   // Watch stay (ruimer)
-  watchStayEQ: 62,          // was 60
-  watchStayPS: 52,          // was 50
+  watchStayEQ: 60,
+  watchStayPS: 50,
 
   // Open enter (strakker)
-  openEnterEQ: 76,          // was 72
-  openEnterPS: 62,          // was 58
-  openEnterPressure: 60,    // was 54
+  openEnterEQ: 72,
+  openEnterPS: 58,
+  openEnterPressure: 54,
 
   // Open stay (ruimer)
-  openStayEQ: 68,           // was 64
-  openStayPS: 56,           // was 52
+  openStayEQ: 64,
+  openStayPS: 52,
 };
 
 function isMainEliteStage(stage) {
