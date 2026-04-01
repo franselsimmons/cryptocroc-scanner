@@ -122,54 +122,53 @@ const POSITION_SIZE_USD = 50;
 // ======================================================
 // ✅ QUALITY UP: strengere A+ gate (MOON)
 // ======================================================
-const APLUS_BTC_ALIGN = 66;
-const APLUS_LIQ = 70;
-const APLUS_PERF = 83;
-const APLUS_TIMING = 76;
+const APLUS_BTC_ALIGN = 70;           // was 66
+const APLUS_LIQ = 74;                // was 70
+const APLUS_PERF = 87;               // was 83
+const APLUS_TIMING = 79;             // was 76
 
-// Near A+ (WATCH)
-const NEAR_LIQ = 68;
-const NEAR_PERF = 79;
-const NEAR_TIMING = 73;
+const APLUS_MIN_EQ = 78;             // was 74
+const APLUS_MIN_PS = 62;             // was 58
+const APLUS_MIN_BREAKOUT_PRESSURE = 60; // was 56
+const APLUS_MAX_SPREAD = 0.9;        // was 1.2
 
-// Extra quality hard filters
-const APLUS_MIN_EQ = 74;
-const APLUS_MIN_PS = 58;
-const APLUS_MIN_BREAKOUT_PRESSURE = 56;
-const APLUS_MAX_SPREAD = 1.2;
+// Near A+ (WATCH) – strakker
+const NEAR_LIQ = 72;     // was 68
+const NEAR_PERF = 83;    // was 79
+const NEAR_TIMING = 76;  // was 73
 
-// Confirm logic
-const WATCH_CONFIRM_TO_OPEN = 3;
-const IMMEDIATE_OPEN_TIMING = 86;
+// Confirm logic – minder agressief OPEN
+const WATCH_CONFIRM_TO_OPEN = 4;  // was 3
+const IMMEDIATE_OPEN_TIMING = 90; // was 86
 
 // ======================================================
-// ✅ Sticky gate hysteresis (MOON) – echte anti-flip
+// ✅ Sticky gate hysteresis (MOON) – strenger
 // ======================================================
 const DESK_THRESHOLDS_MOON = {
-  watchConfirmScans: 2,
-  openConfirmScans: 2,
+  watchConfirmScans: 3,      // was 2
+  openConfirmScans: 3,       // was 2
 
-  watchMinHoldMs: 28 * 60 * 1000, // 28m
-  openMinHoldMs: 16 * 60 * 1000,  // 16m
+  watchMinHoldMs: 35 * 60 * 1000, // was 28m
+  openMinHoldMs: 22 * 60 * 1000,  // was 16m
 
-  // Watch enter
-  watchEnterEQ: 70,
-  watchEnterPS: 56,
-  watchEnterPressure: 54,
-  watchEnterObScore: 0.008,
+  // Watch enter (strakker)
+  watchEnterEQ: 72,          // was 70
+  watchEnterPS: 58,          // was 56
+  watchEnterPressure: 58,    // was 54
+  watchEnterObScore: 0.010,  // was 0.008
 
-  // Watch stay (ruimer)
-  watchStayEQ: 62,
-  watchStayPS: 50,
+  // Watch stay (iets strakker)
+  watchStayEQ: 64,           // was 62
+  watchStayPS: 52,           // was 50
 
   // Open enter (strakker)
-  openEnterEQ: 74,
-  openEnterPS: 58,
-  openEnterPressure: 56,
+  openEnterEQ: 78,           // was 74
+  openEnterPS: 62,           // was 58
+  openEnterPressure: 60,     // was 56
 
-  // Open stay (ruimer)
-  openStayEQ: 66,
-  openStayPS: 52,
+  // Open stay (strakker)
+  openStayEQ: 70,            // was 66
+  openStayPS: 56,            // was 52
 };
 
 function isMoonEliteStage(stage) {
