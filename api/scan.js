@@ -127,32 +127,32 @@ const POSITION_SIZE_USD = 50;
 // ======================================================
 // ✅ QUALITY UP: strengere A+ gate (MAIN)
 // ======================================================
-const APLUS_BTC_ALIGN = 66;
-const APLUS_LIQ = 70;
-const APLUS_PERF = 82;
-const APLUS_TIMING = 75;
+const APLUS_BTC_ALIGN = 68;     // was 66
+const APLUS_LIQ = 72;          // was 70
+const APLUS_PERF = 83;         // was 82
+const APLUS_TIMING = 76;       // was 75
 
 // Near A+ (WATCH)
-const NEAR_LIQ = 68;
-const NEAR_PERF = 78;
-const NEAR_TIMING = 72;
+const NEAR_LIQ = 70;           // was 68
+const NEAR_PERF = 80;          // was 78
+const NEAR_TIMING = 73;        // was 72
 
 // Extra quality hard filters
-const APLUS_MIN_EQ = 72;
-const APLUS_MIN_PS = 58;
-const APLUS_MIN_BREAKOUT_PRESSURE = 54;
-const APLUS_MAX_SPREAD = 1.0;
+const APLUS_MIN_EQ = 74;       // was 72
+const APLUS_MIN_PS = 60;       // was 58
+const APLUS_MIN_BREAKOUT_PRESSURE = 56; // was 54
+const APLUS_MAX_SPREAD = 0.9;  // was 1.0
 
 // Confirm logic
-const WATCH_CONFIRM_TO_OPEN = 3;
-const IMMEDIATE_OPEN_TIMING = 84;
+const WATCH_CONFIRM_TO_OPEN = 3;    // laat zo (niet agressiever)
+const IMMEDIATE_OPEN_TIMING = 86;   // was 84 (iets minder “force open”)
 
 // ======================================================
 // ✅ Anti-flip / Sticky gate hysteresis (REAL)
 // ======================================================
 const DESK_THRESHOLDS_MAIN = {
   watchConfirmScans: 2,
-  openConfirmScans: 2,
+  openConfirmScans: 3, // was 2
 
   watchMinHoldMs: 30 * 60 * 1000, // 30m
   openMinHoldMs: 18 * 60 * 1000, // 18m
