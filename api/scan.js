@@ -159,7 +159,7 @@ const APLUS_MIN_BREAKOUT_PRESSURE = 50; // was 54
 const APLUS_MAX_SPREAD = 1.2; // was 1.0
 
 // Confirm logic
-const WATCH_CONFIRM_TO_OPEN = 3;
+const WATCH_CONFIRM_TO_OPEN = 2; // 🔥 was 3
 const IMMEDIATE_OPEN_TIMING = 84;
 
 // ======================================================
@@ -967,8 +967,9 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
 
     // ========== PATCH: promote WATCH confirmed to OPEN ==========
     const prevWatchScans = n(prev?.watchScans, 0);
-    const openIntent = aPlus || (nearAPlus && prevWatchScans >= (WATCH_CONFIRM_TO_OPEN - 1));
-
+    // 🔥 openIntent al true bij 1 watchScan (in plaats van 2)
+    const openIntent = aPlus || (nearAPlus && prevWatchScans >= 1);
+    
     // tradeCandidate must allow ENTRY from WATCH confirmed
     const tradeCandidate = openIntent;
     const superScannerCoin = aPlus;     // premium only for real A+
@@ -1397,7 +1398,9 @@ export default async function handler(req, res) {
       // Macro check consistent with buildUniverse() – mode-aware
       const btcAlign = n(coin.btcAlignmentScore, 0);
       const macroOkNow = isMacroRegimeOk(regime, mode) && btcAlign >= btcAlignReq(mode);
-      if (!macroOkNow) watchScans = 0;
+      
+      // 🔥 SOFT RESET: alleen 1 stap terug, niet naar 0
+      if (!macroOkNow) watchScans = Math.max(0, watchScans - 1);
 
       let depthHist = Array.isArray(prev?.depthHist) ? [...prev.depthHist] : [];
       const currentDepth = n(coin.ob?.depthMinUsd1p, 0);
