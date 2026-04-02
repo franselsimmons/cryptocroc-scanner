@@ -64,22 +64,25 @@ function sideFromMode(mode) {
 }
 
 // ======================================================
-// Macro regime allowlist (mode-aware)
+// Macro regime allowlist (mode-aware, bear ruimer)
 // ======================================================
 function isMacroRegimeOk(regime, mode) {
   const r = String(regime || "").toUpperCase();
+  const m = String(mode || "bull").toLowerCase();
+
   if (!r) return false;
 
-  // Bull: streng (zoals nu)
-  if (String(mode) === "bull") {
+  // Bull: CHOP/HEADWIND vermijden
+  if (m === "bull") {
     if (r === "HEADWIND") return false;
     if (r === "CHOP") return false;
     return true;
   }
 
-  // Bear: iets ruimer (anders krijg je vaak "niks")
-  if (r === "HEADWIND") return false; // blijft blokkeren
-  return true; // CHOP mag in bear
+  // Bear: HEADWIND mag, CHOP mag (anders krijg je te weinig)
+  // Alleen echt "BAD" blokkeren (als je zo'n label hebt)
+  if (r === "BAD") return false;
+  return true;
 }
 
 // ======================================================
@@ -139,56 +142,50 @@ const MIN_RECENT_ENTRIES_TARGET = 3;
 const POSITION_SIZE_USD = 50;
 
 // ======================================================
-// ✅ QUALITY UP: strengere A+ gate (MAIN)
+// ✅ A+/NEAR drempels – verruimd voor meer signalen
 // ======================================================
-const APLUS_BTC_ALIGN = 66;
-const APLUS_LIQ = 70;
-const APLUS_PERF = 82;
-const APLUS_TIMING = 75;
+const APLUS_BTC_ALIGN = 62;   // was 66
+const APLUS_LIQ = 68;         // was 70
+const APLUS_PERF = 80;        // was 82
+const APLUS_TIMING = 72;      // was 75
 
-// Near A+ (WATCH) – aangepast voor meer WATCH meldingen
-const NEAR_LIQ = 66;
-const NEAR_PERF = 76;
-const NEAR_TIMING = 70;
+const NEAR_LIQ = 66;          // was 68
+const NEAR_PERF = 76;         // was 78
+const NEAR_TIMING = 70;       // was 72
 
-// Extra quality hard filters
-const APLUS_MIN_EQ = 72;
-const APLUS_MIN_PS = 58;
-const APLUS_MIN_BREAKOUT_PRESSURE = 54;
-const APLUS_MAX_SPREAD = 1.0;
+const APLUS_MIN_EQ = 70;      // was 72
+const APLUS_MIN_PS = 56;      // was 58
+const APLUS_MIN_BREAKOUT_PRESSURE = 50; // was 54
+const APLUS_MAX_SPREAD = 1.2; // was 1.0
 
 // Confirm logic
 const WATCH_CONFIRM_TO_OPEN = 3;
 const IMMEDIATE_OPEN_TIMING = 84;
 
 // ======================================================
-// ✅ Anti-flip / Sticky gate hysteresis (REAL)
+// ✅ Hysteresis – sneller naar WATCH/OPEN (meer meldingen)
 // ======================================================
 const DESK_THRESHOLDS_MAIN = {
-  watchConfirmScans: 2,
-  openConfirmScans: 2,
+  watchConfirmScans: 1, // was 2
+  openConfirmScans: 1,  // was 2
 
-  watchMinHoldMs: 30 * 60 * 1000, // 30m
-  openMinHoldMs: 18 * 60 * 1000, // 18m
+  watchMinHoldMs: 20 * 60 * 1000, // was 30m
+  openMinHoldMs: 12 * 60 * 1000,  // was 18m
 
-  // Watch enter
-  watchEnterEQ: 68,
-  watchEnterPS: 56,
-  watchEnterPressure: 52,
-  watchEnterObScore: 0.006,
+  watchEnterEQ: 66,       // was 68
+  watchEnterPS: 54,       // was 56
+  watchEnterPressure: 48, // was 52
+  watchEnterObScore: 0.003, // was 0.006
 
-  // Watch stay (ruimer)
-  watchStayEQ: 60,
-  watchStayPS: 50,
+  watchStayEQ: 58, // was 60
+  watchStayPS: 48, // was 50
 
-  // Open enter (strakker)
-  openEnterEQ: 72,
-  openEnterPS: 58,
-  openEnterPressure: 54,
+  openEnterEQ: 70,       // was 72
+  openEnterPS: 56,       // was 58
+  openEnterPressure: 50, // was 54
 
-  // Open stay (ruimer)
-  openStayEQ: 64,
-  openStayPS: 52,
+  openStayEQ: 62, // was 64
+  openStayPS: 50, // was 52
 };
 
 function isMainEliteStage(stage) {
@@ -823,7 +820,8 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
     const prev = state?.[sym] || {};
 
     let ob = null;
-    if (n(coin.volume, 0) >= 600_000) {
+    // 🔥 VERLAAGDE VOLUME-DREMPEL: 250_000 i.p.v. 600_000 (meer OB’s)
+    if (n(coin.volume, 0) >= 250_000) {
       ob = await fetchOrderbook(`${sym}USDT`);
     }
     const obx = computeObScore(ob);
@@ -937,14 +935,14 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       marketScore,
     });
 
-    // Macro gate – aangepast: mode-aware
+    // Macro gate – mode-aware (bear ruimer)
     const macroOk = isMacroRegimeOk(regime, mode) && n(btcAlignmentScore, 0) >= btcAlignReq(mode);
 
-    // Extra quality gates
+    // Extra quality gates (met verruimde spread)
     const spreadOk = n(obx.spreadPct, 999) <= APLUS_MAX_SPREAD;
     const breakoutOk = !!breakout?.ready || n(breakout?.pressure, 0) >= APLUS_MIN_BREAKOUT_PRESSURE;
 
-    // A+ (trade candidate)
+    // A+ (trade candidate) – met verlaagde drempels
     const aPlus =
       macroOk === true &&
       spreadOk === true &&
@@ -956,7 +954,7 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       n(persistenceScore, 0) >= APLUS_MIN_PS &&
       tradePlan != null;
 
-    // Near A+ (watch) – drempels zijn al aangepast (NEAR_LIQ=66, etc.)
+    // Near A+ (watch) – met verlaagde drempels
     const nearAPlus =
       macroOk === true &&
       spreadOk === true &&
@@ -981,7 +979,7 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
     const scannerOnly = !superScannerCoin;
 
     // -------------------------
-    // ✅ ENGINE GATE (real decision) via hysteresis
+    // ✅ ENGINE GATE (real decision) via hysteresis (sneller)
     // -------------------------
     const hyst = decideDeskGateHysteresis({
       prevGate: prev?.engineGate || prev?.tradeDeskStatus || "IGNORE",
@@ -1397,7 +1395,7 @@ export default async function handler(req, res) {
         else watchScans = 0;
       }
 
-      // Macro check consistent with buildUniverse() – aangepast: mode-aware
+      // Macro check consistent with buildUniverse() – mode-aware
       const btcAlign = n(coin.btcAlignmentScore, 0);
       const macroOkNow = isMacroRegimeOk(regime, mode) && btcAlign >= btcAlignReq(mode);
       if (!macroOkNow) watchScans = 0;
