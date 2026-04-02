@@ -89,7 +89,7 @@ function isMacroRegimeOk(regime, mode) {
 // BTC alignment drempel per mode
 // ======================================================
 function btcAlignReq(mode) {
-  return String(mode) === "bear" ? (APLUS_BTC_ALIGN - 6) : APLUS_BTC_ALIGN;
+  return String(mode) === "bear" ? APLUS_BTC_ALIGN - 6 : APLUS_BTC_ALIGN;
 }
 
 // ======================================================
@@ -144,17 +144,17 @@ const POSITION_SIZE_USD = 50;
 // ======================================================
 // ✅ A+/NEAR drempels – verruimd voor meer signalen
 // ======================================================
-const APLUS_BTC_ALIGN = 62;   // was 66
-const APLUS_LIQ = 68;         // was 70
-const APLUS_PERF = 80;        // was 82
-const APLUS_TIMING = 72;      // was 75
+const APLUS_BTC_ALIGN = 62; // was 66
+const APLUS_LIQ = 68; // was 70
+const APLUS_PERF = 80; // was 82
+const APLUS_TIMING = 72; // was 75
 
-const NEAR_LIQ = 66;          // was 68
-const NEAR_PERF = 76;         // was 78
-const NEAR_TIMING = 70;       // was 72
+const NEAR_LIQ = 66; // was 68
+const NEAR_PERF = 76; // was 78
+const NEAR_TIMING = 70; // was 72
 
-const APLUS_MIN_EQ = 70;      // was 72
-const APLUS_MIN_PS = 56;      // was 58
+const APLUS_MIN_EQ = 70; // was 72
+const APLUS_MIN_PS = 56; // was 58
 const APLUS_MIN_BREAKOUT_PRESSURE = 50; // was 54
 const APLUS_MAX_SPREAD = 1.2; // was 1.0
 
@@ -167,21 +167,21 @@ const IMMEDIATE_OPEN_TIMING = 84;
 // ======================================================
 const DESK_THRESHOLDS_MAIN = {
   watchConfirmScans: 1, // was 2
-  openConfirmScans: 1,  // was 2
+  openConfirmScans: 1, // was 2
 
   watchMinHoldMs: 20 * 60 * 1000, // was 30m
-  openMinHoldMs: 12 * 60 * 1000,  // was 18m
+  openMinHoldMs: 12 * 60 * 1000, // was 18m
 
-  watchEnterEQ: 66,       // was 68
-  watchEnterPS: 54,       // was 56
+  watchEnterEQ: 66, // was 68
+  watchEnterPS: 54, // was 56
   watchEnterPressure: 48, // was 52
   watchEnterObScore: 0.003, // was 0.006
 
   watchStayEQ: 58, // was 60
   watchStayPS: 48, // was 50
 
-  openEnterEQ: 70,       // was 72
-  openEnterPS: 56,       // was 58
+  openEnterEQ: 70, // was 72
+  openEnterPS: 56, // was 58
   openEnterPressure: 50, // was 54
 
   openStayEQ: 62, // was 64
@@ -657,16 +657,56 @@ function decideMainStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, wha
   });
 
   if (mode === "bull" && isBullExhausted(coin)) {
-    return { stage: "RADAR", stageWhy: "bull_exhausted", moveScore: 0, velocity, compression, breakout, eliteType: null, persistenceScore, entryQuality: 0 };
+    return {
+      stage: "RADAR",
+      stageWhy: "bull_exhausted",
+      moveScore: 0,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality: 0,
+    };
   }
   if (mode === "bear" && isBearBounceTrap(coin)) {
-    return { stage: "RADAR", stageWhy: "bear_bounce_trap", moveScore: 0, velocity, compression, breakout, eliteType: null, persistenceScore, entryQuality: 0 };
+    return {
+      stage: "RADAR",
+      stageWhy: "bear_bounce_trap",
+      moveScore: 0,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality: 0,
+    };
   }
   if (mode === "bull" && isLateBullEntry(coin)) {
-    return { stage: "ALMOST", stageWhy: "late_bull_entry", moveScore: 0, velocity, compression, breakout, eliteType: null, persistenceScore, entryQuality: 0 };
+    return {
+      stage: "ALMOST",
+      stageWhy: "late_bull_entry",
+      moveScore: 0,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality: 0,
+    };
   }
   if (mode === "bear" && isLateBearEntry(coin)) {
-    return { stage: "ALMOST", stageWhy: "late_bear_entry", moveScore: 0, velocity, compression, breakout, eliteType: null, persistenceScore, entryQuality: 0 };
+    return {
+      stage: "ALMOST",
+      stageWhy: "late_bear_entry",
+      moveScore: 0,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality: 0,
+    };
   }
 
   const moveScore = mode === "bull" ? computeBullMoveScore(coin, obx) : computeBearMoveScore(coin, obx);
@@ -961,8 +1001,8 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       liquidityScore >= NEAR_LIQ &&
       perfectCandidateScore >= NEAR_PERF &&
       timingScore >= NEAR_TIMING &&
-      n(entryQuality, 0) >= (APLUS_MIN_EQ - 6) &&
-      n(persistenceScore, 0) >= (APLUS_MIN_PS - 6) &&
+      n(entryQuality, 0) >= APLUS_MIN_EQ - 6 &&
+      n(persistenceScore, 0) >= APLUS_MIN_PS - 6 &&
       tradePlan != null;
 
     const isEliteStageForDesk =
@@ -1004,22 +1044,19 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
     const confirmOpen =
       aPlus &&
       (prev?.engineGate || prev?.tradeDeskStatus) === "WATCH" &&
-      (prev?.watchScans || 0) >= (WATCH_CONFIRM_TO_OPEN - 1);
+      (prev?.watchScans || 0) >= WATCH_CONFIRM_TO_OPEN - 1;
 
     let engineGateFinal = engineGate;
     if (immediateOpen || confirmOpen) engineGateFinal = "OPEN";
 
     // -------------------------
     // ✅ UI GATE (anti-flip UI lock)
-    // - If a coin got OPEN recently: keep showing it as OPEN/HOLD until lock expires
-    // - EngineGate still controls actual entries
     // -------------------------
     const prevUiLockUntil = n(prev?.uiLockUntil, 0);
     const uiLockActive = prevUiLockUntil > now;
 
     let uiGate = engineGateFinal;
     if (uiLockActive && uiGate === "IGNORE") {
-      // keep it visible; label it HOLD (still uses OPEN for UI if you want)
       uiGate = "OPEN";
     }
 
@@ -1093,6 +1130,12 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       minHoldCycles: n(prevPositionState.minHoldCycles, 5),
       weakHoldCount: n(prevPositionState.weakHoldCount, 0),
       maxWeakHoldCycles: n(prevPositionState.maxWeakHoldCycles, 2),
+
+      // ✅ ENTRY TICKET: geef engine de persisted ticket-state mee
+      entryTicketActive: !!prev?.entryTicketActive,
+      entryTicketSince: n(prev?.entryTicketSince, 0),
+      entryTicketTtlMs: n(prev?.entryTicketTtlMs, 0),
+      now,
     };
 
     const execution = buildMainExecutionDecision({
@@ -1347,6 +1390,11 @@ export default async function handler(req, res) {
       let eliteSince = prev?.eliteSince || null;
       let watchScans = prev?.watchScans || 0;
 
+      // ✅ ENTRY TICKET state (persisted)
+      let entryTicketActive = !!prev?.entryTicketActive;
+      let entryTicketSince = n(prev?.entryTicketSince, 0);
+      let entryTicketTtlMs = n(prev?.entryTicketTtlMs, 0);
+
       // Persist UI lock
       let uiLockUntil = n(prev?.uiLockUntil, 0);
 
@@ -1357,6 +1405,11 @@ export default async function handler(req, res) {
         eliteSince = null;
         entryLocked = false;
         watchScans = 0;
+
+        // RADAR: ticket reset (anders blijf je pinned op rommel)
+        entryTicketActive = false;
+        entryTicketSince = 0;
+        entryTicketTtlMs = 0;
       } else {
         if (isMainEliteStage(rawStage)) {
           strongScans = (prev?.strongScans || 0) + 1;
@@ -1419,7 +1472,19 @@ export default async function handler(req, res) {
         uiLockUntil = Math.max(uiLockUntil, now + UI_ENTRY_LOCK_MS_MAIN);
       }
 
+      // ✅ ENTRY TICKET persistence via execution meta
       const execMeta = coin.execution?.meta || {};
+      if (execMeta.issueEntryTicket) {
+        entryTicketActive = true;
+        entryTicketSince = now;
+        entryTicketTtlMs = n(execMeta.entryTicketTtlMs, 0) || entryTicketTtlMs;
+      }
+      if (coin.execution?.action === "CANCEL_ENTRY") {
+        entryTicketActive = false;
+        entryTicketSince = 0;
+        entryTicketTtlMs = 0;
+      }
+
       const positionStateForStore = {
         inPosition: !!prev?.entryActive,
         cyclesInTrade: !!prev?.entryActive ? n((prev?.positionState?.cyclesInTrade || 0) + 1, 1) : 0,
@@ -1496,12 +1561,17 @@ export default async function handler(req, res) {
 
         // ✅ store both gates
         tradeDeskStatus: coin.tradeDeskStatus || "IGNORE", // UI
-        engineGate: coin.engineGate || "IGNORE",           // ENGINE
+        engineGate: coin.engineGate || "IGNORE", // ENGINE
         deskGate: coin.tradeDeskStatus || "IGNORE",
         deskMeta: coin.deskMeta || prev?.deskMeta || null,
 
         // ✅ UI lock
         uiLockUntil,
+
+        // ✅ ENTRY TICKET persisted (sticky entry)
+        entryTicketActive,
+        entryTicketSince,
+        entryTicketTtlMs,
 
         name: coin.name,
         image: coin.image,
@@ -1511,7 +1581,8 @@ export default async function handler(req, res) {
       };
 
       // Signals:
-      const isElitePreTrade = coin.engineGate === "WATCH" && watchScans >= 2;
+      // ✅ sneller meldingen: WATCH al vanaf 1 scan
+      const isElitePreTrade = coin.engineGate === "WATCH" && watchScans >= 1;
       if (!hasOpenPosition && isElitePreTrade) {
         await safeSendSignal({
           source: "main",
@@ -1520,7 +1591,20 @@ export default async function handler(req, res) {
           coin,
           btcState: btc?.state || "NEUTRAL",
           kind: "elite_watch",
-          reason: "WATCH bevestigd — gate is sticky (anti-flip)",
+          reason: "WATCH — snelle melding (watchScans>=1)",
+        });
+      }
+
+      // ✅ ook melden als ticket pinned is (je ziet dan iets om op te klikken)
+      if (!hasOpenPosition && coin.execution?.action === "PENDING_ENTRY") {
+        await safeSendSignal({
+          source: "main",
+          stage: "PENDING_ENTRY",
+          mode,
+          coin,
+          btcState: btc?.state || "NEUTRAL",
+          kind: "signal",
+          reason: "Entry ticket actief — entry blijft pinned (PENDING_ENTRY)",
         });
       }
 
@@ -1640,6 +1724,11 @@ export default async function handler(req, res) {
 
         // ensure UI stays visible long enough
         uiLockUntil: Math.max(n(state.uiLockUntil, 0), now + UI_ENTRY_LOCK_MS_MAIN),
+
+        // ✅ zodra trade echt open is: ticket uit
+        entryTicketActive: false,
+        entryTicketSince: 0,
+        entryTicketTtlMs: 0,
 
         positionState: {
           inPosition: true,
