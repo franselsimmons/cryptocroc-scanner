@@ -122,32 +122,32 @@ const POSITION_SIZE_USD = 50;
 // ======================================================
 // ✅ QUALITY UP: strengere A+ gate (MOON)
 // ======================================================
-const APLUS_BTC_ALIGN = 68;     // was 66
-const APLUS_LIQ = 72;          // was 70
-const APLUS_PERF = 84;         // was 83
-const APLUS_TIMING = 77;       // was 76
+const APLUS_BTC_ALIGN = 66;
+const APLUS_LIQ = 70;
+const APLUS_PERF = 83;
+const APLUS_TIMING = 76;
 
 // Near A+ (WATCH)
-const NEAR_LIQ = 70;           // was 68
-const NEAR_PERF = 81;          // was 79
-const NEAR_TIMING = 74;        // was 73
+const NEAR_LIQ = 68;
+const NEAR_PERF = 79;
+const NEAR_TIMING = 73;
 
 // Extra quality hard filters
-const APLUS_MIN_EQ = 76;       // was 74
-const APLUS_MIN_PS = 60;       // was 58
-const APLUS_MIN_BREAKOUT_PRESSURE = 58; // was 56
-const APLUS_MAX_SPREAD = 1.0;  // was 1.2
+const APLUS_MIN_EQ = 74;
+const APLUS_MIN_PS = 58;
+const APLUS_MIN_BREAKOUT_PRESSURE = 56;
+const APLUS_MAX_SPREAD = 1.2;
 
 // Confirm logic
-const WATCH_CONFIRM_TO_OPEN = 3;   // laat zo
-const IMMEDIATE_OPEN_TIMING = 88;  // was 86 (minder “force open”)
+const WATCH_CONFIRM_TO_OPEN = 3;
+const IMMEDIATE_OPEN_TIMING = 86;
 
 // ======================================================
 // ✅ Sticky gate hysteresis (MOON) – echte anti-flip
 // ======================================================
 const DESK_THRESHOLDS_MOON = {
   watchConfirmScans: 2,
-  openConfirmScans: 3, // was 2
+  openConfirmScans: 2,
 
   watchMinHoldMs: 28 * 60 * 1000, // 28m
   openMinHoldMs: 16 * 60 * 1000,  // 16m
