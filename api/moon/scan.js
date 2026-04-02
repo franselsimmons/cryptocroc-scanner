@@ -61,13 +61,72 @@ function sideFromMode(mode) {
   return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG";
 }
 
-// ✅ Macro regime allowlist (MOON) – conservatief (zelfde als main baseline)
-function isMacroRegimeOk(regime) {
+// ======================================================
+// Constantes
+// ======================================================
+const COOLDOWN_SL_SEC = 4 * 60 * 60;
+const COOLDOWN_TP_SEC = 90 * 60;
+const COOLDOWN_TIMEOUT_SEC = 2 * 60 * 60;
+const COOLDOWN_EARLY_EXIT_SEC = 60 * 60;
+
+const MAX_OPEN_TRADES = 4;
+
+const ENTRY_HISTORY_KEEP = 40;
+const ENTRY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const MIN_RECENT_ENTRIES_TARGET = 2;
+
+const POSITION_SIZE_USD = 50;
+
+// ======================================================
+// ✅ A+/NEAR drempels – verruimd voor meer signalen (MOON)
+// ======================================================
+const APLUS_BTC_ALIGN = 62; // was 66
+const APLUS_LIQ = 68; // was 70
+const APLUS_PERF = 81; // was 83
+const APLUS_TIMING = 73; // was 76
+
+// Near A+ (WATCH)
+const NEAR_LIQ = 66; // was 68
+const NEAR_PERF = 77; // was 79
+const NEAR_TIMING = 70; // was 73
+
+// Extra quality hard filters
+const APLUS_MIN_EQ = 72; // was 74
+const APLUS_MIN_PS = 56; // was 58
+const APLUS_MIN_BREAKOUT_PRESSURE = 52; // was 56
+const APLUS_MAX_SPREAD = 1.6; // was 1.2 (moon mag ruimer)
+
+// Confirm logic
+const WATCH_CONFIRM_TO_OPEN = 3;
+const IMMEDIATE_OPEN_TIMING = 86;
+
+// ======================================================
+// ✅ Macro regime allowlist (mode-aware, bear ruimer)
+// ======================================================
+function isMacroRegimeOk(regime, mode) {
   const r = String(regime || "").toUpperCase();
+  const m = String(mode || "bull").toLowerCase();
+
   if (!r) return false;
-  if (r === "HEADWIND") return false;
-  if (r === "CHOP") return false;
+
+  // Bull: CHOP/HEADWIND vermijden
+  if (m === "bull") {
+    if (r === "HEADWIND") return false;
+    if (r === "CHOP") return false;
+    return true;
+  }
+
+  // Bear: ruimer (anders vaak 0 signals)
+  // Alleen echt "BAD" blokkeren (als je zo'n label hebt)
+  if (r === "BAD") return false;
   return true;
+}
+
+// ======================================================
+// BTC alignment drempel per mode (bear ruimer)
+// ======================================================
+function btcAlignReq(mode) {
+  return String(mode) === "bear" ? APLUS_BTC_ALIGN - 6 : APLUS_BTC_ALIGN;
 }
 
 // ======================================================
@@ -104,72 +163,33 @@ async function safeSendSignal(payload) {
 }
 
 // ======================================================
-// Constantes
-// ======================================================
-const COOLDOWN_SL_SEC = 4 * 60 * 60;
-const COOLDOWN_TP_SEC = 90 * 60;
-const COOLDOWN_TIMEOUT_SEC = 2 * 60 * 60;
-const COOLDOWN_EARLY_EXIT_SEC = 60 * 60;
-
-const MAX_OPEN_TRADES = 4;
-
-const ENTRY_HISTORY_KEEP = 40;
-const ENTRY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
-const MIN_RECENT_ENTRIES_TARGET = 2;
-
-const POSITION_SIZE_USD = 50;
-
-// ======================================================
-// ✅ QUALITY UP: strengere A+ gate (MOON)
-// ======================================================
-const APLUS_BTC_ALIGN = 66;
-const APLUS_LIQ = 70;
-const APLUS_PERF = 83;
-const APLUS_TIMING = 76;
-
-// Near A+ (WATCH)
-const NEAR_LIQ = 68;
-const NEAR_PERF = 79;
-const NEAR_TIMING = 73;
-
-// Extra quality hard filters
-const APLUS_MIN_EQ = 74;
-const APLUS_MIN_PS = 58;
-const APLUS_MIN_BREAKOUT_PRESSURE = 56;
-const APLUS_MAX_SPREAD = 1.2;
-
-// Confirm logic
-const WATCH_CONFIRM_TO_OPEN = 3;
-const IMMEDIATE_OPEN_TIMING = 86;
-
-// ======================================================
-// ✅ Sticky gate hysteresis (MOON) – echte anti-flip
+// ✅ Sticky gate hysteresis (MOON) – sneller naar WATCH/OPEN
 // ======================================================
 const DESK_THRESHOLDS_MOON = {
-  watchConfirmScans: 2,
-  openConfirmScans: 2,
+  watchConfirmScans: 1, // was 2
+  openConfirmScans: 1, // was 2
 
-  watchMinHoldMs: 28 * 60 * 1000, // 28m
-  openMinHoldMs: 16 * 60 * 1000,  // 16m
+  watchMinHoldMs: 20 * 60 * 1000, // was 28m
+  openMinHoldMs: 12 * 60 * 1000, // was 16m
 
   // Watch enter
-  watchEnterEQ: 70,
-  watchEnterPS: 56,
-  watchEnterPressure: 54,
-  watchEnterObScore: 0.008,
+  watchEnterEQ: 68, // was 70
+  watchEnterPS: 54, // was 56
+  watchEnterPressure: 50, // was 54
+  watchEnterObScore: 0.004, // was 0.008
 
   // Watch stay (ruimer)
-  watchStayEQ: 62,
-  watchStayPS: 50,
+  watchStayEQ: 60, // was 62
+  watchStayPS: 48, // was 50
 
   // Open enter (strakker)
-  openEnterEQ: 74,
-  openEnterPS: 58,
-  openEnterPressure: 56,
+  openEnterEQ: 72, // was 74
+  openEnterPS: 56, // was 58
+  openEnterPressure: 52, // was 56
 
   // Open stay (ruimer)
-  openStayEQ: 66,
-  openStayPS: 52,
+  openStayEQ: 64, // was 66
+  openStayPS: 50, // was 52
 };
 
 function isMoonEliteStage(stage) {
@@ -631,7 +651,7 @@ function isLateBearEntry(coin) {
 }
 
 // ======================================================
-// Moon stage decision (jouw code ongewijzigd)
+// Moon stage decision (ongewijzigd)
 // ======================================================
 function decideMoonStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, whaleFlow, regime }) {
   const baseCfg = MOON_V2[mode];
@@ -818,7 +838,8 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
     const prev = state?.[sym] || {};
 
     let ob = null;
-    if (n(coin.volume, 0) >= 600_000) {
+    // 🔥 VERLAAGDE VOLUME-DREMPEL: 250_000 i.p.v. 600_000 (meer OB’s)
+    if (n(coin.volume, 0) >= 250_000) {
       ob = await fetchOrderbook(`${sym}USDT`);
     }
     const obx = computeObScore(ob);
@@ -928,9 +949,10 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       marketScore,
     });
 
-    const macroOk = isMacroRegimeOk(regime) && n(btcAlignmentScore, 0) >= APLUS_BTC_ALIGN;
+    // Macro gate – mode-aware (bear ruimer)
+    const macroOk = isMacroRegimeOk(regime, mode) && n(btcAlignmentScore, 0) >= btcAlignReq(mode);
 
-    // Extra quality gates
+    // Extra quality gates (met verruimde spread)
     const spreadOk = n(obx.spreadPct, 999) <= APLUS_MAX_SPREAD;
     const breakoutOk = !!breakout?.ready || n(breakout?.pressure, 0) >= APLUS_MIN_BREAKOUT_PRESSURE;
 
@@ -1369,13 +1391,14 @@ export default async function handler(req, res) {
 
         // watch scans based on ENGINE gate
         if (coin.engineGate === "WATCH") watchScans = (prev?.watchScans || 0) + 1;
-        else if ((prev?.engineGate || prev?.tradeDeskStatus) === "WATCH") watchScans = Math.max(0, (prev?.watchScans || 0) - 1);
+        else if ((prev?.engineGate || prev?.tradeDeskStatus) === "WATCH")
+          watchScans = Math.max(0, (prev?.watchScans || 0) - 1);
         else watchScans = 0;
       }
 
-      // Macro check consistent with buildUniverse()
+      // Macro check consistent with buildUniverse() – mode-aware
       const btcAlign = n(coin.btcAlignmentScore, 0);
-      const macroOkNow = isMacroRegimeOk(regime) && btcAlign >= APLUS_BTC_ALIGN;
+      const macroOkNow = isMacroRegimeOk(regime, mode) && btcAlign >= btcAlignReq(mode);
       if (!macroOkNow) watchScans = 0;
 
       let depthHist = Array.isArray(prev?.depthHist) ? [...prev.depthHist] : [];
@@ -1474,7 +1497,7 @@ export default async function handler(req, res) {
 
         // ✅ store both gates
         tradeDeskStatus: coin.tradeDeskStatus || "IGNORE", // UI
-        engineGate: coin.engineGate || "IGNORE",           // ENGINE
+        engineGate: coin.engineGate || "IGNORE", // ENGINE
         deskGate: coin.tradeDeskStatus || "IGNORE",
         deskMeta: coin.deskMeta || prev?.deskMeta || null,
 
