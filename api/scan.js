@@ -64,15 +64,29 @@ function sideFromMode(mode) {
 }
 
 // ======================================================
-// Macro regime allowlist (keep simple, but strict enough)
-// - MAIN: bull only when not HEADWIND/CHOP (you can tighten to EXPANSION only if you want)
+// Macro regime allowlist (mode-aware)
 // ======================================================
-function isMacroRegimeOk(regime) {
+function isMacroRegimeOk(regime, mode) {
   const r = String(regime || "").toUpperCase();
   if (!r) return false;
-  if (r === "HEADWIND") return false;
-  if (r === "CHOP") return false;
-  return true;
+
+  // Bull: streng (zoals nu)
+  if (String(mode) === "bull") {
+    if (r === "HEADWIND") return false;
+    if (r === "CHOP") return false;
+    return true;
+  }
+
+  // Bear: iets ruimer (anders krijg je vaak "niks")
+  if (r === "HEADWIND") return false; // blijft blokkeren
+  return true; // CHOP mag in bear
+}
+
+// ======================================================
+// BTC alignment drempel per mode
+// ======================================================
+function btcAlignReq(mode) {
+  return String(mode) === "bear" ? (APLUS_BTC_ALIGN - 6) : APLUS_BTC_ALIGN;
 }
 
 // ======================================================
@@ -132,10 +146,10 @@ const APLUS_LIQ = 70;
 const APLUS_PERF = 82;
 const APLUS_TIMING = 75;
 
-// Near A+ (WATCH)
-const NEAR_LIQ = 68;
-const NEAR_PERF = 78;
-const NEAR_TIMING = 72;
+// Near A+ (WATCH) – aangepast voor meer WATCH meldingen
+const NEAR_LIQ = 66;
+const NEAR_PERF = 76;
+const NEAR_TIMING = 70;
 
 // Extra quality hard filters
 const APLUS_MIN_EQ = 72;
@@ -923,8 +937,8 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       marketScore,
     });
 
-    // Macro gate
-    const macroOk = isMacroRegimeOk(regime) && n(btcAlignmentScore, 0) >= APLUS_BTC_ALIGN;
+    // Macro gate – aangepast: mode-aware
+    const macroOk = isMacroRegimeOk(regime, mode) && n(btcAlignmentScore, 0) >= btcAlignReq(mode);
 
     // Extra quality gates
     const spreadOk = n(obx.spreadPct, 999) <= APLUS_MAX_SPREAD;
@@ -942,7 +956,7 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       n(persistenceScore, 0) >= APLUS_MIN_PS &&
       tradePlan != null;
 
-    // Near A+ (watch)
+    // Near A+ (watch) – drempels zijn al aangepast (NEAR_LIQ=66, etc.)
     const nearAPlus =
       macroOk === true &&
       spreadOk === true &&
@@ -1383,9 +1397,9 @@ export default async function handler(req, res) {
         else watchScans = 0;
       }
 
-      // Macro check consistent with buildUniverse()
+      // Macro check consistent with buildUniverse() – aangepast: mode-aware
       const btcAlign = n(coin.btcAlignmentScore, 0);
-      const macroOkNow = isMacroRegimeOk(regime) && btcAlign >= APLUS_BTC_ALIGN;
+      const macroOkNow = isMacroRegimeOk(regime, mode) && btcAlign >= btcAlignReq(mode);
       if (!macroOkNow) watchScans = 0;
 
       let depthHist = Array.isArray(prev?.depthHist) ? [...prev.depthHist] : [];
