@@ -1,3 +1,4 @@
+// ==================== trade.js ====================
 const el = (id) => document.getElementById(id);
 
 const SOURCES = [
@@ -9,41 +10,83 @@ const SOURCES = [
 
 let LAST_ROWS = [];
 
-function safe(n, d = 2) {
-  const x = Number(n);
+function n(x, d = 0) {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : d;
+}
+function safe(v, d = 2) {
+  const x = Number(v);
   if (!Number.isFinite(x)) return "—";
   return x.toFixed(d);
 }
-function pct(n, d = 2) {
-  const x = Number(n);
+function pct(v, d = 2) {
+  const x = Number(v);
   if (!Number.isFinite(x)) return "—";
   const s = x >= 0 ? "+" : "";
   return s + x.toFixed(d) + "%";
 }
-function fmtUSD(n) {
-  n = Number(n) || 0;
-  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
-  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
-  if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
-  return n.toFixed(0);
+function fmtUSD(v) {
+  v = Number(v) || 0;
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
+  if (v >= 1e6) return (v / 1e6).toFixed(2) + "M";
+  if (v >= 1e3) return (v / 1e3).toFixed(2) + "K";
+  return v.toFixed(0);
 }
+function up(x) {
+  return String(x || "").toUpperCase();
+}
+
+// managedAt / ts / scannedAt fallback
 function getTradeDeskTs(data) {
   return Number(data?.managedAt || data?.ts || data?.scannedAt || 0);
 }
 
-function flattenFunnel(funnel) {
-  if (!funnel) return [];
-  return []
-    .concat(funnel.entry || [])
-    .concat(funnel.hold || [])
-    .concat(funnel.sell || [])
-    .concat(funnel.elite_expansion || [])
-    .concat(funnel.elite_ignition || [])
-    .concat(funnel.almost || [])
-    .concat(funnel.buildup || [])
-    .concat(funnel.radar || []);
+// --------------------
+// Funnel normalizers
+// (werkt met scanner-only én legacy payloads)
+// --------------------
+function arr(x) {
+  return Array.isArray(x) ? x : [];
 }
 
+function normalizeScannerFunnel(funnel) {
+  const f = funnel || {};
+
+  // NEW scanner-only keys (main latest)
+  const tradeReady = arr(f.tradeReady);
+
+  // legacy main keys (als ze ooit nog mee komen)
+  const eliteExpansion = arr(f.elite_expansion);
+  const eliteIgnition = arr(f.elite_ignition);
+  const legacyEntry = eliteExpansion.concat(eliteIgnition);
+
+  // choose best available "entry-ish"
+  const entryLike = tradeReady.length ? tradeReady : legacyEntry;
+
+  return {
+    entryLike,
+    almost: arr(f.almost),
+    buildup: arr(f.buildup),
+    radar: arr(f.radar),
+  };
+}
+
+function flattenForDesk(payload) {
+  const f = normalizeScannerFunnel(payload?.funnel);
+
+  // Trade desk wil alleen coins zien die execution object hebben
+  // We nemen entryLike + almost + buildup + radar
+  // (geen hold/sell meer uit scanner)
+  return []
+    .concat(f.entryLike)
+    .concat(f.almost)
+    .concat(f.buildup)
+    .concat(f.radar);
+}
+
+// --------------------
+// Scoring + tone
+// --------------------
 function scoreTone(score) {
   const s = Number(score) || 0;
   if (s >= 82) return "ok";
@@ -52,36 +95,69 @@ function scoreTone(score) {
 }
 
 function actionTone(action) {
-  if (action === "OPEN" || action === "HOLD") return "ok";
-  if (action === "WEAK_HOLD") return "soft";
-  if (action === "WATCH") return "warn";
-  return "no";
+  const a = up(action);
+  if (a === "HOLD") return "ok";
+  if (a === "WEAK_HOLD") return "soft";
+  if (a === "ALLOW_ENTRY" || a === "PENDING_ENTRY" || a === "PARTIAL_EXIT") return "warn";
+  if (a === "EXIT" || a === "CANCEL_ENTRY" || a === "NO_TRADE" || a === "IGNORE") return "no";
+  return "warn";
 }
 
 function displayAction(action) {
-  const a = String(action || "").toUpperCase();
+  const a = up(action);
+  if (!a) return "—";
+  if (a === "ALLOW_ENTRY") return "OPEN";
+  if (a === "PENDING_ENTRY") return "PENDING";
+  if (a === "NO_TRADE") return "SKIP";
+  if (a === "CANCEL_ENTRY") return "CANCEL";
+  if (a === "PARTIAL_EXIT") return "TP1";
+  if (a === "EXIT") return "EXIT";
   if (a === "WEAK_HOLD") return "WEAK HOLD";
-  return a || "—";
+  return a;
 }
 
-// ========== AANGEPAST: normalizeRows met openSet ==========
+// fallback score als execution.score ontbreekt
+function getRowScore(coin) {
+  const exScore = n(coin?.execution?.score, NaN);
+  if (Number.isFinite(exScore)) return exScore;
+
+  // fallback prioriteit
+  const pcs = n(coin?.perfectCandidateScore, NaN);
+  if (Number.isFinite(pcs)) return pcs;
+
+  const eq = n(coin?.entryQuality, NaN);
+  if (Number.isFinite(eq)) return eq;
+
+  const conf = n(coin?.confidence, NaN);
+  if (Number.isFinite(conf)) return conf;
+
+  return 0;
+}
+
+// --------------------
+// Normalize rows
+// --------------------
 function normalizeRows(payload, source) {
-  const all = flattenFunnel(payload?.funnel);
-  const unique = new Map();
+  const all = flattenForDesk(payload);
 
   const openPositions = Array.isArray(payload?.positions?.openItems)
     ? payload.positions.openItems
     : [];
 
-  const openSet = new Set(
-    openPositions.map((p) => String(p?.symbol || "").toUpperCase())
-  );
+  const openSet = new Set(openPositions.map((p) => up(p?.symbol)));
+
+  const unique = new Map();
 
   for (const coin of all) {
-    const key = `${source.key}:${coin.symbol}`;
-    if (!coin?.execution) continue;
+    if (!coin) continue;
+    const symbol = up(coin.symbol);
+    if (!symbol) continue;
 
-    const symbol = String(coin.symbol || "").toUpperCase();
+    // trade desk = alleen als execution bestaat
+    const ex = coin.execution || null;
+    if (!ex) continue;
+
+    const key = `${source.key}:${symbol}`;
 
     unique.set(key, {
       sourceKey: source.key,
@@ -100,31 +176,47 @@ function normalizeRows(payload, source) {
   return [...unique.values()];
 }
 
-// ========== AANGEPAST: rowHtml toont LIVE badge ==========
+// --------------------
+// Row UI
+// --------------------
 function rowHtml(row) {
-  const c = row.coin;
+  const c = row.coin || {};
   const ex = c.execution || {};
-  const plan = c.tradePlan || {};
-  const tone = actionTone(ex.action);
   const meta = ex.meta || {};
+  const plan = c.tradePlan || meta.tradePlan || {};
+
+  const action = up(ex.action);
+  const score = getRowScore(c);
+  const tone = actionTone(action);
+
+  const badgeText = row.isActuallyOpen ? "LIVE" : displayAction(action);
+  const badgeTone = row.isActuallyOpen ? "ok" : tone;
+
+  const side = ex.side || meta.side || "—";
+  const stage = c.stage || meta.stage || "—";
+  const reason = ex.reason || meta.reason || "—";
+  const reasonCode = ex.reasonCode || meta.reasonCode || meta.exitReason || meta.reason || "—";
+
+  const sizeUsd = ex.positionSizeUsd ?? meta.positionSizeUsd ?? "—";
 
   return `
     <div class="row" data-key="${row.sourceKey}:${c.symbol}">
       <div class="rowTop">
         <div>
-          <div class="rowSym">${c.symbol} • ${ex.side || "—"} • ${displayAction(ex.action)}</div>
+          <div class="rowSym">${c.symbol} • ${side} • ${badgeText}</div>
           <div class="rowTag">
-            ${row.sourceLabel} • stage ${c.stage || "—"} • regime ${row.regime || "—"} • ${c.coinProfile?.tradabilityBand || "—"}
+            ${row.sourceLabel}
+            • stage ${stage}
+            • regime ${row.regime || "—"}
           </div>
         </div>
 
         <div class="badges">
-          <div class="badge ${row.isActuallyOpen ? "ok" : tone}">
-            ${row.isActuallyOpen ? "LIVE" : displayAction(ex.action)}
-          </div>
-          <div class="badge ${scoreTone(ex.score)}">score ${ex.score || 0}</div>
-          <div class="badge">size $${ex.positionSizeUsd || "—"}</div>
+          <div class="badge ${badgeTone}">${badgeText}</div>
+          <div class="badge ${scoreTone(score)}">score ${Math.round(score)}</div>
+          <div class="badge">size $${sizeUsd}</div>
           ${meta.holdState ? `<div class="badge">${meta.holdState}</div>` : ""}
+          ${meta.keepPinned ? `<div class="badge soft">PINNED</div>` : ""}
         </div>
       </div>
 
@@ -136,7 +228,7 @@ function rowHtml(row) {
         <span>vm ${safe(c.vm, 2)}</span>
         <span>mc $${fmtUSD(c.marketCap)}</span>
         <span>spread ${safe(c?.ob?.spreadPct, 3)}%</span>
-        <span>depth $${Math.round(Number(c?.ob?.depthMinUsd1p || 0)).toLocaleString()}</span>
+        <span>depth $${Math.round(n(c?.ob?.depthMinUsd1p, 0)).toLocaleString()}</span>
         <span>EQ ${c.entryQuality ?? c.confidence ?? 0}</span>
         <span>PS ${c.persistenceScore ?? 0}</span>
         <span>SL $${safe(plan.sl, 6)}</span>
@@ -146,9 +238,9 @@ function rowHtml(row) {
       </div>
 
       <div class="rowReason">
-        <strong>${row.isActuallyOpen ? "live_position" : (ex.reasonCode || "—")}</strong>
+        <strong>${row.isActuallyOpen ? "live_position" : reasonCode}</strong>
         •
-        ${row.isActuallyOpen ? "Deze coin staat echt open in de positie-administratie" : (ex.reason || "—")}
+        ${row.isActuallyOpen ? "Deze coin staat echt open in de positie-administratie" : reason}
       </div>
     </div>
   `;
@@ -172,6 +264,9 @@ function renderList(id, rows) {
   });
 }
 
+// --------------------
+// Modal helpers
+// --------------------
 function setKV(container, rows) {
   if (!container) return;
   container.innerHTML = rows
@@ -181,7 +276,13 @@ function setKV(container, rows) {
 
 function renderChecks(container, checks) {
   if (!container) return;
-  container.innerHTML = (checks || []).map((c) => {
+  const list = Array.isArray(checks) ? checks : [];
+  if (!list.length) {
+    container.innerHTML = `<div class="empty">Geen checklist.</div>`;
+    return;
+  }
+
+  container.innerHTML = list.map((c) => {
     return `
       <div class="checkItem">
         <div class="checkTitle">${c.ok ? "✓" : "✗"} ${c.name}</div>
@@ -191,47 +292,59 @@ function renderChecks(container, checks) {
   }).join("");
 }
 
-// ========== AANGEPAST: modal toont "Actually open" ==========
 function openModal(row) {
-  const c = row.coin;
+  const c = row.coin || {};
   const ex = c.execution || {};
-  const plan = c.tradePlan || {};
   const meta = ex.meta || {};
+  const plan = c.tradePlan || meta.tradePlan || {};
 
-  el("mTitle").textContent = `${c.symbol} • ${row.sourceLabel} • ${displayAction(ex.action)}`;
+  const action = up(ex.action);
+  const showAction = row.isActuallyOpen ? "LIVE" : displayAction(action);
+
+  el("mTitle").textContent = `${c.symbol} • ${row.sourceLabel} • ${showAction}`;
   el("mSub").textContent =
-    `price $${safe(c.price, 6)} • side ${ex.side || "—"} • stage ${c.stage || "—"} • score ${ex.score || 0}`;
+    `price $${safe(c.price, 6)} • side ${ex.side || meta.side || "—"} • stage ${c.stage || meta.stage || "—"} • score ${Math.round(getRowScore(c))}`;
 
   setKV(el("mPlan"), [
     ["System", row.sourceLabel],
-    ["Action", displayAction(ex.action)],
-    ["Side", ex.side || "—"],
-    ["Position size", `$${ex.positionSizeUsd || "—"}`],
+    ["Action", showAction],
+    ["Side", ex.side || meta.side || "—"],
+    ["Position size", `$${ex.positionSizeUsd ?? meta.positionSizeUsd ?? "—"}`],
     ["Entry", `$${safe(plan.entry, 6)}`],
     ["SL", `$${safe(plan.sl, 6)}`],
     ["TP", `$${safe(plan.tp, 6)}`],
     ["RR", safe(plan.rr, 2)],
-    ["Reason", ex.reason || "—"],
-    ["Reason code", ex.reasonCode || "—"],
+    ["Reason", ex.reason || meta.reason || "—"],
+    ["Reason code", ex.reasonCode || meta.reasonCode || meta.exitReason || "—"],
   ]);
 
   setKV(el("mState"), [
     ["Actually open", row.isActuallyOpen ? "ja" : "nee"],
+    ["Pinned entry", meta.keepPinned ? "ja" : "nee"],
+    ["Ticket active", meta.entryTicketActive ? "ja" : "nee"],
+    ["Ticket expires", meta.entryTicketExpiresAt ? new Date(meta.entryTicketExpiresAt).toLocaleString() : "—"],
     ["Hold state", meta.holdState || "—"],
-    ["Grace active", meta.graceActive ? "ja" : "nee"],
     ["Cycles in trade", meta.cyclesInTrade ?? 0],
     ["Weak hold count", meta.weakHoldCount ?? 0],
     ["Breakout ready", meta.breakoutReady ? "ja" : "nee"],
     ["Breakout pressure", safe(meta.breakoutPressure, 1)],
+    ["Spread", `${safe(meta.spreadPct, 3)}%`],
+    ["Depth 1%", `$${Math.round(n(meta.depthUsd, 0)).toLocaleString()}`],
+    ["OB score", safe(meta.obScore, 5)],
   ]);
 
   renderChecks(el("mChecks"), ex.checklist || []);
-  el("mReason").textContent = `${ex.reasonCode || "—"} • ${ex.reason || "—"}`;
+
+  el("mReason").textContent =
+    `${ex.reasonCode || meta.reasonCode || meta.exitReason || "—"} • ${ex.reason || meta.reason || "—"}`;
+
   el("mDebug").textContent = JSON.stringify(row, null, 2);
   el("modal").classList.remove("hidden");
 }
 
-// ========== AANGEPAST: loadAll met nieuwe filtering ==========
+// --------------------
+// Load / filter
+// --------------------
 async function loadAll() {
   const status = el("statusLine");
   if (status) status.textContent = "Status: laden…";
@@ -274,23 +387,27 @@ async function loadAll() {
   // LIVE = alleen echte open posities
   const live = rows
     .filter((r) => r.isActuallyOpen === true)
-    .sort((a, b) => (b.coin?.execution?.score || 0) - (a.coin?.execution?.score || 0));
+    .sort((a, b) => getRowScore(b.coin) - getRowScore(a.coin));
 
-  // WATCH = scanner/trade candidates (geen echte open positie, maar actie OPEN of WATCH)
+  // WATCHLIST / ENTRY candidates:
+  // niet open, maar engine zegt OPEN/PENDING/WATCH/ALLOW_ENTRY
   const watch = rows
     .filter((r) => {
-      const action = String(r.coin?.execution?.action || "").toUpperCase();
-      return r.isActuallyOpen !== true && (action === "OPEN" || action === "WATCH");
+      if (r.isActuallyOpen === true) return false;
+      const a = up(r.coin?.execution?.action);
+      return a === "ALLOW_ENTRY" || a === "PENDING_ENTRY" || a === "WATCH";
     })
-    .sort((a, b) => (b.coin?.execution?.score || 0) - (a.coin?.execution?.score || 0));
+    .sort((a, b) => getRowScore(b.coin) - getRowScore(a.coin));
 
+  // CLOSED/REJECTED: niet open en action is EXIT/CANCEL/NO_TRADE/IGNORE
   const closed = rows
     .filter((r) => {
-      const action = String(r.coin?.execution?.action || "").toUpperCase();
-      return r.isActuallyOpen !== true && (action === "CLOSE" || action === "IGNORE");
+      if (r.isActuallyOpen === true) return false;
+      const a = up(r.coin?.execution?.action);
+      return a === "EXIT" || a === "CANCEL_ENTRY" || a === "NO_TRADE" || a === "IGNORE";
     })
     .sort((a, b) => (b.managedAt || 0) - (a.managedAt || 0))
-    .slice(0, 20);
+    .slice(0, 25);
 
   renderList("tradeReadyList", live);
   renderList("watchList", watch);
