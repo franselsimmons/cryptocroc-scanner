@@ -7,6 +7,10 @@ import {
   fetchBTCGateFromUniverse,
   fetchCoinGeckoTopCached,
   getBitgetSpotUsdtSymbols,
+
+  // ✅ IMPORTANT: use the SAME KV keys that api/latest.js reads
+  keyMainLatest,
+  keyMainState,
 } from "../lib/_moon_core.js";
 
 export const config = RUNTIME_CONFIG;
@@ -42,7 +46,11 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
 async function fetchOrderbook(symbol) {
   try {
     const url = `${BITGET_OB}?symbol=${symbol}&type=step0&limit=20`;
-    const j = await fetchJsonWithTimeout(url, { headers: { accept: "application/json" } }, 6500);
+    const j = await fetchJsonWithTimeout(
+      url,
+      { headers: { accept: "application/json" } },
+      6500
+    );
     if (String(j?.code || "") !== "00000") return null;
 
     const bids = j?.data?.bids || [];
@@ -54,8 +62,12 @@ async function fetchOrderbook(symbol) {
     if (!(bestBid > 0 && bestAsk > 0)) return null;
 
     const spreadPct = ((bestAsk - bestBid) / bestBid) * 100;
-    const depthBidUsd = bids.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
-    const depthAskUsd = asks.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
+    const depthBidUsd = bids
+      .slice(0, 8)
+      .reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
+    const depthAskUsd = asks
+      .slice(0, 8)
+      .reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
 
     const total = depthBidUsd + depthAskUsd;
     const score = total > 0 ? (depthBidUsd - depthAskUsd) / total : 0;
@@ -89,35 +101,41 @@ function pickTier(marketCap, entryCfg) {
 }
 
 // ======================================================
-// scan lock (15m boundaries)
+// ✅ scan lock (30m boundaries: :00 / :30)
 // ======================================================
 function scanLockKey(mode) {
-  return `scan:lock:${String(mode || "bull").toLowerCase()}`;
+  return `main:scan:lock:${String(mode || "bull").toLowerCase()}`;
 }
+
 async function acquireScanLock(mode) {
   const key = scanLockKey(mode);
   const now = Date.now();
   const d = new Date(now);
+
   const next = new Date(d);
   next.setSeconds(0, 0);
-  const m = d.getMinutes();
-  if (m < 15) next.setMinutes(15);
-  else if (m < 30) next.setMinutes(30);
-  else if (m < 45) next.setMinutes(45);
+
+  // next boundary: 00 or 30
+  if (d.getMinutes() < 30) next.setMinutes(30);
   else {
     next.setMinutes(0);
     next.setHours(d.getHours() + 1);
   }
+
   const until = next.getTime();
   const ttlSec = Math.max(60, Math.ceil((until - now) / 1000));
+
   const ok = await kv.set(key, { ts: now, until, mode }, { nx: true, ex: ttlSec });
   if (ok) return { ok: true, key, until };
+
   const cur = await kv.get(key);
   const curUntil = Number(cur?.until || 0);
   if (curUntil > now) return { ok: false, key, until: curUntil };
+
   await kv.set(key, { ts: now, until, mode }, { ex: ttlSec });
   return { ok: true, key, until };
 }
+
 async function releaseScanLock(mode) {
   try {
     await kv.del(scanLockKey(mode));
@@ -133,24 +151,23 @@ export default async function handler(req, res) {
 
   try {
     // ✅ Allow Vercel Cron without secret. Manual calls still require secret.
-    const isVercelCron = String(req.headers["x-vercel-cron"] || "") === "1";
+    const isVercelCron = String(req.headers?.["x-vercel-cron"] || "") === "1";
     if (!isVercelCron) {
       if (!requireSecret(req, res)) return;
     }
 
     mode = String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
 
-    // ✅ load correct core by mode
+    // load correct core by mode
     const CORE =
-      mode === "bear"
-        ? await import("../lib/_core_bear.js")
-        : await import("../lib/_core_bull.js");
+      mode === "bear" ? await import("../lib/_core_bear.js") : await import("../lib/_core_bull.js");
 
     const CFG = CORE.getCfg();
 
+    // lock
     const lock = await acquireScanLock(mode);
     if (!lock.ok) {
-      const latest = await kv.get(CORE.keyLatest(mode));
+      const latest = await kv.get(keyMainLatest(mode));
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");
       if (latest) {
@@ -170,7 +187,7 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    // btc snapshot
+    // BTC snapshot
     const btcRaw = await fetchBTCGateFromUniverse();
     const btc = {
       price: n(btcRaw?.price, 0),
@@ -188,14 +205,13 @@ export default async function handler(req, res) {
       .filter((c) => bitgetSymbols.has(up(c.symbol)))
       .slice(0, Number(CFG.CG_TOP || 1500));
 
-    // state for histories
-    const prevState = (await kv.get(CORE.keyState(mode))) || {};
+    // state for histories (✅ SAME KEY as latest.js expects)
+    const prevState = (await kv.get(keyMainState(mode))) || {};
     const nextState = {};
 
     // funnels
     const funnel = { entry: [], almost: [], buildup: [], radar: [] };
 
-    // ========== stage pipeline ==========
     for (const coin of tradable) {
       const sym = up(coin.symbol);
       const prev = prevState?.[sym] || {};
@@ -227,7 +243,7 @@ export default async function handler(req, res) {
       // radar dyn thresholds
       const dynRadar = CORE.dynamicRadarThresholds(range24, CFG);
 
-      // ========= RADAR gate =========
+      // RADAR gate
       const R = CFG.radar || {};
       const radarOk =
         marketCap >= n(R.mcapMin, 0) &&
@@ -244,12 +260,11 @@ export default async function handler(req, res) {
 
       let stage = "RADAR";
 
-      // ========= BUILDUP gate =========
+      // BUILDUP gate
       const buildupOk = radarOk && volAcc >= n(CFG.buildup?.minVolAcc, 1.0);
       if (buildupOk) stage = "BUILDUP";
 
-      // ========= ALMOST gate =========
-      // flatness proxy: use last 60 points range%
+      // ALMOST gate (flatness proxy)
       let flat60Pct = 999;
       if (priceHistNext.length >= 10) {
         const tail = priceHistNext.slice(-60);
@@ -272,7 +287,7 @@ export default async function handler(req, res) {
 
       if (almostOk) stage = "ALMOST";
 
-      // ========= ENTRY gate (OB) =========
+      // ENTRY gate (OB)
       let ob = null;
       let entryOk = false;
       let entryReason = "";
@@ -295,6 +310,7 @@ export default async function handler(req, res) {
             depthMinUsd1p: n(ob.depthMinUsd1p, 0),
           });
         }
+
         const trimmed = samplesArr.slice(-Math.max(2, n(entryCfg.samplesMax, 24)));
         await kv.set(samplesKey, trimmed, { ex: n(entryCfg.samplesTtlSec, 3600) });
 
@@ -307,15 +323,12 @@ export default async function handler(req, res) {
           obScoreMin: n(tier?.obScoreMin, n(entryCfg.obScoreMin, 0.02)),
         };
 
-        // dynamic adjust (liq-adaptive)
+        // dynamic adjust
         const dynThr = CORE.dynamicEntryThresholds({ marketCap, volume, vm }, baseThr, CFG);
 
         const spreadOk = ob?.valid ? n(ob.spreadPct, 999) <= n(dynThr.spreadMaxPct, 999) : false;
         const depthOk = ob?.valid ? n(ob.depthMinUsd1p, 0) >= n(dynThr.depthMinUsd1p, 0) : false;
 
-        // OB score direction:
-        // bull: wants positive score
-        // bear: wants negative score (we use abs check + sign)
         const score = n(ob?.score, 0);
         const scoreOk =
           ob?.valid
@@ -324,7 +337,12 @@ export default async function handler(req, res) {
               : score <= -n(dynThr.obScoreMin, 0)
             : false;
 
-        obSlope = CORE.checkObSlopeGate({ stage: "entry", mode, obSamples: trimmed, settings: CFG });
+        obSlope = CORE.checkObSlopeGate({
+          stage: "entry",
+          mode,
+          obSamples: trimmed,
+          settings: CFG,
+        });
 
         const confOk = confidence >= n(dynThr.minConfidence, n(entryCfg.minConfidence, 0));
 
@@ -341,7 +359,6 @@ export default async function handler(req, res) {
         if (entryOk) stage = "ENTRY";
       }
 
-      // store state
       nextState[sym] = {
         symbol: sym,
         stage,
@@ -374,7 +391,6 @@ export default async function handler(req, res) {
         volHist: volHistNext,
       };
 
-      // push into funnel
       const outCoin = {
         id: coin.id,
         symbol: sym,
@@ -402,14 +418,12 @@ export default async function handler(req, res) {
       await sleep(6);
     }
 
-    // sort best-first (confidence)
     const byConf = (a, b) => n(b.confidence, 0) - n(a.confidence, 0);
     funnel.entry.sort(byConf);
     funnel.almost.sort(byConf);
     funnel.buildup.sort(byConf);
     funnel.radar.sort(byConf);
 
-    // apply limits
     funnel.entry = funnel.entry.slice(0, n(CFG.ENTRY_LIMIT, 12));
     funnel.almost = funnel.almost.slice(0, n(CFG.ALMOST_LIMIT, 25));
     funnel.buildup = funnel.buildup.slice(0, n(CFG.BUILDUP_LIMIT, 40));
@@ -429,7 +443,6 @@ export default async function handler(req, res) {
       ts: now,
       scannedAt: now,
       meta: {
-        // keep it small
         cfg: {
           radar: CFG.radar,
           buildup: CFG.buildup,
@@ -448,9 +461,9 @@ export default async function handler(req, res) {
       },
     };
 
-    // persist
-    await kv.set(CORE.keyState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
-    await kv.set(CORE.keyLatest(mode), latest, { ex: 60 * 60 });
+    // ✅ FIX: persist to main keys (api/latest.js reads these)
+    await kv.set(keyMainState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
+    await kv.set(keyMainLatest(mode), latest, { ex: 60 * 60 });
 
     res.status(200).json(latest);
   } catch (err) {
