@@ -86,7 +86,6 @@ const IMMEDIATE_OPEN_TIMING = 86;
 function isMacroRegimeOk(regime, mode) {
   const r = String(regime || "").toUpperCase();
   const m = String(mode || "bull").toLowerCase();
-
   if (!r) return false;
 
   if (m === "bull") {
@@ -294,6 +293,7 @@ function isUsableBtc(btc) {
 async function resolveBtcForMode(mode) {
   const fresh = await fetchBTCGateFromUniverse();
   if (isUsableBtc(fresh)) return fresh;
+
   try {
     const prevLatest = await kv.get(keyMoonLatest(mode));
     if (isUsableBtc(prevLatest?.btc)) {
@@ -301,6 +301,7 @@ async function resolveBtcForMode(mode) {
       return prevLatest.btc;
     }
   } catch {}
+
   return {
     price: n(fresh?.price, 0),
     chg24: n(fresh?.chg24, 0),
@@ -1172,7 +1173,7 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
 }
 
 // ======================================================
-// Funnel balancer, thesis damage (ongewijzigd)
+// Funnel balancer, thesis damage
 // ======================================================
 function canPromoteBalancedEntry(coin, mode, regime) {
   if (!coin) return false;
@@ -1259,11 +1260,10 @@ export default async function handler(req, res) {
 
     mode = String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
 
-    // ✅ NEW: load correct moon core by mode (filters/scoring)
-    const CORE =
-      mode === "bear"
-        ? await import("../../lib/_moon_core_bear.js")
-        : await import("../../lib/_moon_core_bull.js");
+    // ✅ load correct moon core by mode
+    const mod =
+      mode === "bear" ? await import("../../lib/_moon_core_bear.js") : await import("../../lib/_moon_core_bull.js");
+    const CORE = mod?.default && typeof mod.default === "object" ? mod.default : mod;
 
     const lock = await acquireScanLock(mode);
     if (!lock.ok) {
