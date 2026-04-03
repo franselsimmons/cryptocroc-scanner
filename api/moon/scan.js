@@ -633,16 +633,56 @@ function decideMoonStageV6({ CORE, mode, coin, obx, priceHist, volHist, btc, pre
   });
 
   if (mode === "bull" && CORE.isBullExhausted(coin)) {
-    return { stage: "RADAR", stageWhy: "bull_exhausted", moveScore: 0, velocity, compression, breakout, eliteType: null, persistenceScore, entryQuality: 0 };
+    return {
+      stage: "RADAR",
+      stageWhy: "bull_exhausted",
+      moveScore: 0,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality: 0,
+    };
   }
   if (mode === "bear" && CORE.isBearBounceTrap(coin)) {
-    return { stage: "RADAR", stageWhy: "bear_bounce_trap", moveScore: 0, velocity, compression, breakout, eliteType: null, persistenceScore, entryQuality: 0 };
+    return {
+      stage: "RADAR",
+      stageWhy: "bear_bounce_trap",
+      moveScore: 0,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality: 0,
+    };
   }
   if (mode === "bull" && CORE.isLateBullEntry(coin)) {
-    return { stage: "ALMOST", stageWhy: "late_bull_entry", moveScore: 0, velocity, compression, breakout, eliteType: null, persistenceScore, entryQuality: 0 };
+    return {
+      stage: "ALMOST",
+      stageWhy: "late_bull_entry",
+      moveScore: 0,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality: 0,
+    };
   }
   if (mode === "bear" && CORE.isLateBearEntry(coin)) {
-    return { stage: "ALMOST", stageWhy: "late_bear_entry", moveScore: 0, velocity, compression, breakout, eliteType: null, persistenceScore, entryQuality: 0 };
+    return {
+      stage: "ALMOST",
+      stageWhy: "late_bear_entry",
+      moveScore: 0,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality: 0,
+    };
   }
 
   const moveScore = mode === "bull" ? CORE.computeBullMoveScore(coin, obx) : CORE.computeBearMoveScore(coin, obx);
@@ -1222,8 +1262,8 @@ export default async function handler(req, res) {
     // ✅ NEW: load correct moon core by mode (filters/scoring)
     const CORE =
       mode === "bear"
-        ? (await import("../../lib/_moon_core_bear.js"))
-        : (await import("../../lib/_moon_core_bull.js"));
+        ? await import("../../lib/_moon_core_bear.js")
+        : await import("../../lib/_moon_core_bull.js");
 
     const lock = await acquireScanLock(mode);
     if (!lock.ok) {
