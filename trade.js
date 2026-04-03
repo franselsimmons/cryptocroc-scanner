@@ -43,7 +43,6 @@ function getTradeDeskTs(data) {
 
 // --------------------
 // Funnel normalizers
-// (werkt met scanner-only én legacy payloads)
 // --------------------
 function arr(x) {
   return Array.isArray(x) ? x : [];
@@ -52,16 +51,22 @@ function arr(x) {
 function normalizeScannerFunnel(funnel) {
   const f = funnel || {};
 
-  // NEW scanner-only keys (main latest)
+  // ✅ MAIN: entry is echt entryReady bucket
+  const mainEntry = arr(f.entry);
+
+  // optional newer key
   const tradeReady = arr(f.tradeReady);
 
-  // legacy main keys (als ze ooit nog mee komen)
+  // MOON: elite buckets represent entry-like
   const eliteExpansion = arr(f.elite_expansion);
   const eliteIgnition = arr(f.elite_ignition);
-  const legacyEntry = eliteExpansion.concat(eliteIgnition);
+  const moonEntryLike = eliteExpansion.concat(eliteIgnition);
 
-  // choose best available "entry-ish"
-  const entryLike = tradeReady.length ? tradeReady : legacyEntry;
+  // choose best available "entry-like"
+  const entryLike =
+    mainEntry.length ? mainEntry :
+    tradeReady.length ? tradeReady :
+    moonEntryLike;
 
   return {
     entryLike,
@@ -74,9 +79,6 @@ function normalizeScannerFunnel(funnel) {
 function flattenForDesk(payload) {
   const f = normalizeScannerFunnel(payload?.funnel);
 
-  // Trade desk wil alleen coins zien die execution object hebben
-  // We nemen entryLike + almost + buildup + radar
-  // (geen hold/sell meer uit scanner)
   return []
     .concat(f.entryLike)
     .concat(f.almost)
@@ -116,12 +118,10 @@ function displayAction(action) {
   return a;
 }
 
-// fallback score als execution.score ontbreekt
 function getRowScore(coin) {
   const exScore = n(coin?.execution?.score, NaN);
   if (Number.isFinite(exScore)) return exScore;
 
-  // fallback prioriteit
   const pcs = n(coin?.perfectCandidateScore, NaN);
   if (Number.isFinite(pcs)) return pcs;
 
@@ -389,17 +389,16 @@ async function loadAll() {
     .filter((r) => r.isActuallyOpen === true)
     .sort((a, b) => getRowScore(b.coin) - getRowScore(a.coin));
 
-  // WATCHLIST / ENTRY candidates:
-  // niet open, maar engine zegt OPEN/PENDING/WATCH/ALLOW_ENTRY
+  // WATCHLIST / ENTRY candidates: niet open, maar engine zegt ALLOW_ENTRY of PENDING_ENTRY
   const watch = rows
     .filter((r) => {
       if (r.isActuallyOpen === true) return false;
       const a = up(r.coin?.execution?.action);
-      return a === "ALLOW_ENTRY" || a === "PENDING_ENTRY" || a === "WATCH";
+      return a === "ALLOW_ENTRY" || a === "PENDING_ENTRY";
     })
     .sort((a, b) => getRowScore(b.coin) - getRowScore(a.coin));
 
-  // CLOSED/REJECTED: niet open en action is EXIT/CANCEL/NO_TRADE/IGNORE
+  // CLOSED/REJECTED
   const closed = rows
     .filter((r) => {
       if (r.isActuallyOpen === true) return false;
