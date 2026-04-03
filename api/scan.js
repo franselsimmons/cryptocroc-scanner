@@ -90,6 +90,7 @@ function pickTier(marketCap, entryCfg) {
 
 // ======================================================
 // scan lock (15m boundaries)
+// ======================================================
 function scanLockKey(mode) {
   return `scan:lock:${String(mode || "bull").toLowerCase()}`;
 }
@@ -131,15 +132,19 @@ export default async function handler(req, res) {
   let lockAcquired = false;
 
   try {
-    if (!requireSecret(req, res)) return;
+    // ✅ Allow Vercel Cron without secret. Manual calls still require secret.
+    const isVercelCron = String(req.headers["x-vercel-cron"] || "") === "1";
+    if (!isVercelCron) {
+      if (!requireSecret(req, res)) return;
+    }
 
     mode = String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
 
     // ✅ load correct core by mode
     const CORE =
       mode === "bear"
-        ? (await import("../lib/_core_bear.js"))
-        : (await import("../lib/_core_bull.js"));
+        ? await import("../lib/_core_bear.js")
+        : await import("../lib/_core_bull.js");
 
     const CFG = CORE.getCfg();
 
@@ -149,7 +154,15 @@ export default async function handler(req, res) {
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");
       if (latest) {
-        return res.end(JSON.stringify({ ...latest, meta: { ...(latest.meta || {}), scanLock: { active: true, until: lock.until || null } } }));
+        return res.end(
+          JSON.stringify({
+            ...latest,
+            meta: {
+              ...(latest.meta || {}),
+              scanLock: { active: true, until: lock.until || null },
+            },
+          })
+        );
       }
       return res.end(JSON.stringify({ ok: true, skipped: true, reason: "scan_lock_active", mode }));
     }
@@ -224,8 +237,10 @@ export default async function handler(req, res) {
         Math.abs(change24) <= n(R.maxAbsChg24, 999) &&
         range24 <= n(dynRadar.maxRange24, n(R.maxRange24, 999)) &&
         (mode === "bull"
-          ? change1h >= n(dynRadar.dir1hMinBull, n(R.dir1hMinBull, 0)) && change24 >= n(dynRadar.dir24MinBull, n(R.dir24MinBull, 0))
-          : change1h <= n(dynRadar.dir1hMaxBear, n(R.dir1hMaxBear, 0)) && change24 <= n(dynRadar.dir24MaxBear, n(R.dir24MaxBear, 0)));
+          ? change1h >= n(dynRadar.dir1hMinBull, n(R.dir1hMinBull, 0)) &&
+            change24 >= n(dynRadar.dir24MinBull, n(R.dir24MinBull, 0))
+          : change1h <= n(dynRadar.dir1hMaxBear, n(R.dir1hMaxBear, 0)) &&
+            change24 <= n(dynRadar.dir24MaxBear, n(R.dir24MaxBear, 0)));
 
       let stage = "RADAR";
 
@@ -382,7 +397,7 @@ export default async function handler(req, res) {
       if (stage === "ENTRY") funnel.entry.push(outCoin);
       else if (stage === "ALMOST") funnel.almost.push(outCoin);
       else if (stage === "BUILDUP") funnel.buildup.push(outCoin);
-      else if (stage === "RADAR") funnel.radar.push(outCoin);
+      else funnel.radar.push(outCoin);
 
       await sleep(6);
     }
@@ -414,8 +429,8 @@ export default async function handler(req, res) {
       ts: now,
       scannedAt: now,
       meta: {
+        // keep it small
         cfg: {
-          // only small snapshot so response stays light
           radar: CFG.radar,
           buildup: CFG.buildup,
           almost: CFG.almost,
@@ -428,6 +443,8 @@ export default async function handler(req, res) {
           },
           btc: CFG.btc,
         },
+        scanLock: { active: false, until: null },
+        trigger: isVercelCron ? "vercel_cron" : "manual_secret",
       },
     };
 
