@@ -11,18 +11,22 @@ async function runSingle(mode) {
   };
 
   let body = null;
-  let statusCode = 200;
 
   const res = {
+    statusCode: 200,
+    headers: {},
+
     status(code) {
-      statusCode = code;
+      this.statusCode = code;
       return this;
+    },
+    setHeader(k, v) {
+      this.headers[k] = v;
     },
     json(obj) {
       body = obj;
       return this;
     },
-    setHeader() {},
     end(payload) {
       try {
         body = typeof payload === "string" ? JSON.parse(payload) : payload;
@@ -31,11 +35,10 @@ async function runSingle(mode) {
       }
       return this;
     },
-    statusCode: 200,
   };
 
   await mainScan(req, res);
-  return { statusCode, body };
+  return { statusCode: res.statusCode, body };
 }
 
 export default async function handler(req, res) {
@@ -62,6 +65,6 @@ export default async function handler(req, res) {
       bear,
     });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: e.message });
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 }
