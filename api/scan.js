@@ -7,8 +7,12 @@ export const config = RUNTIME_CONFIG;
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 const BITGET_SYMBOLS = "https://api.bitget.com/api/v2/spot/public/symbols";
 
-// CoinGecko: we keep it simple and robust (no cache dependency)
+// CoinGecko
 const CG_MARKETS = "https://api.coingecko.com/api/v3/coins/markets";
+
+// ✅ KV cache (voorkomt HTTP 429)
+const CG_CACHE_KEY = "main:cg:markets:usd:top:v1"; // { ts:number, coins:Array }
+const CG_CACHE_MAX_AGE_SEC = 25 * 60; // 25m (cron is elke 30m)
 
 // ======================================================
 // Helpers
@@ -29,7 +33,14 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { ...options, signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status}`);
+      err.status = res.status;
+      err.retryAfter = res.headers?.get?.("retry-after") || null;
+      throw err;
+    }
+
     return await res.json();
   } finally {
     clearTimeout(id);
@@ -62,11 +73,150 @@ function requireSecret(req, res) {
 }
 
 // ======================================================
-// ✅ BTC snapshot (simple, reliable)
+// ✅ Normalize CoinGecko row
 // ======================================================
-async function fetchBTCGateFromUniverse() {
+function normalizeCgRow(c) {
+  const hi = n(c.high_24h, 0);
+  const lo = n(c.low_24h, 0);
+  const range24 = hi > 0 && lo > 0 ? ((hi - lo) / lo) * 100 : 0;
+
+  return {
+    id: String(c.id || ""),
+    symbol: up(c.symbol),
+    name: String(c.name || ""),
+    image: String(c.image || ""),
+    price: n(c.current_price, 0),
+    marketCap: n(c.market_cap, 0),
+    volume: n(c.total_volume, 0),
+    change24: n(c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h, 0),
+    change1h: n(c.price_change_percentage_1h_in_currency ?? c.price_change_percentage_1h, 0),
+    range24,
+  };
+}
+
+// ======================================================
+// ✅ CoinGecko universe fetch (fresh)
+// Returns normalized rows
+// ======================================================
+async function fetchCoinGeckoTopFresh(top = 1500) {
+  const out = [];
+  const perPage = 250;
+  const maxPages = 6; // 6*250 = 1500
+  const pagesNeeded = Math.max(1, Math.min(maxPages, Math.ceil(Number(top || 1500) / perPage)));
+
+  for (let page = 1; page <= pagesNeeded; page++) {
+    const url =
+      `${CG_MARKETS}?vs_currency=usd&order=market_cap_desc&per_page=${perPage}&page=${page}` +
+      `&sparkline=false&price_change_percentage=1h,24h`;
+
+    const arr = await fetchJsonWithTimeout(url, { headers: { accept: "application/json" } }, 9000);
+    if (!Array.isArray(arr) || !arr.length) break;
+
+    for (const c of arr) out.push(normalizeCgRow(c));
+
+    // kleine pauze tussen pages (vriendelijker voor rate limits)
+    if (page < pagesNeeded) await sleep(220);
+  }
+
+  return out;
+}
+
+// ======================================================
+// ✅ CoinGecko universe cached (429-safe)
+// Returns { coins, meta }
+// ======================================================
+async function fetchCoinGeckoTopCached(top = 1500) {
+  const now = Date.now();
+
+  let cached = null;
   try {
-    // uses /coins/markets so we get high/low + 24h% + 1h%
+    cached = await kv.get(CG_CACHE_KEY);
+  } catch {}
+
+  const cacheTs = n(cached?.ts, 0);
+  const cacheAgeSec = cacheTs > 0 ? (now - cacheTs) / 1000 : Number.POSITIVE_INFINITY;
+  const cacheCoins = Array.isArray(cached?.coins) ? cached.coins : null;
+
+  // 1) cache fresh -> use it
+  if (cacheCoins && cacheCoins.length && cacheAgeSec <= CG_CACHE_MAX_AGE_SEC) {
+    return {
+      coins: cacheCoins.slice(0, Number(top || 1500)),
+      meta: { source: "kv_cache_fresh", cacheTs, cacheAgeSec: Math.round(cacheAgeSec) },
+    };
+  }
+
+  // 2) refresh; on 429 -> fallback to stale cache if exists
+  try {
+    const fresh = await fetchCoinGeckoTopFresh(top);
+    if (fresh && fresh.length) {
+      await kv.set(CG_CACHE_KEY, { ts: now, coins: fresh }, { ex: 60 * 60 }); // keep 1h
+      return {
+        coins: fresh.slice(0, Number(top || 1500)),
+        meta: { source: "coingecko_refresh", prevCacheAgeSec: cacheCoins ? Math.round(cacheAgeSec) : null },
+      };
+    }
+
+    // empty refresh -> fallback if possible
+    if (cacheCoins && cacheCoins.length) {
+      return {
+        coins: cacheCoins.slice(0, Number(top || 1500)),
+        meta: { source: "kv_cache_stale_empty_refresh", cacheTs, cacheAgeSec: Math.round(cacheAgeSec) },
+      };
+    }
+
+    return { coins: [], meta: { source: "empty", cacheTs: 0, cacheAgeSec: null } };
+  } catch (e) {
+    const status = n(e?.status, 0);
+
+    if (status === 429 && cacheCoins && cacheCoins.length) {
+      return {
+        coins: cacheCoins.slice(0, Number(top || 1500)),
+        meta: {
+          source: "kv_cache_stale_429",
+          cacheTs,
+          cacheAgeSec: Math.round(cacheAgeSec),
+          retryAfter: e?.retryAfter || null,
+        },
+      };
+    }
+
+    if (cacheCoins && cacheCoins.length) {
+      return {
+        coins: cacheCoins.slice(0, Number(top || 1500)),
+        meta: { source: "kv_cache_stale_error", cacheTs, cacheAgeSec: Math.round(cacheAgeSec), err: String(e?.message || e) },
+      };
+    }
+
+    throw e;
+  }
+}
+
+// ======================================================
+// ✅ BTC snapshot (zonder extra request als cache al bestaat)
+// - pakt BTC uit universe cache als aanwezig
+// - anders: 1 CG call (best effort)
+// ======================================================
+async function fetchBTCGateFromUniverseCached() {
+  try {
+    const cached = await kv.get(CG_CACHE_KEY);
+    const coins = Array.isArray(cached?.coins) ? cached.coins : [];
+    const btc = coins.find((c) => String(c?.id || "") === "bitcoin" || String(c?.symbol || "") === "BTC");
+
+    if (btc) {
+      // range24 zit al in normalized rows
+      return {
+        price: n(btc.price, 0),
+        chg24: n(btc.change24, 0),
+        chg1h: n(btc.change1h, 0),
+        range24: n(btc.range24, 0),
+        state: "NEUTRAL",
+        _src: "kv_cache",
+      };
+    }
+  } catch {}
+
+  // fallback: 1 call (kan ook 429 geven, maar we vangen dat af)
+  try {
     const url =
       `${CG_MARKETS}?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1` +
       `&sparkline=false&price_change_percentage=1h,24h`;
@@ -82,50 +232,10 @@ async function fetchBTCGateFromUniverse() {
     const lo = n(btc.low_24h, 0);
     const range24 = hi > 0 && lo > 0 ? ((hi - lo) / lo) * 100 : 0;
 
-    return { price, chg24, chg1h, range24, state: "NEUTRAL" };
+    return { price, chg24, chg1h, range24, state: "NEUTRAL", _src: "coingecko" };
   } catch (e) {
-    // fallback safe
     return { price: 0, chg24: 0, chg1h: 0, range24: 0, state: "NEUTRAL", _err: String(e?.message || e) };
   }
-}
-
-// ======================================================
-// ✅ CoinGecko universe fetch (no cache dependency)
-// Returns {id,symbol,name,image,price,marketCap,volume,change24,change1h,range24}
-// ======================================================
-async function fetchCoinGeckoTop() {
-  // We page through until we have enough (CG_TOP max 1500)
-  const out = [];
-  const perPage = 250;
-  const maxPages = 6; // 6*250 = 1500
-  for (let page = 1; page <= maxPages; page++) {
-    const url =
-      `${CG_MARKETS}?vs_currency=usd&order=market_cap_desc&per_page=${perPage}&page=${page}` +
-      `&sparkline=false&price_change_percentage=1h,24h`;
-
-    const arr = await fetchJsonWithTimeout(url, { headers: { accept: "application/json" } }, 9000);
-    if (!Array.isArray(arr) || !arr.length) break;
-
-    for (const c of arr) {
-      const hi = n(c.high_24h, 0);
-      const lo = n(c.low_24h, 0);
-      const range24 = hi > 0 && lo > 0 ? ((hi - lo) / lo) * 100 : 0;
-
-      out.push({
-        id: String(c.id || ""),
-        symbol: up(c.symbol),
-        name: String(c.name || ""),
-        image: String(c.image || ""),
-        price: n(c.current_price, 0),
-        marketCap: n(c.market_cap, 0),
-        volume: n(c.total_volume, 0),
-        change24: n(c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h, 0),
-        change1h: n(c.price_change_percentage_1h_in_currency ?? c.price_change_percentage_1h, 0),
-        range24,
-      });
-    }
-  }
-  return out;
 }
 
 // ======================================================
@@ -290,8 +400,8 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    // BTC snapshot
-    const btcRaw = await fetchBTCGateFromUniverse();
+    // ✅ BTC snapshot (cache-first)
+    const btcRaw = await fetchBTCGateFromUniverseCached();
     const btc = {
       price: n(btcRaw?.price, 0),
       chg24: n(btcRaw?.chg24, 0),
@@ -300,9 +410,10 @@ export default async function handler(req, res) {
       state: CORE.computeBtcState(btcRaw, CFG),
     };
 
-    // Universe + Bitget symbols
-    const rawCoins = await fetchCoinGeckoTop();
+    // ✅ Universe + Bitget symbols (CG cache-first, 429-safe)
     const bitgetSymbols = await getBitgetSpotUsdtSymbols();
+    const uni = await fetchCoinGeckoTopCached(Number(CFG.CG_TOP || 1500));
+    const rawCoins = Array.isArray(uni.coins) ? uni.coins : [];
 
     const tradable = rawCoins
       .filter((c) => bitgetSymbols.has(up(c.symbol)))
@@ -562,6 +673,7 @@ export default async function handler(req, res) {
         },
         scanLock: { active: false, until: null },
         trigger: isVercelCron ? "vercel_cron" : (tokenOk ? "cron_token" : "manual_secret"),
+        universe: uni?.meta || { source: "unknown" },
       },
     };
 
