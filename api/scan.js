@@ -10,10 +10,6 @@ const BITGET_SYMBOLS = "https://api.bitget.com/api/v2/spot/public/symbols";
 // CoinGecko
 const CG_MARKETS = "https://api.coingecko.com/api/v3/coins/markets";
 
-// ✅ KV cache (voorkomt HTTP 429)
-const CG_CACHE_KEY = "main:cg:markets:usd:top:v1"; // { ts:number, coins:Array }
-const CG_CACHE_MAX_AGE_SEC = 25 * 60; // 25m (cron is elke 30m)
-
 // ======================================================
 // Helpers
 // ======================================================
@@ -28,16 +24,33 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function pickRetryAfterSeconds(res) {
+  const ra = res?.headers?.get?.("retry-after");
+  const s = Number(ra);
+  return Number.isFinite(s) && s > 0 ? s : null;
+}
+
 async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
-    const res = await fetch(url, { ...options, signal: controller.signal });
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        accept: "application/json",
+        // Small but helpful: CG sometimes rate-limits harder without UA.
+        "user-agent": "CryptoCrocScanner/1.0",
+        ...(options.headers || {}),
+      },
+    });
 
     if (!res.ok) {
       const err = new Error(`HTTP ${res.status}`);
       err.status = res.status;
-      err.retryAfter = res.headers?.get?.("retry-after") || null;
+      const ra = pickRetryAfterSeconds(res);
+      if (ra != null) err.retryAfter = String(ra);
       throw err;
     }
 
@@ -73,9 +86,21 @@ function requireSecret(req, res) {
 }
 
 // ======================================================
-// ✅ Normalize CoinGecko row
+// ✅ CoinGecko caching strategy (prevents 429 crashes)
+// - cache pages (short TTL)
+// - cache full snapshot (longer TTL)
+// - on 429: use cached snapshot (stale allowed)
 // ======================================================
-function normalizeCgRow(c) {
+const KV_CG_TOP = "main:cg:top:v1";
+const KV_CG_BTC = "main:cg:btc:v1";
+const KV_CG_PAGE_PREFIX = "main:cg:markets:v1:page:";
+
+// TTLs
+const CG_PAGE_TTL_SEC = 60 * 5;   // 5 min
+const CG_TOP_TTL_SEC = 60 * 12;   // 12 min (safe under 30m cron)
+const CG_BTC_TTL_SEC = 60 * 5;    // 5 min
+
+function normalizeCgMarketRow(c) {
   const hi = n(c.high_24h, 0);
   const lo = n(c.low_24h, 0);
   const range24 = hi > 0 && lo > 0 ? ((hi - lo) / lo) * 100 : 0;
@@ -88,140 +113,139 @@ function normalizeCgRow(c) {
     price: n(c.current_price, 0),
     marketCap: n(c.market_cap, 0),
     volume: n(c.total_volume, 0),
-    change24: n(c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h, 0),
-    change1h: n(c.price_change_percentage_1h_in_currency ?? c.price_change_percentage_1h, 0),
+    change24: n(
+      c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h,
+      0
+    ),
+    change1h: n(
+      c.price_change_percentage_1h_in_currency ?? c.price_change_percentage_1h,
+      0
+    ),
     range24,
   };
 }
 
-// ======================================================
-// ✅ CoinGecko universe fetch (fresh)
-// Returns normalized rows
-// ======================================================
-async function fetchCoinGeckoTopFresh(top = 1500) {
-  const out = [];
-  const perPage = 250;
-  const maxPages = 6; // 6*250 = 1500
-  const pagesNeeded = Math.max(1, Math.min(maxPages, Math.ceil(Number(top || 1500) / perPage)));
+async function fetchCoinGeckoMarketsPage(page, perPage = 250) {
+  const url =
+    `${CG_MARKETS}?vs_currency=usd&order=market_cap_desc&per_page=${perPage}&page=${page}` +
+    `&sparkline=false&price_change_percentage=1h,24h`;
 
-  for (let page = 1; page <= pagesNeeded; page++) {
-    const url =
-      `${CG_MARKETS}?vs_currency=usd&order=market_cap_desc&per_page=${perPage}&page=${page}` +
-      `&sparkline=false&price_change_percentage=1h,24h`;
-
-    const arr = await fetchJsonWithTimeout(url, { headers: { accept: "application/json" } }, 9000);
-    if (!Array.isArray(arr) || !arr.length) break;
-
-    for (const c of arr) out.push(normalizeCgRow(c));
-
-    // kleine pauze tussen pages (vriendelijker voor rate limits)
-    if (page < pagesNeeded) await sleep(220);
-  }
-
-  return out;
+  const arr = await fetchJsonWithTimeout(url, {}, 9000);
+  if (!Array.isArray(arr)) return [];
+  return arr.map(normalizeCgMarketRow);
 }
 
-// ======================================================
-// ✅ CoinGecko universe cached (429-safe)
-// Returns { coins, meta }
-// ======================================================
-async function fetchCoinGeckoTopCached(top = 1500) {
-  const now = Date.now();
+async function fetchCoinGeckoTopFresh(maxCoins = 1500) {
+  const perPage = 250;
+  const maxPages = Math.max(1, Math.ceil(maxCoins / perPage)); // usually 6
+  const out = [];
+  const meta = { usedCache: false, partial: false, rateLimited: false };
 
-  let cached = null;
-  try {
-    cached = await kv.get(CG_CACHE_KEY);
-  } catch {}
+  for (let page = 1; page <= maxPages; page++) {
+    try {
+      const rows = await fetchCoinGeckoMarketsPage(page, perPage);
+      if (!rows.length) break;
 
-  const cacheTs = n(cached?.ts, 0);
-  const cacheAgeSec = cacheTs > 0 ? (now - cacheTs) / 1000 : Number.POSITIVE_INFINITY;
-  const cacheCoins = Array.isArray(cached?.coins) ? cached.coins : null;
+      out.push(...rows);
 
-  // 1) cache fresh -> use it
-  if (cacheCoins && cacheCoins.length && cacheAgeSec <= CG_CACHE_MAX_AGE_SEC) {
-    return {
-      coins: cacheCoins.slice(0, Number(top || 1500)),
-      meta: { source: "kv_cache_fresh", cacheTs, cacheAgeSec: Math.round(cacheAgeSec) },
-    };
+      // cache this page
+      await kv.set(`${KV_CG_PAGE_PREFIX}${page}`, rows, { ex: CG_PAGE_TTL_SEC });
+
+      // small delay to reduce burst
+      await sleep(250);
+
+      if (out.length >= maxCoins) break;
+    } catch (e) {
+      const status = Number(e?.status || 0);
+      if (status === 429) {
+        meta.rateLimited = true;
+
+        // If we already have some rows, return partial (better than failing)
+        if (out.length > 0) {
+          meta.partial = true;
+          return { coins: out.slice(0, maxCoins), meta };
+        }
+
+        // No rows yet: try cached pages first
+        const cachedCoins = [];
+        for (let p = 1; p <= maxPages; p++) {
+          const cachedPage = await kv.get(`${KV_CG_PAGE_PREFIX}${p}`);
+          if (Array.isArray(cachedPage) && cachedPage.length) {
+            cachedCoins.push(...cachedPage);
+          }
+          if (cachedCoins.length >= maxCoins) break;
+        }
+
+        if (cachedCoins.length) {
+          meta.usedCache = true;
+          meta.partial = cachedCoins.length < maxCoins;
+          return { coins: cachedCoins.slice(0, maxCoins), meta };
+        }
+
+        // Last resort: full snapshot cache
+        const snap = await kv.get(KV_CG_TOP);
+        if (Array.isArray(snap) && snap.length) {
+          meta.usedCache = true;
+          meta.partial = snap.length < maxCoins;
+          return { coins: snap.slice(0, maxCoins), meta };
+        }
+
+        // If nothing cached at all, return empty but do not crash hard
+        return { coins: [], meta };
+      }
+
+      // non-429 error: if we already have partial, return it
+      if (out.length > 0) {
+        meta.partial = true;
+        return { coins: out.slice(0, maxCoins), meta };
+      }
+
+      throw e;
+    }
   }
 
-  // 2) refresh; on 429 -> fallback to stale cache if exists
+  return { coins: out.slice(0, maxCoins), meta };
+}
+
+async function fetchCoinGeckoTopCached(maxCoins = 1500) {
+  // Try fresh first
   try {
-    const fresh = await fetchCoinGeckoTopFresh(top);
-    if (fresh && fresh.length) {
-      await kv.set(CG_CACHE_KEY, { ts: now, coins: fresh }, { ex: 60 * 60 }); // keep 1h
-      return {
-        coins: fresh.slice(0, Number(top || 1500)),
-        meta: { source: "coingecko_refresh", prevCacheAgeSec: cacheCoins ? Math.round(cacheAgeSec) : null },
-      };
+    const fresh = await fetchCoinGeckoTopFresh(maxCoins);
+
+    if (Array.isArray(fresh.coins) && fresh.coins.length) {
+      // cache full snapshot (even if partial – still useful)
+      await kv.set(KV_CG_TOP, fresh.coins, { ex: CG_TOP_TTL_SEC });
+      return { coins: fresh.coins, meta: fresh.meta };
     }
 
-    // empty refresh -> fallback if possible
-    if (cacheCoins && cacheCoins.length) {
-      return {
-        coins: cacheCoins.slice(0, Number(top || 1500)),
-        meta: { source: "kv_cache_stale_empty_refresh", cacheTs, cacheAgeSec: Math.round(cacheAgeSec) },
-      };
+    // If fresh returned empty, fallback to cached snapshot
+    const snap = await kv.get(KV_CG_TOP);
+    if (Array.isArray(snap) && snap.length) {
+      return { coins: snap.slice(0, maxCoins), meta: { usedCache: true, partial: false, rateLimited: false } };
     }
 
-    return { coins: [], meta: { source: "empty", cacheTs: 0, cacheAgeSec: null } };
+    return { coins: [], meta: { usedCache: false, partial: false, rateLimited: false } };
   } catch (e) {
-    const status = n(e?.status, 0);
-
-    if (status === 429 && cacheCoins && cacheCoins.length) {
-      return {
-        coins: cacheCoins.slice(0, Number(top || 1500)),
-        meta: {
-          source: "kv_cache_stale_429",
-          cacheTs,
-          cacheAgeSec: Math.round(cacheAgeSec),
-          retryAfter: e?.retryAfter || null,
-        },
-      };
+    // fallback to cached snapshot on any error
+    const snap = await kv.get(KV_CG_TOP);
+    if (Array.isArray(snap) && snap.length) {
+      return { coins: snap.slice(0, maxCoins), meta: { usedCache: true, partial: false, rateLimited: false, _err: String(e?.message || e) } };
     }
-
-    if (cacheCoins && cacheCoins.length) {
-      return {
-        coins: cacheCoins.slice(0, Number(top || 1500)),
-        meta: { source: "kv_cache_stale_error", cacheTs, cacheAgeSec: Math.round(cacheAgeSec), err: String(e?.message || e) },
-      };
-    }
-
     throw e;
   }
 }
 
 // ======================================================
-// ✅ BTC snapshot (zonder extra request als cache al bestaat)
-// - pakt BTC uit universe cache als aanwezig
-// - anders: 1 CG call (best effort)
+// ✅ BTC snapshot (cache + 429 safe)
 // ======================================================
-async function fetchBTCGateFromUniverseCached() {
-  try {
-    const cached = await kv.get(CG_CACHE_KEY);
-    const coins = Array.isArray(cached?.coins) ? cached.coins : [];
-    const btc = coins.find((c) => String(c?.id || "") === "bitcoin" || String(c?.symbol || "") === "BTC");
-
-    if (btc) {
-      // range24 zit al in normalized rows
-      return {
-        price: n(btc.price, 0),
-        chg24: n(btc.change24, 0),
-        chg1h: n(btc.change1h, 0),
-        range24: n(btc.range24, 0),
-        state: "NEUTRAL",
-        _src: "kv_cache",
-      };
-    }
-  } catch {}
-
-  // fallback: 1 call (kan ook 429 geven, maar we vangen dat af)
+async function fetchBTCGateFromUniverse() {
+  // Try fresh
   try {
     const url =
       `${CG_MARKETS}?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1` +
       `&sparkline=false&price_change_percentage=1h,24h`;
 
-    const arr = await fetchJsonWithTimeout(url, { headers: { accept: "application/json" } }, 8000);
+    const arr = await fetchJsonWithTimeout(url, {}, 8000);
     const btc = Array.isArray(arr) && arr.length ? arr[0] : null;
     if (!btc) throw new Error("no_btc");
 
@@ -232,8 +256,20 @@ async function fetchBTCGateFromUniverseCached() {
     const lo = n(btc.low_24h, 0);
     const range24 = hi > 0 && lo > 0 ? ((hi - lo) / lo) * 100 : 0;
 
-    return { price, chg24, chg1h, range24, state: "NEUTRAL", _src: "coingecko" };
+    const out = { price, chg24, chg1h, range24, state: "NEUTRAL" };
+    await kv.set(KV_CG_BTC, out, { ex: CG_BTC_TTL_SEC });
+    return out;
   } catch (e) {
+    const status = Number(e?.status || 0);
+    if (status === 429) {
+      // fallback cache
+      const cached = await kv.get(KV_CG_BTC);
+      if (cached && typeof cached === "object") return cached;
+      return { price: 0, chg24: 0, chg1h: 0, range24: 0, state: "NEUTRAL", _err: "btc_429_no_cache" };
+    }
+    // fallback cache on any error
+    const cached = await kv.get(KV_CG_BTC);
+    if (cached && typeof cached === "object") return cached;
     return { price: 0, chg24: 0, chg1h: 0, range24: 0, state: "NEUTRAL", _err: String(e?.message || e) };
   }
 }
@@ -243,7 +279,7 @@ async function fetchBTCGateFromUniverseCached() {
 // ======================================================
 async function getBitgetSpotUsdtSymbols() {
   try {
-    const j = await fetchJsonWithTimeout(BITGET_SYMBOLS, { headers: { accept: "application/json" } }, 8000);
+    const j = await fetchJsonWithTimeout(BITGET_SYMBOLS, {}, 8000);
     if (String(j?.code || "") !== "00000") return new Set();
     const data = Array.isArray(j?.data) ? j.data : [];
 
@@ -265,7 +301,7 @@ async function getBitgetSpotUsdtSymbols() {
 async function fetchOrderbook(symbol) {
   try {
     const url = `${BITGET_OB}?symbol=${symbol}&type=step0&limit=20`;
-    const j = await fetchJsonWithTimeout(url, { headers: { accept: "application/json" } }, 6500);
+    const j = await fetchJsonWithTimeout(url, {}, 6500);
     if (String(j?.code || "") !== "00000") return null;
 
     const bids = j?.data?.bids || [];
@@ -371,9 +407,10 @@ export default async function handler(req, res) {
     mode = String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
 
     // ✅ ONLY main cores
-    const CORE = mode === "bear"
-      ? await import("../lib/_core_bear.js")
-      : await import("../lib/_core_bull.js");
+    const CORE =
+      mode === "bear"
+        ? await import("../lib/_core_bear.js")
+        : await import("../lib/_core_bull.js");
 
     const CFG = CORE.getCfg();
 
@@ -389,19 +426,21 @@ export default async function handler(req, res) {
             meta: {
               ...(latest.meta || {}),
               scanLock: { active: true, until: lock.until || null },
-              trigger: isVercelCron ? "vercel_cron" : (tokenOk ? "cron_token" : "manual_secret"),
+              trigger: isVercelCron ? "vercel_cron" : tokenOk ? "cron_token" : "manual_secret",
             },
           })
         );
       }
-      return res.end(JSON.stringify({ ok: true, skipped: true, reason: "scan_lock_active", mode, until: lock.until || null }));
+      return res.end(
+        JSON.stringify({ ok: true, skipped: true, reason: "scan_lock_active", mode, until: lock.until || null })
+      );
     }
     lockAcquired = true;
 
     const now = Date.now();
 
-    // ✅ BTC snapshot (cache-first)
-    const btcRaw = await fetchBTCGateFromUniverseCached();
+    // BTC snapshot (safe)
+    const btcRaw = await fetchBTCGateFromUniverse();
     const btc = {
       price: n(btcRaw?.price, 0),
       chg24: n(btcRaw?.chg24, 0),
@@ -410,11 +449,12 @@ export default async function handler(req, res) {
       state: CORE.computeBtcState(btcRaw, CFG),
     };
 
-    // ✅ Universe + Bitget symbols (CG cache-first, 429-safe)
-    const bitgetSymbols = await getBitgetSpotUsdtSymbols();
-    const uni = await fetchCoinGeckoTopCached(Number(CFG.CG_TOP || 1500));
-    const rawCoins = Array.isArray(uni.coins) ? uni.coins : [];
+    // Universe + Bitget symbols (CG cache-first)
+    const cg = await fetchCoinGeckoTopCached(Number(CFG.CG_TOP || 1500));
+    const rawCoins = Array.isArray(cg?.coins) ? cg.coins : [];
+    const cgMeta = cg?.meta || {};
 
+    const bitgetSymbols = await getBitgetSpotUsdtSymbols();
     const tradable = rawCoins
       .filter((c) => bitgetSymbols.has(up(c.symbol)))
       .slice(0, Number(CFG.CG_TOP || 1500));
@@ -543,7 +583,6 @@ export default async function handler(req, res) {
         const spreadOk = ob?.valid ? n(ob.spreadPct, 999) <= n(dynThr.spreadMaxPct, 999) : false;
         const depthOk = ob?.valid ? n(ob.depthMinUsd1p, 0) >= n(dynThr.depthMinUsd1p, 0) : false;
 
-        // OB score direction:
         const score = n(ob?.score, 0);
         const scoreOk =
           ob?.valid
@@ -569,7 +608,6 @@ export default async function handler(req, res) {
         if (entryOk) stage = "ENTRY";
       }
 
-      // store state
       nextState[sym] = {
         symbol: sym,
         stage,
@@ -602,7 +640,6 @@ export default async function handler(req, res) {
         volHist: volHistNext,
       };
 
-      // push into funnel
       const outCoin = {
         id: coin.id,
         symbol: sym,
@@ -628,17 +665,16 @@ export default async function handler(req, res) {
       else if (stage === "BUILDUP") funnel.buildup.push(outCoin);
       else funnel.radar.push(outCoin);
 
+      // keep overall runtime sane
       await sleep(6);
     }
 
-    // sort best-first (confidence)
     const byConf = (a, b) => n(b.confidence, 0) - n(a.confidence, 0);
     funnel.entry.sort(byConf);
     funnel.almost.sort(byConf);
     funnel.buildup.sort(byConf);
     funnel.radar.sort(byConf);
 
-    // apply limits
     funnel.entry = funnel.entry.slice(0, n(CFG.ENTRY_LIMIT, 12));
     funnel.almost = funnel.almost.slice(0, n(CFG.ALMOST_LIMIT, 25));
     funnel.buildup = funnel.buildup.slice(0, n(CFG.BUILDUP_LIMIT, 40));
@@ -672,19 +708,29 @@ export default async function handler(req, res) {
           btc: CFG.btc,
         },
         scanLock: { active: false, until: null },
-        trigger: isVercelCron ? "vercel_cron" : (tokenOk ? "cron_token" : "manual_secret"),
-        universe: uni?.meta || { source: "unknown" },
+        trigger: isVercelCron ? "vercel_cron" : tokenOk ? "cron_token" : "manual_secret",
+        cg: {
+          coinsFetched: rawCoins.length,
+          tradable: tradable.length,
+          usedCache: !!cgMeta.usedCache,
+          partial: !!cgMeta.partial,
+          rateLimited: !!cgMeta.rateLimited,
+        },
       },
     };
 
-    // persist
     await kv.set(CORE.keyState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
     await kv.set(CORE.keyLatest(mode), latest, { ex: 60 * 60 });
 
     res.status(200).json(latest);
   } catch (err) {
     console.error("scan error:", err);
-    res.status(500).json({ ok: false, error: err?.message || String(err) });
+    res.status(500).json({
+      ok: false,
+      error: err?.message || String(err),
+      status: err?.status || null,
+      retryAfter: err?.retryAfter || null,
+    });
   } finally {
     if (lockAcquired) await releaseScanLock(mode);
   }
