@@ -1,37 +1,16 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
-    {
-      "path": "/api/cron-bull",
-      "schedule": "0,30 * * * *"
-    },
-    {
-      "path": "/api/cron-bear",
-      "schedule": "0,30 * * * *"
-    },
-    {
-      "path": "/api/positions/manage?mode=bull",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/positions/manage?mode=bear",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/moon/cron-bull",
-      "schedule": "0,15,30,45 * * * *"
-    },
-    {
-      "path": "/api/moon/cron-bear",
-      "schedule": "0,15,30,45 * * * *"
-    },
-    {
-      "path": "/api/moon/positions/manage?mode=bull",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/moon/positions/manage?mode=bear",
-      "schedule": "*/5 * * * *"
-    }
+    { "path": "/api/scan?mode=bull", "schedule": "0,30 * * * *" },
+    { "path": "/api/scan?mode=bear", "schedule": "0,30 * * * *" },
+
+    { "path": "/api/positions/manage?mode=bull", "schedule": "*/5 * * * *" },
+    { "path": "/api/positions/manage?mode=bear", "schedule": "*/5 * * * *" },
+
+    { "path": "/api/moon/cron-bull", "schedule": "0,15,30,45 * * * *" },
+    { "path": "/api/moon/cron-bear", "schedule": "0,15,30,45 * * * *" },
+
+    { "path": "/api/moon/positions/manage?mode=bull", "schedule": "*/5 * * * *" },
+    { "path": "/api/moon/positions/manage?mode=bear", "schedule": "*/5 * * * *" }
   ]
 }
