@@ -7,7 +7,10 @@ async function runSingle(mode) {
       mode,
       token: process.env.CRON_SECRET,
     },
-    headers: {},
+    headers: {
+      // ✅ mimic real vercel cron header
+      "x-vercel-cron": "1",
+    },
   };
 
   let body = null;
