@@ -75,22 +75,40 @@ function getSnapshotTs(data) {
   return Number(data?.scannedAt || data?.ts || 0);
 }
 
+/**
+ * ✅ Funnel normalizer (NIEUW):
+ * - Nieuwe scan.js payload: funnel.entry / almost / buildup / radar
+ * - Legacy main payloads: funnel.elite_expansion / elite_ignition / hold / sell
+ * - UI blijft werken ongeacht welke backend je aanroept
+ */
 function normalizeMainFunnel(data) {
   const f = data?.funnel || {};
 
+  // ✅ nieuwe scan funnels
+  const entryNew = arr(f.entry);
+  const almost = arr(f.almost);
+  const buildup = arr(f.buildup);
+  const radar = arr(f.radar);
+
+  // ✅ legacy funnels (main engine)
   const eliteExpansion = arr(f.elite_expansion);
   const eliteIgnition = arr(f.elite_ignition);
-  const entry = arr(f.entry).length ? arr(f.entry) : eliteExpansion.concat(eliteIgnition);
+  const hold = arr(f.hold);
+  const sell = arr(f.sell);
+
+  // ENTRY fallback: als nieuwe entry leeg is maar legacy elite bestaat -> toon elite in entry
+  const entry =
+    entryNew.length > 0 ? entryNew : eliteExpansion.concat(eliteIgnition);
 
   return {
     entry,
     elite_expansion: eliteExpansion,
     elite_ignition: eliteIgnition,
-    almost: arr(f.almost),
-    buildup: arr(f.buildup),
-    radar: arr(f.radar),
-    hold: arr(f.hold),
-    sell: arr(f.sell),
+    almost,
+    buildup,
+    radar,
+    hold,
+    sell,
   };
 }
 
@@ -98,6 +116,8 @@ function normalizedCounts(data) {
   const f = normalizeMainFunnel(data);
   const counts = data?.counts || data?.meta?.counts || {};
 
+  // ✅ scan.js counts: {entry,almost,buildup,radar}
+  // ✅ legacy main counts: {entry,hold,sell,almost,buildup,radar}
   return {
     entry: Number(counts.entry ?? f.entry.length ?? 0),
     hold: Number(counts.hold ?? f.hold.length ?? 0),
@@ -161,9 +181,29 @@ function scoreValue(c) {
   return 0;
 }
 
+/**
+ * ✅ stage mapping aangepast aan scan.js:
+ * stages: ENTRY / ALMOST / BUILDUP / RADAR
+ * legacy: ELITE_IGNITION / ELITE_EXPANSION blijven als ENTRY behandeld
+ */
 function actionForStage(c) {
   const stage = upperStage(c?.stage);
 
+  // scan.js (nieuw)
+  if (stage === "ENTRY") {
+    return { label: "ENTRY", sub: "Instap-condities zijn gehaald", tone: "ok" };
+  }
+  if (stage === "ALMOST") {
+    return { label: "KLAARZETTEN", sub: "Mist nog 1–2 checks", tone: "warn" };
+  }
+  if (stage === "BUILDUP") {
+    return { label: "WATCHLIST", sub: "Interessant, maar nog te vroeg", tone: "warn" };
+  }
+  if (stage === "RADAR") {
+    return { label: "SKIP", sub: "Nog geen setup", tone: "no" };
+  }
+
+  // legacy main (oud)
   if (stage === "ELITE_EXPANSION") {
     return { label: "ENTRY", sub: "Sterkste main-setup actief", tone: "ok" };
   }
@@ -176,12 +216,7 @@ function actionForStage(c) {
   if (stage === "SELL") {
     return { label: "SELL", sub: "Trade is gesloten / ongeldig", tone: "no" };
   }
-  if (stage === "ALMOST") {
-    return { label: "KLAARZETTEN", sub: "Mist nog 1–2 checks", tone: "warn" };
-  }
-  if (stage === "BUILDUP") {
-    return { label: "WATCHLIST", sub: "Interessant, maar nog te vroeg", tone: "warn" };
-  }
+
   return { label: "SKIP", sub: "Nog geen setup", tone: "no" };
 }
 
@@ -540,6 +575,7 @@ function openModalMain(c) {
     Number(c?.vm || 0) >= 0.20 ? "ok" : "warn"
   );
 
+  // scan.js heeft meestal geen breakout object; maar als hij er wel is, tonen we hem
   if (c?.breakout && typeof c.breakout === "object") {
     addCheck(
       whyList,
@@ -550,16 +586,21 @@ function openModalMain(c) {
     );
   }
 
-  if (stage === "ELITE_EXPANSION") {
-    addCheck(whyList, true, "Waarom ENTRY", "Explosieve fase is actief.", "ok");
-  } else if (stage === "ELITE_IGNITION") {
-    addCheck(whyList, true, "Waarom ENTRY", "Sterke kans op directe move.", "ok");
+  // ✅ stage uitleg (nieuw + legacy)
+  if (stage === "ENTRY" || stage === "ELITE_EXPANSION" || stage === "ELITE_IGNITION") {
+    addCheck(whyList, true, "Waarom ENTRY", "Instapcondities zijn gehaald.", "ok");
   } else if (stage === "ALMOST") {
     addCheck(whyList, false, "Waarom nog niet entry", "Mist nog 1 laatste upgrade-check.", "warn");
   } else if (stage === "BUILDUP") {
     addCheck(whyList, false, "Waarom nog niet almost", "Momentum bouwt op, maar nog niet scherp genoeg.", "warn");
-  } else {
+  } else if (stage === "RADAR") {
     addCheck(whyList, false, "Waarom nog niet buildup", "Nog te vroeg of te veel ruis.", "warn");
+  } else if (stage === "HOLD") {
+    addCheck(whyList, true, "Waarom HOLD", "Positie blijft geldig.", "ok");
+  } else if (stage === "SELL") {
+    addCheck(whyList, false, "Waarom SELL", "Trade is gesloten / ongeldig.", "warn");
+  } else {
+    addCheck(whyList, false, "Waarom", "Onbekende stage in payload.", "warn");
   }
 
   const liqList = el("mLiqList");
