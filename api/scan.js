@@ -1,21 +1,14 @@
 // api/scan.js
 import { kv } from "@vercel/kv";
-
-import {
-  RUNTIME_CONFIG,
-  requireSecret,
-  fetchBTCGateFromUniverse,
-  fetchCoinGeckoTopCached,
-  getBitgetSpotUsdtSymbols,
-
-  // ✅ IMPORTANT: use the SAME KV keys that api/latest.js reads
-  keyMainLatest,
-  keyMainState,
-} from "../lib/_moon_core.js";
+import { RUNTIME_CONFIG } from "../lib/_runtime.js";
 
 export const config = RUNTIME_CONFIG;
 
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
+const BITGET_SYMBOLS = "https://api.bitget.com/api/v2/spot/public/symbols";
+
+// CoinGecko: we keep it simple and robust (no cache dependency)
+const CG_MARKETS = "https://api.coingecko.com/api/v3/coins/markets";
 
 // ======================================================
 // Helpers
@@ -43,14 +36,126 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
   }
 }
 
+// ======================================================
+// ✅ Secret gate (no dependency on moon core)
+// - Allows Vercel cron OR valid token OR manual secret
+// ======================================================
+function requireSecret(req, res) {
+  const qToken = String(req.query?.token || "");
+  const bearer = String(req.headers?.authorization || "");
+  const headerToken = bearer.toLowerCase().startsWith("bearer ")
+    ? bearer.slice(7).trim()
+    : "";
+
+  const ok =
+    (process.env.CRON_SECRET && qToken && qToken === String(process.env.CRON_SECRET)) ||
+    (process.env.SCAN_SECRET && qToken && qToken === String(process.env.SCAN_SECRET)) ||
+    (process.env.CRON_SECRET && headerToken && headerToken === String(process.env.CRON_SECRET)) ||
+    (process.env.SCAN_SECRET && headerToken && headerToken === String(process.env.SCAN_SECRET));
+
+  if (ok) return true;
+
+  res.statusCode = 401;
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+  return false;
+}
+
+// ======================================================
+// ✅ BTC snapshot (simple, reliable)
+// ======================================================
+async function fetchBTCGateFromUniverse() {
+  try {
+    // uses /coins/markets so we get high/low + 24h% + 1h%
+    const url =
+      `${CG_MARKETS}?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1` +
+      `&sparkline=false&price_change_percentage=1h,24h`;
+
+    const arr = await fetchJsonWithTimeout(url, { headers: { accept: "application/json" } }, 8000);
+    const btc = Array.isArray(arr) && arr.length ? arr[0] : null;
+    if (!btc) throw new Error("no_btc");
+
+    const price = n(btc.current_price, 0);
+    const chg24 = n(btc.price_change_percentage_24h_in_currency ?? btc.price_change_percentage_24h, 0);
+    const chg1h = n(btc.price_change_percentage_1h_in_currency ?? btc.price_change_percentage_1h, 0);
+    const hi = n(btc.high_24h, 0);
+    const lo = n(btc.low_24h, 0);
+    const range24 = hi > 0 && lo > 0 ? ((hi - lo) / lo) * 100 : 0;
+
+    return { price, chg24, chg1h, range24, state: "NEUTRAL" };
+  } catch (e) {
+    // fallback safe
+    return { price: 0, chg24: 0, chg1h: 0, range24: 0, state: "NEUTRAL", _err: String(e?.message || e) };
+  }
+}
+
+// ======================================================
+// ✅ CoinGecko universe fetch (no cache dependency)
+// Returns {id,symbol,name,image,price,marketCap,volume,change24,change1h,range24}
+// ======================================================
+async function fetchCoinGeckoTop() {
+  // We page through until we have enough (CG_TOP max 1500)
+  const out = [];
+  const perPage = 250;
+  const maxPages = 6; // 6*250 = 1500
+  for (let page = 1; page <= maxPages; page++) {
+    const url =
+      `${CG_MARKETS}?vs_currency=usd&order=market_cap_desc&per_page=${perPage}&page=${page}` +
+      `&sparkline=false&price_change_percentage=1h,24h`;
+
+    const arr = await fetchJsonWithTimeout(url, { headers: { accept: "application/json" } }, 9000);
+    if (!Array.isArray(arr) || !arr.length) break;
+
+    for (const c of arr) {
+      const hi = n(c.high_24h, 0);
+      const lo = n(c.low_24h, 0);
+      const range24 = hi > 0 && lo > 0 ? ((hi - lo) / lo) * 100 : 0;
+
+      out.push({
+        id: String(c.id || ""),
+        symbol: up(c.symbol),
+        name: String(c.name || ""),
+        image: String(c.image || ""),
+        price: n(c.current_price, 0),
+        marketCap: n(c.market_cap, 0),
+        volume: n(c.total_volume, 0),
+        change24: n(c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h, 0),
+        change1h: n(c.price_change_percentage_1h_in_currency ?? c.price_change_percentage_1h, 0),
+        range24,
+      });
+    }
+  }
+  return out;
+}
+
+// ======================================================
+// ✅ Bitget USDT symbols set (no dependency)
+// ======================================================
+async function getBitgetSpotUsdtSymbols() {
+  try {
+    const j = await fetchJsonWithTimeout(BITGET_SYMBOLS, { headers: { accept: "application/json" } }, 8000);
+    if (String(j?.code || "") !== "00000") return new Set();
+    const data = Array.isArray(j?.data) ? j.data : [];
+
+    const set = new Set();
+    for (const s of data) {
+      const quote = up(s?.quoteCoin || s?.quoteCoinName || "");
+      const base = up(s?.baseCoin || s?.baseCoinName || "");
+      if (quote === "USDT" && base) set.add(base);
+    }
+    return set;
+  } catch {
+    return new Set();
+  }
+}
+
+// ======================================================
+// Orderbook
+// ======================================================
 async function fetchOrderbook(symbol) {
   try {
     const url = `${BITGET_OB}?symbol=${symbol}&type=step0&limit=20`;
-    const j = await fetchJsonWithTimeout(
-      url,
-      { headers: { accept: "application/json" } },
-      6500
-    );
+    const j = await fetchJsonWithTimeout(url, { headers: { accept: "application/json" } }, 6500);
     if (String(j?.code || "") !== "00000") return null;
 
     const bids = j?.data?.bids || [];
@@ -62,12 +167,8 @@ async function fetchOrderbook(symbol) {
     if (!(bestBid > 0 && bestAsk > 0)) return null;
 
     const spreadPct = ((bestAsk - bestBid) / bestBid) * 100;
-    const depthBidUsd = bids
-      .slice(0, 8)
-      .reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
-    const depthAskUsd = asks
-      .slice(0, 8)
-      .reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
+    const depthBidUsd = bids.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
+    const depthAskUsd = asks.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
 
     const total = depthBidUsd + depthAskUsd;
     const score = total > 0 ? (depthBidUsd - depthAskUsd) / total : 0;
@@ -106,16 +207,14 @@ function pickTier(marketCap, entryCfg) {
 function scanLockKey(mode) {
   return `main:scan:lock:${String(mode || "bull").toLowerCase()}`;
 }
-
 async function acquireScanLock(mode) {
   const key = scanLockKey(mode);
   const now = Date.now();
-  const d = new Date(now);
 
+  const d = new Date(now);
   const next = new Date(d);
   next.setSeconds(0, 0);
 
-  // next boundary: 00 or 30
   if (d.getMinutes() < 30) next.setMinutes(30);
   else {
     next.setMinutes(0);
@@ -135,7 +234,6 @@ async function acquireScanLock(mode) {
   await kv.set(key, { ts: now, until, mode }, { ex: ttlSec });
   return { ok: true, key, until };
 }
-
 async function releaseScanLock(mode) {
   try {
     await kv.del(scanLockKey(mode));
@@ -143,31 +241,35 @@ async function releaseScanLock(mode) {
 }
 
 // ======================================================
-// Main scan
+// Main scan (uses ONLY core_bull / core_bear)
 // ======================================================
 export default async function handler(req, res) {
   let mode = "bull";
   let lockAcquired = false;
 
   try {
-    // ✅ Allow Vercel Cron without secret. Manual calls still require secret.
+    // ✅ allow cron by header OR by token
     const isVercelCron = String(req.headers?.["x-vercel-cron"] || "") === "1";
-    if (!isVercelCron) {
+    const tokenOk =
+      process.env.CRON_SECRET &&
+      String(req.query?.token || "") === String(process.env.CRON_SECRET);
+
+    if (!isVercelCron && !tokenOk) {
       if (!requireSecret(req, res)) return;
     }
 
     mode = String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
 
-    // load correct core by mode
-    const CORE =
-      mode === "bear" ? await import("../lib/_core_bear.js") : await import("../lib/_core_bull.js");
+    // ✅ ONLY main cores
+    const CORE = mode === "bear"
+      ? await import("../lib/_core_bear.js")
+      : await import("../lib/_core_bull.js");
 
     const CFG = CORE.getCfg();
 
-    // lock
     const lock = await acquireScanLock(mode);
     if (!lock.ok) {
-      const latest = await kv.get(keyMainLatest(mode));
+      const latest = await kv.get(CORE.keyLatest(mode));
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");
       if (latest) {
@@ -177,11 +279,12 @@ export default async function handler(req, res) {
             meta: {
               ...(latest.meta || {}),
               scanLock: { active: true, until: lock.until || null },
+              trigger: isVercelCron ? "vercel_cron" : (tokenOk ? "cron_token" : "manual_secret"),
             },
           })
         );
       }
-      return res.end(JSON.stringify({ ok: true, skipped: true, reason: "scan_lock_active", mode }));
+      return res.end(JSON.stringify({ ok: true, skipped: true, reason: "scan_lock_active", mode, until: lock.until || null }));
     }
     lockAcquired = true;
 
@@ -197,19 +300,19 @@ export default async function handler(req, res) {
       state: CORE.computeBtcState(btcRaw, CFG),
     };
 
-    // universe
-    const rawCoins = await fetchCoinGeckoTopCached();
+    // Universe + Bitget symbols
+    const rawCoins = await fetchCoinGeckoTop();
     const bitgetSymbols = await getBitgetSpotUsdtSymbols();
 
     const tradable = rawCoins
       .filter((c) => bitgetSymbols.has(up(c.symbol)))
       .slice(0, Number(CFG.CG_TOP || 1500));
 
-    // state for histories (✅ SAME KEY as latest.js expects)
-    const prevState = (await kv.get(keyMainState(mode))) || {};
+    // State for histories
+    const prevState = (await kv.get(CORE.keyState(mode))) || {};
     const nextState = {};
 
-    // funnels
+    // Funnels
     const funnel = { entry: [], almost: [], buildup: [], radar: [] };
 
     for (const coin of tradable) {
@@ -264,7 +367,7 @@ export default async function handler(req, res) {
       const buildupOk = radarOk && volAcc >= n(CFG.buildup?.minVolAcc, 1.0);
       if (buildupOk) stage = "BUILDUP";
 
-      // ALMOST gate (flatness proxy)
+      // ALMOST gate
       let flat60Pct = 999;
       if (priceHistNext.length >= 10) {
         const tail = priceHistNext.slice(-60);
@@ -323,12 +426,13 @@ export default async function handler(req, res) {
           obScoreMin: n(tier?.obScoreMin, n(entryCfg.obScoreMin, 0.02)),
         };
 
-        // dynamic adjust
+        // dynamic adjust (liq-adaptive)
         const dynThr = CORE.dynamicEntryThresholds({ marketCap, volume, vm }, baseThr, CFG);
 
         const spreadOk = ob?.valid ? n(ob.spreadPct, 999) <= n(dynThr.spreadMaxPct, 999) : false;
         const depthOk = ob?.valid ? n(ob.depthMinUsd1p, 0) >= n(dynThr.depthMinUsd1p, 0) : false;
 
+        // OB score direction:
         const score = n(ob?.score, 0);
         const scoreOk =
           ob?.valid
@@ -337,12 +441,7 @@ export default async function handler(req, res) {
               : score <= -n(dynThr.obScoreMin, 0)
             : false;
 
-        obSlope = CORE.checkObSlopeGate({
-          stage: "entry",
-          mode,
-          obSamples: trimmed,
-          settings: CFG,
-        });
+        obSlope = CORE.checkObSlopeGate({ stage: "entry", mode, obSamples: trimmed, settings: CFG });
 
         const confOk = confidence >= n(dynThr.minConfidence, n(entryCfg.minConfidence, 0));
 
@@ -359,6 +458,7 @@ export default async function handler(req, res) {
         if (entryOk) stage = "ENTRY";
       }
 
+      // store state
       nextState[sym] = {
         symbol: sym,
         stage,
@@ -391,6 +491,7 @@ export default async function handler(req, res) {
         volHist: volHistNext,
       };
 
+      // push into funnel
       const outCoin = {
         id: coin.id,
         symbol: sym,
@@ -408,6 +509,7 @@ export default async function handler(req, res) {
         confidence,
         ob: nextState[sym].ob,
         entry: nextState[sym].entry,
+        stage,
       };
 
       if (stage === "ENTRY") funnel.entry.push(outCoin);
@@ -418,12 +520,14 @@ export default async function handler(req, res) {
       await sleep(6);
     }
 
+    // sort best-first (confidence)
     const byConf = (a, b) => n(b.confidence, 0) - n(a.confidence, 0);
     funnel.entry.sort(byConf);
     funnel.almost.sort(byConf);
     funnel.buildup.sort(byConf);
     funnel.radar.sort(byConf);
 
+    // apply limits
     funnel.entry = funnel.entry.slice(0, n(CFG.ENTRY_LIMIT, 12));
     funnel.almost = funnel.almost.slice(0, n(CFG.ALMOST_LIMIT, 25));
     funnel.buildup = funnel.buildup.slice(0, n(CFG.BUILDUP_LIMIT, 40));
@@ -457,13 +561,13 @@ export default async function handler(req, res) {
           btc: CFG.btc,
         },
         scanLock: { active: false, until: null },
-        trigger: isVercelCron ? "vercel_cron" : "manual_secret",
+        trigger: isVercelCron ? "vercel_cron" : (tokenOk ? "cron_token" : "manual_secret"),
       },
     };
 
-    // ✅ FIX: persist to main keys (api/latest.js reads these)
-    await kv.set(keyMainState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
-    await kv.set(keyMainLatest(mode), latest, { ex: 60 * 60 });
+    // persist
+    await kv.set(CORE.keyState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
+    await kv.set(CORE.keyLatest(mode), latest, { ex: 60 * 60 });
 
     res.status(200).json(latest);
   } catch (err) {
