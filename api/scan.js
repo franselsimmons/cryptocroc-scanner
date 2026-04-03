@@ -6,9 +6,20 @@ export const config = RUNTIME_CONFIG;
 
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 const BITGET_SYMBOLS = "https://api.bitget.com/api/v2/spot/public/symbols";
-
-// CoinGecko
 const CG_MARKETS = "https://api.coingecko.com/api/v3/coins/markets";
+
+// ======================================================
+// ✅ MAIN KV KEYS (1 bron van waarheid)
+// ======================================================
+function keyMainLatest(mode) {
+  return `main:latest:${String(mode || "bull").toLowerCase()}`;
+}
+function keyMainState(mode) {
+  return `main:state:${String(mode || "bull").toLowerCase()}`;
+}
+function keyScanLock(mode) {
+  return `main:scan:lock:${String(mode || "bull").toLowerCase()}`;
+}
 
 // ======================================================
 // Helpers
@@ -40,7 +51,6 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
       signal: controller.signal,
       headers: {
         accept: "application/json",
-        // Small but helpful: CG sometimes rate-limits harder without UA.
         "user-agent": "CryptoCrocScanner/1.0",
         ...(options.headers || {}),
       },
@@ -61,15 +71,12 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
 }
 
 // ======================================================
-// ✅ Secret gate (no dependency on moon core)
-// - Allows Vercel cron OR valid token OR manual secret
+// ✅ Secret gate (cron header OR cron token OR manual secret)
 // ======================================================
 function requireSecret(req, res) {
   const qToken = String(req.query?.token || "");
   const bearer = String(req.headers?.authorization || "");
-  const headerToken = bearer.toLowerCase().startsWith("bearer ")
-    ? bearer.slice(7).trim()
-    : "";
+  const headerToken = bearer.toLowerCase().startsWith("bearer ") ? bearer.slice(7).trim() : "";
 
   const ok =
     (process.env.CRON_SECRET && qToken && qToken === String(process.env.CRON_SECRET)) ||
@@ -86,19 +93,51 @@ function requireSecret(req, res) {
 }
 
 // ======================================================
-// ✅ CoinGecko caching strategy (prevents 429 crashes)
-// - cache pages (short TTL)
-// - cache full snapshot (longer TTL)
-// - on 429: use cached snapshot (stale allowed)
+// ✅ scan lock (30m boundaries: :00 / :30)
 // ======================================================
-const KV_CG_TOP = "main:cg:top:v1";
-const KV_CG_BTC = "main:cg:btc:v1";
-const KV_CG_PAGE_PREFIX = "main:cg:markets:v1:page:";
+async function acquireScanLock(mode) {
+  const key = keyScanLock(mode);
+  const now = Date.now();
 
-// TTLs
-const CG_PAGE_TTL_SEC = 60 * 5;   // 5 min
-const CG_TOP_TTL_SEC = 60 * 12;   // 12 min (safe under 30m cron)
-const CG_BTC_TTL_SEC = 60 * 5;    // 5 min
+  const d = new Date(now);
+  const next = new Date(d);
+  next.setSeconds(0, 0);
+
+  if (d.getMinutes() < 30) next.setMinutes(30);
+  else {
+    next.setMinutes(0);
+    next.setHours(d.getHours() + 1);
+  }
+
+  const until = next.getTime();
+  const ttlSec = Math.max(60, Math.ceil((until - now) / 1000));
+
+  const ok = await kv.set(key, { ts: now, until, mode }, { nx: true, ex: ttlSec });
+  if (ok) return { ok: true, key, until };
+
+  const cur = await kv.get(key);
+  const curUntil = Number(cur?.until || 0);
+  if (curUntil > now) return { ok: false, key, until: curUntil };
+
+  await kv.set(key, { ts: now, until, mode }, { ex: ttlSec });
+  return { ok: true, key, until };
+}
+async function releaseScanLock(mode) {
+  try {
+    await kv.del(keyScanLock(mode));
+  } catch {}
+}
+
+// ======================================================
+// CoinGecko caching (429 safe)
+// ======================================================
+const KV_CG_TOP = "main:cg:top:v2";
+const KV_CG_BTC = "main:cg:btc:v2";
+const KV_CG_PAGE_PREFIX = "main:cg:markets:v2:page:";
+
+const CG_PAGE_TTL_SEC = 60 * 5;
+const CG_TOP_TTL_SEC = 60 * 12;
+const CG_BTC_TTL_SEC = 60 * 5;
 
 function normalizeCgMarketRow(c) {
   const hi = n(c.high_24h, 0);
@@ -113,14 +152,8 @@ function normalizeCgMarketRow(c) {
     price: n(c.current_price, 0),
     marketCap: n(c.market_cap, 0),
     volume: n(c.total_volume, 0),
-    change24: n(
-      c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h,
-      0
-    ),
-    change1h: n(
-      c.price_change_percentage_1h_in_currency ?? c.price_change_percentage_1h,
-      0
-    ),
+    change24: n(c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h, 0),
+    change1h: n(c.price_change_percentage_1h_in_currency ?? c.price_change_percentage_1h, 0),
     range24,
   };
 }
@@ -135,9 +168,9 @@ async function fetchCoinGeckoMarketsPage(page, perPage = 250) {
   return arr.map(normalizeCgMarketRow);
 }
 
-async function fetchCoinGeckoTopFresh(maxCoins = 1500) {
+async function fetchCoinGeckoTopCached(maxCoins = 1500) {
   const perPage = 250;
-  const maxPages = Math.max(1, Math.ceil(maxCoins / perPage)); // usually 6
+  const maxPages = Math.max(1, Math.ceil(maxCoins / perPage));
   const out = [];
   const meta = { usedCache: false, partial: false, rateLimited: false };
 
@@ -147,11 +180,7 @@ async function fetchCoinGeckoTopFresh(maxCoins = 1500) {
       if (!rows.length) break;
 
       out.push(...rows);
-
-      // cache this page
       await kv.set(`${KV_CG_PAGE_PREFIX}${page}`, rows, { ex: CG_PAGE_TTL_SEC });
-
-      // small delay to reduce burst
       await sleep(250);
 
       if (out.length >= maxCoins) break;
@@ -160,19 +189,17 @@ async function fetchCoinGeckoTopFresh(maxCoins = 1500) {
       if (status === 429) {
         meta.rateLimited = true;
 
-        // If we already have some rows, return partial (better than failing)
         if (out.length > 0) {
           meta.partial = true;
+          await kv.set(KV_CG_TOP, out.slice(0, maxCoins), { ex: CG_TOP_TTL_SEC });
           return { coins: out.slice(0, maxCoins), meta };
         }
 
-        // No rows yet: try cached pages first
+        // try cached pages
         const cachedCoins = [];
         for (let p = 1; p <= maxPages; p++) {
           const cachedPage = await kv.get(`${KV_CG_PAGE_PREFIX}${p}`);
-          if (Array.isArray(cachedPage) && cachedPage.length) {
-            cachedCoins.push(...cachedPage);
-          }
+          if (Array.isArray(cachedPage) && cachedPage.length) cachedCoins.push(...cachedPage);
           if (cachedCoins.length >= maxCoins) break;
         }
 
@@ -182,7 +209,7 @@ async function fetchCoinGeckoTopFresh(maxCoins = 1500) {
           return { coins: cachedCoins.slice(0, maxCoins), meta };
         }
 
-        // Last resort: full snapshot cache
+        // fallback full snapshot
         const snap = await kv.get(KV_CG_TOP);
         if (Array.isArray(snap) && snap.length) {
           meta.usedCache = true;
@@ -190,13 +217,12 @@ async function fetchCoinGeckoTopFresh(maxCoins = 1500) {
           return { coins: snap.slice(0, maxCoins), meta };
         }
 
-        // If nothing cached at all, return empty but do not crash hard
         return { coins: [], meta };
       }
 
-      // non-429 error: if we already have partial, return it
       if (out.length > 0) {
         meta.partial = true;
+        await kv.set(KV_CG_TOP, out.slice(0, maxCoins), { ex: CG_TOP_TTL_SEC });
         return { coins: out.slice(0, maxCoins), meta };
       }
 
@@ -204,42 +230,12 @@ async function fetchCoinGeckoTopFresh(maxCoins = 1500) {
     }
   }
 
+  if (out.length) await kv.set(KV_CG_TOP, out.slice(0, maxCoins), { ex: CG_TOP_TTL_SEC });
   return { coins: out.slice(0, maxCoins), meta };
 }
 
-async function fetchCoinGeckoTopCached(maxCoins = 1500) {
-  // Try fresh first
-  try {
-    const fresh = await fetchCoinGeckoTopFresh(maxCoins);
-
-    if (Array.isArray(fresh.coins) && fresh.coins.length) {
-      // cache full snapshot (even if partial – still useful)
-      await kv.set(KV_CG_TOP, fresh.coins, { ex: CG_TOP_TTL_SEC });
-      return { coins: fresh.coins, meta: fresh.meta };
-    }
-
-    // If fresh returned empty, fallback to cached snapshot
-    const snap = await kv.get(KV_CG_TOP);
-    if (Array.isArray(snap) && snap.length) {
-      return { coins: snap.slice(0, maxCoins), meta: { usedCache: true, partial: false, rateLimited: false } };
-    }
-
-    return { coins: [], meta: { usedCache: false, partial: false, rateLimited: false } };
-  } catch (e) {
-    // fallback to cached snapshot on any error
-    const snap = await kv.get(KV_CG_TOP);
-    if (Array.isArray(snap) && snap.length) {
-      return { coins: snap.slice(0, maxCoins), meta: { usedCache: true, partial: false, rateLimited: false, _err: String(e?.message || e) } };
-    }
-    throw e;
-  }
-}
-
-// ======================================================
-// ✅ BTC snapshot (cache + 429 safe)
-// ======================================================
+// BTC (429 safe)
 async function fetchBTCGateFromUniverse() {
-  // Try fresh
   try {
     const url =
       `${CG_MARKETS}?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1` +
@@ -260,23 +256,13 @@ async function fetchBTCGateFromUniverse() {
     await kv.set(KV_CG_BTC, out, { ex: CG_BTC_TTL_SEC });
     return out;
   } catch (e) {
-    const status = Number(e?.status || 0);
-    if (status === 429) {
-      // fallback cache
-      const cached = await kv.get(KV_CG_BTC);
-      if (cached && typeof cached === "object") return cached;
-      return { price: 0, chg24: 0, chg1h: 0, range24: 0, state: "NEUTRAL", _err: "btc_429_no_cache" };
-    }
-    // fallback cache on any error
     const cached = await kv.get(KV_CG_BTC);
     if (cached && typeof cached === "object") return cached;
     return { price: 0, chg24: 0, chg1h: 0, range24: 0, state: "NEUTRAL", _err: String(e?.message || e) };
   }
 }
 
-// ======================================================
-// ✅ Bitget USDT symbols set (no dependency)
-// ======================================================
+// Bitget symbols
 async function getBitgetSpotUsdtSymbols() {
   try {
     const j = await fetchJsonWithTimeout(BITGET_SYMBOLS, {}, 8000);
@@ -295,9 +281,7 @@ async function getBitgetSpotUsdtSymbols() {
   }
 }
 
-// ======================================================
 // Orderbook
-// ======================================================
 async function fetchOrderbook(symbol) {
   try {
     const url = `${BITGET_OB}?symbol=${symbol}&type=step0&limit=20`;
@@ -328,10 +312,6 @@ async function fetchOrderbook(symbol) {
       depthMinUsd1p: Math.min(depthBidUsd, depthAskUsd),
       score,
       valid: true,
-      fresh: true,
-      stale: false,
-      status: "ok",
-      reason: "",
     };
   } catch {
     return null;
@@ -348,53 +328,13 @@ function pickTier(marketCap, entryCfg) {
 }
 
 // ======================================================
-// ✅ scan lock (30m boundaries: :00 / :30)
-// ======================================================
-function scanLockKey(mode) {
-  return `main:scan:lock:${String(mode || "bull").toLowerCase()}`;
-}
-async function acquireScanLock(mode) {
-  const key = scanLockKey(mode);
-  const now = Date.now();
-
-  const d = new Date(now);
-  const next = new Date(d);
-  next.setSeconds(0, 0);
-
-  if (d.getMinutes() < 30) next.setMinutes(30);
-  else {
-    next.setMinutes(0);
-    next.setHours(d.getHours() + 1);
-  }
-
-  const until = next.getTime();
-  const ttlSec = Math.max(60, Math.ceil((until - now) / 1000));
-
-  const ok = await kv.set(key, { ts: now, until, mode }, { nx: true, ex: ttlSec });
-  if (ok) return { ok: true, key, until };
-
-  const cur = await kv.get(key);
-  const curUntil = Number(cur?.until || 0);
-  if (curUntil > now) return { ok: false, key, until: curUntil };
-
-  await kv.set(key, { ts: now, until, mode }, { ex: ttlSec });
-  return { ok: true, key, until };
-}
-async function releaseScanLock(mode) {
-  try {
-    await kv.del(scanLockKey(mode));
-  } catch {}
-}
-
-// ======================================================
-// Main scan (uses ONLY core_bull / core_bear)
+// Main scan (ONLY core_bull / core_bear)
 // ======================================================
 export default async function handler(req, res) {
   let mode = "bull";
   let lockAcquired = false;
 
   try {
-    // ✅ allow cron by header OR by token
     const isVercelCron = String(req.headers?.["x-vercel-cron"] || "") === "1";
     const tokenOk =
       process.env.CRON_SECRET &&
@@ -406,7 +346,6 @@ export default async function handler(req, res) {
 
     mode = String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
 
-    // ✅ ONLY main cores
     const CORE =
       mode === "bear"
         ? await import("../lib/_core_bear.js")
@@ -416,7 +355,7 @@ export default async function handler(req, res) {
 
     const lock = await acquireScanLock(mode);
     if (!lock.ok) {
-      const latest = await kv.get(CORE.keyLatest(mode));
+      const latest = await kv.get(keyMainLatest(mode));
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");
       if (latest) {
@@ -431,15 +370,13 @@ export default async function handler(req, res) {
           })
         );
       }
-      return res.end(
-        JSON.stringify({ ok: true, skipped: true, reason: "scan_lock_active", mode, until: lock.until || null })
-      );
+      return res.end(JSON.stringify({ ok: true, skipped: true, reason: "scan_lock_active", mode, until: lock.until || null }));
     }
     lockAcquired = true;
 
     const now = Date.now();
 
-    // BTC snapshot (safe)
+    // BTC
     const btcRaw = await fetchBTCGateFromUniverse();
     const btc = {
       price: n(btcRaw?.price, 0),
@@ -449,18 +386,18 @@ export default async function handler(req, res) {
       state: CORE.computeBtcState(btcRaw, CFG),
     };
 
-    // Universe + Bitget symbols (CG cache-first)
+    // Universe
     const cg = await fetchCoinGeckoTopCached(Number(CFG.CG_TOP || 1500));
     const rawCoins = Array.isArray(cg?.coins) ? cg.coins : [];
     const cgMeta = cg?.meta || {};
-
     const bitgetSymbols = await getBitgetSpotUsdtSymbols();
+
     const tradable = rawCoins
       .filter((c) => bitgetSymbols.has(up(c.symbol)))
       .slice(0, Number(CFG.CG_TOP || 1500));
 
-    // State for histories
-    const prevState = (await kv.get(CORE.keyState(mode))) || {};
+    // State histories
+    const prevState = (await kv.get(keyMainState(mode))) || {};
     const nextState = {};
 
     // Funnels
@@ -486,7 +423,7 @@ export default async function handler(req, res) {
       const priceHistNext = priceHist.slice(-120);
       const volHistNext = volHist.slice(-120);
 
-      // volAcc short (now vs 5 samples ago)
+      // volAcc
       let volAcc = 1;
       if (volHistNext.length >= 6) {
         const nowVol = volHistNext[volHistNext.length - 1];
@@ -494,10 +431,8 @@ export default async function handler(req, res) {
         volAcc = nowVol / Math.max(ago, 1e-9);
       }
 
-      // radar dyn thresholds
       const dynRadar = CORE.dynamicRadarThresholds(range24, CFG);
 
-      // RADAR gate
       const R = CFG.radar || {};
       const radarOk =
         marketCap >= n(R.mcapMin, 0) &&
@@ -514,11 +449,9 @@ export default async function handler(req, res) {
 
       let stage = "RADAR";
 
-      // BUILDUP gate
       const buildupOk = radarOk && volAcc >= n(CFG.buildup?.minVolAcc, 1.0);
       if (buildupOk) stage = "BUILDUP";
 
-      // ALMOST gate
       let flat60Pct = 999;
       if (priceHistNext.length >= 10) {
         const tail = priceHistNext.slice(-60);
@@ -527,12 +460,7 @@ export default async function handler(req, res) {
         flat60Pct = lo > 0 ? ((hi - lo) / lo) * 100 : 999;
       }
 
-      const confidence = CORE.computeConfidence({
-        vm,
-        change24,
-        range24,
-        obValid: false,
-      });
+      const confidence = CORE.computeConfidence({ vm, change24, range24, obValid: false });
 
       const almostOk =
         buildupOk &&
@@ -541,7 +469,7 @@ export default async function handler(req, res) {
 
       if (almostOk) stage = "ALMOST";
 
-      // ENTRY gate (OB)
+      // ENTRY
       let ob = null;
       let entryOk = false;
       let entryReason = "";
@@ -551,8 +479,7 @@ export default async function handler(req, res) {
         ob = await fetchOrderbook(`${sym}USDT`);
         const entryCfg = CFG.entry || {};
 
-        // persist samples
-        const samplesKey = CORE.keyObSamples(mode, sym);
+        const samplesKey = `main:ob:samples:${mode}:${sym}`;
         const prevSamples = (await kv.get(samplesKey)) || [];
         const samplesArr = Array.isArray(prevSamples) ? prevSamples : [];
 
@@ -568,7 +495,6 @@ export default async function handler(req, res) {
         const trimmed = samplesArr.slice(-Math.max(2, n(entryCfg.samplesMax, 24)));
         await kv.set(samplesKey, trimmed, { ex: n(entryCfg.samplesTtlSec, 3600) });
 
-        // tier thresholds
         const tier = pickTier(marketCap, entryCfg);
         const baseThr = {
           minConfidence: n(tier?.minConf, n(entryCfg.minConfidence, 40)),
@@ -577,7 +503,6 @@ export default async function handler(req, res) {
           obScoreMin: n(tier?.obScoreMin, n(entryCfg.obScoreMin, 0.02)),
         };
 
-        // dynamic adjust (liq-adaptive)
         const dynThr = CORE.dynamicEntryThresholds({ marketCap, volume, vm }, baseThr, CFG);
 
         const spreadOk = ob?.valid ? n(ob.spreadPct, 999) <= n(dynThr.spreadMaxPct, 999) : false;
@@ -592,7 +517,6 @@ export default async function handler(req, res) {
             : false;
 
         obSlope = CORE.checkObSlopeGate({ stage: "entry", mode, obSamples: trimmed, settings: CFG });
-
         const confOk = confidence >= n(dynThr.minConfidence, n(entryCfg.minConfidence, 0));
 
         entryOk = spreadOk && depthOk && scoreOk && confOk && obSlope.ok;
@@ -665,7 +589,6 @@ export default async function handler(req, res) {
       else if (stage === "BUILDUP") funnel.buildup.push(outCoin);
       else funnel.radar.push(outCoin);
 
-      // keep overall runtime sane
       await sleep(6);
     }
 
@@ -694,19 +617,6 @@ export default async function handler(req, res) {
       ts: now,
       scannedAt: now,
       meta: {
-        cfg: {
-          radar: CFG.radar,
-          buildup: CFG.buildup,
-          almost: CFG.almost,
-          entry: {
-            samplesNeed: CFG.entry?.samplesNeed,
-            minConfidence: CFG.entry?.minConfidence,
-            obScoreMin: CFG.entry?.obScoreMin,
-            spreadMaxPct: CFG.entry?.spreadMaxPct,
-            depthMinUsd1p: CFG.entry?.depthMinUsd1p,
-          },
-          btc: CFG.btc,
-        },
         scanLock: { active: false, until: null },
         trigger: isVercelCron ? "vercel_cron" : tokenOk ? "cron_token" : "manual_secret",
         cg: {
@@ -719,8 +629,9 @@ export default async function handler(req, res) {
       },
     };
 
-    await kv.set(CORE.keyState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
-    await kv.set(CORE.keyLatest(mode), latest, { ex: 60 * 60 });
+    // ✅ WRITE to MAIN keys (this is the real fix)
+    await kv.set(keyMainState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
+    await kv.set(keyMainLatest(mode), latest, { ex: 60 * 60 });
 
     res.status(200).json(latest);
   } catch (err) {
