@@ -80,7 +80,6 @@ function isMacroRegimeOk(regime, mode) {
   }
 
   // Bear: HEADWIND mag, CHOP mag (anders krijg je te weinig)
-  // Alleen echt "BAD" blokkeren (als je zo'n label hebt)
   if (r === "BAD") return false;
   return true;
 }
@@ -144,17 +143,17 @@ const POSITION_SIZE_USD = 50;
 // ======================================================
 // ✅ A+/NEAR drempels – verruimd voor meer signalen
 // ======================================================
-const APLUS_BTC_ALIGN = 62;   // was 66
-const APLUS_LIQ = 68;         // was 70
-const APLUS_PERF = 80;        // was 82
-const APLUS_TIMING = 72;      // was 75
+const APLUS_BTC_ALIGN = 62; // was 66
+const APLUS_LIQ = 68; // was 70
+const APLUS_PERF = 80; // was 82
+const APLUS_TIMING = 72; // was 75
 
-const NEAR_LIQ = 66;          // was 68
-const NEAR_PERF = 76;         // was 78
-const NEAR_TIMING = 70;       // was 72
+const NEAR_LIQ = 66; // was 68
+const NEAR_PERF = 76; // was 78
+const NEAR_TIMING = 70; // was 72
 
-const APLUS_MIN_EQ = 70;      // was 72
-const APLUS_MIN_PS = 56;      // was 58
+const APLUS_MIN_EQ = 70; // was 72
+const APLUS_MIN_PS = 56; // was 58
 const APLUS_MIN_BREAKOUT_PRESSURE = 50; // was 54
 const APLUS_MAX_SPREAD = 1.2; // was 1.0
 
@@ -166,26 +165,26 @@ const IMMEDIATE_OPEN_TIMING = 84;
 // ✅ Hysteresis – sneller naar WATCH/OPEN (meer meldingen)
 // ======================================================
 const DESK_THRESHOLDS_MAIN = {
-  watchConfirmScans: 1, // was 2
-  openConfirmScans: 1,  // was 2
+  watchConfirmScans: 1,
+  openConfirmScans: 1,
 
-  watchMinHoldMs: 20 * 60 * 1000, // was 30m
-  openMinHoldMs: 12 * 60 * 1000,  // was 18m
+  watchMinHoldMs: 20 * 60 * 1000,
+  openMinHoldMs: 12 * 60 * 1000,
 
-  watchEnterEQ: 66,       // was 68
-  watchEnterPS: 54,       // was 56
-  watchEnterPressure: 48, // was 52
-  watchEnterObScore: 0.003, // was 0.006
+  watchEnterEQ: 66,
+  watchEnterPS: 54,
+  watchEnterPressure: 48,
+  watchEnterObScore: 0.003,
 
-  watchStayEQ: 58, // was 60
-  watchStayPS: 48, // was 50
+  watchStayEQ: 58,
+  watchStayPS: 48,
 
-  openEnterEQ: 70,       // was 72
-  openEnterPS: 56,       // was 58
-  openEnterPressure: 50, // was 54
+  openEnterEQ: 70,
+  openEnterPS: 56,
+  openEnterPressure: 50,
 
-  openStayEQ: 62, // was 64
-  openStayPS: 50, // was 52
+  openStayEQ: 62,
+  openStayPS: 50,
 };
 
 function isMainEliteStage(stage) {
@@ -196,7 +195,7 @@ function isMainEliteStage(stage) {
 // ======================================================
 // ✅ UI lock: als coin eenmaal OPEN/ENTRY kreeg -> niet meer verdwijnen uit funnel
 // ======================================================
-const UI_ENTRY_LOCK_MS_MAIN = 6 * 60 * 60 * 1000; // 6 uur zichtbaarheid
+const UI_ENTRY_LOCK_MS_MAIN = 6 * 60 * 60 * 1000;
 
 // ======================================================
 // Sticky gate decision (WATCH/OPEN/IGNORE)
@@ -205,17 +204,14 @@ function decideDeskGateHysteresis({
   prevGate = "IGNORE",
   prevMeta = {},
   now,
-  // live facts
   isEliteStageForDesk,
   hasTradePlan,
   entryQuality,
   persistenceScore,
   breakout,
   obScore,
-  // desired booleans (from your A+/Near)
   wantWatch,
   wantOpen,
-  // thresholds
   T,
 }) {
   const prev = String(prevGate || "IGNORE").toUpperCase();
@@ -228,7 +224,6 @@ function decideDeskGateHysteresis({
   const brReady = !!breakout?.ready;
   const brPressure = n(breakout?.pressure, 0);
 
-  // WATCH wants: allow “almost” + quality baseline
   const wantWatchFinal =
     wantWatch === true &&
     hasTradePlan === true &&
@@ -238,13 +233,11 @@ function decideDeskGateHysteresis({
         (brReady || brPressure >= T.watchEnterPressure) &&
         n(obScore, 0) >= T.watchEnterObScore));
 
-  // WATCH stay (ruimer)
   const canStayWatch =
     hasTradePlan === true &&
     n(entryQuality, 0) >= T.watchStayEQ &&
     n(persistenceScore, 0) >= T.watchStayPS;
 
-  // OPEN wants: must be elite-ish + strong quality
   const wantOpenFinal =
     wantOpen === true &&
     isEliteStageForDesk &&
@@ -253,7 +246,6 @@ function decideDeskGateHysteresis({
     n(persistenceScore, 0) >= T.openEnterPS &&
     (brReady || brPressure >= T.openEnterPressure);
 
-  // OPEN stay (ruimer)
   const canStayOpen =
     hasTradePlan === true &&
     n(entryQuality, 0) >= T.openStayEQ &&
@@ -266,16 +258,14 @@ function decideDeskGateHysteresis({
 
   let gate = prev;
 
-  // OPEN logic
   if (prev === "OPEN") {
     if (holdActive) gate = "OPEN";
     else if (canStayOpen) gate = "OPEN";
-    else gate = "WATCH"; // degrade softly
+    else gate = "WATCH";
   } else {
     if (wantOpenFinal && openStreak >= T.openConfirmScans) gate = "OPEN";
   }
 
-  // WATCH logic
   if (gate !== "OPEN") {
     if (prev === "WATCH") {
       if (holdActive) gate = "WATCH";
@@ -286,7 +276,6 @@ function decideDeskGateHysteresis({
     }
   }
 
-  // meta updates
   let deskGateSince = prevSince;
   let deskHoldUntil = prevHoldUntil;
 
@@ -400,7 +389,6 @@ async function appendEntryHistory(mode) {
   await kv.set(key, next, { ex: 60 * 60 * 24 * 3 });
 }
 
-// --- anti flip: cooldowns uit closed trades ---
 function parseExitReason(p) {
   const r = String(p?.exitReason || p?.reason || p?.closedReason || p?.closeReason || "").toLowerCase();
   if (r.includes("stop") || r.includes("sl")) return "sl";
@@ -571,7 +559,7 @@ function splitFunnels(coins) {
     almost: [],
     buildup: [],
     radar: [],
-    hold: [], // ✅ NEW: locked/open coins live here for UI stability
+    hold: [],
   };
   for (const c of coins) {
     if (c.stage === "ELITE_EXPANSION" || c.stage === "ELITE_CASCADE") funnel.elite_expansion.push(c);
@@ -615,9 +603,6 @@ function makePortfolio(mode, positions) {
   };
 }
 
-// ======================================================
-// hasEliteFollowThrough
-// ======================================================
 function hasEliteFollowThrough(prev, currentStage) {
   const curr = up(currentStage);
   if (curr === "ELITE_EXPANSION" || curr === "ELITE_CASCADE") return true;
@@ -633,7 +618,7 @@ function hasEliteFollowThrough(prev, currentStage) {
 }
 
 // ======================================================
-// Main stage decision (ongewijzigd)
+// Main stage decision
 // ======================================================
 function decideMainStageV6({ mode, coin, obx, priceHist, volHist, btc, prev, whaleFlow, regime }) {
   const baseCfg = MAIN_V2[mode];
@@ -820,7 +805,6 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
     const prev = state?.[sym] || {};
 
     let ob = null;
-    // 🔥 VERLAAGDE VOLUME-DREMPEL: 250_000 i.p.v. 600_000 (meer OB’s)
     if (n(coin.volume, 0) >= 250_000) {
       ob = await fetchOrderbook(`${sym}USDT`);
     }
@@ -935,14 +919,11 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       marketScore,
     });
 
-    // Macro gate – mode-aware (bear ruimer)
     const macroOk = isMacroRegimeOk(regime, mode) && n(btcAlignmentScore, 0) >= btcAlignReq(mode);
 
-    // Extra quality gates (met verruimde spread)
     const spreadOk = n(obx.spreadPct, 999) <= APLUS_MAX_SPREAD;
     const breakoutOk = !!breakout?.ready || n(breakout?.pressure, 0) >= APLUS_MIN_BREAKOUT_PRESSURE;
 
-    // A+ (trade candidate) – met verlaagde drempels
     const aPlus =
       macroOk === true &&
       spreadOk === true &&
@@ -954,7 +935,6 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       n(persistenceScore, 0) >= APLUS_MIN_PS &&
       tradePlan != null;
 
-    // Near A+ (watch) – met verlaagde drempels
     const nearAPlus =
       macroOk === true &&
       spreadOk === true &&
@@ -965,16 +945,12 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       n(persistenceScore, 0) >= (APLUS_MIN_PS - 6) &&
       tradePlan != null;
 
-    // ========== PATCH: promote WATCH confirmed to OPEN ==========
     const prevWatchScans = n(prev?.watchScans, 0);
-    // 🔥 openIntent al true bij 1 watchScan (in plaats van 2)
     const openIntent = aPlus || (nearAPlus && prevWatchScans >= 1);
-    
-    // tradeCandidate must allow ENTRY from WATCH confirmed
+
     const tradeCandidate = openIntent;
-    const superScannerCoin = aPlus;     // premium only for real A+
+    const superScannerCoin = aPlus;
     const scannerOnly = !superScannerCoin;
-    // ============================================================
 
     const isEliteStageForDesk =
       stage === "ELITE_IGNITION" ||
@@ -982,9 +958,6 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       stage === "ELITE_CASCADE" ||
       stage === "ALMOST";
 
-    // -------------------------
-    // ✅ ENGINE GATE (real decision) via hysteresis (sneller)
-    // -------------------------
     const hyst = decideDeskGateHysteresis({
       prevGate: prev?.engineGate || prev?.tradeDeskStatus || "IGNORE",
       prevMeta: prev?.deskMeta || {},
@@ -996,16 +969,14 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
       breakout,
       obScore: n(obx.score, 0),
       wantWatch: nearAPlus,
-      wantOpen: openIntent,               // gebruik openIntent
+      wantOpen: openIntent,
       T: DESK_THRESHOLDS_MAIN,
     });
 
-    let engineGate = hyst.gate; // OPEN/WATCH/IGNORE
+    let engineGate = hyst.gate;
     const deskMeta = hyst.meta;
 
-    // Immediate / confirm open accelerator (only to upgrade to OPEN faster)
     const immediateOpen = aPlus && isEliteStageForDesk && timingScore >= IMMEDIATE_OPEN_TIMING;
-    // confirmOpen gebruikt nu openIntent ipv aPlus
     const confirmOpen =
       openIntent &&
       (prev?.engineGate || prev?.tradeDeskStatus) === "WATCH" &&
@@ -1014,16 +985,11 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
     let engineGateFinal = engineGate;
     if (immediateOpen || confirmOpen) engineGateFinal = "OPEN";
 
-    // -------------------------
-    // ✅ UI GATE (anti-flip UI lock)
-    // -------------------------
     const prevUiLockUntil = n(prev?.uiLockUntil, 0);
     const uiLockActive = prevUiLockUntil > now;
 
     let uiGate = engineGateFinal;
-    if (uiLockActive && uiGate === "IGNORE") {
-      uiGate = "OPEN";
-    }
+    if (uiLockActive && uiGate === "IGNORE") uiGate = "OPEN";
 
     const coinForDecision = {
       ...coin,
@@ -1184,7 +1150,7 @@ async function buildUniverse(mode, whaleFlow, btc, now) {
 }
 
 // ======================================================
-// Funnel balancer (UI only) – ongewijzigd
+// Funnel balancer
 // ======================================================
 function canPromoteBalancedEntry(coin, mode, regime) {
   if (!coin) return false;
@@ -1266,10 +1232,20 @@ export default async function handler(req, res) {
   let mode = "bull";
   let lockAcquired = false;
 
+  // ✅ NEW: load mode-core (bull/bear)
+  let CORE = null;
+  let CFG = null;
+
   try {
     if (!requireSecret(req, res)) return;
 
     mode = String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
+
+    CORE = mode === "bear"
+      ? await import("../lib/_core_bear.js")
+      : await import("../lib/_core_bull.js");
+
+    CFG = CORE?.getCfg ? CORE.getCfg() : null;
 
     const lock = await acquireScanLock(mode);
     if (!lock.ok) {
@@ -1283,11 +1259,12 @@ export default async function handler(req, res) {
             meta: {
               ...(latest.meta || {}),
               scanLock: { active: true, until: lock.until || null },
+              cfgLoaded: !!CFG,
             },
           })
         );
       }
-      return res.end(JSON.stringify({ ok: true, skipped: true, reason: "scan_lock_active", mode }));
+      return res.end(JSON.stringify({ ok: true, skipped: true, reason: "scan_lock_active", mode, cfgLoaded: !!CFG }));
     }
 
     lockAcquired = true;
@@ -1327,9 +1304,6 @@ export default async function handler(req, res) {
       recentEntryCount,
     });
 
-    // ------------------------------------------------------------
-    // 1) State-machine voor coins zonder open positie
-    // ------------------------------------------------------------
     for (const coin of universe) {
       const sym = up(coin.symbol);
       const prev = prevState?.[sym] || null;
@@ -1347,7 +1321,6 @@ export default async function handler(req, res) {
       let eliteSince = prev?.eliteSince || null;
       let watchScans = prev?.watchScans || 0;
 
-      // Persist UI lock
       let uiLockUntil = n(prev?.uiLockUntil, 0);
 
       if (rawStage === "RADAR") {
@@ -1389,17 +1362,13 @@ export default async function handler(req, res) {
         thesisInvalidScans = prev?.thesisInvalidScans || 0;
         entryLocked = prev?.entryLocked || false;
 
-        // Watch scans based on ENGINE gate (not UI)
         if (coin.engineGate === "WATCH") watchScans = (prev?.watchScans || 0) + 1;
         else if ((prev?.engineGate || prev?.tradeDeskStatus) === "WATCH") watchScans = Math.max(0, (prev?.watchScans || 0) - 1);
         else watchScans = 0;
       }
 
-      // Macro check consistent with buildUniverse() – mode-aware
       const btcAlign = n(coin.btcAlignmentScore, 0);
       const macroOkNow = isMacroRegimeOk(regime, mode) && btcAlign >= btcAlignReq(mode);
-      
-      // 🔥 SOFT RESET: alleen 1 stap terug, niet naar 0
       if (!macroOkNow) watchScans = Math.max(0, watchScans - 1);
 
       let depthHist = Array.isArray(prev?.depthHist) ? [...prev.depthHist] : [];
@@ -1410,13 +1379,11 @@ export default async function handler(req, res) {
       const thesisInfo = calculateThesisDamage(coin, prev, mode);
       const tradePlan = coin.tradePlan;
 
-      // ✅ ENTRY READY uses ENGINE gate only
       let entryReady = false;
       if (!hasOpenPosition) {
         entryReady = coin.engineGate === "OPEN" && entryLocked === false && coin.tradePlan != null;
       }
 
-      // ✅ If engineGate OPEN -> lock UI visibility window
       if (coin.engineGate === "OPEN") {
         uiLockUntil = Math.max(uiLockUntil, now + UI_ENTRY_LOCK_MS_MAIN);
       }
@@ -1510,7 +1477,6 @@ export default async function handler(req, res) {
         positionState: positionStateForStore,
       };
 
-      // Signals:
       const isElitePreTrade = coin.engineGate === "WATCH" && watchScans >= 2;
       if (!hasOpenPosition && isElitePreTrade) {
         await safeSendSignal({
@@ -1537,12 +1503,8 @@ export default async function handler(req, res) {
       }
     }
 
-    // ------------------------------------------------------------
-    // 2) Voeg HOLD funnel items toe (open pos + UI-locked)
-    // ------------------------------------------------------------
     const holdItems = [];
 
-    // A) open positions always visible
     for (const p of positions.open) {
       const sym = up(p.symbol);
       const coin = universeMap.get(sym) || null;
@@ -1561,7 +1523,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // B) UI locks (ENTRY given recently) even if coin not open
     for (const sym of Object.keys(nextState)) {
       if (openMap.has(sym)) continue;
       const st = nextState[sym];
@@ -1578,9 +1539,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // ------------------------------------------------------------
-    // 3) Nieuwe entries openen (alleen ENGINE OPEN + tradeCandidate + cooldown vrij)
-    // ------------------------------------------------------------
     const entryCandidates = [];
     for (const sym of Object.keys(nextState)) {
       const state = nextState[sym];
@@ -1675,9 +1633,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // ------------------------------------------------------------
-    // 4) Portfolio en opslag
-    // ------------------------------------------------------------
     const portfolio = makePortfolio(mode, positions);
     await kv.set(keyMainPortfolio(mode), portfolio, { ex: 60 * 60 * 24 * 7 });
 
@@ -1686,9 +1641,6 @@ export default async function handler(req, res) {
     await kv.set(keyMainState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
     await kv.set(keyMainPositions(mode), positions, { ex: 60 * 60 * 24 * 7 });
 
-    // ------------------------------------------------------------
-    // 5) Response + latest opslaan
-    // ------------------------------------------------------------
     const responseFunnel = { ...funnel, hold: holdItems };
 
     const premiumCandidates = universe
@@ -1759,6 +1711,11 @@ export default async function handler(req, res) {
           stage: p.stage,
           eliteType: p.eliteType,
         })),
+      },
+      meta: {
+        cfgLoaded: !!CFG,
+        // optioneel: zet je thresholds mee voor debug (later handig)
+        cfg: CFG || null,
       },
       ts: now,
       scannedAt: now,
