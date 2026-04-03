@@ -1,3 +1,4 @@
+<!-- ==================== /public/index.html ==================== -->
 <!doctype html>
 <html lang="nl">
 <head>
@@ -27,48 +28,28 @@
 
   <main class="grid">
 
-    <!-- ENTRY -->
+    <!-- TRADE READY (scanner entry) -->
     <section class="panel">
-      <div class="panelTitle">ENTRY</div>
+      <div class="panelTitle">TRADE READY</div>
       <div class="panelHint">
-        Nieuwe instap-signalen. Als je FULL trading mode draait,
-        hier wordt de trade geopend.
+        Scanner-signalen die “entry-ready” zijn. De trade engine opent hier een trade
+        (als die aan staat).
       </div>
       <div class="stageBody" id="stageEntry"></div>
     </section>
 
-    <!-- HOLD -->
+    <!-- SETUP -->
     <section class="panel">
-      <div class="panelTitle">HOLD</div>
+      <div class="panelTitle">SETUP</div>
       <div class="panelHint">
-        Open trades. Deze coins zijn al ingestapt en blijven open
-        tot SELL-regel triggert.
-      </div>
-      <div class="stageBody" id="stageHold"></div>
-    </section>
-
-    <!-- SELL -->
-    <section class="panel">
-      <div class="panelTitle">SELL</div>
-      <div class="panelHint">
-        Recent gesloten trades inclusief reden
-        (hard stop / trailing / OB-break / time-stop).
-      </div>
-      <div class="stageBody" id="stageSell"></div>
-    </section>
-
-    <!-- ALMOST -->
-    <section class="panel">
-      <div class="panelTitle">ALMOST</div>
-      <div class="panelHint">
-        Bijna entry — mist nog 1–2 gates.
+        Bijna trade-ready — mist nog 1–2 gates.
       </div>
       <div class="stageBody" id="stageAlmost"></div>
     </section>
 
-    <!-- BUILDUP -->
+    <!-- WARMUP -->
     <section class="panel">
-      <div class="panelTitle">BUILDUP</div>
+      <div class="panelTitle">WARMUP</div>
       <div class="panelHint">
         Opbouwfase — richting + volume + VM + consistency.
       </div>
@@ -116,7 +97,7 @@
           </div>
           <div class="kv" id="mActionKv"></div>
           <div class="actionNote">
-            Dit is een **template plan**. In BUILDUP/ALMOST is dit vooral “klaarzetten”.
+            Dit is een **template plan**. In WARMUP/SETUP is dit vooral “klaarzetten”.
           </div>
         </div>
 
@@ -143,6 +124,5 @@
   </div>
 
   <script src="/app.js"></script>
-
 </body>
 </html>
