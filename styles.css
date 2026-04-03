@@ -1,3 +1,4 @@
+/* ==================== /public/styles.css ==================== */
 :root{
   --bg:#0b0f14;
   --card:#0f1620;
@@ -12,7 +13,7 @@
   --accent:#3d7cff;
   --danger:#ff5c5c;
 
-  /* trade kleuren */
+  /* trade kleuren (trade desk gebruikt dit; scanner kan het laten staan) */
   --hold:#22c55e;
   --sell:#ff5c5c;
 
@@ -116,7 +117,7 @@ body{
   font-size:12px; color:var(--muted);
 }
 
-/* ===== Pills ===== */
+/* ===== Pills (optioneel; kan door andere pagina’s gebruikt worden) ===== */
 .pill{
   padding:4px 10px;
   border:1px solid var(--line2);
