@@ -1,6 +1,7 @@
 // api/scan.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG } from "../lib/_runtime.js";
+import { sendSignal } from "../lib/discordRouter.js"; // ✅ TOEGEVOEGD: Discord webhook koppeling
 
 export const config = RUNTIME_CONFIG;
 
@@ -588,6 +589,34 @@ export default async function handler(req, res) {
       else if (stage === "ALMOST") funnel.almost.push(outCoin);
       else if (stage === "BUILDUP") funnel.buildup.push(outCoin);
       else funnel.radar.push(outCoin);
+
+      // ======================================================
+      // ✅ TOEGEVOEGD: DISCORD LOGICA START
+      // ======================================================
+      const oldStage = up(prev?.stage || "RADAR");
+      
+      if (stage !== oldStage && stage !== "RADAR") {
+        const isUpgrade = 
+          (oldStage === "RADAR" && (stage === "BUILDUP" || stage === "ALMOST" || stage === "ENTRY")) ||
+          (oldStage === "BUILDUP" && (stage === "ALMOST" || stage === "ENTRY")) ||
+          (oldStage === "ALMOST" && stage === "ENTRY");
+
+        if (isUpgrade) {
+          console.log(`[Scanner] 🚀 Upgrade voor ${sym}: ${oldStage} -> ${stage}. Discord aanroepen...`);
+          
+          await sendSignal({
+            source: "scanner", 
+            stage: stage,
+            mode: mode,
+            coin: outCoin,
+            btcState: btc.state,
+            kind: "signal"
+          }).catch(err => console.error("Discord send error:", err));
+        }
+      }
+      // ======================================================
+      // ✅ DISCORD LOGICA EIND
+      // ======================================================
 
       await sleep(6);
     }
