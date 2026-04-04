@@ -1503,6 +1503,9 @@ export default async function handler(req, res) {
       if (!hasOpenPosition && isElitePreTrade) {
         await safeSendSignal({
           source: "moon",
+          action: "WATCH",
+          symbol: sym,
+          price: coin.price,
           stage: rawStage,
           mode,
           coin,
@@ -1515,6 +1518,9 @@ export default async function handler(req, res) {
       if (!hasOpenPosition && coin.engineGate === "OPEN") {
         await safeSendSignal({
           source: "moon",
+          action: "OPEN_SIGNAL",
+          symbol: sym,
+          price: coin.price,
           stage: "ENTRY",
           mode,
           coin,
@@ -1651,13 +1657,20 @@ export default async function handler(req, res) {
         eliteType: newPos.eliteType,
       });
 
+      // ✅ Aangepast voor robuuste Discord router integratie
       await safeSendSignal({
         source: "moon",
+        action: "OPEN_TRADE",
+        symbol: sym,
+        price: newPos.entryPrice,
+        side: newPos.side,
         stage: coin.stage,
         mode,
         coin,
+        position: newPos,
         btcState: btc?.state || "NEUTRAL",
         kind: "trade_opened",
+        reason: "Nieuwe positie geopend door Moon engine",
       });
     }
 
