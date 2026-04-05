@@ -41,6 +41,39 @@ function sideFromMode(mode) {
   return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG";
 }
 
+// ✅ Discord helper: garandeert entry/tp/sl voor MOON
+// (FormatDiscord MAIN blijft zoals is; dit verandert alleen wat Moon doorstuurt)
+function coinForDiscord({ coin, position }) {
+  const plan = coin?.tradePlan || coin?.execution?.meta?.tradePlan || null;
+
+  const entry =
+    position?.entryPrice ??
+    plan?.entry ??
+    coin?.entry ??
+    coin?.price ??
+    null;
+
+  const tp =
+    position?.tp ??
+    plan?.tp ??
+    coin?.tp ??
+    null;
+
+  const sl =
+    position?.sl ??
+    plan?.sl ??
+    coin?.sl ??
+    null;
+
+  return {
+    ...coin,
+    entry,
+    tp,
+    sl,
+    tradePlan: coin?.tradePlan || plan || null,
+  };
+}
+
 // ======================================================
 // Constantes
 // ======================================================
@@ -706,7 +739,17 @@ function decideMoonStageV6({ CORE, mode, coin, obx, priceHist, volHist, btc, pre
       : n(btc?.chg24, 0) <= -0.8 && n(btc?.range24, 0) >= 2.8;
 
   if (volAcc.short < 1.01 && volAcc.medium < 1.06 && moveScore < 72 && !breakout.ready && persistenceScore < 58) {
-    return { stage: "ALMOST", stageWhy: "volume_not_accelerating", moveScore, velocity, compression, breakout, eliteType: null, persistenceScore, entryQuality };
+    return {
+      stage: "ALMOST",
+      stageWhy: "volume_not_accelerating",
+      moveScore,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality,
+    };
   }
 
   let stage = "RADAR";
@@ -738,7 +781,7 @@ function decideMoonStageV6({ CORE, mode, coin, obx, priceHist, volHist, btc, pre
     } else if (
       n(coin.change1h, 0) >= Math.max(0.9, n(cfg.minCh1hAlmost, 0) - 0.3) &&
       n(coin.change24, 0) >= Math.max(5.5, n(cfg.minCh24Almost, 0) - 1.5) &&
-      n(coin.vm, 0) >= Math.max(0.20, n(cfg.minVmAlmost, 0) - 0.03) &&
+      n(coin.vm, 0) >= Math.max(0.2, n(cfg.minVmAlmost, 0) - 0.03) &&
       velocity >= Math.max(0.11, n(cfg.strongVelocity, 0) - 0.02)
     ) {
       stage = "ALMOST";
@@ -778,7 +821,7 @@ function decideMoonStageV6({ CORE, mode, coin, obx, priceHist, volHist, btc, pre
     } else if (
       n(coin.change1h, 0) <= Math.min(-0.9, n(cfg.maxCh1hAlmost, 0) + 0.3) &&
       n(coin.change24, 0) <= Math.min(-5.5, n(cfg.maxCh24Almost, 0) + 1.5) &&
-      n(coin.vm, 0) >= Math.max(0.20, n(cfg.minVmAlmost, 0) - 0.03) &&
+      n(coin.vm, 0) >= Math.max(0.2, n(cfg.minVmAlmost, 0) - 0.03) &&
       velocity >= Math.max(0.11, n(cfg.strongVelocity, 0) - 0.02)
     ) {
       stage = "ALMOST";
@@ -798,11 +841,31 @@ function decideMoonStageV6({ CORE, mode, coin, obx, priceHist, volHist, btc, pre
   }
 
   if (isMoonEliteStage(stage) && !btcMomentumOk && regime !== "EXPANSION") {
-    return { stage: "ALMOST", stageWhy: "btc_not_expanding", moveScore, velocity, compression, breakout, eliteType: null, persistenceScore, entryQuality };
+    return {
+      stage: "ALMOST",
+      stageWhy: "btc_not_expanding",
+      moveScore,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality,
+    };
   }
 
   if (isMoonEliteStage(stage) && !hasEliteFollowThrough(prev, stage)) {
-    return { stage: "ALMOST", stageWhy: "elite_needs_followthrough", moveScore, velocity, compression, breakout, eliteType: null, persistenceScore, entryQuality };
+    return {
+      stage: "ALMOST",
+      stageWhy: "elite_needs_followthrough",
+      moveScore,
+      velocity,
+      compression,
+      breakout,
+      eliteType: null,
+      persistenceScore,
+      entryQuality,
+    };
   }
 
   return { stage, stageWhy: "ok", moveScore, velocity, compression, breakout, eliteType, persistenceScore, entryQuality };
@@ -1508,7 +1571,7 @@ export default async function handler(req, res) {
           price: coin.price,
           stage: rawStage,
           mode,
-          coin,
+          coin: coinForDiscord({ coin }),
           btcState: btc?.state || "NEUTRAL",
           kind: "elite_watch",
           reason: "WATCH bevestigd — gate is sticky (anti-flip)",
@@ -1523,7 +1586,7 @@ export default async function handler(req, res) {
           price: coin.price,
           stage: "ENTRY",
           mode,
-          coin,
+          coin: coinForDiscord({ coin }),
           btcState: btc?.state || "NEUTRAL",
           kind: "signal",
           reason: "Engine OPEN — UI blijft gelocked (geen flipper)",
@@ -1657,7 +1720,6 @@ export default async function handler(req, res) {
         eliteType: newPos.eliteType,
       });
 
-      // ✅ Aangepast voor robuuste Discord router integratie
       await safeSendSignal({
         source: "moon",
         action: "OPEN_TRADE",
@@ -1666,7 +1728,7 @@ export default async function handler(req, res) {
         side: newPos.side,
         stage: coin.stage,
         mode,
-        coin,
+        coin: coinForDiscord({ coin, position: newPos }),
         position: newPos,
         btcState: btc?.state || "NEUTRAL",
         kind: "trade_opened",
