@@ -46,24 +46,9 @@ function sideFromMode(mode) {
 function coinForDiscord({ coin, position }) {
   const plan = coin?.tradePlan || coin?.execution?.meta?.tradePlan || null;
 
-  const entry =
-    position?.entryPrice ??
-    plan?.entry ??
-    coin?.entry ??
-    coin?.price ??
-    null;
-
-  const tp =
-    position?.tp ??
-    plan?.tp ??
-    coin?.tp ??
-    null;
-
-  const sl =
-    position?.sl ??
-    plan?.sl ??
-    coin?.sl ??
-    null;
+  const entry = position?.entryPrice ?? plan?.entry ?? coin?.entry ?? coin?.price ?? null;
+  const tp = position?.tp ?? plan?.tp ?? coin?.tp ?? null;
+  const sl = position?.sl ?? plan?.sl ?? coin?.sl ?? null;
 
   return {
     ...coin,
@@ -868,7 +853,17 @@ function decideMoonStageV6({ CORE, mode, coin, obx, priceHist, volHist, btc, pre
     };
   }
 
-  return { stage, stageWhy: "ok", moveScore, velocity, compression, breakout, eliteType, persistenceScore, entryQuality };
+  return {
+    stage,
+    stageWhy: "ok",
+    moveScore,
+    velocity,
+    compression,
+    breakout,
+    eliteType,
+    persistenceScore,
+    entryQuality,
+  };
 }
 
 // ======================================================
@@ -1034,8 +1029,8 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
       liquidityScore >= NEAR_LIQ &&
       perfectCandidateScore >= NEAR_PERF &&
       timingScore >= NEAR_TIMING &&
-      n(entryQuality, 0) >= (APLUS_MIN_EQ - 6) &&
-      n(persistenceScore, 0) >= (APLUS_MIN_PS - 6) &&
+      n(entryQuality, 0) >= APLUS_MIN_EQ - 6 &&
+      n(persistenceScore, 0) >= APLUS_MIN_PS - 6 &&
       tradePlan != null;
 
     const isEliteStageForDesk =
@@ -1067,7 +1062,7 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
     const confirmOpen =
       aPlus &&
       (prev?.engineGate || prev?.tradeDeskStatus) === "WATCH" &&
-      (prev?.watchScans || 0) >= (WATCH_CONFIRM_TO_OPEN - 1);
+      (prev?.watchScans || 0) >= WATCH_CONFIRM_TO_OPEN - 1;
 
     if (immediateOpen || confirmOpen) engineGateFinal = "OPEN";
 
@@ -1720,6 +1715,7 @@ export default async function handler(req, res) {
         eliteType: newPos.eliteType,
       });
 
+      // ✅ Aangepast voor robuuste Discord router integratie
       await safeSendSignal({
         source: "moon",
         action: "OPEN_TRADE",
