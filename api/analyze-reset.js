@@ -1,3 +1,4 @@
+// api/analyze-reset.js
 import { kv } from "@vercel/kv";
 
 function requireSecret(req, res) {
