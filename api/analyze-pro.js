@@ -1,186 +1,138 @@
-import { kv } from "@vercel/kv";
 import { readEvents } from "../lib/_analytics.js";
-import * as moonCore from "../lib/_moon_core.js";
 
-// ================= HELPERS =================
 function n(x, d = 0) {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
 }
 
-function scoreFromFailRate(fails, total) {
-  if (!total) return 5;
-  const failRate = fails / total;
-  return Math.max(1, Math.min(10, Math.round((1 - failRate) * 10)));
+function up(x) {
+  return String(x || "").toUpperCase();
 }
 
-function adviceBlock(name, score, issue, fix) {
-  return {
-    filter: name,
-    score,
-    issue,
-    fix,
-    target: "→ naar 9/10",
-  };
+function pct(v) {
+  return Number(n(v, 0).toFixed(2));
 }
 
-// ================= MAIN =================
-function analyzeMain(coins) {
-  const total = coins.length || 1;
+function safeArray(v) {
+  return Array.isArray(v) ? v : [];
+}
 
-  let fails = {
-    btc: 0,
-    breakout: 0,
-    persistence: 0,
-    entry: 0,
-  };
+function isMoonTradeId(id) {
+  return String(id || "").startsWith("moon_");
+}
 
-  for (const c of coins) {
-    const checklist = c?.execution?.checklist || [];
+function groupStats(rows, keyFn) {
+  const map = new Map();
 
-    for (const item of checklist) {
-      if (!item.ok) {
-        const name = String(item.name || "").toLowerCase();
+  for (const row of rows) {
+    const key = keyFn(row);
+    if (!key) continue;
 
-        if (name.includes("btc")) fails.btc++;
-        if (name.includes("breakout")) fails.breakout++;
-        if (name.includes("persist")) fails.persistence++;
-        if (name.includes("entry")) fails.entry++;
-      }
-    }
+    const cur = map.get(key) || {
+      key,
+      count: 0,
+      wins: 0,
+      losses: 0,
+      totalPnlPct: 0,
+      totalPnlUsd: 0,
+    };
+
+    cur.count += 1;
+    cur.totalPnlPct += n(row.pnlPct, 0);
+    cur.totalPnlUsd += n(row.pnlUsd, 0);
+
+    if (n(row.pnlPct, 0) >= 0) cur.wins += 1;
+    else cur.losses += 1;
+
+    map.set(key, cur);
   }
 
-  const scores = {
-    btc: scoreFromFailRate(fails.btc, total),
-    breakout: scoreFromFailRate(fails.breakout, total),
-    persistence: scoreFromFailRate(fails.persistence, total),
-    entry: scoreFromFailRate(fails.entry, total),
-  };
-
-  return [
-    adviceBlock(
-      "BTC Alignment",
-      scores.btc,
-      scores.btc < 7 ? "Te veel coins falen door BTC richting mismatch" : "Goed",
-      "Verlaag of versoepel BTC confirmatie threshold"
-    ),
-    adviceBlock(
-      "Breakout",
-      scores.breakout,
-      scores.breakout < 7 ? "Breakouts worden te streng afgekeurd" : "Goed",
-      "Verlaag breakout ready threshold of druk"
-    ),
-    adviceBlock(
-      "Persistence",
-      scores.persistence,
-      scores.persistence < 7 ? "Moves houden niet lang genoeg stand" : "Goed",
-      "Verlaag persistence score eis licht (5-10%)"
-    ),
-    adviceBlock(
-      "Entry Quality",
-      scores.entry,
-      scores.entry < 7 ? "Entries te streng → weinig trades" : "Goed",
-      "Versoepel entryQuality threshold"
-    ),
-  ];
+  return [...map.values()]
+    .map((x) => ({
+      ...x,
+      winRate: x.count ? pct((x.wins / x.count) * 100) : 0,
+      avgPnlPct: x.count ? pct(x.totalPnlPct / x.count) : 0,
+      avgPnlUsd: x.count ? pct(x.totalPnlUsd / x.count) : 0,
+      totalPnlPct: pct(x.totalPnlPct),
+      totalPnlUsd: pct(x.totalPnlUsd),
+    }))
+    .sort((a, b) => b.totalPnlUsd - a.totalPnlUsd);
 }
 
-// ================= MOON =================
-function analyzeMoon(diags) {
-  const total = diags.length || 1;
-
-  let eliteFails = 0;
-  let obFails = 0;
-  let stabilityFails = 0;
-
-  for (const d of diags) {
-    const r = d?.reasons || {};
-
-    eliteFails += Object.values(r.eliteWhy || {}).reduce((a, b) => a + b, 0);
-    obFails += Object.values(r.obReason || {}).reduce((a, b) => a + b, 0);
-    stabilityFails += Object.values(r.eliteExtraFail || {}).reduce((a, b) => a + b, 0);
-  }
-
-  const eliteScore = scoreFromFailRate(eliteFails, total * 5);
-  const liqScore = scoreFromFailRate(obFails, total * 5);
-  const stabScore = scoreFromFailRate(stabilityFails, total * 5);
-
-  return [
-    adviceBlock(
-      "Elite Filter",
-      eliteScore,
-      eliteScore < 7 ? "Te weinig coins halen ELITE" : "Goed",
-      "Versoepel elite thresholds (vm / velocity / ch1h)"
-    ),
-    adviceBlock(
-      "Liquidity",
-      liqScore,
-      liqScore < 7 ? "Te veel coins vallen af op orderboek" : "Goed",
-      "Verlaag depth eis of spread limiet"
-    ),
-    adviceBlock(
-      "Stability",
-      stabScore,
-      stabScore < 7 ? "Coins vallen af door instabiliteit" : "Goed",
-      "Verlaag rolling window strictheid"
-    ),
-  ];
-}
-
-// ================= TRADES =================
-function analyzeTrades(trades) {
-  const total = trades.length || 1;
-
-  let giveback = 0;
-  let losses = 0;
-
-  for (const t of trades) {
-    const max = n(t?.maxPnlPct);
-    const pnl = n(t?.pnlPct);
-
-    giveback += Math.max(0, max - pnl);
-    if (pnl < 0) losses++;
-  }
-
-  const givebackScore = Math.max(1, 10 - giveback / total);
-  const lossScore = Math.max(1, 10 - (losses / total) * 10);
-
-  return [
-    adviceBlock(
-      "Giveback",
-      givebackScore,
-      givebackScore < 7 ? "Je geeft winst terug" : "Goed",
-      "Strakkere trailing TP na TP1"
-    ),
-    adviceBlock(
-      "Loss Rate",
-      lossScore,
-      lossScore < 7 ? "Te veel verliezende trades" : "Goed",
-      "Strengere entry of betere BTC filter"
-    ),
-  ];
-}
-
-// ================= HANDLER =================
 export default async function handler(req, res) {
   try {
-    const [bull, bear, trades] = await Promise.all([
-      kv.get(moonCore.keyMainLatest("bull")),
-      kv.get(moonCore.keyMainLatest("bear")),
-      readEvents("trade_closed", 4000),
-    ]);
+    const openedRaw = await readEvents("trade_opened", 5000);
+    const closedRaw = await readEvents("trade_closed", 5000);
 
-    const coins = [
-      ...(bull?.funnel?.entry || []),
-      ...(bear?.funnel?.entry || []),
-    ];
+    const opened = safeArray(openedRaw).filter((x) => isMoonTradeId(x.id));
+    const closed = safeArray(closedRaw).filter((x) => isMoonTradeId(x.id));
 
-    const main = analyzeMain(coins);
-    const moon = analyzeMoon([]); // kan later gevuld worden
-    const trade = analyzeTrades(trades);
+    const openById = new Map();
+    for (const ev of opened) {
+      if (ev?.id) openById.set(ev.id, ev);
+    }
 
-    res.json({ main, moon, trade });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+    const rows = closed.map((ev) => {
+      const open = openById.get(ev.id) || null;
+      return {
+        id: ev.id,
+        symbol: up(ev.symbol || open?.symbol),
+        side: up(ev.side || open?.side),
+        mode: String(ev.mode || open?.mode || ""),
+        entryPrice: n(open?.entry || open?.entryPrice, 0),
+        exitPrice: n(ev.exitPrice, 0),
+        pnlPct: pct(ev.pnlPct),
+        pnlUsd: pct(ev.pnlUsd),
+        reason: String(ev.reason || ev.exitReason || ""),
+        stage: String(open?.stage || ev?.stage || ""),
+        rr: n(open?.rr, 0),
+        closedAt: n(ev.ts || ev.closedAt, 0),
+      };
+    });
+
+    const wins = rows.filter((x) => n(x.pnlPct, 0) >= 0);
+    const losses = rows.filter((x) => n(x.pnlPct, 0) < 0);
+
+    const closedIds = new Set(rows.map((x) => x.id));
+    const live = opened
+      .filter((x) => x?.id && !closedIds.has(x.id))
+      .map((x) => ({
+        id: x.id,
+        symbol: up(x.symbol),
+        side: up(x.side),
+        mode: String(x.mode || ""),
+        entryPrice: n(x.entry || x.entryPrice, 0),
+        tp: n(x.tp, 0),
+        sl: n(x.sl, 0),
+        rr: n(x.rr, 0),
+        ts: n(x.ts || x.entryAt, 0),
+      }))
+      .sort((a, b) => b.ts - a.ts);
+
+    res.status(200).json({
+      ok: true,
+      summary: {
+        totalOpened: opened.length,
+        totalClosed: rows.length,
+        live: live.length,
+        wins: wins.length,
+        losses: losses.length,
+        winRate: rows.length ? pct((wins.length / rows.length) * 100) : 0,
+        totalPnlPct: pct(rows.reduce((a, b) => a + n(b.pnlPct, 0), 0)),
+        totalPnlUsd: pct(rows.reduce((a, b) => a + n(b.pnlUsd, 0), 0)),
+        avgPnlPct: rows.length ? pct(rows.reduce((a, b) => a + n(b.pnlPct, 0), 0) / rows.length) : 0,
+      },
+      byReason: groupStats(rows, (x) => x.reason || "unknown").slice(0, 20),
+      bySymbol: groupStats(rows, (x) => x.symbol || "UNKNOWN").slice(0, 20),
+      byStage: groupStats(rows, (x) => x.stage || "UNKNOWN").slice(0, 20),
+      recentClosed: rows.sort((a, b) => b.closedAt - a.closedAt).slice(0, 50),
+      liveTrades: live.slice(0, 50),
+      ts: Date.now(),
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err?.message || String(err),
+    });
   }
 }
