@@ -557,9 +557,10 @@ export default async function handler(req, res) {
       const eliteSince = rawStage.includes("ELITE") ? (prev.eliteSince || now) : null;
       const entryLocked = prev.entryLocked || false;
 
+      // ---- FIX: alleen ALLOW_ENTRY mag entry ready maken, NIET ARM_ENTRY ----
       const entryReady =
         !hasOpen &&
-        (coin.execution?.action === "ALLOW_ENTRY" || coin.execution?.action === "ARM_ENTRY") &&
+        coin.execution?.action === "ALLOW_ENTRY" &&
         !entryLocked &&
         coin.tradePlan != null;
 
@@ -567,6 +568,53 @@ export default async function handler(req, res) {
 
       const depthHist = [...(prev.depthHist || []), coin.ob?.depthMinUsd1p].filter(v => v > 0).slice(-20);
       const thesisDamage = CORE.computeThesisDamage(coin, prev, mode);
+
+      // --- Nieuwe entry ticket state logic ---
+      const prevPositionState = prev.positionState || {
+        inPosition: false,
+        cyclesInTrade: 0,
+        minHoldCycles: 6,
+        weakHoldCount: 0,
+        maxWeakHoldCycles: 3,
+        entryTicketActive: false,
+        entryTicketSince: 0,
+        entryTicketTtlMs: 90 * 60 * 1000,
+      };
+
+      const nextPositionState = {
+        ...prevPositionState,
+        inPosition: false,
+        cyclesInTrade: prevPositionState.inPosition ? prevPositionState.cyclesInTrade || 0 : 0,
+      };
+
+      if (!hasOpen) {
+        if (coin.execution?.action === "ARM_ENTRY") {
+          nextPositionState.entryTicketActive = true;
+          nextPositionState.entryTicketSince =
+            prevPositionState.entryTicketActive && prevPositionState.entryTicketSince
+              ? prevPositionState.entryTicketSince
+              : now;
+          nextPositionState.entryTicketTtlMs =
+            coin.execution?.meta?.entryTicketTtlMs ||
+            prevPositionState.entryTicketTtlMs ||
+            90 * 60 * 1000;
+        } else if (
+          coin.execution?.action === "CANCEL_ENTRY" ||
+          coin.execution?.action === "NO_TRADE" ||
+          coin.execution?.action === "WATCH"
+        ) {
+          nextPositionState.entryTicketActive = false;
+          nextPositionState.entryTicketSince = 0;
+        } else if (coin.execution?.action === "ALLOW_ENTRY") {
+          nextPositionState.entryTicketActive = true;
+          nextPositionState.entryTicketSince =
+            prevPositionState.entryTicketSince || now;
+          nextPositionState.entryTicketTtlMs =
+            coin.execution?.meta?.entryTicketTtlMs ||
+            prevPositionState.entryTicketTtlMs ||
+            90 * 60 * 1000;
+        }
+      }
 
       nextState[sym] = {
         ...prev,
@@ -620,13 +668,7 @@ export default async function handler(req, res) {
         deskMeta: coin.deskMeta,
         uiLockUntil,
         watchScans,
-        positionState: prev.positionState || {
-          inPosition: false,
-          cyclesInTrade: 0,
-          minHoldCycles: 6,
-          weakHoldCount: 0,
-          maxWeakHoldCycles: 3,
-        },
+        positionState: nextPositionState,
         execution: coin.execution,
         coinProfile: coin.coinProfile,
       };
@@ -681,6 +723,9 @@ export default async function handler(req, res) {
           pnlPct: execution.meta?.pnlPct ?? 0,
           pnlUsd: (execution.meta?.pnlPct ?? 0) / 100 * POSITION_SIZE_USD,
           exitReason: execution.meta?.exitReason || execution.meta?.reason,
+          entryStage: pos.stage || "ENTRY",
+          sourceStage: pos.sourceStage || liveCoin.stage || "UNKNOWN",
+          exitStage: liveCoin.stage || "UNKNOWN",
         };
 
         positions.closed.push(closedPos);
@@ -799,7 +844,8 @@ export default async function handler(req, res) {
         entryQuality: coin.entryQuality,
         persistenceScore: coin.persistenceScore,
         regime,
-        stage: coin.stage,
+        stage: "ENTRY",
+        sourceStage: coin.stage,
         eliteType: coin.eliteType,
       };
 
@@ -834,6 +880,7 @@ export default async function handler(req, res) {
         sl: newPos.sl,
         rr: newPos.rr,
         stage: newPos.stage,
+        sourceStage: newPos.sourceStage,
         eliteType: newPos.eliteType,
       });
 
@@ -1012,6 +1059,7 @@ export default async function handler(req, res) {
           sl: p.sl,
           rr: p.rr,
           stage: p.stage,
+          sourceStage: p.sourceStage,
           eliteType: p.eliteType,
         })),
       },
