@@ -914,6 +914,16 @@ export default async function handler(req, res) {
             scannerGate: outCoin.scannerGate || null,
             tradeDeskStatus: outCoin.tradeDeskStatus || null,
             ts: now,
+            // NIEUW: entry filters
+            entryFilters: {
+              confidenceMin: dynThr?.minConfidence ?? null,
+              spreadMaxPct: dynThr?.spreadMaxPct ?? null,
+              depthMinUsd1p: dynThr?.depthMinUsd1p ?? null,
+              obScoreMin: dynThr?.obScoreMin ?? null,
+              macroMode,
+              strictConfBoost: 2,
+              strictSpreadCap: 1.2,
+            },
           });
 
           await sendSignal({
