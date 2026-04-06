@@ -1,3 +1,4 @@
+// api/analyze.js
 import { kv } from "@vercel/kv";
 import { readEvents } from "../lib/_analytics.js";
 
