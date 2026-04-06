@@ -1,3 +1,4 @@
+// pages/analyze-all.js
 import { useEffect, useState } from "react";
 
 function n(x, d = 0) {
