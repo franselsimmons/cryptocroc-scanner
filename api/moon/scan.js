@@ -1,4 +1,3 @@
-// api/moon/scan.js
 import { kv } from "@vercel/kv";
 
 import {
@@ -61,6 +60,10 @@ const POSITION_SIZE_USD = 50;
 const ENTRY_HISTORY_KEEP = 40;
 const ENTRY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const UI_ENTRY_LOCK_MS_MOON = 8 * 60 * 60 * 1000;
+
+function keyMoonConfigSnapshot(mode) {
+  return `moon:config:snapshot:${String(mode || "bull").toLowerCase()}`;
+}
 
 // ========== lock (15 min boundaries) ==========
 function scanLockKey(mode) {
@@ -434,6 +437,27 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
       deskGate: uiGate,
       deskMeta,
       uiLockUntil,
+      filterSnapshot: {
+        system: "moon",
+        mode,
+        regime,
+        stage,
+        engineGate,
+        tradeDeskStatus: uiGate,
+        entryQuality: n(entryQuality, 0),
+        persistenceScore: n(persistenceScore, 0),
+        qualityScore: n(qualityScore, 0),
+        liquidityScore: n(liquidityScore, 0),
+        timingScore: n(timingScore, 0),
+        marketScore: n(marketScore, 0),
+        btcAlignmentScore: n(btcAlignmentScore, 0),
+        perfectCandidateScore: n(perfectCandidateScore, 0),
+        spreadPct: n(obx?.spreadPct, 999),
+        obScore: n(obx?.score, 0),
+        depthMinUsd1p: n(obx?.depthMinUsd1p, 0),
+        breakoutReady: !!breakout?.ready,
+        breakoutPressure: n(breakout?.pressure, 0),
+      },
       _state: {
         priceHist: priceHistNext,
         volHist: volHistNext,
@@ -671,6 +695,7 @@ export default async function handler(req, res) {
         positionState: nextPositionState,
         execution: coin.execution,
         coinProfile: coin.coinProfile,
+        filterSnapshot: coin.filterSnapshot || null,
       };
     }
 
@@ -732,11 +757,21 @@ export default async function handler(req, res) {
 
         await safePushEvent("trade_closed", {
           id: pos.id,
+          system: "moon",
           mode,
           symbol: sym,
+          side: pos.side,
+          stage: pos.stage || "ENTRY",
+          sourceStage: pos.sourceStage || liveCoin.stage || "UNKNOWN",
+          exitStage: liveCoin.stage || "UNKNOWN",
           exitPrice: liveCoin.price,
           pnlPct: closedPos.pnlPct,
+          pnlUsd: closedPos.pnlUsd,
           reason: closedPos.exitReason,
+          entryQuality: pos.entryQuality ?? null,
+          persistenceScore: pos.persistenceScore ?? null,
+          filterSnapshot: pos.filterSnapshot || null,
+          ts: now,
         });
 
         await logTradeClosed({
@@ -847,6 +882,8 @@ export default async function handler(req, res) {
         stage: "ENTRY",
         sourceStage: coin.stage,
         eliteType: coin.eliteType,
+        system: "moon",
+        filterSnapshot: coin.filterSnapshot || null,
       };
 
       positions.open.push(newPos);
@@ -871,6 +908,7 @@ export default async function handler(req, res) {
 
       await safePushEvent("trade_opened", {
         id,
+        system: "moon",
         mode,
         side: newPos.side,
         symbol: sym,
@@ -882,6 +920,19 @@ export default async function handler(req, res) {
         stage: newPos.stage,
         sourceStage: newPos.sourceStage,
         eliteType: newPos.eliteType,
+        regime,
+        scannerStageAtOpen: coin.stage,
+        engineGateAtOpen: coin.engineGate || coin.tradeDeskStatus,
+        entryQuality: coin.entryQuality,
+        persistenceScore: coin.persistenceScore,
+        qualityScore: coin.qualityScore,
+        timingScore: coin.timingScore,
+        marketScore: coin.marketScore,
+        perfectCandidateScore: coin.perfectCandidateScore,
+        spreadPct: coin?.ob?.spreadPct ?? null,
+        obScore: coin?.ob?.score ?? null,
+        depthMinUsd1p: coin?.ob?.depthMinUsd1p ?? null,
+        filterSnapshot: coin.filterSnapshot || null,
       });
 
       await logTradeOpened({
@@ -989,6 +1040,24 @@ export default async function handler(req, res) {
     positions.closed = positions.closed.slice(-1000);
     await kv.set(keyMoonState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
     await kv.set(keyMoonPositions(mode), positions, { ex: 60 * 60 * 24 * 7 });
+
+    const configSnapshot = {
+      system: "moon",
+      mode,
+      regime,
+      engine: {
+        maxOpenTrades: MAX_OPEN_TRADES,
+        positionSizeUsd: POSITION_SIZE_USD,
+        cooldownSlSec: COOLDOWN_SL_SEC,
+        cooldownTpSec: COOLDOWN_TP_SEC,
+        cooldownTimeoutSec: COOLDOWN_TIMEOUT_SEC,
+        cooldownEarlyExitSec: COOLDOWN_EARLY_EXIT_SEC,
+        uiEntryLockMs: UI_ENTRY_LOCK_MS_MOON,
+      },
+      updatedAt: now,
+    };
+
+    await kv.set(keyMoonConfigSnapshot(mode), configSnapshot, { ex: 60 * 60 * 24 * 7 });
 
     // -------------------------------
     // 6. Response
