@@ -21,10 +21,19 @@ import { buildCoinProfile, buildMoonExecutionDecision } from "../../lib/_trade_e
 import { logTradeOpened, logTradeClosed } from "../../lib/tradeAnalytics.js";
 
 // ========== helpers ==========
-function n(x, d = 0) { const v = Number(x); return Number.isFinite(v) ? v : d; }
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-function up(x) { return String(x || "").toUpperCase(); }
-function sideFromMode(mode) { return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG"; }
+function n(x, d = 0) {
+  const v = Number(x);
+  return Number.isFinite(v) ? v : d;
+}
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+function up(x) {
+  return String(x || "").toUpperCase();
+}
+function sideFromMode(mode) {
+  return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG";
+}
 
 function coinForDiscord({ coin, position }) {
   const plan = coin?.tradePlan || coin?.execution?.meta?.tradePlan || null;
@@ -181,7 +190,7 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
 async function fetchExchangeFlows() {
   try {
     const data = await fetchJsonWithTimeout("https://api.binance.com/api/v3/ticker/24hr", {}, 8000);
-    return data.filter(x => Number(x.quoteVolume) > 200_000_000).length;
+    return data.filter((x) => Number(x.quoteVolume) > 200_000_000).length;
   } catch {
     return 0;
   }
@@ -208,8 +217,8 @@ async function fetchOrderbook(symbol) {
     const depthAskUsd = asks.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
     const total = depthBidUsd + depthAskUsd;
     const score = total > 0 ? (depthBidUsd - depthAskUsd) / total : 0;
-    const largestBidUsd = Math.max(...bids.slice(0, 8).map(b => n(b?.[1]) * n(b?.[0])), 0);
-    const largestAskUsd = Math.max(...asks.slice(0, 8).map(b => n(b?.[1]) * n(b?.[0])), 0);
+    const largestBidUsd = Math.max(...bids.slice(0, 8).map((b) => n(b?.[1]) * n(b?.[0])), 0);
+    const largestAskUsd = Math.max(...asks.slice(0, 8).map((b) => n(b?.[1]) * n(b?.[0])), 0);
     const lor = total > 0 ? Math.max(largestBidUsd, largestAskUsd) / total : 0;
 
     return {
@@ -259,8 +268,8 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
   const cg = await fetchCoinGeckoTopCached();
   const rawCoins = Array.isArray(cg?.coins) ? cg.coins : Array.isArray(cg) ? cg : [];
   const bitgetSymbols = await getBitgetSpotUsdtSymbols();
-  const step1 = rawCoins.filter(c => !isBlockedMoonAsset(c));
-  const step2 = step1.filter(c => bitgetSymbols.has(up(c.symbol)));
+  const step1 = rawCoins.filter((c) => !isBlockedMoonAsset(c));
+  const step2 = step1.filter((c) => bitgetSymbols.has(up(c.symbol)));
   const filtered = step2.slice(0, 180);
   const out = [];
   const state = (await kv.get(keyMoonState(mode))) || {};
@@ -536,8 +545,8 @@ export default async function handler(req, res) {
     const { regime, coins: universe } = await buildUniverse({ CORE, mode, whaleFlow, btc, now });
     const prevState = (await kv.get(keyMoonState(mode))) || {};
     const nextState = {};
-    const universeMap = new Map(universe.map(c => [c.symbol, c]));
-    const openMap = new Map(positions.open.map(p => [up(p.symbol), p]));
+    const universeMap = new Map(universe.map((c) => [c.symbol, c]));
+    const openMap = new Map(positions.open.map((p) => [up(p.symbol), p]));
 
     // -------------------------------
     // 1. Update state voor ALLE coins
@@ -581,7 +590,6 @@ export default async function handler(req, res) {
       const eliteSince = rawStage.includes("ELITE") ? (prev.eliteSince || now) : null;
       const entryLocked = prev.entryLocked || false;
 
-      // ---- FIX: alleen ALLOW_ENTRY mag entry ready maken, NIET ARM_ENTRY ----
       const entryReady =
         !hasOpen &&
         coin.execution?.action === "ALLOW_ENTRY" &&
@@ -590,10 +598,9 @@ export default async function handler(req, res) {
 
       const uiLockUntil = Math.max(coin.uiLockUntil, n(prev.uiLockUntil, 0));
 
-      const depthHist = [...(prev.depthHist || []), coin.ob?.depthMinUsd1p].filter(v => v > 0).slice(-20);
+      const depthHist = [...(prev.depthHist || []), coin.ob?.depthMinUsd1p].filter((v) => v > 0).slice(-20);
       const thesisDamage = CORE.computeThesisDamage(coin, prev, mode);
 
-      // --- Nieuwe entry ticket state logic ---
       const prevPositionState = prev.positionState || {
         inPosition: false,
         cyclesInTrade: 0,
@@ -770,7 +777,11 @@ export default async function handler(req, res) {
           reason: closedPos.exitReason,
           entryQuality: pos.entryQuality ?? null,
           persistenceScore: pos.persistenceScore ?? null,
-          filterSnapshot: pos.filterSnapshot || null,
+          spreadPct: liveCoin?.ob?.spreadPct ?? pos?.filterSnapshot?.spreadPct ?? null,
+          obScore: liveCoin?.ob?.score ?? pos?.filterSnapshot?.obScore ?? null,
+          depthMinUsd1p: liveCoin?.ob?.depthMinUsd1p ?? pos?.filterSnapshot?.depthMinUsd1p ?? null,
+          perfectCandidateScore: liveCoin?.perfectCandidateScore ?? pos?.filterSnapshot?.perfectCandidateScore ?? null,
+          filterSnapshot: pos.filterSnapshot || liveCoin.filterSnapshot || null,
           ts: now,
         });
 
@@ -832,7 +843,7 @@ export default async function handler(req, res) {
     }
 
     positions.open = stillOpen;
-    const refreshedOpenMap = new Map(positions.open.map(p => [up(p.symbol), p]));
+    const refreshedOpenMap = new Map(positions.open.map((p) => [up(p.symbol), p]));
 
     // -------------------------------
     // 3. Nieuwe entries openen
@@ -923,6 +934,7 @@ export default async function handler(req, res) {
         regime,
         scannerStageAtOpen: coin.stage,
         engineGateAtOpen: coin.engineGate || coin.tradeDeskStatus,
+        stageWhy: coin.stageWhy || null,
         entryQuality: coin.entryQuality,
         persistenceScore: coin.persistenceScore,
         qualityScore: coin.qualityScore,
@@ -966,7 +978,6 @@ export default async function handler(req, res) {
           eliteType: coin.eliteType || null,
           source: "moon_scan",
         },
-        // NIEUW: entryFilters
         entryFilters: {
           spreadMaxPct: coin?.execution?.meta?.entryTicketMaxSpreadPct ?? null,
           minBreakoutPressure: coin?.execution?.meta?.minBreakoutPressure ?? null,
@@ -1064,6 +1075,13 @@ export default async function handler(req, res) {
         cooldownEarlyExitSec: COOLDOWN_EARLY_EXIT_SEC,
         uiEntryLockMs: UI_ENTRY_LOCK_MS_MOON,
       },
+      limits: {
+        premium: 12,
+        tradeReady: 20,
+        watch: 20,
+        scannerOnly: 20,
+        universeTop: 180,
+      },
       updatedAt: now,
     };
 
@@ -1073,22 +1091,22 @@ export default async function handler(req, res) {
     // 6. Response
     // -------------------------------
     const premiumCandidates = universe
-      .filter(c => c.superScannerCoin)
+      .filter((c) => c.superScannerCoin)
       .sort((a, b) => b.perfectCandidateScore - a.perfectCandidateScore)
       .slice(0, 12);
 
     const tradeReady = universe
-      .filter(c => c.execution?.action === "ALLOW_ENTRY")
+      .filter((c) => c.execution?.action === "ALLOW_ENTRY")
       .sort((a, b) => b.perfectCandidateScore - a.perfectCandidateScore)
       .slice(0, 20);
 
     const watchCandidates = universe
-      .filter(c => c.engineGate === "WATCH" || c.execution?.action === "WATCH" || c.execution?.action === "ARM_ENTRY")
+      .filter((c) => c.engineGate === "WATCH" || c.execution?.action === "WATCH" || c.execution?.action === "ARM_ENTRY")
       .sort((a, b) => b.perfectCandidateScore - a.perfectCandidateScore)
       .slice(0, 20);
 
     const scannerOnly = universe
-      .filter(c => !c.superScannerCoin)
+      .filter((c) => !c.superScannerCoin)
       .sort((a, b) => b.perfectCandidateScore - a.perfectCandidateScore)
       .slice(0, 20);
 
@@ -1123,7 +1141,7 @@ export default async function handler(req, res) {
       positions: {
         open: positions.open.length,
         closed: positions.closed.length,
-        openItems: positions.open.map(p => ({
+        openItems: positions.open.map((p) => ({
           id: p.id,
           symbol: p.symbol,
           mode: p.mode,
