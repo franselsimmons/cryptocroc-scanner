@@ -20,24 +20,12 @@ import { pushEvent, uid } from "../../lib/_analytics.js";
 import { sendSignal } from "../../lib/discordRouter.js";
 import { buildCoinProfile, buildMoonExecutionDecision } from "../../lib/_trade_engine.js";
 
-// ======================================================
-// Helpers
-// ======================================================
-function n(x, d = 0) {
-  const v = Number(x);
-  return Number.isFinite(v) ? v : d;
-}
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-function up(x) {
-  return String(x || "").toUpperCase();
-}
-function sideFromMode(mode) {
-  return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG";
-}
+// ========== helpers ==========
+function n(x, d = 0) { const v = Number(x); return Number.isFinite(v) ? v : d; }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function up(x) { return String(x || "").toUpperCase(); }
+function sideFromMode(mode) { return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG"; }
 
-// Discord helper (zelfde als main)
 function coinForDiscord({ coin, position }) {
   const plan = coin?.tradePlan || coin?.execution?.meta?.tradePlan || null;
   const entry = position?.entryPrice ?? plan?.entry ?? coin?.entry ?? coin?.price ?? null;
@@ -46,24 +34,10 @@ function coinForDiscord({ coin, position }) {
   return { ...coin, entry, tp, sl, tradePlan: plan };
 }
 
-async function safeSendSignal(payload) {
-  try {
-    await sendSignal(payload);
-  } catch (e) {
-    console.error("sendSignal failed:", e?.message || e);
-  }
-}
-async function safePushEvent(name, payload) {
-  try {
-    await pushEvent(name, payload);
-  } catch (e) {
-    console.error(`pushEvent failed (${name}):`, e?.message || e);
-  }
-}
+async function safeSendSignal(payload) { try { await sendSignal(payload); } catch(e) { console.error("sendSignal failed:", e?.message || e); } }
+async function safePushEvent(name, payload) { try { await pushEvent(name, payload); } catch(e) { console.error(`pushEvent failed (${name}):`, e?.message || e); } }
 
-// ======================================================
-// Constantes (kunnen later naar core, maar blijven hier voor overzicht)
-// ======================================================
+// ========== constants ==========
 const COOLDOWN_SL_SEC = 4 * 60 * 60;
 const COOLDOWN_TP_SEC = 90 * 60;
 const COOLDOWN_TIMEOUT_SEC = 2 * 60 * 60;
@@ -75,12 +49,8 @@ const ENTRY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const MIN_RECENT_ENTRIES_TARGET = 2;
 const UI_ENTRY_LOCK_MS_MOON = 8 * 60 * 60 * 1000;
 
-// ======================================================
-// Boundary lock (15 min)
-// ======================================================
-function scanLockKey(mode) {
-  return `moon:scan:lock:${String(mode || "bull").toLowerCase()}`;
-}
+// ========== lock (15 min boundaries) ==========
+function scanLockKey(mode) { return `moon:scan:lock:${String(mode || "bull").toLowerCase()}`; }
 async function acquireScanLock(mode) {
   const key = scanLockKey(mode);
   const now = Date.now();
@@ -102,22 +72,16 @@ async function acquireScanLock(mode) {
   await kv.set(key, { ts: now, until, mode }, { ex: ttlSec });
   return { ok: true, key, until };
 }
-async function releaseScanLock(mode) {
-  try { await kv.del(scanLockKey(mode)); } catch {}
-}
+async function releaseScanLock(mode) { try { await kv.del(scanLockKey(mode)); } catch {} }
 
-// ======================================================
-// Cooldown helpers
-// ======================================================
-function cooldownKey(mode, symbol) {
-  return `moon:cooldown:${String(mode || "bull").toLowerCase()}:${up(symbol)}`;
-}
+// ========== cooldown helpers ==========
+function cooldownKey(mode, symbol) { return `moon:cooldown:${String(mode || "bull").toLowerCase()}:${up(symbol)}`; }
 async function readRecentEntryCount(mode, lookbackMs = ENTRY_LOOKBACK_MS) {
   const key = `moon:entry:history:${mode}`;
   const now = Date.now();
   const prev = (await kv.get(key)) || [];
   const arr = Array.isArray(prev) ? prev : [];
-  const filtered = arr.filter((ts) => n(ts, 0) >= now - lookbackMs).slice(0, ENTRY_HISTORY_KEEP);
+  const filtered = arr.filter(ts => n(ts, 0) >= now - lookbackMs).slice(0, ENTRY_HISTORY_KEEP);
   await kv.set(key, filtered, { ex: 60 * 60 * 24 * 3 });
   return filtered.length;
 }
@@ -129,7 +93,6 @@ async function appendEntryHistory(mode) {
   const next = [now, ...arr].slice(0, ENTRY_HISTORY_KEEP);
   await kv.set(key, next, { ex: 60 * 60 * 24 * 3 });
 }
-
 function parseExitReason(p) {
   const r = String(p?.exitReason || p?.reason || p?.closedReason || p?.closeReason || "").toLowerCase();
   if (r.includes("stop") || r.includes("sl")) return "sl";
@@ -166,9 +129,7 @@ async function applyCooldownsFromClosed(mode, positions, now) {
   }
 }
 
-// ======================================================
-// Externe data (orderbook, whale flow)
-// ======================================================
+// ========== external data ==========
 async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -176,17 +137,13 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
     const res = await fetch(url, { ...options, signal: controller.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
-  } finally {
-    clearTimeout(id);
-  }
+  } finally { clearTimeout(id); }
 }
 async function fetchExchangeFlows() {
   try {
     const data = await fetchJsonWithTimeout("https://api.binance.com/api/v3/ticker/24hr", {}, 8000);
-    return data.filter((x) => Number(x.quoteVolume) > 200_000_000).length;
-  } catch {
-    return 0;
-  }
+    return data.filter(x => Number(x.quoteVolume) > 200_000_000).length;
+  } catch { return 0; }
 }
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 async function fetchOrderbook(symbol) {
@@ -205,28 +162,26 @@ async function fetchOrderbook(symbol) {
     const depthAskUsd = asks.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
     const total = depthBidUsd + depthAskUsd;
     const score = total > 0 ? (depthBidUsd - depthAskUsd) / total : 0;
-    const largestBidUsd = Math.max(...bids.slice(0, 8).map((b) => n(b?.[1]) * n(b?.[0])), 0);
-    const largestAskUsd = Math.max(...asks.slice(0, 8).map((b) => n(b?.[1]) * n(b?.[0])), 0);
+    const largestBidUsd = Math.max(...bids.slice(0, 8).map(b => n(b?.[1]) * n(b?.[0])), 0);
+    const largestAskUsd = Math.max(...asks.slice(0, 8).map(b => n(b?.[1]) * n(b?.[0])), 0);
     const lor = total > 0 ? Math.max(largestBidUsd, largestAskUsd) / total : 0;
     return { bestBid, bestAsk, spreadPct, depthBidUsd, depthAskUsd, depthMinUsd1p: Math.min(depthBidUsd, depthAskUsd), score, lor, valid: true, fresh: true, stale: false, reason: "", status: "ok" };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 function computeObScore(ob) {
   if (!ob) return { bestBid:0, bestAsk:0, spreadPct:999, depthBidUsd:0, depthAskUsd:0, depthMinUsd1p:0, score:0, lor:1, valid:false, fresh:false, stale:true, reason:"missing_snapshot", status:"none" };
   return { ...ob, valid:!!ob.valid, fresh:!!ob.fresh, stale:!!ob.stale };
 }
 
-// ======================================================
-// Universe bouwen (gebruikt core logica)
-// ======================================================
+// ========== universe builder ==========
 async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
   const regime = CORE.computeMarketRegime({ btc, whaleFlow, mode });
-  const rawCoins = await fetchCoinGeckoTopCached();
+  // FIX: CoinGecko kan object {coins, meta} teruggeven
+  const cg = await fetchCoinGeckoTopCached();
+  const rawCoins = Array.isArray(cg?.coins) ? cg.coins : Array.isArray(cg) ? cg : [];
   const bitgetSymbols = await getBitgetSpotUsdtSymbols();
-  const step1 = rawCoins.filter((c) => !isBlockedMoonAsset(c));
-  const step2 = step1.filter((c) => bitgetSymbols.has(up(c.symbol)));
+  const step1 = rawCoins.filter(c => !isBlockedMoonAsset(c));
+  const step2 = step1.filter(c => bitgetSymbols.has(up(c.symbol)));
   const filtered = step2.slice(0, 180);
   const out = [];
   const state = (await kv.get(keyMoonState(mode))) || {};
@@ -261,12 +216,7 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
       CORE, mode, coin, obx, priceHist: priceHistNext, volHist: volHistNext,
       btc, prev: { ...prev, volAcc }, whaleFlow, regime
     });
-
-    const {
-      stage, stageWhy, eliteType, moveScore, velocity, compression, breakout,
-      persistenceScore, entryQuality
-    } = stageDecision;
-
+    const { stage, stageWhy, eliteType, moveScore, velocity, compression, breakout, persistenceScore, entryQuality } = stageDecision;
     const probs = CORE.computeMoonProbabilities({ mode, coin: { ...coin, ob: obx }, moveScore, velocity, compression, persistenceScore });
     const tradePlan = CORE.buildMoonTradePlan({ CORE, price: coin.price, mode, confidence: entryQuality || moveScore, range24: coin.range24, depthOk, tier, regime, persistenceScore });
     const qualityScore = CORE.computeQualityScore({ coin, moveScore, entryQuality, persistenceScore, velocity, compression, breakout });
@@ -275,27 +225,19 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
     const marketScore = CORE.computeMarketScore({ btc, mode, regime, whaleFlow });
     const btcAlignmentScore = CORE.computeBtcAlignmentScore({ btc, mode, regime });
     const perfectCandidateScore = CORE.computePerfectCandidateScore({ qualityScore, liquidityScore, timingScore, marketScore });
-
     const { engineGate, uiGate, deskMeta } = CORE.computeDeskGate({
       mode, stage, entryQuality, persistenceScore, breakout, obScore: obx.score,
       tradePlan: !!tradePlan, now, prevGate: prev?.engineGate, prevMeta: prev?.deskMeta,
       isEliteStageForDesk: ["ELITE_IGNITION","ELITE_EXPANSION","ELITE_CASCADE"].includes(stage)
     });
-
     const uiLockUntil = Math.max(n(prev?.uiLockUntil,0), engineGate==="OPEN" ? now+UI_ENTRY_LOCK_MS_MOON : 0);
 
     const coinForOutput = {
-      ...coin,
-      side: sideFromMode(mode),
-      stage,
-      stageWhy,
-      eliteType,
-      moveScore,
+      ...coin, side: sideFromMode(mode), stage, stageWhy, eliteType, moveScore,
       confidence: entryQuality || moveScore,
       moonProbability: probs?.moonProbability ?? 0,
       dumpProbability: probs?.dumpProbability ?? 0,
-      tradeCandidate: engineGate === "OPEN",
-      superScannerCoin: engineGate === "OPEN",
+      tradeCandidate: engineGate === "OPEN", superScannerCoin: engineGate === "OPEN",
       qualityScore, liquidityScore, timingScore, marketScore, btcAlignmentScore, perfectCandidateScore,
       ob: { bestBid: obx.bestBid, bestAsk: obx.bestAsk, spreadPct: obx.spreadPct, depthBidUsd: obx.depthBidUsd, depthAskUsd: obx.depthAskUsd, score: obx.score, depthMinUsd1p: obx.depthMinUsd1p, valid: obx.valid, lor: obx.lor },
       thresholds: { depthFloorUsd: floorUsd, depthOk },
@@ -307,24 +249,10 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
       _state: { priceHist: priceHistNext, volHist: volHistNext, stageHist: (prev?.stageHist||[]).concat([stage]).slice(-12), volAcc }
     };
 
-    // Integrate trade engine for profile and execution
-    const coinProfile = buildCoinProfile({
-      systemType: "moon",
-      coin: coinForOutput,
-    });
+    const coinProfile = buildCoinProfile({ systemType: "moon", coin: coinForOutput });
     const execution = buildMoonExecutionDecision({
-      coin: coinForOutput,
-      btc,
-      regime,
-      mode,
-      coinProfile,
-      positionState: prev?.positionState || {
-        inPosition: false,
-        cyclesInTrade: 0,
-        minHoldCycles: 6,
-        weakHoldCount: 0,
-        maxWeakHoldCycles: 3,
-      },
+      coin: coinForOutput, btc, regime, mode, coinProfile,
+      positionState: prev?.positionState || { inPosition: false, cyclesInTrade: 0, minHoldCycles: 6, weakHoldCount: 0, maxWeakHoldCycles: 3 },
       scannerGate: engineGate,
     });
     coinForOutput.coinProfile = coinProfile;
@@ -336,9 +264,6 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
   return { regime, coins: out };
 }
 
-// ======================================================
-// Helper voor stage upgrade Discord (zoals main scanner)
-// ======================================================
 function shouldSendUpgradeSignal(oldStage, newStage) {
   if (oldStage === newStage) return false;
   const order = ["RADAR","BUILDUP","ALMOST","ELITE_IGNITION","ELITE_EXPANSION","ELITE_CASCADE"];
@@ -347,9 +272,6 @@ function shouldSendUpgradeSignal(oldStage, newStage) {
   return newIdx > oldIdx;
 }
 
-// ======================================================
-// Main handler
-// ======================================================
 export default async function handler(req, res) {
   let mode = "bull";
   let lockAcquired = false;
@@ -378,22 +300,21 @@ export default async function handler(req, res) {
     const prevState = (await kv.get(keyMoonState(mode))) || {};
     const nextState = {};
     const universeMap = new Map(universe.map(c => [c.symbol, c]));
-    const openMap = new Map(positions.open.map(p => [up(p.symbol), p]));
+    let openMap = new Map(positions.open.map(p => [up(p.symbol), p]));
 
     // -------------------------------
-    // 1. Update state + Discord upgrades
+    // 1. Update state voor ALLE coins (ook open posities, maar skip entry/upgrade voor open)
     // -------------------------------
     for (const coin of universe) {
       const sym = up(coin.symbol);
       const prev = prevState?.[sym] || {};
       const hasOpen = openMap.has(sym);
-      if (hasOpen) continue;
 
       const rawStage = coin.stage;
       const oldStage = prev.stage || "RADAR";
 
-      // Upgrade signal (net als main scanner)
-      if (shouldSendUpgradeSignal(oldStage, rawStage)) {
+      // upgrade signal alleen als niet open
+      if (!hasOpen && shouldSendUpgradeSignal(oldStage, rawStage)) {
         await safeSendSignal({
           source: "moon", action: "STAGE_UPGRADE", symbol: sym, price: coin.price,
           stage: rawStage, oldStage, mode, coin: coinForDiscord({ coin }),
@@ -402,7 +323,6 @@ export default async function handler(req, res) {
         });
       }
 
-      // Bouw nieuwe state (gebruik core helpers voor persistentie)
       let strongScans = rawStage !== "RADAR" ? (prev.strongScans||0)+1 : 0;
       let weakScans = rawStage === "RADAR" ? (prev.weakScans||0)+1 : 0;
       let eliteScans = (rawStage.includes("ELITE") ? (prev.eliteScans||0)+1 : 0);
@@ -412,7 +332,6 @@ export default async function handler(req, res) {
       let eliteSince = rawStage.includes("ELITE") ? (prev.eliteSince || now) : null;
 
       let entryLocked = prev.entryLocked || false;
-      // entryReady nu gebaseerd op trade engine execution
       let entryReady = !hasOpen && coin.execution?.action === "ALLOW_ENTRY" && !entryLocked && coin.tradePlan != null;
       let uiLockUntil = Math.max(coin.uiLockUntil, n(prev.uiLockUntil,0));
 
@@ -437,13 +356,12 @@ export default async function handler(req, res) {
         tradeDeskStatus: coin.tradeDeskStatus, engineGate: coin.engineGate, deskGate: coin.deskGate,
         deskMeta: coin.deskMeta, uiLockUntil, watchScans,
         positionState: prev.positionState || { inPosition: false, cyclesInTrade:0, minHoldCycles:6, weakHoldCount:0, maxWeakHoldCycles:3 },
-        execution: coin.execution,        // store execution
-        coinProfile: coin.coinProfile,    // store profile
+        execution: coin.execution, coinProfile: coin.coinProfile,
       };
     }
 
     // -------------------------------
-    // 2. Evaluate open positions (EXIT / HOLD) using trade engine
+    // 2. Evaluate open positions (exit / hold) en update state voor open coins
     // -------------------------------
     const stillOpen = [];
     for (const pos of positions.open) {
@@ -454,12 +372,7 @@ export default async function handler(req, res) {
         continue;
       }
 
-      const coinProfile = buildCoinProfile({
-        systemType: "moon",
-        coin: liveCoin,
-      });
-
-      // Build a coin object with entryPrice and tradePlan from position
+      const coinProfile = buildCoinProfile({ systemType: "moon", coin: liveCoin });
       const evalCoin = {
         ...liveCoin,
         entryPrice: pos.entryPrice,
@@ -472,13 +385,8 @@ export default async function handler(req, res) {
           slPct: pos.slPct,
         },
       };
-
       const execution = buildMoonExecutionDecision({
-        coin: evalCoin,
-        btc,
-        regime,
-        mode,
-        coinProfile,
+        coin: evalCoin, btc, regime, mode, coinProfile,
         positionState: {
           ...(nextState[sym]?.positionState || {}),
           inPosition: true,
@@ -488,7 +396,6 @@ export default async function handler(req, res) {
       });
 
       if (execution.action === "EXIT") {
-        // Close position
         const closedPos = {
           ...pos,
           closedAt: now,
@@ -500,16 +407,10 @@ export default async function handler(req, res) {
         positions.closed.push(closedPos);
         await safePushEvent("trade_closed", { id: pos.id, mode, symbol: sym, exitPrice: liveCoin.price, pnlPct: closedPos.pnlPct, reason: closedPos.exitReason });
         await safeSendSignal({ source: "moon", action: "TRADE_CLOSED", symbol: sym, price: liveCoin.price, side: pos.side, mode, coin: coinForDiscord({ coin: liveCoin, position: pos }), position: closedPos, btcState: btc?.state || "NEUTRAL", kind: "trade_closed", pnl: closedPos.pnlPct, reason: closedPos.exitReason });
-        // Update state to reflect not in position
         if (nextState[sym]) {
-          nextState[sym].positionState = {
-            ...nextState[sym].positionState,
-            inPosition: false,
-            cyclesInTrade: 0,
-          };
+          nextState[sym].positionState = { ...nextState[sym].positionState, inPosition: false, cyclesInTrade: 0 };
         }
       } else {
-        // Hold or weak hold
         const updatedPos = {
           ...pos,
           lastPrice: liveCoin.price,
@@ -518,29 +419,28 @@ export default async function handler(req, res) {
           cyclesInTrade: n(pos.cyclesInTrade, 0) + 1,
         };
         stillOpen.push(updatedPos);
-        // Update state position info
         if (nextState[sym]) {
           nextState[sym].positionState = {
             inPosition: true,
             cyclesInTrade: n(pos.cyclesInTrade, 0) + 1,
             minHoldCycles: 6,
-            weakHoldCount: execution.action === "WEAK_HOLD"
-              ? n(nextState[sym]?.positionState?.weakHoldCount, 0) + 1
-              : 0,
+            weakHoldCount: execution.action === "WEAK_HOLD" ? n(nextState[sym]?.positionState?.weakHoldCount, 0) + 1 : 0,
             maxWeakHoldCycles: 3,
           };
         }
       }
     }
     positions.open = stillOpen;
+    // Refresh openMap after exit processing
+    const refreshedOpenMap = new Map(positions.open.map(p => [up(p.symbol), p]));
 
     // -------------------------------
-    // 3. Nieuwe entries openen
+    // 3. Nieuwe entries openen (gebruik refreshedOpenMap)
     // -------------------------------
     const entryCandidates = [];
     for (const sym of Object.keys(nextState)) {
       const state = nextState[sym];
-      if (state.entryReady && state.tradeCandidate && !openMap.has(sym)) {
+      if (state.entryReady && state.tradeCandidate && !refreshedOpenMap.has(sym)) {
         const cdKey = cooldownKey(mode, sym);
         const cdUntil = await kv.get(cdKey);
         if (n(cdUntil,0) <= now) entryCandidates.push({ sym, state, coin: universeMap.get(sym) });
@@ -567,7 +467,7 @@ export default async function handler(req, res) {
     }
 
     // -------------------------------
-    // 4. Funnel splitsen (via core helper)
+    // 4. Funnel splitsen (gebruik refreshedOpenMap)
     // -------------------------------
     const funnel = CORE.splitFunnels(universe);
     const holdItems = [];
@@ -576,14 +476,14 @@ export default async function handler(req, res) {
       holdItems.push({ symbol: p.symbol, kind: "IN_TRADE", reason: "open_position", entryAt: p.entryAt, entryPrice: p.entryPrice, lastPrice: p.lastPrice, pnlPct: p.pnlPct, pnlUsd: p.pnlUsd, coin, state: nextState[up(p.symbol)] });
     }
     for (const sym of Object.keys(nextState)) {
-      if (!openMap.has(sym) && n(nextState[sym]?.uiLockUntil,0) > now) {
+      if (!refreshedOpenMap.has(sym) && n(nextState[sym]?.uiLockUntil,0) > now) {
         holdItems.push({ symbol: sym, kind: "ENTRY_LOCK", reason: "entry_signal_lock", lockUntil: nextState[sym].uiLockUntil, coin: universeMap.get(sym), state: nextState[sym] });
       }
     }
     funnel.hold = holdItems;
 
     // -------------------------------
-    // 5. Portfolio en opslag
+    // 5. Portfolio & opslag
     // -------------------------------
     const portfolio = {
       mode, posUsd: POSITION_SIZE_USD, openCount: positions.open.length, closedCount: positions.closed.length,
