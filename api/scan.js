@@ -409,6 +409,29 @@ function gateFromStage(stage) {
 }
 
 // ======================================================
+// NEW: Macro mode for neutral BTC selectivity
+// ======================================================
+function getMainMacroMode({ btc, mode }) {
+  const state = up(btc?.state || "NEUTRAL");
+  const chg24 = n(btc?.chg24, 0);
+  const range24 = n(btc?.range24, 0);
+
+  if (mode === "bull") {
+    if (state === "BULL" && chg24 >= 1.2 && range24 >= 3.2) return "PERMISSIVE";
+    if (state === "NEUTRAL") return "SELECTIVE";
+    return "RESTRICTIVE";
+  }
+
+  if (mode === "bear") {
+    if (state === "BEAR" && chg24 <= -1.2 && range24 >= 3.2) return "PERMISSIVE";
+    if (state === "NEUTRAL") return "SELECTIVE";
+    return "RESTRICTIVE";
+  }
+
+  return "SELECTIVE";
+}
+
+// ======================================================
 // Main scan
 // ======================================================
 export default async function handler(req, res) {
@@ -467,6 +490,7 @@ export default async function handler(req, res) {
       state: CORE.computeBtcState(btcRaw, CFG),
     };
     const regime = deriveMainRegime({ btc });
+    const macroMode = getMainMacroMode({ btc, mode });
 
     // Universe
     const cg = await fetchCoinGeckoTopCached(Number(CFG.CG_TOP || 1500));
@@ -551,6 +575,11 @@ export default async function handler(req, res) {
       let entryOk = false;
       let entryReason = "";
       let obSlope = { ok: true, slope: 0, reason: "disabled" };
+      let spreadOk = false;
+      let depthOk = false;
+      let scoreOk = false;
+      let confOk = false;
+      let dynThr = null;
 
       if (stage === "ALMOST") {
         ob = await fetchOrderbook(`${sym}USDT`);
@@ -580,13 +609,13 @@ export default async function handler(req, res) {
           obScoreMin: n(tier?.obScoreMin, n(entryCfg.obScoreMin, 0.02)),
         };
 
-        const dynThr = CORE.dynamicEntryThresholds({ marketCap, volume, vm }, baseThr, CFG);
+        dynThr = CORE.dynamicEntryThresholds({ marketCap, volume, vm }, baseThr, CFG);
 
-        const spreadOk = ob?.valid ? n(ob.spreadPct, 999) <= n(dynThr.spreadMaxPct, 999) : false;
-        const depthOk = ob?.valid ? n(ob.depthMinUsd1p, 0) >= n(dynThr.depthMinUsd1p, 0) : false;
+        spreadOk = ob?.valid ? n(ob.spreadPct, 999) <= n(dynThr.spreadMaxPct, 999) : false;
+        depthOk = ob?.valid ? n(ob.depthMinUsd1p, 0) >= n(dynThr.depthMinUsd1p, 0) : false;
 
         const score = n(ob?.score, 0);
-        const scoreOk =
+        scoreOk =
           ob?.valid
             ? mode === "bull"
               ? score >= n(dynThr.obScoreMin, 0)
@@ -594,9 +623,26 @@ export default async function handler(req, res) {
             : false;
 
         obSlope = CORE.checkObSlopeGate({ stage: "entry", mode, obSamples: trimmed, settings: CFG });
-        const confOk = confidence >= n(dynThr.minConfidence, n(entryCfg.minConfidence, 0));
+        confOk = confidence >= n(dynThr.minConfidence, n(entryCfg.minConfidence, 0));
 
-        entryOk = spreadOk && depthOk && scoreOk && confOk && obSlope.ok;
+        // Macro mode based extra restrictions
+        let macroEntryOk = true;
+        if (macroMode === "SELECTIVE") {
+          const selectiveConfOk = confidence >= (n(dynThr.minConfidence, n(entryCfg.minConfidence, 0)) + 4);
+          const selectiveSpreadOk = ob?.valid ? n(ob.spreadPct, 999) <= Math.min(n(dynThr.spreadMaxPct, 999), 1.25) : false;
+          const selectiveScoreOk =
+            ob?.valid
+              ? mode === "bull"
+                ? score >= (n(dynThr.obScoreMin, 0) + 0.004)
+                : score <= -(n(dynThr.obScoreMin, 0) + 0.004)
+              : false;
+          macroEntryOk = selectiveConfOk && selectiveSpreadOk && selectiveScoreOk;
+        }
+        if (macroMode === "RESTRICTIVE") {
+          macroEntryOk = false;
+        }
+
+        entryOk = spreadOk && depthOk && scoreOk && confOk && obSlope.ok && macroEntryOk;
 
         if (!ob?.valid) entryReason = "no_ob";
         else if (!confOk) entryReason = "conf_low";
@@ -604,6 +650,7 @@ export default async function handler(req, res) {
         else if (!depthOk) entryReason = "depth";
         else if (!scoreOk) entryReason = "ob_score";
         else if (!obSlope.ok) entryReason = "ob_slope";
+        else if (!macroEntryOk) entryReason = "macro_selective";
         else entryReason = "ok";
 
         if (entryOk) stage = "ENTRY";
@@ -621,8 +668,8 @@ export default async function handler(req, res) {
       };
 
       const thresholds = {
-        depthFloorUsd: 0,
-        depthOk: !!ob?.valid,
+        depthFloorUsd: stage === "ENTRY" && dynThr ? n(dynThr.depthMinUsd1p, 0) : 0,
+        depthOk,
       };
 
       const tradePlan = buildMainTradePlan({
@@ -778,7 +825,7 @@ export default async function handler(req, res) {
           console.log(`[Scanner] 🚀 Upgrade voor ${sym}: ${oldStage} -> ${stage}. Discord aanroepen...`);
 
           await sendSignal({
-            source: "scanner",
+            source: "main",   // FIXED: was "scanner"
             stage,
             mode,
             coin: outCoin,
