@@ -957,14 +957,24 @@ export default async function handler(req, res) {
         timingScore: coin.timingScore,
         marketScore: coin.marketScore,
         perfectCandidateScore: coin.perfectCandidateScore,
-        spreadAtOpen: coin.ob?.spreadPct,
-        obScoreAtOpen: coin.ob?.score,
-        depthAtOpen: coin.ob?.depthMinUsd1p,
+        spreadAtOpen: coin?.ob?.spreadPct,
+        obScoreAtOpen: coin?.ob?.score,
+        depthAtOpen: coin?.ob?.depthMinUsd1p,
         btcState: btc?.state || "NEUTRAL",
         regime,
         meta: {
           eliteType: coin.eliteType || null,
           source: "moon_scan",
+        },
+        // NIEUW: entryFilters
+        entryFilters: {
+          spreadMaxPct: coin?.execution?.meta?.entryTicketMaxSpreadPct ?? null,
+          minBreakoutPressure: coin?.execution?.meta?.minBreakoutPressure ?? null,
+          entryQuality: coin?.entryQuality ?? null,
+          persistenceScore: coin?.persistenceScore ?? null,
+          spreadAtOpen: coin?.ob?.spreadPct ?? null,
+          obScoreAtOpen: coin?.ob?.score ?? null,
+          depthAtOpen: coin?.ob?.depthMinUsd1p ?? null,
         },
       });
 
