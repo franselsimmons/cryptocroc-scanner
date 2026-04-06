@@ -1,4 +1,3 @@
-// pages/analyze-all.js
 import { useEffect, useState } from "react";
 
 function n(x, d = 0) {
@@ -14,13 +13,13 @@ function fmtUsd(v) {
   return `$${n(v, 0).toFixed(2)}`;
 }
 
-function fmtTs(ts) {
-  if (!ts) return "-";
-  try {
-    return new Date(ts).toLocaleString("nl-NL");
-  } catch {
-    return "-";
-  }
+function Panel({ title, children }) {
+  return (
+    <div style={styles.panel}>
+      <h2 style={styles.h2}>{title}</h2>
+      {children}
+    </div>
+  );
 }
 
 function StatCard({ title, value, sub }) {
@@ -68,6 +67,126 @@ function SimpleTable({ title, rows, columns }) {
   );
 }
 
+function GroupBlock({ title, group }) {
+  const summary = group?.summary || {};
+  const buckets = group?.buckets || {};
+  const teacher = group?.teacher || {};
+  const liveConfig = group?.liveConfig || null;
+
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <Panel title={title}>
+        <div style={styles.grid}>
+          <StatCard title="Trades" value={summary.trades || 0} />
+          <StatCard title="Winrate" value={fmtPct(summary.winRate)} />
+          <StatCard title="Avg PnL %" value={fmtPct(summary.avgPnlPct)} />
+          <StatCard title="Total PnL %" value={fmtPct(summary.totalPnlPct)} />
+          <StatCard title="Total PnL USD" value={fmtUsd(summary.totalPnlUsd)} />
+          <StatCard title="Teacher score" value={`${n(teacher.score, 0).toFixed(1)}/10`} />
+        </div>
+
+        <div style={styles.twoCol}>
+          <div>
+            <h3 style={styles.h3}>Teacher feedback</h3>
+            <div style={styles.lessonList}>
+              {(teacher.lessons || []).length ? (
+                teacher.lessons.map((x, i) => (
+                  <div key={i} style={styles.lessonItem}>
+                    <strong>{x.type?.toUpperCase() || "TIP"}:</strong> {x.text}
+                  </div>
+                ))
+              ) : (
+                <div style={styles.muted}>Nog geen feedback</div>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <h3 style={styles.h3}>Live config snapshot</h3>
+            <pre style={styles.pre}>
+              {JSON.stringify(liveConfig, null, 2)}
+            </pre>
+          </div>
+        </div>
+      </Panel>
+
+      <div style={styles.twoCol}>
+        <SimpleTable
+          title={`${title} - By reason`}
+          rows={buckets.byReason || []}
+          columns={[
+            { key: "key", label: "Reason" },
+            { key: "count", label: "Trades" },
+            { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+            { key: "avgPnlPct", label: "Avg PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+            { key: "totalPnlUsd", label: "Total USD", render: (r) => fmtUsd(r.totalPnlUsd) },
+          ]}
+        />
+
+        <SimpleTable
+          title={`${title} - By stage`}
+          rows={buckets.byStage || []}
+          columns={[
+            { key: "key", label: "Stage" },
+            { key: "count", label: "Trades" },
+            { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+            { key: "avgPnlPct", label: "Avg PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+            { key: "totalPnlUsd", label: "Total USD", render: (r) => fmtUsd(r.totalPnlUsd) },
+          ]}
+        />
+      </div>
+
+      <div style={styles.twoCol}>
+        <SimpleTable
+          title={`${title} - Entry quality buckets`}
+          rows={buckets.byEntryQuality || []}
+          columns={[
+            { key: "key", label: "Bucket" },
+            { key: "count", label: "Trades" },
+            { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+            { key: "avgPnlPct", label: "Avg PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+          ]}
+        />
+
+        <SimpleTable
+          title={`${title} - Persistence buckets`}
+          rows={buckets.byPersistence || []}
+          columns={[
+            { key: "key", label: "Bucket" },
+            { key: "count", label: "Trades" },
+            { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+            { key: "avgPnlPct", label: "Avg PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+          ]}
+        />
+      </div>
+
+      <div style={styles.twoCol}>
+        <SimpleTable
+          title={`${title} - Spread buckets`}
+          rows={buckets.bySpread || []}
+          columns={[
+            { key: "key", label: "Bucket" },
+            { key: "count", label: "Trades" },
+            { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+            { key: "avgPnlPct", label: "Avg PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+          ]}
+        />
+
+        <SimpleTable
+          title={`${title} - OB score buckets`}
+          rows={buckets.byObScore || []}
+          columns={[
+            { key: "key", label: "Bucket" },
+            { key: "count", label: "Trades" },
+            { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+            { key: "avgPnlPct", label: "Avg PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+          ]}
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function AnalyzeAllPage() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState("");
@@ -92,24 +211,14 @@ export default function AnalyzeAllPage() {
     load();
   }, []);
 
-  const trades = data?.overview?.trades || {};
-  const moon = data?.tradeBooks?.moon || {};
-  const all = data?.tradeBooks?.all || {};
-  const mainBull = data?.overview?.main?.bull || null;
-  const mainBear = data?.overview?.main?.bear || null;
-  const moonBull = data?.overview?.moon?.bull || null;
-  const moonBear = data?.overview?.moon?.bear || null;
-
   return (
     <div style={styles.page}>
       <div style={styles.header}>
         <div>
           <h1 style={styles.h1}>Analyze All</h1>
-          <div style={styles.muted}>Laatste refresh: {fmtTs(data?.ts)}</div>
+          <div style={styles.muted}>Live teacher-analyse per funnel en per mode</div>
         </div>
-        <button onClick={load} style={styles.button}>
-          Refresh
-        </button>
+        <button onClick={load} style={styles.button}>Refresh</button>
       </div>
 
       {loading ? <div style={styles.panel}>Laden...</div> : null}
@@ -117,116 +226,11 @@ export default function AnalyzeAllPage() {
 
       {!loading && !err && data ? (
         <>
-          <div style={styles.grid}>
-            <StatCard title="Closed trades" value={trades.closed || 0} />
-            <StatCard title="Live trades" value={trades.live || 0} />
-            <StatCard title="Win rate" value={fmtPct(trades.winRate)} />
-            <StatCard title="Total PnL USD" value={fmtUsd(trades.totalPnlUsd)} />
-            <StatCard title="Total PnL %" value={fmtPct(trades.totalPnlPct)} />
-            <StatCard title="Moon closed" value={moon?.summary?.closed || 0} />
-          </div>
-
-          <div style={styles.twoCol}>
-            <div style={styles.panel}>
-              <h2 style={styles.h2}>Main Scanner Snapshot</h2>
-              <div style={styles.snapshotBox}>
-                <div>
-                  <strong>Bull</strong>
-                  <div>Regime: {mainBull?.regime || "-"}</div>
-                  <div>Trade Ready: {mainBull?.counts?.trade_ready || 0}</div>
-                  <div>Almost: {mainBull?.counts?.almost || 0}</div>
-                  <div>Buildup: {mainBull?.counts?.buildup || 0}</div>
-                  <div>Radar: {mainBull?.counts?.radar || 0}</div>
-                </div>
-                <div>
-                  <strong>Bear</strong>
-                  <div>Regime: {mainBear?.regime || "-"}</div>
-                  <div>Trade Ready: {mainBear?.counts?.trade_ready || 0}</div>
-                  <div>Almost: {mainBear?.counts?.almost || 0}</div>
-                  <div>Buildup: {mainBear?.counts?.buildup || 0}</div>
-                  <div>Radar: {mainBear?.counts?.radar || 0}</div>
-                </div>
-              </div>
-            </div>
-
-            <div style={styles.panel}>
-              <h2 style={styles.h2}>Moon Snapshot</h2>
-              <div style={styles.snapshotBox}>
-                <div>
-                  <strong>Bull</strong>
-                  <div>Regime: {moonBull?.regime || "-"}</div>
-                  <div>Hold: {moonBull?.counts?.hold || 0}</div>
-                  <div>Almost: {moonBull?.counts?.almost || 0}</div>
-                  <div>Buildup: {moonBull?.counts?.buildup || 0}</div>
-                  <div>Radar: {moonBull?.counts?.radar || 0}</div>
-                </div>
-                <div>
-                  <strong>Bear</strong>
-                  <div>Regime: {moonBear?.regime || "-"}</div>
-                  <div>Hold: {moonBear?.counts?.hold || 0}</div>
-                  <div>Almost: {moonBear?.counts?.almost || 0}</div>
-                  <div>Buildup: {moonBear?.counts?.buildup || 0}</div>
-                  <div>Radar: {moonBear?.counts?.radar || 0}</div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <SimpleTable
-            title="Recent closed trades"
-            rows={all?.recentClosed || []}
-            columns={[
-              { key: "symbol", label: "Symbol" },
-              { key: "side", label: "Side" },
-              { key: "mode", label: "Mode" },
-              { key: "stage", label: "Stage" },
-              { key: "pnlPct", label: "PnL %", render: (r) => fmtPct(r.pnlPct) },
-              { key: "pnlUsd", label: "PnL USD", render: (r) => fmtUsd(r.pnlUsd) },
-              { key: "reason", label: "Reason" },
-              { key: "closedAt", label: "Closed at", render: (r) => fmtTs(r.closedAt) },
-            ]}
-          />
-
-          <div style={styles.twoCol}>
-            <SimpleTable
-              title="Best / worst per symbol"
-              rows={all?.bySymbol || []}
-              columns={[
-                { key: "key", label: "Symbol" },
-                { key: "count", label: "Trades" },
-                { key: "winRate", label: "Win rate", render: (r) => fmtPct(r.winRate) },
-                { key: "avgPnlPct", label: "Avg PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-                { key: "totalPnlUsd", label: "Total USD", render: (r) => fmtUsd(r.totalPnlUsd) },
-              ]}
-            />
-
-            <SimpleTable
-              title="Reason breakdown"
-              rows={all?.byReason || []}
-              columns={[
-                { key: "key", label: "Reason" },
-                { key: "count", label: "Count" },
-                { key: "winRate", label: "Win rate", render: (r) => fmtPct(r.winRate) },
-                { key: "avgPnlPct", label: "Avg PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-                { key: "totalPnlUsd", label: "Total USD", render: (r) => fmtUsd(r.totalPnlUsd) },
-              ]}
-            />
-          </div>
-
-          <SimpleTable
-            title="Live trades"
-            rows={all?.liveTrades || []}
-            columns={[
-              { key: "symbol", label: "Symbol" },
-              { key: "side", label: "Side" },
-              { key: "mode", label: "Mode" },
-              { key: "stage", label: "Stage" },
-              { key: "entryPrice", label: "Entry", render: (r) => n(r.entryPrice, 0).toFixed(8) },
-              { key: "tp", label: "TP", render: (r) => n(r.tp, 0).toFixed(8) },
-              { key: "sl", label: "SL", render: (r) => n(r.sl, 0).toFixed(8) },
-              { key: "ts", label: "Opened", render: (r) => fmtTs(r.ts) },
-            ]}
-          />
+          <GroupBlock title="Moon Bull" group={data?.groups?.moon_bull} />
+          <GroupBlock title="Moon Bear" group={data?.groups?.moon_bear} />
+          <GroupBlock title="Main Bull" group={data?.groups?.main_bull} />
+          <GroupBlock title="Main Bear" group={data?.groups?.main_bear} />
+          <GroupBlock title="Trade Funnel" group={data?.groups?.trade_funnel} />
         </>
       ) : null}
     </div>
@@ -312,11 +316,6 @@ const styles = {
     gap: 20,
     marginBottom: 20,
   },
-  snapshotBox: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 16,
-  },
   table: {
     width: "100%",
     borderCollapse: "collapse",
@@ -333,5 +332,27 @@ const styles = {
     borderBottom: "1px solid #162544",
     fontSize: 14,
     verticalAlign: "top",
+  },
+  pre: {
+    background: "#08111f",
+    border: "1px solid #1c2b4f",
+    borderRadius: 12,
+    padding: 12,
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    fontSize: 12,
+    lineHeight: 1.45,
+    overflowX: "auto",
+  },
+  lessonList: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+  lessonItem: {
+    background: "#101d37",
+    border: "1px solid #20345c",
+    borderRadius: 12,
+    padding: 12,
   },
 };
