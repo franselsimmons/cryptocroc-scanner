@@ -652,7 +652,6 @@ export default async function handler(req, res) {
           macroEntryOk = false;
         }
 
-        // ---- STRICTERE CONDITIONS VOOR MAIN ----
         const strictConfOk =
           confidence >= (n(dynThr.minConfidence, n(entryCfg.minConfidence, 0)) + 2);
 
@@ -806,9 +805,9 @@ export default async function handler(req, res) {
             strictSpreadCap: 1.2,
           },
           liveMetrics: {
-            confidence,
-            volAcc,
-            flat60Pct,
+            confidence: n(confidence, 0),
+            volAcc: n(volAcc, 0),
+            flat60Pct: n(flat60Pct, 0),
             spreadPct: n(ob?.spreadPct, 999),
             depthMinUsd1p: n(ob?.depthMinUsd1p, 0),
             obScore: n(ob?.score, 0),
@@ -893,10 +892,13 @@ export default async function handler(req, res) {
 
           await safePushEvent("main_signal_upgrade", {
             source: "main",
+            system: "main",
             mode,
             symbol: sym,
             oldStage,
             newStage: stage,
+            sourceStage: oldStage,
+            stage,
             price: outCoin.price,
             side: outCoin.side,
             confidence: outCoin.confidence,
@@ -914,7 +916,6 @@ export default async function handler(req, res) {
             scannerGate: outCoin.scannerGate || null,
             tradeDeskStatus: outCoin.tradeDeskStatus || null,
             ts: now,
-            // NIEUW: entry filters
             entryFilters: {
               confidenceMin: dynThr?.minConfidence ?? null,
               spreadMaxPct: dynThr?.spreadMaxPct ?? null,
@@ -993,6 +994,13 @@ export default async function handler(req, res) {
         buildup: CFG?.buildup || {},
         almost: CFG?.almost || {},
         entry: CFG?.entry || {},
+      },
+      limits: {
+        ENTRY_LIMIT: CFG?.ENTRY_LIMIT ?? null,
+        ALMOST_LIMIT: CFG?.ALMOST_LIMIT ?? null,
+        BUILDUP_LIMIT: CFG?.BUILDUP_LIMIT ?? null,
+        RADAR_LIMIT: CFG?.RADAR_LIMIT ?? null,
+        CG_TOP: CFG?.CG_TOP ?? null,
       },
       updatedAt: now,
     };
