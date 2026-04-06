@@ -1,4 +1,3 @@
-// api/moon/scan.js
 import { kv } from "@vercel/kv";
 
 import {
@@ -176,7 +175,6 @@ function computeObScore(ob) {
 // ========== universe builder ==========
 async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
   const regime = CORE.computeMarketRegime({ btc, whaleFlow, mode });
-  // FIX: CoinGecko kan object {coins, meta} teruggeven
   const cg = await fetchCoinGeckoTopCached();
   const rawCoins = Array.isArray(cg?.coins) ? cg.coins : Array.isArray(cg) ? cg : [];
   const bitgetSymbols = await getBitgetSpotUsdtSymbols();
@@ -230,14 +228,17 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
       tradePlan: !!tradePlan, now, prevGate: prev?.engineGate, prevMeta: prev?.deskMeta,
       isEliteStageForDesk: ["ELITE_IGNITION","ELITE_EXPANSION","ELITE_CASCADE"].includes(stage)
     });
-    const uiLockUntil = Math.max(n(prev?.uiLockUntil,0), engineGate==="OPEN" ? now+UI_ENTRY_LOCK_MS_MOON : 0);
+    // Aangepast: uiLockUntil baseren op WATCH i.p.v. OPEN
+    const uiLockUntil = Math.max(n(prev?.uiLockUntil,0), engineGate==="WATCH" ? now+UI_ENTRY_LOCK_MS_MOON : 0);
 
     const coinForOutput = {
       ...coin, side: sideFromMode(mode), stage, stageWhy, eliteType, moveScore,
       confidence: entryQuality || moveScore,
       moonProbability: probs?.moonProbability ?? 0,
       dumpProbability: probs?.dumpProbability ?? 0,
-      tradeCandidate: engineGate === "OPEN", superScannerCoin: engineGate === "OPEN",
+      // Aangepast: tradeCandidate en superScannerCoin op basis van WATCH
+      tradeCandidate: engineGate === "WATCH",
+      superScannerCoin: engineGate === "WATCH",
       qualityScore, liquidityScore, timingScore, marketScore, btcAlignmentScore, perfectCandidateScore,
       ob: { bestBid: obx.bestBid, bestAsk: obx.bestAsk, spreadPct: obx.spreadPct, depthBidUsd: obx.depthBidUsd, depthAskUsd: obx.depthAskUsd, score: obx.score, depthMinUsd1p: obx.depthMinUsd1p, valid: obx.valid, lor: obx.lor },
       thresholds: { depthFloorUsd: floorUsd, depthOk },
@@ -313,24 +314,21 @@ export default async function handler(req, res) {
       const rawStage = coin.stage;
       const oldStage = prev.stage || "RADAR";
 
-      // upgrade signal alleen als niet open
+      // upgrade signal alleen als niet open (aangepast: gebruik engineGate === "WATCH" voor elite_watch)
       if (!hasOpen && shouldSendUpgradeSignal(oldStage, rawStage)) {
-        const isEliteStage =
-          rawStage === "ELITE_IGNITION" ||
-          rawStage === "ELITE_EXPANSION" ||
-          rawStage === "ELITE_CASCADE";
+        const isWatchStage = coin.engineGate === "WATCH";
 
         await safeSendSignal({
           source: "moon",
           action: "STAGE_UPGRADE",
           symbol: sym,
           price: coin.price,
-          stage: rawStage,
+          stage: isWatchStage ? "WATCH" : rawStage,
           oldStage,
           mode,
           coin: coinForDiscord({ coin }),
           btcState: btc?.state || "NEUTRAL",
-          kind: isEliteStage ? "pre_trade" : "signal",
+          kind: isWatchStage ? "elite_watch" : "signal",
           reason: `Stage upgrade: ${oldStage} → ${rawStage}`
         });
       }
@@ -344,7 +342,8 @@ export default async function handler(req, res) {
       let eliteSince = rawStage.includes("ELITE") ? (prev.eliteSince || now) : null;
 
       let entryLocked = prev.entryLocked || false;
-      let entryReady = !hasOpen && coin.execution?.action === "ALLOW_ENTRY" && !entryLocked && coin.tradePlan != null;
+      // Aangepast: entryReady luistert naar ALLOW_ENTRY of ARM_ENTRY
+      let entryReady = !hasOpen && (coin.execution?.action === "ALLOW_ENTRY" || coin.execution?.action === "ARM_ENTRY") && !entryLocked && coin.tradePlan != null;
       let uiLockUntil = Math.max(coin.uiLockUntil, n(prev.uiLockUntil,0));
 
       const depthHist = [...(prev.depthHist||[]), coin.ob?.depthMinUsd1p].filter(v=>v>0).slice(-20);
@@ -443,16 +442,16 @@ export default async function handler(req, res) {
       }
     }
     positions.open = stillOpen;
-    // Refresh openMap after exit processing
     const refreshedOpenMap = new Map(positions.open.map(p => [up(p.symbol), p]));
 
     // -------------------------------
-    // 3. Nieuwe entries openen (gebruik refreshedOpenMap)
+    // 3. Nieuwe entries openen (geen tradeCandidate check meer)
     // -------------------------------
     const entryCandidates = [];
     for (const sym of Object.keys(nextState)) {
       const state = nextState[sym];
-      if (state.entryReady && state.tradeCandidate && !refreshedOpenMap.has(sym)) {
+      // tradeCandidate check verwijderd: alleen entryReady en geen open positie
+      if (state.entryReady && !refreshedOpenMap.has(sym)) {
         const cdKey = cooldownKey(mode, sym);
         const cdUntil = await kv.get(cdKey);
         if (n(cdUntil,0) <= now) entryCandidates.push({ sym, state, coin: universeMap.get(sym) });
@@ -479,7 +478,7 @@ export default async function handler(req, res) {
     }
 
     // -------------------------------
-    // 4. Funnel splitsen (gebruik refreshedOpenMap)
+    // 4. Funnel splitsen (ongewijzigd)
     // -------------------------------
     const funnel = CORE.splitFunnels(universe);
     const holdItems = [];
