@@ -1,3 +1,4 @@
+// api/scan.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG } from "../lib/_runtime.js";
 import { sendSignal } from "../lib/discordRouter.js";
@@ -127,6 +128,7 @@ async function acquireScanLock(mode) {
   await kv.set(key, { ts: now, until, mode }, { ex: ttlSec });
   return { ok: true, key, until };
 }
+
 async function releaseScanLock(mode) {
   try {
     await kv.del(keyScanLock(mode));
@@ -402,8 +404,7 @@ function deriveMainRegime({ btc }) {
 
 function gateFromStage(stage) {
   const st = up(stage);
-  if (st === "TRADE_READY") return "OPEN";
-  if (st === "ALMOST") return "WATCH";
+  if (st === "TRADE_READY") return "WATCH";
   return "IGNORE";
 }
 
@@ -504,7 +505,6 @@ export default async function handler(req, res) {
     const prevState = (await kv.get(keyMainState(mode))) || {};
     const nextState = {};
 
-    // Aangepast: funnel key trade_ready i.p.v. entry
     const funnel = { trade_ready: [], almost: [], buildup: [], radar: [] };
 
     for (const coin of tradable) {
@@ -625,7 +625,6 @@ export default async function handler(req, res) {
         obSlope = CORE.checkObSlopeGate({ stage: "entry", mode, obSamples: trimmed, settings: CFG });
         confOk = confidence >= n(dynThr.minConfidence, n(entryCfg.minConfidence, 0));
 
-        // Macro mode based extra restrictions
         let macroEntryOk = true;
         if (macroMode === "SELECTIVE") {
           const selectiveConfOk = confidence >= (n(dynThr.minConfidence, n(entryCfg.minConfidence, 0)) + 4);
@@ -653,7 +652,6 @@ export default async function handler(req, res) {
         else if (!macroEntryOk) entryReason = "macro_selective";
         else entryReason = "ok";
 
-        // Aangepast: stage wordt TRADE_READY i.p.v. ENTRY
         if (entryOk) stage = "TRADE_READY";
       }
 
@@ -809,7 +807,6 @@ export default async function handler(req, res) {
         volHist: volHistNext,
       };
 
-      // Aangepast: toevoegen aan funnel.trade_ready i.p.v. entry
       if (stage === "TRADE_READY") funnel.trade_ready.push(outCoin);
       else if (stage === "ALMOST") funnel.almost.push(outCoin);
       else if (stage === "BUILDUP") funnel.buildup.push(outCoin);
