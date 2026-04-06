@@ -2,6 +2,7 @@
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG } from "../lib/_runtime.js";
 import { sendSignal } from "../lib/discordRouter.js";
+import { pushEvent } from "../lib/_analytics.js";
 import { buildCoinProfile, buildMainExecutionDecision } from "../lib/_trade_engine.js";
 
 export const config = RUNTIME_CONFIG;
@@ -39,6 +40,14 @@ function sleep(ms) {
 
 function sideFromMode(mode) {
   return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG";
+}
+
+async function safePushEvent(name, payload) {
+  try {
+    await pushEvent(name, payload);
+  } catch (e) {
+    console.error(`pushEvent failed (${name}):`, e?.message || e);
+  }
 }
 
 function pickRetryAfterSeconds(res) {
@@ -822,6 +831,28 @@ export default async function handler(req, res) {
 
         if (isUpgrade) {
           console.log(`[Scanner] 🚀 Upgrade voor ${sym}: ${oldStage} -> ${stage}. Discord aanroepen...`);
+
+          await safePushEvent("main_signal_upgrade", {
+            source: "main",
+            mode,
+            symbol: sym,
+            oldStage,
+            newStage: stage,
+            price: outCoin.price,
+            side: outCoin.side,
+            confidence: outCoin.confidence,
+            entryQuality: outCoin.entryQuality,
+            persistenceScore: outCoin.persistenceScore,
+            perfectCandidateScore: outCoin.perfectCandidateScore,
+            spreadPct: outCoin?.ob?.spreadPct ?? null,
+            obScore: outCoin?.ob?.score ?? null,
+            depthMinUsd1p: outCoin?.ob?.depthMinUsd1p ?? null,
+            btcState: btc.state,
+            regime,
+            tradePlan: outCoin.tradePlan || null,
+            stageWhy: outCoin.stageWhy || null,
+            ts: now,
+          });
 
           await sendSignal({
             source: "main",
