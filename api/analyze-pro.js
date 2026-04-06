@@ -1,3 +1,4 @@
+// api/analyze-pro.js
 import { readEvents } from "../lib/_analytics.js";
 
 function n(x, d = 0) {
