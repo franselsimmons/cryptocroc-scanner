@@ -1,4 +1,3 @@
-// api/scan.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG } from "../lib/_runtime.js";
 import { sendSignal } from "../lib/discordRouter.js";
@@ -347,7 +346,7 @@ function pickTier(marketCap, entryCfg) {
 function buildMainTradePlan({ price, range24, confidence, stage, ob, mode }) {
   const p = n(price, 0);
   if (!(p > 0)) return null;
-  if (String(stage || "").toUpperCase() !== "ENTRY") return null;
+  if (String(stage || "").toUpperCase() !== "TRADE_READY") return null;
 
   const r24 = Math.max(2, Math.min(18, n(range24, 0)));
   const conf = Math.max(0, Math.min(100, n(confidence, 0)));
@@ -403,7 +402,7 @@ function deriveMainRegime({ btc }) {
 
 function gateFromStage(stage) {
   const st = up(stage);
-  if (st === "ENTRY") return "OPEN";
+  if (st === "TRADE_READY") return "OPEN";
   if (st === "ALMOST") return "WATCH";
   return "IGNORE";
 }
@@ -505,7 +504,8 @@ export default async function handler(req, res) {
     const prevState = (await kv.get(keyMainState(mode))) || {};
     const nextState = {};
 
-    const funnel = { entry: [], almost: [], buildup: [], radar: [] };
+    // Aangepast: funnel key trade_ready i.p.v. entry
+    const funnel = { trade_ready: [], almost: [], buildup: [], radar: [] };
 
     for (const coin of tradable) {
       const sym = up(coin.symbol);
@@ -653,7 +653,8 @@ export default async function handler(req, res) {
         else if (!macroEntryOk) entryReason = "macro_selective";
         else entryReason = "ok";
 
-        if (entryOk) stage = "ENTRY";
+        // Aangepast: stage wordt TRADE_READY i.p.v. ENTRY
+        if (entryOk) stage = "TRADE_READY";
       }
 
       const compression = {
@@ -662,13 +663,13 @@ export default async function handler(req, res) {
       };
 
       const breakout = {
-        ready: stage === "ENTRY",
-        pressure: stage === "ENTRY" ? 60 : stage === "ALMOST" ? 48 : 0,
+        ready: stage === "TRADE_READY",
+        pressure: stage === "TRADE_READY" ? 60 : stage === "ALMOST" ? 48 : 0,
         breakoutPct: 0,
       };
 
       const thresholds = {
-        depthFloorUsd: stage === "ENTRY" && dynThr ? n(dynThr.depthMinUsd1p, 0) : 0,
+        depthFloorUsd: stage === "TRADE_READY" && dynThr ? n(dynThr.depthMinUsd1p, 0) : 0,
         depthOk,
       };
 
@@ -735,12 +736,12 @@ export default async function handler(req, res) {
         tradeDeskStatus: scannerGate,
         qualityScore: confidence,
         liquidityScore: ob?.valid ? Math.max(0, Math.min(100, 55 + (n(ob.score, 0) * 100) / 2 - Math.max(0, n(ob.spreadPct, 0) - 0.8) * 8)) : 35,
-        timingScore: stage === "ENTRY" ? 82 : stage === "ALMOST" ? 68 : stage === "BUILDUP" ? 54 : 35,
+        timingScore: stage === "TRADE_READY" ? 82 : stage === "ALMOST" ? 68 : stage === "BUILDUP" ? 54 : 35,
         marketScore: regime === "EXPANSION" ? 82 : regime === "TREND" ? 70 : regime === "HEADWIND" ? 35 : 50,
-        perfectCandidateScore: stage === "ENTRY" ? 78 : stage === "ALMOST" ? 66 : stage === "BUILDUP" ? 52 : 30,
-        tradeCandidate: stage === "ENTRY",
-        superScannerCoin: stage === "ENTRY",
-        scannerOnly: stage !== "ENTRY",
+        perfectCandidateScore: stage === "TRADE_READY" ? 78 : stage === "ALMOST" ? 66 : stage === "BUILDUP" ? 52 : 30,
+        tradeCandidate: stage === "TRADE_READY",
+        superScannerCoin: stage === "TRADE_READY",
+        scannerOnly: stage !== "TRADE_READY",
         entry: {
           ok: !!entryOk,
           reason: entryReason,
@@ -808,7 +809,8 @@ export default async function handler(req, res) {
         volHist: volHistNext,
       };
 
-      if (stage === "ENTRY") funnel.entry.push(outCoin);
+      // Aangepast: toevoegen aan funnel.trade_ready i.p.v. entry
+      if (stage === "TRADE_READY") funnel.trade_ready.push(outCoin);
       else if (stage === "ALMOST") funnel.almost.push(outCoin);
       else if (stage === "BUILDUP") funnel.buildup.push(outCoin);
       else funnel.radar.push(outCoin);
@@ -817,9 +819,9 @@ export default async function handler(req, res) {
 
       if (stage !== oldStage && stage !== "RADAR") {
         const isUpgrade =
-          (oldStage === "RADAR" && (stage === "BUILDUP" || stage === "ALMOST" || stage === "ENTRY")) ||
-          (oldStage === "BUILDUP" && (stage === "ALMOST" || stage === "ENTRY")) ||
-          (oldStage === "ALMOST" && stage === "ENTRY");
+          (oldStage === "RADAR" && (stage === "BUILDUP" || stage === "ALMOST" || stage === "TRADE_READY")) ||
+          (oldStage === "BUILDUP" && (stage === "ALMOST" || stage === "TRADE_READY")) ||
+          (oldStage === "ALMOST" && stage === "TRADE_READY");
 
         if (isUpgrade) {
           console.log(`[Scanner] 🚀 Upgrade voor ${sym}: ${oldStage} -> ${stage}. Discord aanroepen...`);
@@ -840,12 +842,12 @@ export default async function handler(req, res) {
 
     const byConf = (a, b) => n(b.execution?.score, n(b.confidence, 0)) - n(a.execution?.score, n(a.confidence, 0));
 
-    funnel.entry.sort(byConf);
+    funnel.trade_ready.sort(byConf);
     funnel.almost.sort(byConf);
     funnel.buildup.sort(byConf);
     funnel.radar.sort(byConf);
 
-    funnel.entry = funnel.entry.slice(0, n(CFG.ENTRY_LIMIT, 12));
+    funnel.trade_ready = funnel.trade_ready.slice(0, n(CFG.ENTRY_LIMIT, 12));
     funnel.almost = funnel.almost.slice(0, n(CFG.ALMOST_LIMIT, 25));
     funnel.buildup = funnel.buildup.slice(0, n(CFG.BUILDUP_LIMIT, 40));
     funnel.radar = funnel.radar.slice(0, n(CFG.RADAR_LIMIT, 80));
@@ -857,7 +859,7 @@ export default async function handler(req, res) {
       btc,
       funnel,
       counts: {
-        entry: funnel.entry.length,
+        trade_ready: funnel.trade_ready.length,
         almost: funnel.almost.length,
         buildup: funnel.buildup.length,
         radar: funnel.radar.length,
