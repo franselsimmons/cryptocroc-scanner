@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CryptoCroc Analyze All</title>
+  <link rel="stylesheet" href="/analyze-all.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div>
+        <h1>Analyze All</h1>
+        <p class="muted" id="lastUpdated">Laden...</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="refreshBtn">Refresh</button>
+      </div>
+    </header>
+
+    <section id="loadingBox" class="panel">Data laden...</section>
+    <section id="errorBox" class="panel error hidden"></section>
+
+    <main id="app" class="hidden">
+      <section class="stats-grid" id="statsGrid"></section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Teacher overzicht</h2>
+          <div class="tabs">
+            <button class="tab active" data-group="moon_bull">Moon Bull</button>
+            <button class="tab" data-group="moon_bear">Moon Bear</button>
+            <button class="tab" data-group="main_bull">Main Bull</button>
+            <button class="tab" data-group="main_bear">Main Bear</button>
+            <button class="tab" data-group="trade_funnel">Trade Funnel</button>
+          </div>
+        </div>
+
+        <div id="groupSummary" class="group-summary"></div>
+      </section>
+
+      <section class="two-col">
+        <div class="panel">
+          <h2>Belangrijkste lessen</h2>
+          <div id="teacherLessons" class="lesson-list"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Live filters / config</h2>
+          <div id="liveConfigBox" class="config-box"></div>
+        </div>
+      </section>
+
+      <section class="two-col">
+        <div class="panel">
+          <h2>Per exit reden</h2>
+          <div id="byReason"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Per stage</h2>
+          <div id="byStage"></div>
+        </div>
+      </section>
+
+      <section class="two-col">
+        <div class="panel">
+          <h2>Per entry quality</h2>
+          <div id="byEntryQuality"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Per persistence</h2>
+          <div id="byPersistence"></div>
+        </div>
+      </section>
+
+      <section class="two-col">
+        <div class="panel">
+          <h2>Per spread</h2>
+          <div id="bySpread"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Per OB score</h2>
+          <div id="byObScore"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Wat moet je aanpassen</h2>
+        <div id="actionPlan" class="action-plan"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/analyze-all.js"></script>
+</body>
+</html>
