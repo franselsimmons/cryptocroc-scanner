@@ -19,6 +19,7 @@ import {
 import { pushEvent, uid } from "../../lib/_analytics.js";
 import { sendSignal } from "../../lib/discordRouter.js";
 import { buildCoinProfile, buildMoonExecutionDecision } from "../../lib/_trade_engine.js";
+import { logTradeOpened, logTradeClosed } from "../../lib/tradeAnalytics.js";
 
 // ========== helpers ==========
 function n(x, d = 0) { const v = Number(x); return Number.isFinite(v) ? v : d; }
@@ -693,6 +694,17 @@ export default async function handler(req, res) {
           reason: closedPos.exitReason,
         });
 
+        await logTradeClosed({
+          system: "moon",
+          tradeId: pos.id,
+          symbol: sym,
+          exitAt: now,
+          exitPrice: liveCoin.price,
+          pnlPct: closedPos.pnlPct,
+          pnlUsd: closedPos.pnlUsd,
+          exitReason: closedPos.exitReason,
+        });
+
         await safeSendSignal({
           source: "moon",
           action: "TRADE_CLOSED",
@@ -823,6 +835,39 @@ export default async function handler(req, res) {
         rr: newPos.rr,
         stage: newPos.stage,
         eliteType: newPos.eliteType,
+      });
+
+      await logTradeOpened({
+        system: "moon",
+        tradeId: id,
+        symbol: sym,
+        mode,
+        side: newPos.side,
+        entryAt: now,
+        entryPrice: newPos.entryPrice,
+        sizeUsd: newPos.sizeUsd,
+        tp: newPos.tp,
+        sl: newPos.sl,
+        rr: newPos.rr,
+        tpPct: newPos.tpPct,
+        slPct: newPos.slPct,
+        scannerStageAtOpen: coin.stage,
+        engineGateAtOpen: coin.engineGate || coin.tradeDeskStatus,
+        entryQuality: coin.entryQuality,
+        persistenceScore: coin.persistenceScore,
+        qualityScore: coin.qualityScore,
+        timingScore: coin.timingScore,
+        marketScore: coin.marketScore,
+        perfectCandidateScore: coin.perfectCandidateScore,
+        spreadAtOpen: coin.ob?.spreadPct,
+        obScoreAtOpen: coin.ob?.score,
+        depthAtOpen: coin.ob?.depthMinUsd1p,
+        btcState: btc?.state || "NEUTRAL",
+        regime,
+        meta: {
+          eliteType: coin.eliteType || null,
+          source: "moon_scan",
+        },
       });
 
       await safeSendSignal({
