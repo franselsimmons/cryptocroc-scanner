@@ -1,6 +1,12 @@
 import { kv } from "@vercel/kv";
 import { readTradeEventBook, inferSystemFromTradeId } from "../lib/_analytics.js";
 
+// Nieuwe imports voor live configuraties
+import mainBullCore from "../lib/_core_bull.js";
+import mainBearCore from "../lib/_core_bear.js";
+import moonBullCore from "../lib/_moon_core_bull.js";
+import moonBearCore from "../lib/_moon_core_bear.js";
+
 function n(x, d = 0) {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
@@ -235,15 +241,64 @@ function analyzeGroup(rows, liveConfig) {
   };
 }
 
+// ========== NIEUWE HELPER VOOR LIVE CONFIG ==========
+function pickLiveConfig(core, type) {
+  try {
+    const cfg = typeof core?.getCfg === "function" ? core.getCfg() : {};
+
+    if (type === "main") {
+      return {
+        radar: cfg?.radar || null,
+        buildup: cfg?.buildup || null,
+        almost: cfg?.almost || null,
+        entry: cfg?.entry || null,
+        limits: {
+          ENTRY_LIMIT: cfg?.ENTRY_LIMIT ?? null,
+          ALMOST_LIMIT: cfg?.ALMOST_LIMIT ?? null,
+          BUILDUP_LIMIT: cfg?.BUILDUP_LIMIT ?? null,
+          RADAR_LIMIT: cfg?.RADAR_LIMIT ?? null,
+          CG_TOP: cfg?.CG_TOP ?? null,
+        },
+      };
+    }
+
+    if (type === "moon") {
+      return {
+        radar: cfg?.radar || null,
+        buildup: cfg?.buildup || null,
+        almost: cfg?.almost || null,
+        elite: cfg?.elite || null,
+        entry: cfg?.entry || null,
+        desk: cfg?.desk || null,
+        exits: cfg?.exits || null,
+        limits: {
+          ENTRY_LIMIT: cfg?.ENTRY_LIMIT ?? null,
+          ALMOST_LIMIT: cfg?.ALMOST_LIMIT ?? null,
+          BUILDUP_LIMIT: cfg?.BUILDUP_LIMIT ?? null,
+          RADAR_LIMIT: cfg?.RADAR_LIMIT ?? null,
+          CG_TOP: cfg?.CG_TOP ?? null,
+        },
+      };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export default async function handler(req, res) {
   try {
     const { opened, closed } = await readTradeEventBook(5000);
     const rows = enrichClosedTrades(opened, closed);
 
-    const mainBullConfig = await kv.get("main:config:snapshot:bull");
-    const mainBearConfig = await kv.get("main:config:snapshot:bear");
-    const moonBullConfig = await kv.get("moon:config:snapshot:bull");
-    const moonBearConfig = await kv.get("moon:config:snapshot:bear");
+    // Live config ophalen uit cores (niet uit KV)
+    const liveConfig = {
+      main_bull: pickLiveConfig(mainBullCore, "main"),
+      main_bear: pickLiveConfig(mainBearCore, "main"),
+      moon_bull: pickLiveConfig(moonBullCore, "moon"),
+      moon_bear: pickLiveConfig(moonBearCore, "moon"),
+    };
 
     const moonBull = rows.filter((x) => x.system === "moon" && x.mode === "bull");
     const moonBear = rows.filter((x) => x.system === "moon" && x.mode === "bear");
@@ -254,13 +309,15 @@ export default async function handler(req, res) {
     res.status(200).json({
       ok: true,
       groups: {
-        moon_bull: analyzeGroup(moonBull, moonBullConfig || null),
-        moon_bear: analyzeGroup(moonBear, moonBearConfig || null),
-        main_bull: analyzeGroup(mainBull, mainBullConfig || null),
-        main_bear: analyzeGroup(mainBear, mainBearConfig || null),
+        moon_bull: analyzeGroup(moonBull, liveConfig.moon_bull),
+        moon_bear: analyzeGroup(moonBear, liveConfig.moon_bear),
+        main_bull: analyzeGroup(mainBull, liveConfig.main_bull),
+        main_bear: analyzeGroup(mainBear, liveConfig.main_bear),
         trade_funnel: analyzeGroup(tradeFunnel, {
-          bull: moonBullConfig || null,
-          bear: moonBearConfig || null,
+          main_bull: liveConfig.main_bull,
+          main_bear: liveConfig.main_bear,
+          moon_bull: liveConfig.moon_bull,
+          moon_bear: liveConfig.moon_bear,
         }),
       },
       ts: Date.now(),
