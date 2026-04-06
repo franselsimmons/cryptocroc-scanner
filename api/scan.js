@@ -650,11 +650,30 @@ export default async function handler(req, res) {
           macroEntryOk = false;
         }
 
-        entryOk = spreadOk && depthOk && scoreOk && confOk && obSlope.ok && macroEntryOk;
+        // ---- STRICTERE CONDITIONS VOOR MAIN ----
+        const strictConfOk =
+          confidence >= (n(dynThr.minConfidence, n(entryCfg.minConfidence, 0)) + 2);
+
+        const strictSpreadOk =
+          ob?.valid
+            ? n(ob.spreadPct, 999) <= Math.min(n(dynThr.spreadMaxPct, 999), 1.20)
+            : false;
+
+        entryOk =
+          spreadOk &&
+          depthOk &&
+          scoreOk &&
+          confOk &&
+          obSlope.ok &&
+          macroEntryOk &&
+          strictConfOk &&
+          strictSpreadOk;
 
         if (!ob?.valid) entryReason = "no_ob";
         else if (!confOk) entryReason = "conf_low";
+        else if (!strictConfOk) entryReason = "strict_conf_low";
         else if (!spreadOk) entryReason = "spread";
+        else if (!strictSpreadOk) entryReason = "strict_spread";
         else if (!depthOk) entryReason = "depth";
         else if (!scoreOk) entryReason = "ob_score";
         else if (!obSlope.ok) entryReason = "ob_slope";
