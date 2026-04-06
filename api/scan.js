@@ -1,4 +1,3 @@
-// api/scan.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG } from "../lib/_runtime.js";
 import { sendSignal } from "../lib/discordRouter.js";
@@ -22,6 +21,9 @@ function keyMainState(mode) {
 }
 function keyScanLock(mode) {
   return `main:scan:lock:${String(mode || "bull").toLowerCase()}`;
+}
+function keyMainConfigSnapshot(mode) {
+  return `main:config:snapshot:${String(mode || "bull").toLowerCase()}`;
 }
 
 // ======================================================
@@ -775,6 +777,43 @@ export default async function handler(req, res) {
           slope: Number(n(obSlope?.slope, 0).toFixed(8)),
         },
         flat60Pct: Number(n(flat60Pct, 0).toFixed(3)),
+        filterSnapshot: {
+          system: "main",
+          mode,
+          regime,
+          macroMode,
+          stage,
+          radar: {
+            mcapMin: n(CFG?.radar?.mcapMin, 0),
+            mcapMax: n(CFG?.radar?.mcapMax, 0),
+            volMin: n(CFG?.radar?.volMin, 0),
+            vmMin: n(CFG?.radar?.vmMin, 0),
+            maxAbsChg24: n(CFG?.radar?.maxAbsChg24, 0),
+          },
+          buildup: {
+            minVolAcc: n(CFG?.buildup?.minVolAcc, 0),
+          },
+          almost: {
+            minConfidence: n(CFG?.almost?.minConfidence, 0),
+            maxFlat60Pct: n(CFG?.almost?.maxFlat60Pct, 0),
+          },
+          entry: {
+            minConfidence: n(dynThr?.minConfidence, n(CFG?.entry?.minConfidence, 0)),
+            spreadMaxPct: n(dynThr?.spreadMaxPct, n(CFG?.entry?.spreadMaxPct, 0)),
+            depthMinUsd1p: n(dynThr?.depthMinUsd1p, n(CFG?.entry?.depthMinUsd1p, 0)),
+            obScoreMin: n(dynThr?.obScoreMin, n(CFG?.entry?.obScoreMin, 0)),
+            strictConfBoost: 2,
+            strictSpreadCap: 1.2,
+          },
+          liveMetrics: {
+            confidence,
+            volAcc,
+            flat60Pct,
+            spreadPct: n(ob?.spreadPct, 999),
+            depthMinUsd1p: n(ob?.depthMinUsd1p, 0),
+            obScore: n(ob?.score, 0),
+          },
+        },
       };
 
       const coinProfile = buildCoinProfile({
@@ -833,6 +872,7 @@ export default async function handler(req, res) {
         entry: engineCoin.entry,
         priceHist: priceHistNext,
         volHist: volHistNext,
+        filterSnapshot: outCoin.filterSnapshot,
       };
 
       if (stage === "TRADE_READY") funnel.trade_ready.push(outCoin);
@@ -870,6 +910,9 @@ export default async function handler(req, res) {
             regime,
             tradePlan: outCoin.tradePlan || null,
             stageWhy: outCoin.stageWhy || null,
+            filterSnapshot: outCoin.filterSnapshot || null,
+            scannerGate: outCoin.scannerGate || null,
+            tradeDeskStatus: outCoin.tradeDeskStatus || null,
             ts: now,
           });
 
@@ -929,6 +972,22 @@ export default async function handler(req, res) {
 
     await kv.set(keyMainState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
     await kv.set(keyMainLatest(mode), latest, { ex: 60 * 60 });
+
+    const configSnapshot = {
+      system: "main",
+      mode,
+      regime,
+      macroMode,
+      scanner: {
+        radar: CFG?.radar || {},
+        buildup: CFG?.buildup || {},
+        almost: CFG?.almost || {},
+        entry: CFG?.entry || {},
+      },
+      updatedAt: now,
+    };
+
+    await kv.set(keyMainConfigSnapshot(mode), configSnapshot, { ex: 60 * 60 * 24 * 7 });
 
     res.status(200).json(latest);
   } catch (err) {
