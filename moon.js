@@ -1,4 +1,3 @@
-// ==================== moon.js ====================
 function syncTopbarHeight() {
   const tb = document.querySelector(".topbar");
   const h = tb ? Math.ceil(tb.getBoundingClientRect().height) : 78;
@@ -13,7 +12,9 @@ const el = (id) => document.getElementById(id);
 
 const API = {
   latest: (mode, bust = "") =>
-    `/api/moon/public-latest?mode=${encodeURIComponent(mode)}${bust ? `&_=${encodeURIComponent(bust)}` : ""}`,
+    `/api/moon/public-latest?mode=${encodeURIComponent(mode)}${
+      bust ? `&_=${encodeURIComponent(bust)}` : ""
+    }`,
 };
 
 let MODE =
@@ -86,22 +87,6 @@ function esc(v) {
     .replaceAll('"', "&quot;");
 }
 
-function uniqBySymbol(list) {
-  const seen = new Set();
-  const out = [];
-
-  for (const item of arr(list)) {
-    const key = String(item?.symbol || item?.id || "").toUpperCase();
-    if (!key) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(item);
-  }
-
-  return out;
-}
-
-// scannedAt heeft voorrang
 function getSnapshotTs(data) {
   return Number(data?.scannedAt || data?.ts || 0);
 }
@@ -122,76 +107,40 @@ function staleLabel(ts) {
   return `${h}u ${m}m oud`;
 }
 
-/**
- * Funnel mapping:
- * backend kan verschillende keys uitsturen.
- * UI houdt het stabiel op:
- * - tradeReady
- * - almost
- * - buildup
- * - radar
- *
- * Fallbacks:
- * - gebruikt ook candidates.tradeReady / watch / scannerOnly
- * - ondersteunt legacy elite_* keys
- */
 function normalizeMoonFunnel(data) {
   const funnel = data?.funnel || {};
-  const candidates = data?.candidates || {};
-
-  const tradeReady = uniqBySymbol([
-    ...arr(funnel.trade_ready),
-    ...arr(funnel.entry),
-    ...arr(funnel.tradeReady),
-    ...arr(funnel.elite_expansion),
-    ...arr(funnel.elite_ignition),
-    ...arr(funnel.elite_cascade),
-    ...arr(candidates.tradeReady),
-    ...arr(funnel.hold),
-  ]);
-
-  const almost = uniqBySymbol(
-    arr(funnel.almost).length
-      ? arr(funnel.almost)
-      : arr(candidates.watch).filter((c) => upperStage(c?.stage) === "ALMOST")
-  );
-
-  const buildup = uniqBySymbol(
-    arr(funnel.buildup).length
-      ? arr(funnel.buildup)
-      : arr(candidates.watch).filter((c) => upperStage(c?.stage) === "BUILDUP")
-  );
-
-  const radar = uniqBySymbol(
-    arr(funnel.radar).length
-      ? arr(funnel.radar)
-      : arr(candidates.scannerOnly).filter((c) => upperStage(c?.stage) === "RADAR")
-  );
-
   return {
-    radar,
-    buildup,
-    almost,
-    tradeReady,
+    entry: arr(funnel.entry),
+    almost: arr(funnel.almost),
+    buildup: arr(funnel.buildup),
+    radar: arr(funnel.radar),
   };
 }
 
 function stageReasonText(stage) {
   const s = upperStage(stage);
 
-  if (s === "ENTRY") return "TRADE READY: entry-ready signaal (beste kwaliteit).";
-  if (s === "TRADE_READY") return "TRADE READY: entry-ready signaal (beste kwaliteit).";
-
-  if (s === "ELITE_EXPANSION" || s === "ELITE_IGNITION" || s === "ELITE_CASCADE") {
-    return "TRADE READY (legacy): elite signaal, hoog momentum.";
+  if (s === "ENTRY" || s === "TRADE_READY") {
+    return "ENTRY: entry-ready signaal (beste kwaliteit).";
+  }
+  if (s === "ALMOST") {
+    return "ALMOST: bijna klaar — mist nog 1–2 checks.";
+  }
+  if (s === "BUILDUP") {
+    return "BUILDUP: opbouwfase — volume en snelheid lopen op.";
+  }
+  if (s === "RADAR") {
+    return "RADAR: vroege selectie — vooral volgen.";
+  }
+  if (
+    s === "ELITE_IGNITION" ||
+    s === "ELITE_EXPANSION" ||
+    s === "ELITE_CASCADE"
+  ) {
+    return "ENTRY: sterke Moon setup.";
   }
 
-  if (s === "HOLD") return "TRADE READY (hold): coin blijft zichtbaar door lock/open positie.";
-  if (s === "ALMOST") return "ALMOST: bijna klaar — mist nog 1–2 checks.";
-  if (s === "BUILDUP") return "BUILDUP: opbouwfase — momentum en volume lopen op.";
-  if (s === "RADAR") return "RADAR: vroege selectie — vooral volgen.";
-
-  return "Vroeg signaal — volgen, nog veel ruis.";
+  return "Moon signaal.";
 }
 
 function computeFallbackRisk(c, mode) {
@@ -230,7 +179,9 @@ function getRisk(c, mode) {
       tp,
       rr: Number.isFinite(Number(plan?.rr))
         ? Number(plan.rr)
-        : (price > 0 ? Math.abs((tp - price) / (price - sl || 1e-9)) : null),
+        : price > 0
+          ? Math.abs((tp - price) / (price - sl || 1e-9))
+          : null,
       source: "backend",
     };
   }
@@ -252,8 +203,14 @@ function actionForStage(c, data) {
   const stage = upperStage(c?.stage);
   const btcState = upperStage(data?.btc?.state || "NEUTRAL");
 
-  if (stage === "ENTRY" || stage === "TRADE_READY") {
-    return { label: "TRADE READY", sub: `Entry-ready signaal. BTC is ${btcState}.`, tone: "ok" };
+  if (
+    stage === "ENTRY" ||
+    stage === "TRADE_READY" ||
+    stage === "ELITE_IGNITION" ||
+    stage === "ELITE_EXPANSION" ||
+    stage === "ELITE_CASCADE"
+  ) {
+    return { label: "ENTRY", sub: `Entry-ready signaal. BTC is ${btcState}.`, tone: "ok" };
   }
   if (stage === "ALMOST") {
     return { label: "KLAARZETTEN", sub: `Bijna klaar, mist nog 1–2 checks. BTC is ${btcState}.`, tone: "warn" };
@@ -263,9 +220,6 @@ function actionForStage(c, data) {
   }
   if (stage === "RADAR") {
     return { label: "SKIP / VOLGEN", sub: "Te vroeg voor actie. Alleen watchlist.", tone: "no" };
-  }
-  if (stage.startsWith("ELITE_") || stage === "HOLD") {
-    return { label: "TRADE READY", sub: `Elite/hold signaal. BTC is ${btcState}.`, tone: "ok" };
   }
 
   return { label: "SKIP / VOLGEN", sub: "Te vroeg voor actie. Alleen watchlist.", tone: "no" };
@@ -357,7 +311,6 @@ function renderAll(data) {
   const ageText = staleLabel(ts);
   const ageMin = getAgeMinutes(ts);
   const funnel = normalizeMoonFunnel(data);
-  const universeCount = Number(data?.debug?.universeCount || 0);
 
   const statusLine = el("statusLine");
   if (statusLine) {
@@ -367,13 +320,12 @@ function renderAll(data) {
 
     statusLine.textContent =
       `${btcLine(data.btc)} • Laatste update: ${stamp}${staleNote} • ` +
-      `Universe ${universeCount} • ` +
-      `TRADE READY ${funnel.tradeReady.length} • ALMOST ${funnel.almost.length} • ` +
+      `ENTRY ${funnel.entry.length} • ALMOST ${funnel.almost.length} • ` +
       `BUILDUP ${funnel.buildup.length} • RADAR ${funnel.radar.length}` +
       ` • Whale flow ${Number(data?.whaleFlow || 0)}`;
   }
 
-  renderStage("stageTradeReady", funnel.tradeReady);
+  renderStage("stageTradeReady", funnel.entry);
   renderStage("stageAlmost", funnel.almost);
   renderStage("stageBuildup", funnel.buildup);
   renderStage("stageRadar", funnel.radar);
@@ -585,8 +537,18 @@ function openModalMain(c) {
       ["TP", `$${safe(risk.tp, 6)} (${pct(tpPct, 2)})`],
       ["R:R", risk.rr ? safe(risk.rr, 2) : "—"],
       ["Bron SL/TP", risk.source === "backend" ? "Systeem (exact)" : "Fallback"],
-      ["Moon probability", Number.isFinite(Number(c?.moonProbability)) ? `${safe(Number(c.moonProbability) * 100, 1)}%` : "—"],
-      ["Dump probability", Number.isFinite(Number(c?.dumpProbability)) ? `${safe(Number(c.dumpProbability) * 100, 1)}%` : "—"],
+      [
+        "Moon probability",
+        Number.isFinite(Number(c?.moonProbability))
+          ? `${safe(Number(c.moonProbability) * 100, 1)}%`
+          : "—",
+      ],
+      [
+        "Dump probability",
+        Number.isFinite(Number(c?.dumpProbability))
+          ? `${safe(Number(c.dumpProbability) * 100, 1)}%`
+          : "—",
+      ],
     ]);
   } else {
     setKV(el("mActionKv"), [
