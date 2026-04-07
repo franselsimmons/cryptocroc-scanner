@@ -1,4 +1,3 @@
-import { kv } from "@vercel/kv";
 import { readTradeEventBook, inferSystemFromTradeId } from "../lib/_analytics.js";
 
 // Namespace imports voor core bestanden
@@ -101,93 +100,237 @@ function buildSummary(rows) {
   };
 }
 
-function buildTeacher(summary, byReason, byEntryQuality, byPersistence, bySpread) {
+function fmtBucketTeacher(bucket) {
+  if (!bucket) return "-";
+  return `${pct(bucket.avgPnlPct)}% avg pnl en ${pct(bucket.winRate)}% winrate over ${n(bucket.count, 0)} trades`;
+}
+
+function bestBucket(list) {
+  const arr = safeArray(list).filter((x) => n(x.count, 0) >= 3);
+  if (!arr.length) return null;
+
+  return [...arr].sort((a, b) => {
+    const pnlDiff = n(b.avgPnlPct, 0) - n(a.avgPnlPct, 0);
+    if (pnlDiff !== 0) return pnlDiff;
+
+    const wrDiff = n(b.winRate, 0) - n(a.winRate, 0);
+    if (wrDiff !== 0) return wrDiff;
+
+    return n(b.count, 0) - n(a.count, 0);
+  })[0];
+}
+
+function worstBucket(list) {
+  const arr = safeArray(list).filter((x) => n(x.count, 0) >= 3);
+  if (!arr.length) return null;
+
+  return [...arr].sort((a, b) => {
+    const pnlDiff = n(a.avgPnlPct, 0) - n(b.avgPnlPct, 0);
+    if (pnlDiff !== 0) return pnlDiff;
+
+    const wrDiff = n(a.winRate, 0) - n(b.winRate, 0);
+    if (wrDiff !== 0) return wrDiff;
+
+    return n(b.count, 0) - n(a.count, 0);
+  })[0];
+}
+
+function suggestHigherNumeric(currentValue, bucketKey) {
+  const cur = n(currentValue, 0);
+  const key = String(bucketKey || "");
+
+  if (key.startsWith("<40")) return Math.max(cur, 40);
+  if (key.startsWith("40-49")) return Math.max(cur, 50);
+  if (key.startsWith("50-59")) return Math.max(cur, 60);
+  if (key.startsWith("60-69")) return Math.max(cur, 70);
+  if (key.startsWith("70-79")) return Math.max(cur, 80);
+  if (key.endsWith("+")) return cur;
+
+  return cur;
+}
+
+function suggestTighterSpread(currentValue, bucketKey) {
+  const cur = n(currentValue, 999);
+  const key = String(bucketKey || "");
+
+  if (key === "<0.40") return Math.min(cur, 0.4);
+  if (key === "0.40-0.79") return Math.min(cur, 0.8);
+  if (key === "0.80-1.19") return Math.min(cur, 1.2);
+  if (key === "1.20-1.59") return Math.min(cur, 1.6);
+
+  return cur;
+}
+
+function explainConfigValue(liveConfig, path, fallback = null) {
+  try {
+    const parts = String(path || "").split(".");
+    let cur = liveConfig;
+    for (const p of parts) cur = cur?.[p];
+    return cur ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function buildTeacher(summary, byReason, byEntryQuality, byPersistence, bySpread, byObScore, liveConfig) {
   const lessons = [];
 
   const timeout = byReason.find((x) => x.key === "timeout");
   const stopLoss = byReason.find((x) => x.key === "sl" || x.key === "stop_loss");
   const thesisBreak = byReason.find((x) => x.key === "thesis_break");
 
+  const bestEq = bestBucket(byEntryQuality);
+  const worstEq = worstBucket(byEntryQuality);
+
+  const bestPs = bestBucket(byPersistence);
+  const worstPs = worstBucket(byPersistence);
+
+  const bestSpread = bestBucket(bySpread);
+  const worstSpread = worstBucket(bySpread);
+
+  const bestOb = bestBucket(byObScore);
+  const worstOb = worstBucket(byObScore);
+
+  const liveEntryMinConfidence = explainConfigValue(liveConfig, "entry.minConfidence", null);
+  const liveSpreadMaxPct = explainConfigValue(liveConfig, "entry.spreadMaxPct", null);
+  const liveObScoreMin = explainConfigValue(liveConfig, "entry.obScoreMin", null);
+  const liveAlmostMinConfidence = explainConfigValue(liveConfig, "almost.minConfidence", null);
+
   if (n(summary.winRate) < 45) {
     lessons.push({
       type: "improve",
-      text: "Winrate is te laag. Maak entries strenger en laat alleen sterkere setups door.",
+      text: `Winrate is ${pct(summary.winRate)}%. Dat is te laag. Entries moeten strenger worden op basis van best presterende buckets.`,
     });
   }
 
   if (timeout && n(timeout.avgPnlPct) < -1) {
     lessons.push({
       type: "improve",
-      text: "Timeout verliest gemiddeld te veel. Verkort timeout of verhoog minimale quality voor entry.",
+      text: `Timeout trades verliezen gemiddeld ${pct(timeout.avgPnlPct)}%. Timeout is nu te duur en moet strenger of korter.`,
     });
   }
 
   if (stopLoss && stopLoss.count >= 3 && stopLoss.winRate === 0) {
     lessons.push({
       type: "improve",
-      text: "Stop-loss cluster aanwezig. Spread, OB score en entry confidence moeten strenger.",
+      text: `Stop-loss cluster aanwezig: ${stopLoss.count} trades, ${pct(stopLoss.totalPnlPct)}% totaal. Entryfilters zijn nog te los.`,
     });
   }
 
   if (thesisBreak && n(thesisBreak.totalPnlPct) > 0) {
     lessons.push({
       type: "good",
-      text: "Thesis-break exit werkt positief. Deze exit bewaart gemiddeld winst beter dan timeout.",
+      text: `Thesis-break is positief: ${pct(thesisBreak.totalPnlPct)}% totaal bij ${thesisBreak.count} trades.`,
     });
   }
 
-  const bestEq = [...byEntryQuality].sort((a, b) => b.avgPnlPct - a.avgPnlPct)[0];
   if (bestEq) {
     lessons.push({
       type: "focus",
-      text: `Beste entry-quality bucket nu: ${bestEq.key}.`,
+      text: `Beste entry-quality bucket: ${bestEq.key} met ${fmtBucketTeacher(bestEq)}.`,
     });
   }
 
-  const bestPs = [...byPersistence].sort((a, b) => b.avgPnlPct - a.avgPnlPct)[0];
   if (bestPs) {
     lessons.push({
       type: "focus",
-      text: `Beste persistence bucket nu: ${bestPs.key}.`,
+      text: `Beste persistence bucket: ${bestPs.key} met ${fmtBucketTeacher(bestPs)}.`,
     });
   }
 
-  const bestSpread = [...bySpread].sort((a, b) => b.avgPnlPct - a.avgPnlPct)[0];
   if (bestSpread) {
     lessons.push({
       type: "focus",
-      text: `Beste spread bucket nu: ${bestSpread.key}.`,
+      text: `Beste spread bucket: ${bestSpread.key} met ${fmtBucketTeacher(bestSpread)}.`,
     });
   }
 
-  const worstEq = [...byEntryQuality].sort((a, b) => a.avgPnlPct - b.avgPnlPct)[0];
-  const worstPs = [...byPersistence].sort((a, b) => a.avgPnlPct - b.avgPnlPct)[0];
-  const worstSpread = [...bySpread].sort((a, b) => a.avgPnlPct - b.avgPnlPct)[0];
-
-  if (worstEq && worstEq.key !== bestEq?.key) {
+  if (bestOb) {
     lessons.push({
-      type: "warn",
-      text: `Slechtste entry-quality bucket nu: ${worstEq.key}. Deze bucket moet strenger of uitgesloten worden.`,
+      type: "focus",
+      text: `Beste OB-score bucket: ${bestOb.key} met ${fmtBucketTeacher(bestOb)}.`,
     });
   }
 
-  if (worstPs && worstPs.key !== bestPs?.key) {
+  if (worstEq && bestEq && worstEq.key !== bestEq.key) {
     lessons.push({
       type: "warn",
-      text: `Slechtste persistence bucket nu: ${worstPs.key}. Hier lekt waarschijnlijk kwaliteit weg.`,
+      text: `Slechtste entry-quality bucket: ${worstEq.key} met ${fmtBucketTeacher(worstEq)}.`,
     });
   }
 
-  if (worstSpread && worstSpread.key !== bestSpread?.key) {
+  if (worstPs && bestPs && worstPs.key !== bestPs.key) {
     lessons.push({
       type: "warn",
-      text: `Slechtste spread bucket nu: ${worstSpread.key}. Deze spread-range kost waarschijnlijk rendement.`,
+      text: `Slechtste persistence bucket: ${worstPs.key} met ${fmtBucketTeacher(worstPs)}.`,
     });
+  }
+
+  if (worstSpread && bestSpread && worstSpread.key !== bestSpread.key) {
+    lessons.push({
+      type: "warn",
+      text: `Slechtste spread bucket: ${worstSpread.key} met ${fmtBucketTeacher(worstSpread)}.`,
+    });
+  }
+
+  if (worstOb && bestOb && worstOb.key !== bestOb.key) {
+    lessons.push({
+      type: "warn",
+      text: `Slechtste OB-score bucket: ${worstOb.key} met ${fmtBucketTeacher(worstOb)}.`,
+    });
+  }
+
+  if (bestEq && liveEntryMinConfidence != null) {
+    const suggested = suggestHigherNumeric(liveEntryMinConfidence, bestEq.key);
+    if (suggested > n(liveEntryMinConfidence, 0)) {
+      lessons.push({
+        type: "action",
+        text: `Concrete suggestie: verhoog entry.minConfidence van ${liveEntryMinConfidence} naar ongeveer ${suggested}, omdat bucket ${bestEq.key} beter presteert.`,
+      });
+    }
+  }
+
+  if (bestEq && liveAlmostMinConfidence != null) {
+    const suggestedAlmost = suggestHigherNumeric(liveAlmostMinConfidence, bestEq.key);
+    if (suggestedAlmost > n(liveAlmostMinConfidence, 0)) {
+      lessons.push({
+        type: "action",
+        text: `Concrete suggestie: verhoog almost.minConfidence van ${liveAlmostMinConfidence} naar ongeveer ${suggestedAlmost}, zodat zwakkere pre-entry setups eerder afvallen.`,
+      });
+    }
+  }
+
+  if (bestSpread && liveSpreadMaxPct != null) {
+    const suggestedSpread = suggestTighterSpread(liveSpreadMaxPct, bestSpread.key);
+    if (suggestedSpread < n(liveSpreadMaxPct, 999)) {
+      lessons.push({
+        type: "action",
+        text: `Concrete suggestie: verlaag entry.spreadMaxPct van ${liveSpreadMaxPct} naar ongeveer ${suggestedSpread}, omdat de beste resultaten in bucket ${bestSpread.key} zitten.`,
+      });
+    }
+  }
+
+  if (bestOb && liveObScoreMin != null) {
+    const obKey = String(bestOb.key || "");
+    let suggestedOb = n(liveObScoreMin, 0);
+
+    if (obKey === "0.05+") suggestedOb = Math.max(suggestedOb, 0.05);
+    else if (obKey === "0-0.04") suggestedOb = Math.max(suggestedOb, 0);
+
+    if (suggestedOb > n(liveObScoreMin, 0)) {
+      lessons.push({
+        type: "action",
+        text: `Concrete suggestie: verhoog entry.obScoreMin van ${liveObScoreMin} naar ongeveer ${suggestedOb}, omdat hogere OB buckets beter presteren.`,
+      });
+    }
   }
 
   const score = Math.max(
     1,
-    Math.min(10, 5 + (n(summary.winRate) - 40) / 10 + n(summary.avgPnlPct) / 2)
+    Math.min(
+      10,
+      5 + (n(summary.winRate) - 40) / 10 + n(summary.avgPnlPct) / 2
+    )
   );
 
   return {
@@ -233,7 +376,10 @@ function enrichClosedTrades(opened, closed) {
       obScore: n(ev.obScore, n(filterSnapshot?.obScore, 0)),
       perfectCandidateScore: n(
         ev.perfectCandidateScore,
-        n(filterSnapshot?.perfectCandidateScore, 0)
+        n(
+          open?.perfectCandidateScore,
+          n(filterSnapshot?.perfectCandidateScore, 0)
+        )
       ),
       filterSnapshot,
     };
@@ -242,13 +388,11 @@ function enrichClosedTrades(opened, closed) {
 
 function isRichTrade(row) {
   if (!row) return false;
-
   if (row.filterSnapshot) return true;
   if (n(row.entryQuality, 0) > 0) return true;
   if (n(row.persistenceScore, 0) > 0) return true;
   if (n(row.spreadPct, 999) < 900) return true;
   if (Math.abs(n(row.obScore, 0)) > 0) return true;
-
   return false;
 }
 
@@ -257,8 +401,7 @@ function analyzeGroup(rows, liveConfig) {
   const richRows = allRows.filter(isRichTrade);
 
   const summary = buildSummary(allRows);
-
-  const analysisRows = richRows.length ? richRows : allRows;
+  const analysisRows = richRows.length >= 5 ? richRows : allRows;
 
   const byReason = groupStats(allRows, (x) => x.reason || "unknown", 20);
   const byStage = groupStats(allRows, (x) => x.sourceStage || x.stage || "UNKNOWN", 20);
@@ -272,7 +415,9 @@ function analyzeGroup(rows, liveConfig) {
     byReason,
     byEntryQuality,
     byPersistence,
-    bySpread
+    bySpread,
+    byObScore,
+    liveConfig
   );
 
   return {
@@ -281,6 +426,7 @@ function analyzeGroup(rows, liveConfig) {
       totalClosedTrades: allRows.length,
       richClosedTrades: richRows.length,
       richCoveragePct: allRows.length ? pct((richRows.length / allRows.length) * 100) : 0,
+      usingRichRows: richRows.length >= 5,
     },
     buckets: {
       byReason,
