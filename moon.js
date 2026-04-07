@@ -4,6 +4,7 @@ function syncTopbarHeight() {
   const h = tb ? Math.ceil(tb.getBoundingClientRect().height) : 78;
   document.documentElement.style.setProperty("--topbar-h", h + "px");
 }
+
 window.addEventListener("resize", syncTopbarHeight);
 window.addEventListener("load", syncTopbarHeight);
 syncTopbarHeight();
@@ -85,6 +86,20 @@ function esc(v) {
     .replaceAll('"', "&quot;");
 }
 
+function uniqBySymbol(list) {
+  const seen = new Set();
+  const out = [];
+
+  for (const item of arr(list)) {
+    const key = String(item?.symbol || item?.id || Math.random()).toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+
+  return out;
+}
+
 // scannedAt heeft voorrang
 function getSnapshotTs(data) {
   return Number(data?.scannedAt || data?.ts || 0);
@@ -114,24 +129,48 @@ function staleLabel(ts) {
  * - almost
  * - buildup
  * - radar
+ *
+ * Fallbacks:
+ * - gebruikt ook candidates.tradeReady / watch / scannerOnly
+ * - ondersteunt legacy elite_* keys
  */
 function normalizeMoonFunnel(data) {
   const funnel = data?.funnel || {};
+  const candidates = data?.candidates || {};
 
-  const tradeReady = [
+  const tradeReady = uniqBySymbol([
     ...arr(funnel.trade_ready),
     ...arr(funnel.entry),
     ...arr(funnel.tradeReady),
     ...arr(funnel.elite_expansion),
     ...arr(funnel.elite_ignition),
     ...arr(funnel.elite_cascade),
+    ...arr(candidates.tradeReady),
     ...arr(funnel.hold),
-  ];
+  ]);
+
+  const almost = uniqBySymbol(
+    arr(funnel.almost).length
+      ? arr(funnel.almost)
+      : arr(candidates.watch).filter((c) => upperStage(c?.stage) === "ALMOST")
+  );
+
+  const buildup = uniqBySymbol(
+    arr(funnel.buildup).length
+      ? arr(funnel.buildup)
+      : arr(candidates.watch).filter((c) => upperStage(c?.stage) === "BUILDUP")
+  );
+
+  const radar = uniqBySymbol(
+    arr(funnel.radar).length
+      ? arr(funnel.radar)
+      : arr(candidates.scannerOnly).filter((c) => upperStage(c?.stage) === "RADAR")
+  );
 
   return {
-    radar: arr(funnel.radar),
-    buildup: arr(funnel.buildup),
-    almost: arr(funnel.almost),
+    radar,
+    buildup,
+    almost,
     tradeReady,
   };
 }
@@ -292,6 +331,7 @@ function renderStage(targetId, items, renderer = coinRow) {
 
   box.innerHTML = "";
   const list = Array.isArray(items) ? items : [];
+
   if (list.length === 0) {
     box.innerHTML = `<div class="empty">Geen coins.</div>`;
     return;
@@ -358,6 +398,7 @@ async function loadLatest(force = false) {
 
     const text = await r.text();
     let j;
+
     try {
       j = JSON.parse(text);
     } catch {
@@ -566,10 +607,10 @@ function openModalMain(c) {
   );
   addCheck(
     whyList,
-    Number(c?.vm || 0) >= 0.30,
+    Number(c?.vm || 0) >= 0.3,
     "Volume / MarketCap",
     `VM: ${safe(c.vm, 3)}`,
-    Number(c?.vm || 0) >= 0.30 ? "ok" : "warn"
+    Number(c?.vm || 0) >= 0.3 ? "ok" : "warn"
   );
   addCheck(
     whyList,
