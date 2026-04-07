@@ -27,14 +27,17 @@ function n(x, d = 0) {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
 }
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 function up(x) {
   return String(x || "").toUpperCase();
 }
+
 function sideFromMode(mode) {
   return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG";
-}
-function safeArr(v) {
-  return Array.isArray(v) ? v : [];
 }
 
 function coinForDiscord({ coin, position }) {
@@ -69,23 +72,6 @@ async function safePushStageTransition(payload) {
   }
 }
 
-async function mapWithConcurrency(items, limit, worker) {
-  const out = new Array(items.length);
-  let idx = 0;
-
-  async function run() {
-    while (true) {
-      const cur = idx++;
-      if (cur >= items.length) break;
-      out[cur] = await worker(items[cur], cur);
-    }
-  }
-
-  const runners = Array.from({ length: Math.max(1, limit) }, () => run());
-  await Promise.all(runners);
-  return out;
-}
-
 // ========== constants ==========
 const COOLDOWN_SL_SEC = 4 * 60 * 60;
 const COOLDOWN_TP_SEC = 90 * 60;
@@ -96,10 +82,9 @@ const POSITION_SIZE_USD = 50;
 const ENTRY_HISTORY_KEEP = 40;
 const UI_ENTRY_LOCK_MS_MOON = 8 * 60 * 60 * 1000;
 
-// performance
-const MOON_UNIVERSE_LIMIT = 120;
-const OB_MIN_VOLUME_USD = 750_000;
-const BUILD_CONCURRENCY = 8;
+// timeout fix: minder coins + minder sleeps + minder extra logging volume
+const MAX_UNIVERSE_COINS = 90;
+const STATE_EVENT_SAMPLE_LIMIT = 12;
 
 function keyMoonConfigSnapshot(mode) {
   return `moon:config:snapshot:${String(mode || "bull").toLowerCase()}`;
@@ -161,7 +146,10 @@ async function appendEntryHistory(mode) {
 }
 
 function parseExitReason(p) {
-  const r = String(p?.exitReason || p?.reason || p?.closedReason || p?.closeReason || "").toLowerCase();
+  const r = String(
+    p?.exitReason || p?.reason || p?.closedReason || p?.closeReason || ""
+  ).toLowerCase();
+
   if (r.includes("stop") || r.includes("sl")) return "sl";
   if (r.includes("tp") || r.includes("take")) return "tp";
   if (r.includes("timeout")) return "timeout";
@@ -220,7 +208,11 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
 
 async function fetchExchangeFlows() {
   try {
-    const data = await fetchJsonWithTimeout("https://api.binance.com/api/v3/ticker/24hr", {}, 8000);
+    const data = await fetchJsonWithTimeout(
+      "https://api.binance.com/api/v3/ticker/24hr",
+      {},
+      8000
+    );
     return data.filter((x) => Number(x.quoteVolume) > 200_000_000).length;
   } catch {
     return 0;
@@ -232,7 +224,12 @@ const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 async function fetchOrderbook(symbol) {
   try {
     const url = `${BITGET_OB}?symbol=${symbol}&type=step0&limit=20`;
-    const j = await fetchJsonWithTimeout(url, { headers: { accept: "application/json" } }, 4500);
+    const j = await fetchJsonWithTimeout(
+      url,
+      { headers: { accept: "application/json" } },
+      6000
+    );
+
     if (String(j?.code || "") !== "00000") return null;
 
     const bids = j?.data?.bids || [];
@@ -244,12 +241,27 @@ async function fetchOrderbook(symbol) {
     if (!(bestBid > 0 && bestAsk > 0)) return null;
 
     const spreadPct = ((bestAsk - bestBid) / bestBid) * 100;
-    const depthBidUsd = bids.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
-    const depthAskUsd = asks.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
+    const depthBidUsd = bids
+      .slice(0, 8)
+      .reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
+
+    const depthAskUsd = asks
+      .slice(0, 8)
+      .reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
+
     const total = depthBidUsd + depthAskUsd;
     const score = total > 0 ? (depthBidUsd - depthAskUsd) / total : 0;
-    const largestBidUsd = Math.max(...bids.slice(0, 8).map((b) => n(b?.[1]) * n(b?.[0])), 0);
-    const largestAskUsd = Math.max(...asks.slice(0, 8).map((b) => n(b?.[1]) * n(b?.[0])), 0);
+
+    const largestBidUsd = Math.max(
+      ...bids.slice(0, 8).map((b) => n(b?.[1]) * n(b?.[0])),
+      0
+    );
+
+    const largestAskUsd = Math.max(
+      ...asks.slice(0, 8).map((b) => n(b?.[1]) * n(b?.[0])),
+      0
+    );
+
     const lor = total > 0 ? Math.max(largestBidUsd, largestAskUsd) / total : 0;
 
     return {
@@ -296,25 +308,27 @@ function computeObScore(ob) {
 // ========== universe builder ==========
 async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
   const regime = CORE.computeMarketRegime({ btc, whaleFlow, mode });
+
   const cg = await fetchCoinGeckoTopCached();
   const rawCoins = Array.isArray(cg?.coins) ? cg.coins : Array.isArray(cg) ? cg : [];
+
   const bitgetSymbols = await getBitgetSpotUsdtSymbols();
+  const step1 = rawCoins.filter((c) => !isBlockedMoonAsset(c));
+  const step2 = step1.filter((c) => bitgetSymbols.has(up(c.symbol)));
+  const filtered = step2.slice(0, MAX_UNIVERSE_COINS);
 
-  const filtered = rawCoins
-    .filter((c) => !isBlockedMoonAsset(c))
-    .filter((c) => bitgetSymbols.has(up(c.symbol)))
-    .slice(0, MOON_UNIVERSE_LIMIT);
-
+  const out = [];
   const state = (await kv.get(keyMoonState(mode))) || {};
 
-  const out = await mapWithConcurrency(filtered, BUILD_CONCURRENCY, async (coin) => {
+  for (const coin of filtered) {
     const sym = up(coin.symbol);
     const prev = state?.[sym] || {};
 
     let ob = null;
-    if (n(coin.volume, 0) >= OB_MIN_VOLUME_USD) {
+    if (n(coin.volume, 0) >= 250_000) {
       ob = await fetchOrderbook(`${sym}USDT`);
     }
+
     const obx = computeObScore(ob);
 
     const tier = getTierForMcap(coin.marketCap);
@@ -323,6 +337,7 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
 
     const priceHist = Array.isArray(prev?.priceHist) ? [...prev.priceHist] : [];
     const volHist = Array.isArray(prev?.volHist) ? [...prev.volHist] : [];
+
     priceHist.push(n(coin.price, 0));
     volHist.push(n(coin.volume, 0));
 
@@ -415,6 +430,7 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
 
     const marketScore = CORE.computeMarketScore({ btc, mode, regime, whaleFlow });
     const btcAlignmentScore = CORE.computeBtcAlignmentScore({ btc, mode, regime });
+
     const perfectCandidateScore = CORE.computePerfectCandidateScore({
       qualityScore,
       liquidityScore,
@@ -433,7 +449,11 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
       now,
       prevGate: prev?.engineGate,
       prevMeta: prev?.deskMeta,
-      isEliteStageForDesk: ["ELITE_IGNITION", "ELITE_EXPANSION", "ELITE_CASCADE"].includes(stage),
+      isEliteStageForDesk: [
+        "ELITE_IGNITION",
+        "ELITE_EXPANSION",
+        "ELITE_CASCADE",
+      ].includes(stage),
     });
 
     const uiLockUntil = Math.max(
@@ -448,7 +468,6 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
       stageWhy,
       eliteType,
       moveScore,
-      velocity,
       confidence: entryQuality || moveScore,
       moonProbability: probs?.moonProbability ?? 0,
       dumpProbability: probs?.dumpProbability ?? 0,
@@ -471,7 +490,10 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
         valid: obx.valid,
         lor: obx.lor,
       },
-      thresholds: { depthFloorUsd: floorUsd, depthOk },
+      thresholds: {
+        depthFloorUsd: floorUsd,
+        depthOk,
+      },
       breakout: {
         ready: breakout.ready,
         breakoutPct: breakout.breakoutPct,
@@ -481,7 +503,11 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
         isCompressed: compression.isCompressed,
         flatPct: compression.flatPct,
       },
-      volAcc: { short: volAcc.short, medium: volAcc.medium },
+      volAcc: {
+        short: volAcc.short,
+        medium: volAcc.medium,
+      },
+      velocity,
       entryQuality,
       persistenceScore,
       tradePlan,
@@ -520,7 +546,11 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
       },
     };
 
-    const coinProfile = buildCoinProfile({ systemType: "moon", coin: coinForOutput });
+    const coinProfile = buildCoinProfile({
+      systemType: "moon",
+      coin: coinForOutput,
+    });
+
     const execution = buildMoonExecutionDecision({
       coin: coinForOutput,
       btc,
@@ -540,15 +570,22 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
     coinForOutput.coinProfile = coinProfile;
     coinForOutput.execution = execution;
 
-    return coinForOutput;
-  });
+    out.push(coinForOutput);
+  }
 
-  return { regime, coins: out.filter(Boolean) };
+  return { regime, coins: out };
 }
 
 function shouldSendUpgradeSignal(oldStage, newStage) {
   if (oldStage === newStage) return false;
-  const order = ["RADAR", "BUILDUP", "ALMOST", "ELITE_IGNITION", "ELITE_EXPANSION", "ELITE_CASCADE"];
+  const order = [
+    "RADAR",
+    "BUILDUP",
+    "ALMOST",
+    "ELITE_IGNITION",
+    "ELITE_EXPANSION",
+    "ELITE_CASCADE",
+  ];
   const oldIdx = order.indexOf(oldStage);
   const newIdx = order.indexOf(newStage);
   return newIdx > oldIdx;
@@ -573,8 +610,9 @@ export default async function handler(req, res) {
     const lock = await acquireScanLock(mode);
     if (!lock.ok) {
       const latest = await kv.get(keyMoonLatest(mode));
-      res.status(200).json(latest || { ok: true, skipped: true, reason: "scan_lock_active", mode });
-      return;
+      return res
+        .status(200)
+        .json(latest || { ok: true, skipped: true, reason: "scan_lock_active", mode });
     }
     lockAcquired = true;
 
@@ -583,15 +621,33 @@ export default async function handler(req, res) {
     const whaleFlow = await fetchExchangeFlows();
     const btc = await fetchBTCGateFromUniverse();
 
-    const prevPositions = (await kv.get(keyMoonPositions(mode))) || { open: [], closed: [] };
-    const positions = { open: [...(prevPositions.open || [])], closed: [...(prevPositions.closed || [])] };
+    const prevPositions = (await kv.get(keyMoonPositions(mode))) || {
+      open: [],
+      closed: [],
+    };
+
+    const positions = {
+      open: [...(prevPositions.open || [])],
+      closed: [...(prevPositions.closed || [])],
+    };
+
     await applyCooldownsFromClosed(mode, positions, now);
 
-    const { regime, coins: universe } = await buildUniverse({ CORE, mode, whaleFlow, btc, now });
+    const { regime, coins: universe } = await buildUniverse({
+      CORE,
+      mode,
+      whaleFlow,
+      btc,
+      now,
+    });
+
     const prevState = (await kv.get(keyMoonState(mode))) || {};
     const nextState = {};
+
     const universeMap = new Map(universe.map((c) => [c.symbol, c]));
     const openMap = new Map(positions.open.map((p) => [up(p.symbol), p]));
+
+    let stateSampleCount = 0;
 
     // -------------------------------
     // 1. Update state voor ALLE coins
@@ -656,7 +712,7 @@ export default async function handler(req, res) {
       let candidateSince = prev.candidateSince;
       if (rawStage !== "RADAR" && !candidateSince) candidateSince = now;
 
-      const eliteSince = rawStage.includes("ELITE") ? (prev.eliteSince || now) : null;
+      const eliteSince = rawStage.includes("ELITE") ? prev.eliteSince || now : null;
       const entryLocked = prev.entryLocked || false;
 
       const entryReady =
@@ -687,7 +743,9 @@ export default async function handler(req, res) {
       const nextPositionState = {
         ...prevPositionState,
         inPosition: false,
-        cyclesInTrade: prevPositionState.inPosition ? prevPositionState.cyclesInTrade || 0 : 0,
+        cyclesInTrade: prevPositionState.inPosition
+          ? prevPositionState.cyclesInTrade || 0
+          : 0,
       };
 
       if (!hasOpen) {
@@ -775,12 +833,37 @@ export default async function handler(req, res) {
         coinProfile: coin.coinProfile,
         filterSnapshot: coin.filterSnapshot || null,
       };
+
+      // sample logging, niet voor alle 90 coins
+      if (stateSampleCount < STATE_EVENT_SAMPLE_LIMIT) {
+        stateSampleCount += 1;
+        await safePushEvent("scan_coin_state", {
+          system: "moon",
+          mode,
+          symbol: sym,
+          stage: rawStage,
+          price: coin.price,
+          entryQuality: coin.entryQuality,
+          persistenceScore: coin.persistenceScore,
+          perfectCandidateScore: coin.perfectCandidateScore,
+          spreadPct: coin?.ob?.spreadPct ?? null,
+          obScore: coin?.ob?.score ?? null,
+          depthMinUsd1p: coin?.ob?.depthMinUsd1p ?? null,
+          scannerGate: coin.engineGate || null,
+          tradeDeskStatus: coin.tradeDeskStatus || null,
+          regime,
+          btcState: btc?.state || "NEUTRAL",
+          filterSnapshot: coin.filterSnapshot || null,
+          ts: now,
+        });
+      }
     }
 
     // -------------------------------
     // 2. Evaluate open positions
     // -------------------------------
     const stillOpen = [];
+
     for (const pos of positions.open) {
       const sym = up(pos.symbol);
       const liveCoin = universeMap.get(sym);
@@ -791,6 +874,7 @@ export default async function handler(req, res) {
       }
 
       const coinProfile = buildCoinProfile({ systemType: "moon", coin: liveCoin });
+
       const evalCoin = {
         ...liveCoin,
         entryPrice: pos.entryPrice,
@@ -824,7 +908,7 @@ export default async function handler(req, res) {
           closedAt: now,
           exitPrice: liveCoin.price,
           pnlPct: execution.meta?.pnlPct ?? 0,
-          pnlUsd: ((execution.meta?.pnlPct ?? 0) / 100) * POSITION_SIZE_USD,
+          pnlUsd: (execution.meta?.pnlPct ?? 0) / 100 * POSITION_SIZE_USD,
           exitReason: execution.meta?.exitReason || execution.meta?.reason,
           entryStage: pos.stage || "ENTRY",
           sourceStage: pos.sourceStage || liveCoin.stage || "UNKNOWN",
@@ -850,9 +934,12 @@ export default async function handler(req, res) {
           persistenceScore: pos.persistenceScore ?? null,
           spreadPct: liveCoin?.ob?.spreadPct ?? pos?.filterSnapshot?.spreadPct ?? null,
           obScore: liveCoin?.ob?.score ?? pos?.filterSnapshot?.obScore ?? null,
-          depthMinUsd1p: liveCoin?.ob?.depthMinUsd1p ?? pos?.filterSnapshot?.depthMinUsd1p ?? null,
+          depthMinUsd1p:
+            liveCoin?.ob?.depthMinUsd1p ?? pos?.filterSnapshot?.depthMinUsd1p ?? null,
           perfectCandidateScore:
-            liveCoin?.perfectCandidateScore ?? pos?.filterSnapshot?.perfectCandidateScore ?? null,
+            liveCoin?.perfectCandidateScore ??
+            pos?.filterSnapshot?.perfectCandidateScore ??
+            null,
           filterSnapshot: pos.filterSnapshot || liveCoin.filterSnapshot || null,
           ts: now,
         });
@@ -921,6 +1008,7 @@ export default async function handler(req, res) {
     // 3. Nieuwe entries openen
     // -------------------------------
     const entryCandidates = [];
+
     for (const sym of Object.keys(nextState)) {
       const state = nextState[sym];
       if (state.entryReady && !refreshedOpenMap.has(sym)) {
@@ -932,7 +1020,9 @@ export default async function handler(req, res) {
       }
     }
 
-    entryCandidates.sort((a, b) => (b.coin?.entryQuality || 0) - (a.coin?.entryQuality || 0));
+    entryCandidates.sort(
+      (a, b) => (b.coin?.entryQuality || 0) - (a.coin?.entryQuality || 0)
+    );
 
     const slotsLeft = MAX_OPEN_TRADES - positions.open.length;
     const toOpen = entryCandidates.slice(0, Math.min(slotsLeft, 1));
@@ -942,6 +1032,7 @@ export default async function handler(req, res) {
       if (!coin?.tradePlan) continue;
 
       const id = uid("moon");
+
       const newPos = {
         id,
         symbol: sym,
@@ -1080,7 +1171,17 @@ export default async function handler(req, res) {
     // -------------------------------
     // 4. Funnel splitsen
     // -------------------------------
-    const funnel = CORE.splitFunnels(universe);
+    const rawFunnel = CORE.splitFunnels(universe) || {};
+
+    const funnel = {
+      elite_expansion: Array.isArray(rawFunnel.elite_expansion) ? rawFunnel.elite_expansion : [],
+      elite_ignition: Array.isArray(rawFunnel.elite_ignition) ? rawFunnel.elite_ignition : [],
+      almost: Array.isArray(rawFunnel.almost) ? rawFunnel.almost : [],
+      buildup: Array.isArray(rawFunnel.buildup) ? rawFunnel.buildup : [],
+      radar: Array.isArray(rawFunnel.radar) ? rawFunnel.radar : [],
+      hold: [],
+    };
+
     const holdItems = [];
 
     for (const p of positions.open) {
@@ -1130,7 +1231,9 @@ export default async function handler(req, res) {
     };
 
     await kv.set(keyMoonPortfolio(mode), portfolio, { ex: 60 * 60 * 24 * 7 });
+
     positions.closed = positions.closed.slice(-1000);
+
     await kv.set(keyMoonState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
     await kv.set(keyMoonPositions(mode), positions, { ex: 60 * 60 * 24 * 7 });
 
@@ -1152,12 +1255,14 @@ export default async function handler(req, res) {
         tradeReady: 20,
         watch: 20,
         scannerOnly: 20,
-        universeTop: MOON_UNIVERSE_LIMIT,
+        universeTop: MAX_UNIVERSE_COINS,
       },
       updatedAt: now,
     };
 
-    await kv.set(keyMoonConfigSnapshot(mode), configSnapshot, { ex: 60 * 60 * 24 * 7 });
+    await kv.set(keyMoonConfigSnapshot(mode), configSnapshot, {
+      ex: 60 * 60 * 24 * 7,
+    });
 
     // -------------------------------
     // 6. Response
@@ -1187,6 +1292,23 @@ export default async function handler(req, res) {
       .sort((a, b) => b.perfectCandidateScore - a.perfectCandidateScore)
       .slice(0, 20);
 
+    console.log("MOON DEBUG", {
+      mode,
+      universeCount: universe.length,
+      funnelCounts: {
+        elite_expansion: funnel.elite_expansion.length,
+        elite_ignition: funnel.elite_ignition.length,
+        almost: funnel.almost.length,
+        buildup: funnel.buildup.length,
+        radar: funnel.radar.length,
+        hold: funnel.hold.length,
+      },
+      premium: premiumCandidates.length,
+      tradeReady: tradeReady.length,
+      watch: watchCandidates.length,
+      scannerOnly: scannerOnly.length,
+    });
+
     const latest = {
       ok: true,
       mode,
@@ -1201,18 +1323,25 @@ export default async function handler(req, res) {
       whaleFlow,
       funnel,
       counts: {
-        elite_expansion: funnel.elite_expansion?.length || 0,
-        elite_ignition: funnel.elite_ignition?.length || 0,
-        almost: funnel.almost?.length || 0,
-        buildup: funnel.buildup?.length || 0,
-        radar: funnel.radar?.length || 0,
-        hold: funnel.hold?.length || 0,
+        elite_expansion: funnel.elite_expansion.length,
+        elite_ignition: funnel.elite_ignition.length,
+        almost: funnel.almost.length,
+        buildup: funnel.buildup.length,
+        radar: funnel.radar.length,
+        hold: funnel.hold.length,
       },
       candidates: {
         premium: premiumCandidates,
         tradeReady,
         watch: watchCandidates,
         scannerOnly,
+      },
+      debug: {
+        universeCount: universe.length,
+        premiumCount: premiumCandidates.length,
+        tradeReadyCount: tradeReady.length,
+        watchCount: watchCandidates.length,
+        scannerOnlyCount: scannerOnly.length,
       },
       portfolio,
       positions: {
@@ -1242,11 +1371,17 @@ export default async function handler(req, res) {
     };
 
     await kv.set(keyMoonLatest(mode), latest, { ex: 60 * 60 });
-    res.status(200).json(latest);
+
+    return res.status(200).json(latest);
   } catch (err) {
     console.error("Moon scan error:", err);
-    res.status(500).json({ ok: false, error: err?.message || String(err) });
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || String(err),
+    });
   } finally {
-    if (lockAcquired) await releaseScanLock(mode);
+    if (lockAcquired) {
+      await releaseScanLock(mode);
+    }
   }
 }
