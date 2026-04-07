@@ -1,4 +1,3 @@
-// api/moon/public-latest.js
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, keyMoonLatest } from "../../lib/_moon_core.js";
 
@@ -13,18 +12,8 @@ function arr(x) {
   return Array.isArray(x) ? x : [];
 }
 
-function setNoCache(res) {
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
-  res.setHeader("Pragma", "no-cache");
-  res.setHeader("Expires", "0");
-  res.setHeader("Surrogate-Control", "no-store");
-}
-
 export default async function handler(req, res) {
   try {
-    setNoCache(res);
-
     const mode =
       String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
 
@@ -36,7 +25,6 @@ export default async function handler(req, res) {
         mode,
         ts: 0,
         scannedAt: 0,
-        snapshotAgeMs: null,
         btc: { state: "NEUTRAL", chg24: 0, range24: 0 },
         whaleFlow: 0,
         funnel: {
@@ -55,17 +43,31 @@ export default async function handler(req, res) {
           radar: 0,
           hold: 0,
         },
+        candidates: {
+          premium: [],
+          tradeReady: [],
+          watch: [],
+          scannerOnly: [],
+        },
+        debug: {
+          universeCount: 0,
+          premiumCount: 0,
+          tradeReadyCount: 0,
+          watchCount: 0,
+          scannerOnlyCount: 0,
+        },
         portfolio: {
           openCount: 0,
           closedCount: 0,
           realizedUsd: 0,
           avgRealizedPct: 0,
         },
-        positions: { open: 0, closed: 0 },
+        positions: { open: 0, closed: 0, openItems: [] },
       });
     }
 
     const funnel = latest?.funnel || {};
+
     const eliteExpansion = arr(funnel.elite_expansion);
     const eliteIgnition = arr(funnel.elite_ignition);
     const almost = arr(funnel.almost);
@@ -73,17 +75,12 @@ export default async function handler(req, res) {
     const radar = arr(funnel.radar);
     const hold = arr(funnel.hold);
 
-    const scannedAt = n(latest?.scannedAt, n(latest?.ts, 0));
-    const ts = scannedAt || n(latest?.ts, 0);
-    const snapshotAgeMs = scannedAt > 0 ? Math.max(0, Date.now() - scannedAt) : null;
+    const ts = n(latest?.scannedAt, n(latest?.ts, 0));
 
     return res.status(200).json({
       ...latest,
-      ok: true,
-      mode,
       ts,
-      scannedAt,
-      snapshotAgeMs,
+      scannedAt: n(latest?.scannedAt, ts),
       btc: latest?.btc || { state: "NEUTRAL", chg24: 0, range24: 0 },
       whaleFlow: n(latest?.whaleFlow, 0),
       funnel: {
@@ -102,9 +99,21 @@ export default async function handler(req, res) {
         radar: radar.length,
         hold: hold.length,
       },
+      candidates: {
+        premium: arr(latest?.candidates?.premium),
+        tradeReady: arr(latest?.candidates?.tradeReady),
+        watch: arr(latest?.candidates?.watch),
+        scannerOnly: arr(latest?.candidates?.scannerOnly),
+      },
+      debug: {
+        universeCount: n(latest?.debug?.universeCount, 0),
+        premiumCount: n(latest?.debug?.premiumCount, 0),
+        tradeReadyCount: n(latest?.debug?.tradeReadyCount, 0),
+        watchCount: n(latest?.debug?.watchCount, 0),
+        scannerOnlyCount: n(latest?.debug?.scannerOnlyCount, 0),
+      },
     });
   } catch (e) {
-    setNoCache(res);
     return res.status(500).json({
       ok: false,
       error: e?.message || "moon_public_latest_failed",
