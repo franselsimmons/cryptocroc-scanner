@@ -28,12 +28,16 @@ function n(x, d = 0) {
   return Number.isFinite(v) ? v : d;
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 function up(x) {
   return String(x || "").toUpperCase();
+}
+
+function arr(x) {
+  return Array.isArray(x) ? x : [];
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 function sideFromMode(mode) {
@@ -46,6 +50,50 @@ function coinForDiscord({ coin, position }) {
   const tp = position?.tp ?? plan?.tp ?? coin?.tp ?? null;
   const sl = position?.sl ?? plan?.sl ?? coin?.sl ?? null;
   return { ...coin, entry, tp, sl, tradePlan: plan };
+}
+
+function uniqBySymbol(list) {
+  const out = [];
+  const seen = new Set();
+
+  for (const item of arr(list)) {
+    const key = up(item?.symbol || item?.id || "");
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+
+  return out;
+}
+
+function sortMoonCoins(a, b) {
+  return (
+    n(b?.perfectCandidateScore, 0) - n(a?.perfectCandidateScore, 0) ||
+    n(b?.entryQuality, 0) - n(a?.entryQuality, 0) ||
+    n(b?.persistenceScore, 0) - n(a?.persistenceScore, 0) ||
+    n(b?.marketCap, 0) - n(a?.marketCap, 0)
+  );
+}
+
+function stageOf(c) {
+  return up(c?.stage);
+}
+
+function execActionOf(c) {
+  return up(c?.execution?.action);
+}
+
+function isTradeReadyCoin(c) {
+  const st = stageOf(c);
+  const act = execActionOf(c);
+  const gate = up(c?.engineGate || c?.tradeDeskStatus || "");
+
+  if (st === "ENTRY" || st === "TRADE_READY") return true;
+  if (st === "ELITE_IGNITION" || st === "ELITE_EXPANSION" || st === "ELITE_CASCADE") return true;
+  if (gate === "WATCH") return true;
+  if (act === "ALLOW_ENTRY" || act === "ARM_ENTRY" || act === "WATCH" || act === "PENDING_ENTRY") return true;
+
+  return false;
 }
 
 async function safeSendSignal(payload) {
@@ -82,9 +130,13 @@ const POSITION_SIZE_USD = 50;
 const ENTRY_HISTORY_KEEP = 40;
 const UI_ENTRY_LOCK_MS_MOON = 8 * 60 * 60 * 1000;
 
-// timeout fix: minder coins + minder sleeps + minder extra logging volume
 const MAX_UNIVERSE_COINS = 90;
 const STATE_EVENT_SAMPLE_LIMIT = 12;
+
+const LIMIT_PREMIUM = 12;
+const LIMIT_TRADE_READY = 20;
+const LIMIT_WATCH = 20;
+const LIMIT_SCANNER_ONLY = 20;
 
 function keyMoonConfigSnapshot(mode) {
   return `moon:config:snapshot:${String(mode || "bull").toLowerCase()}`;
@@ -140,8 +192,8 @@ async function appendEntryHistory(mode) {
   const key = `moon:entry:history:${mode}`;
   const now = Date.now();
   const prev = (await kv.get(key)) || [];
-  const arr = Array.isArray(prev) ? prev : [];
-  const next = [now, ...arr].slice(0, ENTRY_HISTORY_KEEP);
+  const list = Array.isArray(prev) ? prev : [];
+  const next = [now, ...list].slice(0, ENTRY_HISTORY_KEEP);
   await kv.set(key, next, { ex: 60 * 60 * 24 * 3 });
 }
 
@@ -834,7 +886,6 @@ export default async function handler(req, res) {
         filterSnapshot: coin.filterSnapshot || null,
       };
 
-      // sample logging, niet voor alle 90 coins
       if (stateSampleCount < STATE_EVENT_SAMPLE_LIMIT) {
         stateSampleCount += 1;
         await safePushEvent("scan_coin_state", {
@@ -1169,18 +1220,34 @@ export default async function handler(req, res) {
     }
 
     // -------------------------------
-    // 4. Funnel splitsen
+    // 4. Funnel bouwen voor UI
     // -------------------------------
-    const rawFunnel = CORE.splitFunnels(universe) || {};
+    const stageEliteIgnition = uniqBySymbol(
+      universe.filter((c) => stageOf(c) === "ELITE_IGNITION")
+    ).sort(sortMoonCoins);
 
-    const funnel = {
-      elite_expansion: Array.isArray(rawFunnel.elite_expansion) ? rawFunnel.elite_expansion : [],
-      elite_ignition: Array.isArray(rawFunnel.elite_ignition) ? rawFunnel.elite_ignition : [],
-      almost: Array.isArray(rawFunnel.almost) ? rawFunnel.almost : [],
-      buildup: Array.isArray(rawFunnel.buildup) ? rawFunnel.buildup : [],
-      radar: Array.isArray(rawFunnel.radar) ? rawFunnel.radar : [],
-      hold: [],
-    };
+    const stageEliteExpansion = uniqBySymbol(
+      universe.filter((c) => {
+        const st = stageOf(c);
+        return st === "ELITE_EXPANSION" || st === "ELITE_CASCADE";
+      })
+    ).sort(sortMoonCoins);
+
+    const stageAlmost = uniqBySymbol(
+      universe.filter((c) => stageOf(c) === "ALMOST")
+    ).sort(sortMoonCoins);
+
+    const stageBuildup = uniqBySymbol(
+      universe.filter((c) => stageOf(c) === "BUILDUP")
+    ).sort(sortMoonCoins);
+
+    const stageRadar = uniqBySymbol(
+      universe.filter((c) => stageOf(c) === "RADAR")
+    ).sort(sortMoonCoins);
+
+    const stageTradeReady = uniqBySymbol(
+      universe.filter((c) => isTradeReadyCoin(c))
+    ).sort(sortMoonCoins);
 
     const holdItems = [];
 
@@ -1213,7 +1280,14 @@ export default async function handler(req, res) {
       }
     }
 
-    funnel.hold = holdItems;
+    const funnel = {
+      elite_expansion: stageEliteExpansion,
+      elite_ignition: stageEliteIgnition,
+      almost: stageAlmost,
+      buildup: stageBuildup,
+      radar: stageRadar,
+      hold: holdItems,
+    };
 
     // -------------------------------
     // 5. Portfolio & opslag
@@ -1251,10 +1325,10 @@ export default async function handler(req, res) {
         uiEntryLockMs: UI_ENTRY_LOCK_MS_MOON,
       },
       limits: {
-        premium: 12,
-        tradeReady: 20,
-        watch: 20,
-        scannerOnly: 20,
+        premium: LIMIT_PREMIUM,
+        tradeReady: LIMIT_TRADE_READY,
+        watch: LIMIT_WATCH,
+        scannerOnly: LIMIT_SCANNER_ONLY,
         universeTop: MAX_UNIVERSE_COINS,
       },
       updatedAt: now,
@@ -1265,32 +1339,30 @@ export default async function handler(req, res) {
     });
 
     // -------------------------------
-    // 6. Response
+    // 6. Kandidaten voor UI fallback
     // -------------------------------
-    const premiumCandidates = universe
-      .filter((c) => c.superScannerCoin)
-      .sort((a, b) => b.perfectCandidateScore - a.perfectCandidateScore)
-      .slice(0, 12);
+    const premiumCandidates = uniqBySymbol([
+      ...stageEliteExpansion,
+      ...stageEliteIgnition,
+      ...stageTradeReady.filter((c) => !!c.superScannerCoin),
+    ])
+      .sort(sortMoonCoins)
+      .slice(0, LIMIT_PREMIUM);
 
-    const tradeReady = universe
-      .filter((c) => c.execution?.action === "ALLOW_ENTRY")
-      .sort((a, b) => b.perfectCandidateScore - a.perfectCandidateScore)
-      .slice(0, 20);
+    const tradeReadyCandidates = uniqBySymbol(stageTradeReady)
+      .sort(sortMoonCoins)
+      .slice(0, LIMIT_TRADE_READY);
 
-    const watchCandidates = universe
-      .filter(
-        (c) =>
-          c.engineGate === "WATCH" ||
-          c.execution?.action === "WATCH" ||
-          c.execution?.action === "ARM_ENTRY"
-      )
-      .sort((a, b) => b.perfectCandidateScore - a.perfectCandidateScore)
-      .slice(0, 20);
+    const watchCandidates = uniqBySymbol([
+      ...stageAlmost,
+      ...stageBuildup,
+    ])
+      .sort(sortMoonCoins)
+      .slice(0, LIMIT_WATCH);
 
-    const scannerOnly = universe
-      .filter((c) => !c.superScannerCoin)
-      .sort((a, b) => b.perfectCandidateScore - a.perfectCandidateScore)
-      .slice(0, 20);
+    const scannerOnlyCandidates = uniqBySymbol(stageRadar)
+      .sort(sortMoonCoins)
+      .slice(0, LIMIT_SCANNER_ONLY);
 
     console.log("MOON DEBUG", {
       mode,
@@ -1304,9 +1376,9 @@ export default async function handler(req, res) {
         hold: funnel.hold.length,
       },
       premium: premiumCandidates.length,
-      tradeReady: tradeReady.length,
+      tradeReady: tradeReadyCandidates.length,
       watch: watchCandidates.length,
-      scannerOnly: scannerOnly.length,
+      scannerOnly: scannerOnlyCandidates.length,
     });
 
     const latest = {
@@ -1332,16 +1404,16 @@ export default async function handler(req, res) {
       },
       candidates: {
         premium: premiumCandidates,
-        tradeReady,
+        tradeReady: tradeReadyCandidates,
         watch: watchCandidates,
-        scannerOnly,
+        scannerOnly: scannerOnlyCandidates,
       },
       debug: {
         universeCount: universe.length,
         premiumCount: premiumCandidates.length,
-        tradeReadyCount: tradeReady.length,
+        tradeReadyCount: tradeReadyCandidates.length,
         watchCount: watchCandidates.length,
-        scannerOnlyCount: scannerOnly.length,
+        scannerOnlyCount: scannerOnlyCandidates.length,
       },
       portfolio,
       positions: {
