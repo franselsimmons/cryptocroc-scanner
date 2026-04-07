@@ -15,7 +15,7 @@ import {
   isBlockedMoonAsset,
 } from "../../lib/_moon_core.js";
 
-import { pushEvent } from "../../lib/_analytics.js";
+import { pushEvent, uid } from "../../lib/_analytics.js";
 import { sendSignal } from "../../lib/discordRouter.js";
 import { buildCoinProfile, buildMoonExecutionDecision } from "../../lib/_trade_engine.js";
 import { logTradeOpened, logTradeClosed } from "../../lib/tradeAnalytics.js";
@@ -27,17 +27,14 @@ function n(x, d = 0) {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
 }
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
 function up(x) {
   return String(x || "").toUpperCase();
 }
 function sideFromMode(mode) {
   return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG";
 }
-function uid(prefix = "moon") {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+function safeArr(v) {
+  return Array.isArray(v) ? v : [];
 }
 
 function coinForDiscord({ coin, position }) {
@@ -64,6 +61,31 @@ async function safePushEvent(name, payload) {
   }
 }
 
+async function safePushStageTransition(payload) {
+  try {
+    await pushEvent("scan_transition", payload);
+  } catch (e) {
+    console.error("pushEvent failed (scan_transition):", e?.message || e);
+  }
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  const out = new Array(items.length);
+  let idx = 0;
+
+  async function run() {
+    while (true) {
+      const cur = idx++;
+      if (cur >= items.length) break;
+      out[cur] = await worker(items[cur], cur);
+    }
+  }
+
+  const runners = Array.from({ length: Math.max(1, limit) }, () => run());
+  await Promise.all(runners);
+  return out;
+}
+
 // ========== constants ==========
 const COOLDOWN_SL_SEC = 4 * 60 * 60;
 const COOLDOWN_TP_SEC = 90 * 60;
@@ -73,6 +95,11 @@ const MAX_OPEN_TRADES = 4;
 const POSITION_SIZE_USD = 50;
 const ENTRY_HISTORY_KEEP = 40;
 const UI_ENTRY_LOCK_MS_MOON = 8 * 60 * 60 * 1000;
+
+// performance
+const MOON_UNIVERSE_LIMIT = 120;
+const OB_MIN_VOLUME_USD = 750_000;
+const BUILD_CONCURRENCY = 8;
 
 function keyMoonConfigSnapshot(mode) {
   return `moon:config:snapshot:${String(mode || "bull").toLowerCase()}`;
@@ -205,7 +232,7 @@ const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 async function fetchOrderbook(symbol) {
   try {
     const url = `${BITGET_OB}?symbol=${symbol}&type=step0&limit=20`;
-    const j = await fetchJsonWithTimeout(url, { headers: { accept: "application/json" } }, 6000);
+    const j = await fetchJsonWithTimeout(url, { headers: { accept: "application/json" } }, 4500);
     if (String(j?.code || "") !== "00000") return null;
 
     const bids = j?.data?.bids || [];
@@ -272,18 +299,22 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
   const cg = await fetchCoinGeckoTopCached();
   const rawCoins = Array.isArray(cg?.coins) ? cg.coins : Array.isArray(cg) ? cg : [];
   const bitgetSymbols = await getBitgetSpotUsdtSymbols();
-  const step1 = rawCoins.filter((c) => !isBlockedMoonAsset(c));
-  const step2 = step1.filter((c) => bitgetSymbols.has(up(c.symbol)));
-  const filtered = step2.slice(0, 180);
-  const out = [];
+
+  const filtered = rawCoins
+    .filter((c) => !isBlockedMoonAsset(c))
+    .filter((c) => bitgetSymbols.has(up(c.symbol)))
+    .slice(0, MOON_UNIVERSE_LIMIT);
+
   const state = (await kv.get(keyMoonState(mode))) || {};
 
-  for (const coin of filtered) {
+  const out = await mapWithConcurrency(filtered, BUILD_CONCURRENCY, async (coin) => {
     const sym = up(coin.symbol);
     const prev = state?.[sym] || {};
 
     let ob = null;
-    if (n(coin.volume, 0) >= 250_000) ob = await fetchOrderbook(`${sym}USDT`);
+    if (n(coin.volume, 0) >= OB_MIN_VOLUME_USD) {
+      ob = await fetchOrderbook(`${sym}USDT`);
+    }
     const obx = computeObScore(ob);
 
     const tier = getTierForMcap(coin.marketCap);
@@ -417,6 +448,7 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
       stageWhy,
       eliteType,
       moveScore,
+      velocity,
       confidence: entryQuality || moveScore,
       moonProbability: probs?.moonProbability ?? 0,
       dumpProbability: probs?.dumpProbability ?? 0,
@@ -450,7 +482,6 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
         flatPct: compression.flatPct,
       },
       volAcc: { short: volAcc.short, medium: volAcc.medium },
-      velocity,
       entryQuality,
       persistenceScore,
       tradePlan,
@@ -509,11 +540,10 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
     coinForOutput.coinProfile = coinProfile;
     coinForOutput.execution = execution;
 
-    out.push(coinForOutput);
-    await sleep(8);
-  }
+    return coinForOutput;
+  });
 
-  return { regime, coins: out };
+  return { regime, coins: out.filter(Boolean) };
 }
 
 function shouldSendUpgradeSignal(oldStage, newStage) {
@@ -522,15 +552,6 @@ function shouldSendUpgradeSignal(oldStage, newStage) {
   const oldIdx = order.indexOf(oldStage);
   const newIdx = order.indexOf(newStage);
   return newIdx > oldIdx;
-}
-
-// ========== extra events voor stuck-analyse ==========
-async function safePushStageTransition(payload) {
-  try {
-    await pushEvent("scan_transition", payload);
-  } catch (e) {
-    console.error("pushEvent failed (scan_transition):", e?.message || e);
-  }
 }
 
 export default async function handler(req, res) {
@@ -552,9 +573,7 @@ export default async function handler(req, res) {
     const lock = await acquireScanLock(mode);
     if (!lock.ok) {
       const latest = await kv.get(keyMoonLatest(mode));
-      res.status(200).json(
-        latest || { ok: true, skipped: true, reason: "scan_lock_active", mode }
-      );
+      res.status(200).json(latest || { ok: true, skipped: true, reason: "scan_lock_active", mode });
       return;
     }
     lockAcquired = true;
@@ -565,20 +584,10 @@ export default async function handler(req, res) {
     const btc = await fetchBTCGateFromUniverse();
 
     const prevPositions = (await kv.get(keyMoonPositions(mode))) || { open: [], closed: [] };
-    const positions = {
-      open: [...(prevPositions.open || [])],
-      closed: [...(prevPositions.closed || [])],
-    };
+    const positions = { open: [...(prevPositions.open || [])], closed: [...(prevPositions.closed || [])] };
     await applyCooldownsFromClosed(mode, positions, now);
 
-    const { regime, coins: universe } = await buildUniverse({
-      CORE,
-      mode,
-      whaleFlow,
-      btc,
-      now,
-    });
-
+    const { regime, coins: universe } = await buildUniverse({ CORE, mode, whaleFlow, btc, now });
     const prevState = (await kv.get(keyMoonState(mode))) || {};
     const nextState = {};
     const universeMap = new Map(universe.map((c) => [c.symbol, c]));
@@ -678,9 +687,7 @@ export default async function handler(req, res) {
       const nextPositionState = {
         ...prevPositionState,
         inPosition: false,
-        cyclesInTrade: prevPositionState.inPosition
-          ? prevPositionState.cyclesInTrade || 0
-          : 0,
+        cyclesInTrade: prevPositionState.inPosition ? prevPositionState.cyclesInTrade || 0 : 0,
       };
 
       if (!hasOpen) {
@@ -703,8 +710,7 @@ export default async function handler(req, res) {
           nextPositionState.entryTicketSince = 0;
         } else if (coin.execution?.action === "ALLOW_ENTRY") {
           nextPositionState.entryTicketActive = true;
-          nextPositionState.entryTicketSince =
-            prevPositionState.entryTicketSince || now;
+          nextPositionState.entryTicketSince = prevPositionState.entryTicketSince || now;
           nextPositionState.entryTicketTtlMs =
             coin.execution?.meta?.entryTicketTtlMs ||
             prevPositionState.entryTicketTtlMs ||
@@ -769,26 +775,6 @@ export default async function handler(req, res) {
         coinProfile: coin.coinProfile,
         filterSnapshot: coin.filterSnapshot || null,
       };
-
-      await safePushEvent("scan_coin_state", {
-        system: "moon",
-        mode,
-        symbol: sym,
-        stage: rawStage,
-        price: coin.price,
-        entryQuality: coin.entryQuality,
-        persistenceScore: coin.persistenceScore,
-        perfectCandidateScore: coin.perfectCandidateScore,
-        spreadPct: coin?.ob?.spreadPct ?? null,
-        obScore: coin?.ob?.score ?? null,
-        depthMinUsd1p: coin?.ob?.depthMinUsd1p ?? null,
-        scannerGate: coin.engineGate || null,
-        tradeDeskStatus: coin.tradeDeskStatus || null,
-        regime,
-        btcState: btc?.state || "NEUTRAL",
-        filterSnapshot: coin.filterSnapshot || null,
-        ts: now,
-      });
     }
 
     // -------------------------------
@@ -838,7 +824,7 @@ export default async function handler(req, res) {
           closedAt: now,
           exitPrice: liveCoin.price,
           pnlPct: execution.meta?.pnlPct ?? 0,
-          pnlUsd: (execution.meta?.pnlPct ?? 0) / 100 * POSITION_SIZE_USD,
+          pnlUsd: ((execution.meta?.pnlPct ?? 0) / 100) * POSITION_SIZE_USD,
           exitReason: execution.meta?.exitReason || execution.meta?.reason,
           entryStage: pos.stage || "ENTRY",
           sourceStage: pos.sourceStage || liveCoin.stage || "UNKNOWN",
@@ -864,12 +850,9 @@ export default async function handler(req, res) {
           persistenceScore: pos.persistenceScore ?? null,
           spreadPct: liveCoin?.ob?.spreadPct ?? pos?.filterSnapshot?.spreadPct ?? null,
           obScore: liveCoin?.ob?.score ?? pos?.filterSnapshot?.obScore ?? null,
-          depthMinUsd1p:
-            liveCoin?.ob?.depthMinUsd1p ?? pos?.filterSnapshot?.depthMinUsd1p ?? null,
+          depthMinUsd1p: liveCoin?.ob?.depthMinUsd1p ?? pos?.filterSnapshot?.depthMinUsd1p ?? null,
           perfectCandidateScore:
-            liveCoin?.perfectCandidateScore ??
-            pos?.filterSnapshot?.perfectCandidateScore ??
-            null,
+            liveCoin?.perfectCandidateScore ?? pos?.filterSnapshot?.perfectCandidateScore ?? null,
           filterSnapshot: pos.filterSnapshot || liveCoin.filterSnapshot || null,
           ts: now,
         });
@@ -949,9 +932,7 @@ export default async function handler(req, res) {
       }
     }
 
-    entryCandidates.sort(
-      (a, b) => (b.coin?.entryQuality || 0) - (a.coin?.entryQuality || 0)
-    );
+    entryCandidates.sort((a, b) => (b.coin?.entryQuality || 0) - (a.coin?.entryQuality || 0));
 
     const slotsLeft = MAX_OPEN_TRADES - positions.open.length;
     const toOpen = entryCandidates.slice(0, Math.min(slotsLeft, 1));
@@ -1171,14 +1152,12 @@ export default async function handler(req, res) {
         tradeReady: 20,
         watch: 20,
         scannerOnly: 20,
-        universeTop: 180,
+        universeTop: MOON_UNIVERSE_LIMIT,
       },
       updatedAt: now,
     };
 
-    await kv.set(keyMoonConfigSnapshot(mode), configSnapshot, {
-      ex: 60 * 60 * 24 * 7,
-    });
+    await kv.set(keyMoonConfigSnapshot(mode), configSnapshot, { ex: 60 * 60 * 24 * 7 });
 
     // -------------------------------
     // 6. Response
