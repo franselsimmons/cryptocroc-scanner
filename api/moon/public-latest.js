@@ -1,5 +1,6 @@
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG, keyMoonLatest } from "../../lib/_moon_core.js";
+import { buildCoinProfile, buildMoonExecutionDecision } from "../../lib/_trade_engine.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -16,23 +17,77 @@ function up(x) {
   return String(x || "").toUpperCase();
 }
 
-function uniqBySymbol(list) {
-  const seen = new Set();
-  const out = [];
-
-  for (const item of arr(list)) {
-    const key = up(item?.symbol || item?.id || "");
-    if (!key) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(item);
+function gateFromStage(stage) {
+  const st = up(stage);
+  if (
+    st === "ENTRY" ||
+    st === "TRADE_READY" ||
+    st === "ELITE_IGNITION" ||
+    st === "ELITE_EXPANSION" ||
+    st === "ELITE_CASCADE"
+  ) {
+    return "WATCH";
   }
+  if (st === "ALMOST") return "WATCH";
+  return "IGNORE";
+}
 
-  return out;
+function sideFromMode(mode) {
+  return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG";
+}
+
+function addExecutionToMoonCoin({ coin, mode, btc, regime }) {
+  const scannerGate = gateFromStage(coin?.stage);
+  const tradeDeskStatus = scannerGate;
+  const side = sideFromMode(mode);
+
+  const coinForEngine = {
+    ...coin,
+    side,
+    systemType: "moon",
+    tradeDeskStatus,
+    scannerGate,
+  };
+
+  const coinProfile = buildCoinProfile({
+    systemType: "moon",
+    coin: coinForEngine,
+  });
+
+  const positionState = {
+    inPosition: false,
+    cyclesInTrade: 0,
+    minHoldCycles: 6,
+    weakHoldCount: 0,
+    maxWeakHoldCycles: 3,
+    entryTicketActive: false,
+    entryTicketSince: 0,
+    now: Date.now(),
+  };
+
+  const execution = buildMoonExecutionDecision({
+    coin: coinForEngine,
+    btc,
+    regime,
+    mode,
+    coinProfile,
+    positionState,
+    scannerGate,
+  });
+
+  return {
+    ...coinForEngine,
+    tradeDeskStatus,
+    coinProfile,
+    execution,
+  };
 }
 
 export default async function handler(req, res) {
   try {
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.setHeader("cache-control", "no-store");
+
     const mode =
       String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
 
@@ -44,39 +99,11 @@ export default async function handler(req, res) {
         mode,
         ts: 0,
         scannedAt: 0,
-        btc: { state: "NEUTRAL", chg24: 0, range24: 0 },
+        regime: "TREND",
+        btc: { state: "NEUTRAL", chg24: 0, chg1h: 0, range24: 0, price: 0 },
         whaleFlow: 0,
-        funnel: {
-          trade_ready: [],
-          elite_expansion: [],
-          elite_ignition: [],
-          almost: [],
-          buildup: [],
-          radar: [],
-          hold: [],
-        },
-        counts: {
-          trade_ready: 0,
-          elite_expansion: 0,
-          elite_ignition: 0,
-          almost: 0,
-          buildup: 0,
-          radar: 0,
-          hold: 0,
-        },
-        candidates: {
-          premium: [],
-          tradeReady: [],
-          watch: [],
-          scannerOnly: [],
-        },
-        debug: {
-          universeCount: 0,
-          premiumCount: 0,
-          tradeReadyCount: 0,
-          watchCount: 0,
-          scannerOnlyCount: 0,
-        },
+        funnel: { entry: [], almost: [], buildup: [], radar: [] },
+        counts: { entry: 0, almost: 0, buildup: 0, radar: 0 },
         portfolio: {
           openCount: 0,
           closedCount: 0,
@@ -88,71 +115,52 @@ export default async function handler(req, res) {
     }
 
     const funnel = latest?.funnel || {};
-    const candidates = latest?.candidates || {};
-
-    const eliteExpansion = arr(funnel.elite_expansion);
-    const eliteIgnition = arr(funnel.elite_ignition);
-    const almost = arr(funnel.almost);
-    const buildup = arr(funnel.buildup);
-    const radar = arr(funnel.radar);
-    const hold = arr(funnel.hold);
-
-    const tradeReady = uniqBySymbol([
-      ...arr(funnel.trade_ready),
-      ...arr(funnel.entry),
-      ...eliteExpansion,
-      ...eliteIgnition,
-      ...arr(funnel.elite_cascade),
-      ...arr(candidates.tradeReady),
-      ...hold,
-    ]);
+    const entry0 = arr(funnel.entry);
+    const almost0 = arr(funnel.almost);
+    const buildup0 = arr(funnel.buildup);
+    const radar0 = arr(funnel.radar);
 
     const ts = n(latest?.scannedAt, n(latest?.ts, 0));
 
+    const btcIn = latest?.btc || {};
+    const btc = {
+      price: n(btcIn.price, 0),
+      chg24: n(btcIn.chg24, 0),
+      chg1h: n(btcIn.chg1h, 0),
+      range24: n(btcIn.range24, 0),
+      state: String(btcIn.state || "NEUTRAL").toUpperCase(),
+    };
+
+    const regime = String(latest?.regime || "TREND").toUpperCase();
+
+    const entry = entry0.map((c) =>
+      addExecutionToMoonCoin({ coin: c, mode, btc, regime })
+    );
+    const almost = almost0.map((c) =>
+      addExecutionToMoonCoin({ coin: c, mode, btc, regime })
+    );
+    const buildup = buildup0.map((c) =>
+      addExecutionToMoonCoin({ coin: c, mode, btc, regime })
+    );
+    const radar = radar0.map((c) =>
+      addExecutionToMoonCoin({ coin: c, mode, btc, regime })
+    );
+
     return res.status(200).json({
       ...latest,
+      ok: true,
+      mode,
       ts,
-      scannedAt: n(latest?.scannedAt, ts),
-      btc: latest?.btc || { state: "NEUTRAL", chg24: 0, range24: 0 },
-      whaleFlow: n(latest?.whaleFlow, 0),
-      funnel: {
-        trade_ready: tradeReady,
-        elite_expansion: eliteExpansion,
-        elite_ignition: eliteIgnition,
-        almost,
-        buildup,
-        radar,
-        hold,
-      },
+      scannedAt: ts,
+      btc,
+      regime,
+      funnel: { entry, almost, buildup, radar },
       counts: {
-        trade_ready: tradeReady.length,
-        elite_expansion: eliteExpansion.length,
-        elite_ignition: eliteIgnition.length,
+        entry: entry.length,
         almost: almost.length,
         buildup: buildup.length,
         radar: radar.length,
-        hold: hold.length,
       },
-      candidates: {
-        premium: arr(candidates.premium),
-        tradeReady: arr(candidates.tradeReady),
-        watch: arr(candidates.watch),
-        scannerOnly: arr(candidates.scannerOnly),
-      },
-      debug: {
-        universeCount: n(latest?.debug?.universeCount, 0),
-        premiumCount: n(latest?.debug?.premiumCount, 0),
-        tradeReadyCount: n(latest?.debug?.tradeReadyCount, 0),
-        watchCount: n(latest?.debug?.watchCount, 0),
-        scannerOnlyCount: n(latest?.debug?.scannerOnlyCount, 0),
-      },
-      portfolio: latest?.portfolio || {
-        openCount: 0,
-        closedCount: 0,
-        realizedUsd: 0,
-        avgRealizedPct: 0,
-      },
-      positions: latest?.positions || { open: 0, closed: 0, openItems: [] },
     });
   } catch (e) {
     return res.status(500).json({
