@@ -1,6 +1,9 @@
-import { readTradeEventBook, inferSystemFromTradeId, readManyEvents } from "../lib/_analytics.js";
+import {
+  readTradeEventBook,
+  inferSystemFromTradeId,
+  readManyEvents,
+} from "../lib/_analytics.js";
 
-// Namespace imports voor core bestanden
 import * as mainBullCore from "../lib/_core_bull.js";
 import * as mainBearCore from "../lib/_core_bear.js";
 import * as moonBullCore from "../lib/_moon_core_bull.js";
@@ -17,6 +20,10 @@ function safeArray(v) {
 
 function pct(v) {
   return Number(n(v, 0).toFixed(2));
+}
+
+function up(v) {
+  return String(v || "").toUpperCase();
 }
 
 function bucketNumber(v, steps = [40, 50, 60, 70, 80]) {
@@ -100,347 +107,6 @@ function buildSummary(rows) {
   };
 }
 
-function fmtBucketTeacher(bucket) {
-  if (!bucket) return "-";
-  return `${pct(bucket.avgPnlPct)}% avg pnl en ${pct(bucket.winRate)}% winrate over ${n(bucket.count, 0)} trades`;
-}
-
-function bestBucket(list) {
-  const arr = safeArray(list).filter((x) => n(x.count, 0) >= 3);
-  if (!arr.length) return null;
-
-  return [...arr].sort((a, b) => {
-    const pnlDiff = n(b.avgPnlPct, 0) - n(a.avgPnlPct, 0);
-    if (pnlDiff !== 0) return pnlDiff;
-
-    const wrDiff = n(b.winRate, 0) - n(a.winRate, 0);
-    if (wrDiff !== 0) return wrDiff;
-
-    return n(b.count, 0) - n(a.count, 0);
-  })[0];
-}
-
-function worstBucket(list) {
-  const arr = safeArray(list).filter((x) => n(x.count, 0) >= 3);
-  if (!arr.length) return null;
-
-  return [...arr].sort((a, b) => {
-    const pnlDiff = n(a.avgPnlPct, 0) - n(b.avgPnlPct, 0);
-    if (pnlDiff !== 0) return pnlDiff;
-
-    const wrDiff = n(a.winRate, 0) - n(b.winRate, 0);
-    if (wrDiff !== 0) return wrDiff;
-
-    return n(b.count, 0) - n(a.count, 0);
-  })[0];
-}
-
-function suggestHigherNumeric(currentValue, bucketKey) {
-  const cur = n(currentValue, 0);
-  const key = String(bucketKey || "");
-
-  if (key.startsWith("<40")) return Math.max(cur, 40);
-  if (key.startsWith("40-49")) return Math.max(cur, 50);
-  if (key.startsWith("50-59")) return Math.max(cur, 60);
-  if (key.startsWith("60-69")) return Math.max(cur, 70);
-  if (key.startsWith("70-79")) return Math.max(cur, 80);
-  if (key.endsWith("+")) return cur;
-
-  return cur;
-}
-
-function suggestTighterSpread(currentValue, bucketKey) {
-  const cur = n(currentValue, 999);
-  const key = String(bucketKey || "");
-
-  if (key === "<0.40") return Math.min(cur, 0.4);
-  if (key === "0.40-0.79") return Math.min(cur, 0.8);
-  if (key === "0.80-1.19") return Math.min(cur, 1.2);
-  if (key === "1.20-1.59") return Math.min(cur, 1.6);
-
-  return cur;
-}
-
-function explainConfigValue(liveConfig, path, fallback = null) {
-  try {
-    const parts = String(path || "").split(".");
-    let cur = liveConfig;
-    for (const p of parts) cur = cur?.[p];
-    return cur ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function buildTeacher(summary, byReason, byEntryQuality, byPersistence, bySpread, byObScore, liveConfig) {
-  const lessons = [];
-
-  const timeout = byReason.find((x) => x.key === "timeout");
-  const stopLoss = byReason.find((x) => x.key === "sl" || x.key === "stop_loss");
-  const thesisBreak = byReason.find((x) => x.key === "thesis_break");
-
-  const bestEq = bestBucket(byEntryQuality);
-  const worstEq = worstBucket(byEntryQuality);
-
-  const bestPs = bestBucket(byPersistence);
-  const worstPs = worstBucket(byPersistence);
-
-  const bestSpread = bestBucket(bySpread);
-  const worstSpread = worstBucket(bySpread);
-
-  const bestOb = bestBucket(byObScore);
-  const worstOb = worstBucket(byObScore);
-
-  const liveEntryMinConfidence = explainConfigValue(liveConfig, "entry.minConfidence", null);
-  const liveSpreadMaxPct = explainConfigValue(liveConfig, "entry.spreadMaxPct", null);
-  const liveObScoreMin = explainConfigValue(liveConfig, "entry.obScoreMin", null);
-  const liveAlmostMinConfidence = explainConfigValue(liveConfig, "almost.minConfidence", null);
-
-  if (n(summary.winRate) < 45) {
-    lessons.push({
-      type: "improve",
-      text: `Winrate is ${pct(summary.winRate)}%. Dat is te laag. Entries moeten strenger worden op basis van best presterende buckets.`,
-    });
-  }
-
-  if (timeout && n(timeout.avgPnlPct) < -1) {
-    lessons.push({
-      type: "improve",
-      text: `Timeout trades verliezen gemiddeld ${pct(timeout.avgPnlPct)}%. Timeout is nu te duur en moet strenger of korter.`,
-    });
-  }
-
-  if (stopLoss && stopLoss.count >= 3 && stopLoss.winRate === 0) {
-    lessons.push({
-      type: "improve",
-      text: `Stop-loss cluster aanwezig: ${stopLoss.count} trades, ${pct(stopLoss.totalPnlPct)}% totaal. Entryfilters zijn nog te los.`,
-    });
-  }
-
-  if (thesisBreak && n(thesisBreak.totalPnlPct) > 0) {
-    lessons.push({
-      type: "good",
-      text: `Thesis-break is positief: ${pct(thesisBreak.totalPnlPct)}% totaal bij ${thesisBreak.count} trades.`,
-    });
-  }
-
-  if (bestEq) {
-    lessons.push({
-      type: "focus",
-      text: `Beste entry-quality bucket: ${bestEq.key} met ${fmtBucketTeacher(bestEq)}.`,
-    });
-  }
-
-  if (bestPs) {
-    lessons.push({
-      type: "focus",
-      text: `Beste persistence bucket: ${bestPs.key} met ${fmtBucketTeacher(bestPs)}.`,
-    });
-  }
-
-  if (bestSpread) {
-    lessons.push({
-      type: "focus",
-      text: `Beste spread bucket: ${bestSpread.key} met ${fmtBucketTeacher(bestSpread)}.`,
-    });
-  }
-
-  if (bestOb) {
-    lessons.push({
-      type: "focus",
-      text: `Beste OB-score bucket: ${bestOb.key} met ${fmtBucketTeacher(bestOb)}.`,
-    });
-  }
-
-  if (worstEq && bestEq && worstEq.key !== bestEq.key) {
-    lessons.push({
-      type: "warn",
-      text: `Slechtste entry-quality bucket: ${worstEq.key} met ${fmtBucketTeacher(worstEq)}.`,
-    });
-  }
-
-  if (worstPs && bestPs && worstPs.key !== bestPs.key) {
-    lessons.push({
-      type: "warn",
-      text: `Slechtste persistence bucket: ${worstPs.key} met ${fmtBucketTeacher(worstPs)}.`,
-    });
-  }
-
-  if (worstSpread && bestSpread && worstSpread.key !== bestSpread.key) {
-    lessons.push({
-      type: "warn",
-      text: `Slechtste spread bucket: ${worstSpread.key} met ${fmtBucketTeacher(worstSpread)}.`,
-    });
-  }
-
-  if (worstOb && bestOb && worstOb.key !== bestOb.key) {
-    lessons.push({
-      type: "warn",
-      text: `Slechtste OB-score bucket: ${worstOb.key} met ${fmtBucketTeacher(worstOb)}.`,
-    });
-  }
-
-  if (bestEq && liveEntryMinConfidence != null) {
-    const suggested = suggestHigherNumeric(liveEntryMinConfidence, bestEq.key);
-    if (suggested > n(liveEntryMinConfidence, 0)) {
-      lessons.push({
-        type: "action",
-        text: `Concrete suggestie: verhoog entry.minConfidence van ${liveEntryMinConfidence} naar ongeveer ${suggested}, omdat bucket ${bestEq.key} beter presteert.`,
-      });
-    }
-  }
-
-  if (bestEq && liveAlmostMinConfidence != null) {
-    const suggestedAlmost = suggestHigherNumeric(liveAlmostMinConfidence, bestEq.key);
-    if (suggestedAlmost > n(liveAlmostMinConfidence, 0)) {
-      lessons.push({
-        type: "action",
-        text: `Concrete suggestie: verhoog almost.minConfidence van ${liveAlmostMinConfidence} naar ongeveer ${suggestedAlmost}, zodat zwakkere pre-entry setups eerder afvallen.`,
-      });
-    }
-  }
-
-  if (bestSpread && liveSpreadMaxPct != null) {
-    const suggestedSpread = suggestTighterSpread(liveSpreadMaxPct, bestSpread.key);
-    if (suggestedSpread < n(liveSpreadMaxPct, 999)) {
-      lessons.push({
-        type: "action",
-        text: `Concrete suggestie: verlaag entry.spreadMaxPct van ${liveSpreadMaxPct} naar ongeveer ${suggestedSpread}, omdat de beste resultaten in bucket ${bestSpread.key} zitten.`,
-      });
-    }
-  }
-
-  if (bestOb && liveObScoreMin != null) {
-    const obKey = String(bestOb.key || "");
-    let suggestedOb = n(liveObScoreMin, 0);
-
-    if (obKey === "0.05+") suggestedOb = Math.max(suggestedOb, 0.05);
-    else if (obKey === "0-0.04") suggestedOb = Math.max(suggestedOb, 0);
-
-    if (suggestedOb > n(liveObScoreMin, 0)) {
-      lessons.push({
-        type: "action",
-        text: `Concrete suggestie: verhoog entry.obScoreMin van ${liveObScoreMin} naar ongeveer ${suggestedOb}, omdat hogere OB buckets beter presteren.`,
-      });
-    }
-  }
-
-  const score = Math.max(
-    1,
-    Math.min(
-      10,
-      5 + (n(summary.winRate) - 40) / 10 + n(summary.avgPnlPct) / 2
-    )
-  );
-
-  return {
-    score: pct(score),
-    lessons,
-  };
-}
-
-function enrichClosedTrades(opened, closed) {
-  const openById = new Map();
-
-  for (const ev of safeArray(opened)) {
-    if (ev?.id) openById.set(ev.id, ev);
-  }
-
-  return safeArray(closed).map((ev) => {
-    const open = openById.get(ev.id) || null;
-    const system = ev.system || open?.system || inferSystemFromTradeId(ev.id);
-    const filterSnapshot = ev.filterSnapshot || open?.filterSnapshot || null;
-
-    return {
-      id: ev.id,
-      system,
-      mode: ev.mode || open?.mode || "unknown",
-      symbol: String(ev.symbol || open?.symbol || "").toUpperCase(),
-      side: String(ev.side || open?.side || "").toUpperCase(),
-      stage: String(ev.stage || open?.stage || "").toUpperCase(),
-      sourceStage: String(ev.sourceStage || open?.sourceStage || "").toUpperCase(),
-      reason: String(ev.reason || ev.exitReason || "unknown"),
-      pnlPct: pct(ev.pnlPct),
-      pnlUsd: pct(ev.pnlUsd),
-      ts: n(ev.ts || ev.closedAt, 0),
-
-      entryQuality: n(
-        ev.entryQuality,
-        n(open?.entryQuality, n(filterSnapshot?.entryQuality, 0))
-      ),
-      persistenceScore: n(
-        ev.persistenceScore,
-        n(open?.persistenceScore, n(filterSnapshot?.persistenceScore, 0))
-      ),
-      spreadPct: n(ev.spreadPct, n(filterSnapshot?.spreadPct, 999)),
-      obScore: n(ev.obScore, n(filterSnapshot?.obScore, 0)),
-      perfectCandidateScore: n(
-        ev.perfectCandidateScore,
-        n(
-          open?.perfectCandidateScore,
-          n(filterSnapshot?.perfectCandidateScore, 0)
-        )
-      ),
-      filterSnapshot,
-    };
-  });
-}
-
-function isRichTrade(row) {
-  if (!row) return false;
-  if (row.filterSnapshot) return true;
-  if (n(row.entryQuality, 0) > 0) return true;
-  if (n(row.persistenceScore, 0) > 0) return true;
-  if (n(row.spreadPct, 999) < 900) return true;
-  if (Math.abs(n(row.obScore, 0)) > 0) return true;
-  return false;
-}
-
-function analyzeGroup(rows, liveConfig) {
-  const allRows = safeArray(rows);
-  const richRows = allRows.filter(isRichTrade);
-
-  const summary = buildSummary(allRows);
-  const analysisRows = richRows.length >= 5 ? richRows : allRows;
-
-  const byReason = groupStats(allRows, (x) => x.reason || "unknown", 20);
-  const byStage = groupStats(allRows, (x) => x.sourceStage || x.stage || "UNKNOWN", 20);
-  const byEntryQuality = groupStats(analysisRows, (x) => bucketNumber(x.entryQuality), 20);
-  const byPersistence = groupStats(analysisRows, (x) => bucketNumber(x.persistenceScore), 20);
-  const bySpread = groupStats(analysisRows, (x) => bucketSpread(x.spreadPct), 20);
-  const byObScore = groupStats(analysisRows, (x) => bucketOb(x.obScore), 20);
-
-  const teacher = buildTeacher(
-    summary,
-    byReason,
-    byEntryQuality,
-    byPersistence,
-    bySpread,
-    byObScore,
-    liveConfig
-  );
-
-  return {
-    summary,
-    dataQuality: {
-      totalClosedTrades: allRows.length,
-      richClosedTrades: richRows.length,
-      richCoveragePct: allRows.length ? pct((richRows.length / allRows.length) * 100) : 0,
-      usingRichRows: richRows.length >= 5,
-    },
-    buckets: {
-      byReason,
-      byStage,
-      byEntryQuality,
-      byPersistence,
-      bySpread,
-      byObScore,
-    },
-    teacher,
-    liveConfig,
-  };
-}
-
 function resolveCfg(core) {
   if (typeof core?.getCfg === "function") return core.getCfg();
   if (typeof core?.default?.getCfg === "function") return core.default.getCfg();
@@ -453,6 +119,7 @@ function pickLiveConfig(core, type) {
 
     if (type === "main") {
       return {
+        kind: "single_system",
         radar: cfg?.radar || null,
         buildup: cfg?.buildup || null,
         almost: cfg?.almost || null,
@@ -469,6 +136,7 @@ function pickLiveConfig(core, type) {
 
     if (type === "moon") {
       return {
+        kind: "single_system",
         radar: cfg?.radar || null,
         buildup: cfg?.buildup || null,
         almost: cfg?.almost || null,
@@ -492,9 +160,500 @@ function pickLiveConfig(core, type) {
   }
 }
 
-// ========== STUCK‑COIN ANALYSE (nieuw) ==========
+function explainConfigValue(liveConfig, path, fallback = null) {
+  try {
+    const parts = String(path || "").split(".");
+    let cur = liveConfig;
+    for (const p of parts) cur = cur?.[p];
+    return cur ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeReason(v) {
+  const s = String(v || "").toLowerCase();
+  if (!s) return "unknown";
+  if (s === "sl") return "stop_loss";
+  if (s === "tp") return "take_profit";
+  return s;
+}
+
+function normalizeStageValue(...values) {
+  for (const v of values) {
+    const s = up(v);
+    if (s && s !== "UNKNOWN" && s !== "NULL" && s !== "UNDEFINED") return s;
+  }
+  return "UNKNOWN";
+}
+
+function enrichClosedTrades(opened, closed) {
+  const openById = new Map();
+
+  for (const ev of safeArray(opened)) {
+    if (ev?.id) openById.set(ev.id, ev);
+  }
+
+  return safeArray(closed).map((ev) => {
+    const open = openById.get(ev.id) || null;
+    const filterSnapshot = ev.filterSnapshot || open?.filterSnapshot || null;
+    const system = ev.system || open?.system || inferSystemFromTradeId(ev.id);
+
+    const sourceStage = normalizeStageValue(
+      ev.sourceStage,
+      open?.sourceStage,
+      ev.scannerStageAtOpen,
+      open?.scannerStageAtOpen,
+      filterSnapshot?.stage
+    );
+
+    const stage = normalizeStageValue(
+      ev.stage,
+      open?.stage,
+      ev.entryStage,
+      open?.entryStage,
+      sourceStage
+    );
+
+    return {
+      id: ev.id,
+      system,
+      mode: String(ev.mode || open?.mode || "unknown").toLowerCase(),
+      symbol: up(ev.symbol || open?.symbol),
+      side: up(ev.side || open?.side),
+      stage,
+      sourceStage,
+      reason: normalizeReason(ev.reason || ev.exitReason || ev.closedReason || "unknown"),
+      pnlPct: pct(ev.pnlPct),
+      pnlUsd: pct(ev.pnlUsd),
+      ts: n(ev.ts || ev.closedAt, 0),
+
+      entryQuality: n(
+        ev.entryQuality,
+        n(open?.entryQuality, n(filterSnapshot?.entryQuality, 0))
+      ),
+      persistenceScore: n(
+        ev.persistenceScore,
+        n(open?.persistenceScore, n(filterSnapshot?.persistenceScore, 0))
+      ),
+      spreadPct: n(
+        ev.spreadPct,
+        n(open?.spreadPct, n(filterSnapshot?.spreadPct, 999))
+      ),
+      obScore: n(
+        ev.obScore,
+        n(open?.obScore, n(filterSnapshot?.obScore, 0))
+      ),
+      perfectCandidateScore: n(
+        ev.perfectCandidateScore,
+        n(open?.perfectCandidateScore, n(filterSnapshot?.perfectCandidateScore, 0))
+      ),
+      filterSnapshot,
+    };
+  });
+}
+
+function isRichTrade(row) {
+  if (!row) return false;
+  if (row.filterSnapshot) return true;
+  if (n(row.entryQuality, 0) > 0) return true;
+  if (n(row.persistenceScore, 0) > 0) return true;
+  if (n(row.spreadPct, 999) < 900) return true;
+  if (Math.abs(n(row.obScore, 0)) > 0) return true;
+  return false;
+}
+
+function bestBucket(list, minCount = 3) {
+  const arr = safeArray(list).filter((x) => n(x.count, 0) >= minCount);
+  if (!arr.length) return null;
+
+  return [...arr].sort((a, b) => {
+    const pnlDiff = n(b.avgPnlPct, 0) - n(a.avgPnlPct, 0);
+    if (pnlDiff !== 0) return pnlDiff;
+
+    const wrDiff = n(b.winRate, 0) - n(a.winRate, 0);
+    if (wrDiff !== 0) return wrDiff;
+
+    return n(b.count, 0) - n(a.count, 0);
+  })[0];
+}
+
+function worstBucket(list, minCount = 3) {
+  const arr = safeArray(list).filter((x) => n(x.count, 0) >= minCount);
+  if (!arr.length) return null;
+
+  return [...arr].sort((a, b) => {
+    const pnlDiff = n(a.avgPnlPct, 0) - n(b.avgPnlPct, 0);
+    if (pnlDiff !== 0) return pnlDiff;
+
+    const wrDiff = n(a.winRate, 0) - n(b.winRate, 0);
+    if (wrDiff !== 0) return wrDiff;
+
+    return n(b.count, 0) - n(a.count, 0);
+  })[0];
+}
+
+function suggestHigherNumeric(currentValue, bucketKey) {
+  const cur = n(currentValue, 0);
+  const key = String(bucketKey || "");
+
+  if (key.startsWith("<40")) return Math.max(cur, 40);
+  if (key.startsWith("40-49")) return Math.max(cur, 50);
+  if (key.startsWith("50-59")) return Math.max(cur, 60);
+  if (key.startsWith("60-69")) return Math.max(cur, 70);
+  if (key.startsWith("70-79")) return Math.max(cur, 80);
+
+  return cur;
+}
+
+function suggestTighterSpread(currentValue, bucketKey) {
+  const cur = n(currentValue, 999);
+  const key = String(bucketKey || "");
+
+  if (key === "<0.40") return Math.min(cur, 0.4);
+  if (key === "0.40-0.79") return Math.min(cur, 0.8);
+  if (key === "0.80-1.19") return Math.min(cur, 1.2);
+  if (key === "1.20-1.59") return Math.min(cur, 1.6);
+
+  return cur;
+}
+
+function suggestHigherOb(currentValue, bucketKey) {
+  const cur = n(currentValue, 0);
+  const key = String(bucketKey || "");
+
+  if (key === "0.05+") return Math.max(cur, 0.05);
+  if (key === "0-0.04") return Math.max(cur, 0);
+  return cur;
+}
+
+function buildAutomaticSuggestions({
+  summary,
+  byReason,
+  byEntryQuality,
+  byPersistence,
+  bySpread,
+  byObScore,
+  liveConfig,
+}) {
+  const suggestions = [];
+
+  if (!liveConfig || liveConfig.kind !== "single_system") return suggestions;
+  if (n(summary.trades, 0) < 5) return suggestions;
+
+  const bestEq = bestBucket(byEntryQuality);
+  const worstEq = worstBucket(byEntryQuality);
+  const bestPs = bestBucket(byPersistence);
+  const bestSpread = bestBucket(bySpread);
+  const bestOb = bestBucket(byObScore);
+  const stopLoss = byReason.find((x) => x.key === "stop_loss");
+  const timeout = byReason.find((x) => x.key === "timeout");
+
+  const entryMinConfidence = explainConfigValue(liveConfig, "entry.minConfidence", null);
+  const almostMinConfidence = explainConfigValue(liveConfig, "almost.minConfidence", null);
+  const entrySpreadMaxPct = explainConfigValue(liveConfig, "entry.spreadMaxPct", null);
+  const entryObScoreMin = explainConfigValue(liveConfig, "entry.obScoreMin", null);
+
+  if (
+    bestEq &&
+    worstEq &&
+    entryMinConfidence != null &&
+    n(bestEq.avgPnlPct, 0) > n(worstEq.avgPnlPct, 0) + 1
+  ) {
+    const suggested = suggestHigherNumeric(entryMinConfidence, bestEq.key);
+    if (suggested > n(entryMinConfidence, 0)) {
+      suggestions.push({
+        path: "entry.minConfidence",
+        direction: "raise",
+        current: n(entryMinConfidence, 0),
+        suggested,
+        reason: `bucket ${bestEq.key} presteert beter dan ${worstEq.key} op entry quality`,
+        basedOn: {
+          bestBucket: bestEq.key,
+          bestAvgPnlPct: bestEq.avgPnlPct,
+          worstBucket: worstEq.key,
+          worstAvgPnlPct: worstEq.avgPnlPct,
+        },
+      });
+    }
+  }
+
+  if (
+    bestEq &&
+    worstEq &&
+    almostMinConfidence != null &&
+    n(bestEq.avgPnlPct, 0) > n(worstEq.avgPnlPct, 0) + 1
+  ) {
+    const suggested = suggestHigherNumeric(almostMinConfidence, bestEq.key);
+    if (suggested > n(almostMinConfidence, 0)) {
+      suggestions.push({
+        path: "almost.minConfidence",
+        direction: "raise",
+        current: n(almostMinConfidence, 0),
+        suggested,
+        reason: `beste entry-quality zit in ${bestEq.key}; zwakkere almost setups mogen eerder afvallen`,
+        basedOn: {
+          bestBucket: bestEq.key,
+          bestAvgPnlPct: bestEq.avgPnlPct,
+        },
+      });
+    }
+  }
+
+  if (bestSpread && entrySpreadMaxPct != null) {
+    const suggested = suggestTighterSpread(entrySpreadMaxPct, bestSpread.key);
+    if (
+      suggested < n(entrySpreadMaxPct, 999) &&
+      n(bestSpread.count, 0) >= 3
+    ) {
+      suggestions.push({
+        path: "entry.spreadMaxPct",
+        direction: "lower",
+        current: n(entrySpreadMaxPct, 0),
+        suggested,
+        reason: `beste spread-resultaten zitten in bucket ${bestSpread.key}`,
+        basedOn: {
+          bestBucket: bestSpread.key,
+          bestAvgPnlPct: bestSpread.avgPnlPct,
+        },
+      });
+    }
+  }
+
+  if (bestOb && entryObScoreMin != null) {
+    const suggested = suggestHigherOb(entryObScoreMin, bestOb.key);
+    if (suggested > n(entryObScoreMin, 0) && n(bestOb.count, 0) >= 3) {
+      suggestions.push({
+        path: "entry.obScoreMin",
+        direction: "raise",
+        current: n(entryObScoreMin, 0),
+        suggested,
+        reason: `hogere OB-score bucket ${bestOb.key} presteert beter`,
+        basedOn: {
+          bestBucket: bestOb.key,
+          bestAvgPnlPct: bestOb.avgPnlPct,
+        },
+      });
+    }
+  }
+
+  if (
+    stopLoss &&
+    n(stopLoss.count, 0) >= 3 &&
+    n(stopLoss.avgPnlPct, 0) < -2 &&
+    bestSpread &&
+    entrySpreadMaxPct != null
+  ) {
+    const suggested = suggestTighterSpread(entrySpreadMaxPct, bestSpread.key);
+    if (suggested < n(entrySpreadMaxPct, 999)) {
+      suggestions.push({
+        path: "entry.spreadMaxPct",
+        direction: "lower",
+        current: n(entrySpreadMaxPct, 0),
+        suggested,
+        reason: `stop-loss cluster is zwaar negatief en spread buckets wijzen op strakkere spread-selectie`,
+        basedOn: {
+          stopLossTrades: stopLoss.count,
+          stopLossAvgPnlPct: stopLoss.avgPnlPct,
+          bestSpreadBucket: bestSpread.key,
+        },
+      });
+    }
+  }
+
+  if (
+    timeout &&
+    n(timeout.count, 0) >= 3 &&
+    n(timeout.avgPnlPct, 0) < -1 &&
+    bestPs &&
+    almostMinConfidence != null
+  ) {
+    const suggested = suggestHigherNumeric(almostMinConfidence, bestPs.key);
+    if (suggested > n(almostMinConfidence, 0)) {
+      suggestions.push({
+        path: "almost.minConfidence",
+        direction: "raise",
+        current: n(almostMinConfidence, 0),
+        suggested,
+        reason: `timeout-trades zijn te zwak en persistence-data wijst naar sterkere kwaliteit in ${bestPs.key}`,
+        basedOn: {
+          timeoutTrades: timeout.count,
+          timeoutAvgPnlPct: timeout.avgPnlPct,
+          bestPersistenceBucket: bestPs.key,
+        },
+      });
+    }
+  }
+
+  const dedup = new Map();
+  for (const s of suggestions) {
+    const key = `${s.path}:${s.suggested}`;
+    if (!dedup.has(key)) dedup.set(key, s);
+  }
+
+  return [...dedup.values()];
+}
+
+function buildTeacher({
+  summary,
+  byReason,
+  byEntryQuality,
+  byPersistence,
+  bySpread,
+  byObScore,
+  liveConfig,
+  dataQuality,
+}) {
+  const lessons = [];
+
+  const timeout = byReason.find((x) => x.key === "timeout");
+  const stopLoss = byReason.find((x) => x.key === "stop_loss");
+  const thesisBreak = byReason.find((x) => x.key === "thesis_break");
+
+  const bestEq = bestBucket(byEntryQuality);
+  const worstEq = worstBucket(byEntryQuality);
+
+  const bestPs = bestBucket(byPersistence);
+  const worstPs = worstBucket(byPersistence);
+
+  const bestSpread = bestBucket(bySpread);
+  const worstSpread = worstBucket(bySpread);
+
+  const bestOb = bestBucket(byObScore);
+  const worstOb = worstBucket(byObScore);
+
+  if (n(summary.trades, 0) < 5) {
+    lessons.push({
+      type: "warn",
+      text: `Sample is nog klein (${summary.trades} closed trades). Zie onderstaande inzichten als voorlopig, niet als definitief.`,
+    });
+  }
+
+  if (n(dataQuality.richCoveragePct, 0) < 60) {
+    lessons.push({
+      type: "warn",
+      text: `Rich coverage is ${pct(dataQuality.richCoveragePct)}%. Een deel van de trades mist dus echte filterdata.`,
+    });
+  }
+
+  if (n(summary.winRate) < 45 && n(summary.trades, 0) >= 5) {
+    lessons.push({
+      type: "improve",
+      text: `Winrate is ${pct(summary.winRate)}%. Entries moeten strenger of cleaner worden gefilterd.`,
+    });
+  }
+
+  if (timeout && n(timeout.avgPnlPct) < -1 && n(timeout.count, 0) >= 3) {
+    lessons.push({
+      type: "improve",
+      text: `Timeout-trades verliezen gemiddeld ${pct(timeout.avgPnlPct)}% over ${timeout.count} trades.`,
+    });
+  }
+
+  if (stopLoss && stopLoss.count >= 3 && stopLoss.winRate === 0) {
+    lessons.push({
+      type: "improve",
+      text: `Stop-loss cluster aanwezig: ${stopLoss.count} trades, ${pct(stopLoss.totalPnlPct)}% totaal verlies.`,
+    });
+  }
+
+  if (thesisBreak && n(thesisBreak.totalPnlPct) > 0 && n(thesisBreak.count, 0) >= 1) {
+    lessons.push({
+      type: "good",
+      text: `Thesis-break is positief: ${pct(thesisBreak.totalPnlPct)}% totaal bij ${thesisBreak.count} trades.`,
+    });
+  }
+
+  if (bestEq) {
+    lessons.push({
+      type: "focus",
+      text: `Beste entry-quality bucket: ${bestEq.key} (${pct(bestEq.avgPnlPct)}% avg pnl, ${pct(bestEq.winRate)}% winrate).`,
+    });
+  }
+
+  if (bestPs) {
+    lessons.push({
+      type: "focus",
+      text: `Beste persistence bucket: ${bestPs.key} (${pct(bestPs.avgPnlPct)}% avg pnl).`,
+    });
+  }
+
+  if (bestSpread) {
+    lessons.push({
+      type: "focus",
+      text: `Beste spread bucket: ${bestSpread.key} (${pct(bestSpread.avgPnlPct)}% avg pnl).`,
+    });
+  }
+
+  if (bestOb) {
+    lessons.push({
+      type: "focus",
+      text: `Beste OB-score bucket: ${bestOb.key} (${pct(bestOb.avgPnlPct)}% avg pnl).`,
+    });
+  }
+
+  if (worstEq && bestEq && worstEq.key !== bestEq.key) {
+    lessons.push({
+      type: "warn",
+      text: `Slechtste entry-quality bucket: ${worstEq.key} (${pct(worstEq.avgPnlPct)}% avg pnl).`,
+    });
+  }
+
+  if (worstPs && bestPs && worstPs.key !== bestPs.key) {
+    lessons.push({
+      type: "warn",
+      text: `Slechtste persistence bucket: ${worstPs.key} (${pct(worstPs.avgPnlPct)}% avg pnl).`,
+    });
+  }
+
+  if (worstSpread && bestSpread && worstSpread.key !== bestSpread.key) {
+    lessons.push({
+      type: "warn",
+      text: `Slechtste spread bucket: ${worstSpread.key} (${pct(worstSpread.avgPnlPct)}% avg pnl).`,
+    });
+  }
+
+  if (worstOb && bestOb && worstOb.key !== bestOb.key) {
+    lessons.push({
+      type: "warn",
+      text: `Slechtste OB-score bucket: ${worstOb.key} (${pct(worstOb.avgPnlPct)}% avg pnl).`,
+    });
+  }
+
+  const autoSuggestions = buildAutomaticSuggestions({
+    summary,
+    byReason,
+    byEntryQuality,
+    byPersistence,
+    bySpread,
+    byObScore,
+    liveConfig,
+  });
+
+  for (const s of autoSuggestions) {
+    lessons.push({
+      type: "action",
+      text: `Concrete suggestie: pas ${s.path} aan van ${s.current} naar ongeveer ${s.suggested}. Reden: ${s.reason}.`,
+    });
+  }
+
+  const score = Math.max(
+    1,
+    Math.min(
+      10,
+      5 + (n(summary.winRate) - 40) / 10 + n(summary.avgPnlPct) / 2
+    )
+  );
+
+  return {
+    score: pct(score),
+    lessons,
+    suggestions: autoSuggestions,
+  };
+}
+
 function stageRank(stage) {
-  const s = String(stage || "").toUpperCase();
+  const s = up(stage);
   if (s === "RADAR") return 1;
   if (s === "BUILDUP") return 2;
   if (s === "ALMOST") return 3;
@@ -524,13 +683,13 @@ function analyzeStuckCoins(scanStates, transitions, system, mode) {
   const laterStrongBySymbol = new Map();
 
   for (const row of moves) {
-    const sym = String(row.symbol || "").toUpperCase();
+    const sym = up(row.symbol);
     if (!sym) continue;
     if (isStrongLaterState(row)) laterStrongBySymbol.set(sym, true);
   }
 
   for (const row of states) {
-    const sym = String(row.symbol || "").toUpperCase();
+    const sym = up(row.symbol);
     if (!sym) continue;
     if (isStrongLaterState(row)) laterStrongBySymbol.set(sym, true);
   }
@@ -539,21 +698,23 @@ function analyzeStuckCoins(scanStates, transitions, system, mode) {
   const out = [];
 
   for (const st of relevantStages) {
-    const rows = states.filter((x) => String(x.stage || "").toUpperCase() === st);
-    const uniqueSymbols = [...new Set(rows.map((x) => String(x.symbol || "").toUpperCase()).filter(Boolean))];
+    const rows = states.filter((x) => up(x.stage) === st);
+    const uniqueSymbols = [
+      ...new Set(rows.map((x) => up(x.symbol)).filter(Boolean)),
+    ];
 
     let laterStrong = 0;
     for (const sym of uniqueSymbols) {
       if (laterStrongBySymbol.get(sym)) laterStrong += 1;
     }
 
-    const stuckRate = uniqueSymbols.length ? pct((laterStrong / uniqueSymbols.length) * 100) : 0;
-
     out.push({
       stage: st,
       seenCoins: uniqueSymbols.length,
       laterStrongCoins: laterStrong,
-      stuckButLaterStrongRate: stuckRate,
+      stuckButLaterStrongRate: uniqueSymbols.length
+        ? pct((laterStrong / uniqueSymbols.length) * 100)
+        : 0,
     });
   }
 
@@ -567,7 +728,7 @@ function buildFunnelBlockersTeacher(stuckStats) {
   if (top && n(top.laterStrongCoins, 0) >= 3) {
     lessons.push({
       type: "blocker",
-      text: `${top.stage} houdt relatief veel coins vast die later sterk blijken. Dit filtercluster is waarschijnlijk te streng of te vroeg.`,
+      text: `${top.stage} houdt relatief veel coins vast die later sterk blijken (${pct(top.stuckButLaterStrongRate)}%).`,
     });
   }
 
@@ -575,7 +736,7 @@ function buildFunnelBlockersTeacher(stuckStats) {
     if (n(row.stuckButLaterStrongRate, 0) >= 25 && n(row.laterStrongCoins, 0) >= 3) {
       lessons.push({
         type: "focus",
-        text: `${row.stage}: ${row.laterStrongCoins} coins werden later sterk na hier vast te zitten (${row.stuckButLaterStrongRate}%).`,
+        text: `${row.stage}: ${row.laterStrongCoins} coins werden later sterk na hier vast te zitten (${pct(row.stuckButLaterStrongRate)}%).`,
       });
     }
   }
@@ -583,21 +744,74 @@ function buildFunnelBlockersTeacher(stuckStats) {
   return lessons;
 }
 
-// ========== MAIN HANDLER ==========
+function analyzeGroup(rows, liveConfig) {
+  const allRows = safeArray(rows);
+  const richRows = allRows.filter(isRichTrade);
+  const summary = buildSummary(allRows);
+
+  const useRichRows = richRows.length >= 5;
+  const analysisRows = useRichRows ? richRows : allRows;
+
+  const dataQuality = {
+    totalClosedTrades: allRows.length,
+    richClosedTrades: richRows.length,
+    richCoveragePct: allRows.length ? pct((richRows.length / allRows.length) * 100) : 0,
+    usingRichRows: useRichRows,
+  };
+
+  const byReason = groupStats(allRows, (x) => x.reason || "unknown", 20);
+  const byStage = groupStats(allRows, (x) => x.sourceStage || x.stage || "UNKNOWN", 20);
+  const byEntryQuality = groupStats(analysisRows, (x) => bucketNumber(x.entryQuality), 20);
+  const byPersistence = groupStats(analysisRows, (x) => bucketNumber(x.persistenceScore), 20);
+  const bySpread = groupStats(analysisRows, (x) => bucketSpread(x.spreadPct), 20);
+  const byObScore = groupStats(analysisRows, (x) => bucketOb(x.obScore), 20);
+
+  const teacher = buildTeacher({
+    summary,
+    byReason,
+    byEntryQuality,
+    byPersistence,
+    bySpread,
+    byObScore,
+    liveConfig,
+    dataQuality,
+  });
+
+  return {
+    summary,
+    dataQuality,
+    buckets: {
+      byReason,
+      byStage,
+      byEntryQuality,
+      byPersistence,
+      bySpread,
+      byObScore,
+    },
+    teacher,
+    liveConfig,
+  };
+}
+
 export default async function handler(req, res) {
   try {
     const { opened, closed } = await readTradeEventBook(5000);
     const extra = await readManyEvents(["scan_transition", "scan_coin_state"], 10000);
+
     const scanTransitions = extra.scan_transition || [];
     const scanCoinStates = extra.scan_coin_state || [];
 
     const rows = enrichClosedTrades(opened, closed);
 
     const liveConfig = {
-      main_bull: pickLiveConfig(mainBullCore, "main"),
-      main_bear: pickLiveConfig(mainBearCore, "main"),
       moon_bull: pickLiveConfig(moonBullCore, "moon"),
       moon_bear: pickLiveConfig(moonBearCore, "moon"),
+      main_bull: pickLiveConfig(mainBullCore, "main"),
+      main_bear: pickLiveConfig(mainBearCore, "main"),
+      trade_funnel: {
+        kind: "aggregate",
+        note: "Trade Funnel is een samengestelde groep van meerdere systemen en modes. Daarom bestaat hier geen enkele live config.",
+      },
     };
 
     const moonBull = rows.filter((x) => x.system === "moon" && x.mode === "bull");
@@ -606,7 +820,6 @@ export default async function handler(req, res) {
     const mainBear = rows.filter((x) => x.system === "main" && x.mode === "bear");
     const tradeFunnel = rows;
 
-    // stuck analyses
     const moonBullStuck = analyzeStuckCoins(scanCoinStates, scanTransitions, "moon", "bull");
     const moonBearStuck = analyzeStuckCoins(scanCoinStates, scanTransitions, "moon", "bear");
     const mainBullStuck = analyzeStuckCoins(scanCoinStates, scanTransitions, "main", "bull");
@@ -644,12 +857,7 @@ export default async function handler(req, res) {
           },
         },
         trade_funnel: {
-          ...analyzeGroup(tradeFunnel, {
-            main_bull: liveConfig.main_bull,
-            main_bear: liveConfig.main_bear,
-            moon_bull: liveConfig.moon_bull,
-            moon_bear: liveConfig.moon_bear,
-          }),
+          ...analyzeGroup(tradeFunnel, liveConfig.trade_funnel),
           funnelBlockers: {
             stuckStats: [
               ...moonBullStuck.map((x) => ({ group: "moon_bull", ...x })),
