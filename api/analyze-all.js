@@ -1,4 +1,4 @@
-import { readTradeEventBook, inferSystemFromTradeId } from "../lib/_analytics.js";
+import { readTradeEventBook, inferSystemFromTradeId, readManyEvents } from "../lib/_analytics.js";
 
 // Namespace imports voor core bestanden
 import * as mainBullCore from "../lib/_core_bull.js";
@@ -492,9 +492,105 @@ function pickLiveConfig(core, type) {
   }
 }
 
+// ========== STUCK‑COIN ANALYSE (nieuw) ==========
+function stageRank(stage) {
+  const s = String(stage || "").toUpperCase();
+  if (s === "RADAR") return 1;
+  if (s === "BUILDUP") return 2;
+  if (s === "ALMOST") return 3;
+  if (s === "TRADE_READY") return 4;
+  if (s === "ELITE_IGNITION") return 4;
+  if (s === "ELITE_EXPANSION") return 5;
+  if (s === "ELITE_CASCADE") return 5;
+  return 0;
+}
+
+function isStrongLaterState(row) {
+  if (!row) return false;
+  if (stageRank(row.to || row.stage) >= 4) return true;
+  if (n(row.perfectCandidateScore, 0) >= 70) return true;
+  if (n(row.entryQuality, 0) >= 50) return true;
+  return false;
+}
+
+function analyzeStuckCoins(scanStates, transitions, system, mode) {
+  const states = safeArray(scanStates).filter(
+    (x) => x.system === system && x.mode === mode
+  );
+  const moves = safeArray(transitions).filter(
+    (x) => x.system === system && x.mode === mode
+  );
+
+  const laterStrongBySymbol = new Map();
+
+  for (const row of moves) {
+    const sym = String(row.symbol || "").toUpperCase();
+    if (!sym) continue;
+    if (isStrongLaterState(row)) laterStrongBySymbol.set(sym, true);
+  }
+
+  for (const row of states) {
+    const sym = String(row.symbol || "").toUpperCase();
+    if (!sym) continue;
+    if (isStrongLaterState(row)) laterStrongBySymbol.set(sym, true);
+  }
+
+  const relevantStages = ["RADAR", "BUILDUP", "ALMOST"];
+  const out = [];
+
+  for (const st of relevantStages) {
+    const rows = states.filter((x) => String(x.stage || "").toUpperCase() === st);
+    const uniqueSymbols = [...new Set(rows.map((x) => String(x.symbol || "").toUpperCase()).filter(Boolean))];
+
+    let laterStrong = 0;
+    for (const sym of uniqueSymbols) {
+      if (laterStrongBySymbol.get(sym)) laterStrong += 1;
+    }
+
+    const stuckRate = uniqueSymbols.length ? pct((laterStrong / uniqueSymbols.length) * 100) : 0;
+
+    out.push({
+      stage: st,
+      seenCoins: uniqueSymbols.length,
+      laterStrongCoins: laterStrong,
+      stuckButLaterStrongRate: stuckRate,
+    });
+  }
+
+  return out.sort((a, b) => b.stuckButLaterStrongRate - a.stuckButLaterStrongRate);
+}
+
+function buildFunnelBlockersTeacher(stuckStats) {
+  const lessons = [];
+  const top = safeArray(stuckStats)[0];
+
+  if (top && n(top.laterStrongCoins, 0) >= 3) {
+    lessons.push({
+      type: "blocker",
+      text: `${top.stage} houdt relatief veel coins vast die later sterk blijken. Dit filtercluster is waarschijnlijk te streng of te vroeg.`,
+    });
+  }
+
+  for (const row of safeArray(stuckStats)) {
+    if (n(row.stuckButLaterStrongRate, 0) >= 25 && n(row.laterStrongCoins, 0) >= 3) {
+      lessons.push({
+        type: "focus",
+        text: `${row.stage}: ${row.laterStrongCoins} coins werden later sterk na hier vast te zitten (${row.stuckButLaterStrongRate}%).`,
+      });
+    }
+  }
+
+  return lessons;
+}
+
+// ========== MAIN HANDLER ==========
 export default async function handler(req, res) {
   try {
     const { opened, closed } = await readTradeEventBook(5000);
+    const extra = await readManyEvents(["scan_transition", "scan_coin_state"], 10000);
+    const scanTransitions = extra.scan_transition || [];
+    const scanCoinStates = extra.scan_coin_state || [];
+
     const rows = enrichClosedTrades(opened, closed);
 
     const liveConfig = {
@@ -510,19 +606,65 @@ export default async function handler(req, res) {
     const mainBear = rows.filter((x) => x.system === "main" && x.mode === "bear");
     const tradeFunnel = rows;
 
+    // stuck analyses
+    const moonBullStuck = analyzeStuckCoins(scanCoinStates, scanTransitions, "moon", "bull");
+    const moonBearStuck = analyzeStuckCoins(scanCoinStates, scanTransitions, "moon", "bear");
+    const mainBullStuck = analyzeStuckCoins(scanCoinStates, scanTransitions, "main", "bull");
+    const mainBearStuck = analyzeStuckCoins(scanCoinStates, scanTransitions, "main", "bear");
+
     res.status(200).json({
       ok: true,
       groups: {
-        moon_bull: analyzeGroup(moonBull, liveConfig.moon_bull),
-        moon_bear: analyzeGroup(moonBear, liveConfig.moon_bear),
-        main_bull: analyzeGroup(mainBull, liveConfig.main_bull),
-        main_bear: analyzeGroup(mainBear, liveConfig.main_bear),
-        trade_funnel: analyzeGroup(tradeFunnel, {
-          main_bull: liveConfig.main_bull,
-          main_bear: liveConfig.main_bear,
-          moon_bull: liveConfig.moon_bull,
-          moon_bear: liveConfig.moon_bear,
-        }),
+        moon_bull: {
+          ...analyzeGroup(moonBull, liveConfig.moon_bull),
+          funnelBlockers: {
+            stuckStats: moonBullStuck,
+            lessons: buildFunnelBlockersTeacher(moonBullStuck),
+          },
+        },
+        moon_bear: {
+          ...analyzeGroup(moonBear, liveConfig.moon_bear),
+          funnelBlockers: {
+            stuckStats: moonBearStuck,
+            lessons: buildFunnelBlockersTeacher(moonBearStuck),
+          },
+        },
+        main_bull: {
+          ...analyzeGroup(mainBull, liveConfig.main_bull),
+          funnelBlockers: {
+            stuckStats: mainBullStuck,
+            lessons: buildFunnelBlockersTeacher(mainBullStuck),
+          },
+        },
+        main_bear: {
+          ...analyzeGroup(mainBear, liveConfig.main_bear),
+          funnelBlockers: {
+            stuckStats: mainBearStuck,
+            lessons: buildFunnelBlockersTeacher(mainBearStuck),
+          },
+        },
+        trade_funnel: {
+          ...analyzeGroup(tradeFunnel, {
+            main_bull: liveConfig.main_bull,
+            main_bear: liveConfig.main_bear,
+            moon_bull: liveConfig.moon_bull,
+            moon_bear: liveConfig.moon_bear,
+          }),
+          funnelBlockers: {
+            stuckStats: [
+              ...moonBullStuck.map((x) => ({ group: "moon_bull", ...x })),
+              ...moonBearStuck.map((x) => ({ group: "moon_bear", ...x })),
+              ...mainBullStuck.map((x) => ({ group: "main_bull", ...x })),
+              ...mainBearStuck.map((x) => ({ group: "main_bear", ...x })),
+            ].sort((a, b) => b.stuckButLaterStrongRate - a.stuckButLaterStrongRate),
+            lessons: [
+              ...buildFunnelBlockersTeacher(moonBullStuck),
+              ...buildFunnelBlockersTeacher(moonBearStuck),
+              ...buildFunnelBlockersTeacher(mainBullStuck),
+              ...buildFunnelBlockersTeacher(mainBearStuck),
+            ],
+          },
+        },
       },
       ts: Date.now(),
     });
