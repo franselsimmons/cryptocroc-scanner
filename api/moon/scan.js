@@ -510,6 +510,15 @@ function shouldSendUpgradeSignal(oldStage, newStage) {
   return newIdx > oldIdx;
 }
 
+// ========== extra events voor stuck‑analyse ==========
+async function safePushStageTransition(payload) {
+  try {
+    await pushEvent("scan_transition", payload);
+  } catch (e) {
+    console.error("pushEvent failed (scan_transition):", e?.message || e);
+  }
+}
+
 export default async function handler(req, res) {
   let mode = "bull";
   let lockAcquired = false;
@@ -558,6 +567,30 @@ export default async function handler(req, res) {
 
       const rawStage = coin.stage;
       const oldStage = prev.stage || "RADAR";
+
+      // ========== TRANSITION EVENT (altijd loggen bij verandering) ==========
+      if (rawStage !== oldStage) {
+        await safePushStageTransition({
+          system: "moon",
+          mode,
+          symbol: sym,
+          from: oldStage,
+          to: rawStage,
+          price: coin.price,
+          entryQuality: coin.entryQuality,
+          persistenceScore: coin.persistenceScore,
+          perfectCandidateScore: coin.perfectCandidateScore,
+          spreadPct: coin?.ob?.spreadPct ?? null,
+          obScore: coin?.ob?.score ?? null,
+          depthMinUsd1p: coin?.ob?.depthMinUsd1p ?? null,
+          scannerGate: coin.engineGate || null,
+          tradeDeskStatus: coin.tradeDeskStatus || null,
+          regime,
+          btcState: btc?.state || "NEUTRAL",
+          filterSnapshot: coin.filterSnapshot || null,
+          ts: now,
+        });
+      }
 
       if (!hasOpen && shouldSendUpgradeSignal(oldStage, rawStage)) {
         const isWatchStage = coin.engineGate === "WATCH";
@@ -704,6 +737,27 @@ export default async function handler(req, res) {
         coinProfile: coin.coinProfile,
         filterSnapshot: coin.filterSnapshot || null,
       };
+
+      // ========== EVENT: scan_coin_state (voor stuck‑analyse) ==========
+      await safePushEvent("scan_coin_state", {
+        system: "moon",
+        mode,
+        symbol: sym,
+        stage: rawStage,
+        price: coin.price,
+        entryQuality: coin.entryQuality,
+        persistenceScore: coin.persistenceScore,
+        perfectCandidateScore: coin.perfectCandidateScore,
+        spreadPct: coin?.ob?.spreadPct ?? null,
+        obScore: coin?.ob?.score ?? null,
+        depthMinUsd1p: coin?.ob?.depthMinUsd1p ?? null,
+        scannerGate: coin.engineGate || null,
+        tradeDeskStatus: coin.tradeDeskStatus || null,
+        regime,
+        btcState: btc?.state || "NEUTRAL",
+        filterSnapshot: coin.filterSnapshot || null,
+        ts: now,
+      });
     }
 
     // -------------------------------
