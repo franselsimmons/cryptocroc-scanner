@@ -111,7 +111,9 @@ function buildSummary(group) {
       <div class="summary-label">Teacher score</div>
       <div class="summary-value">
         ${teacherScore.toFixed(2)}
-        <span class="badge ${badgeClass(teacherScore)}">${teacherScore >= 7.5 ? "sterk" : teacherScore >= 5 ? "matig" : "zwak"}</span>
+        <span class="badge ${badgeClass(teacherScore)}">${
+          teacherScore >= 7.5 ? "sterk" : teacherScore >= 5 ? "matig" : "zwak"
+        }</span>
       </div>
     </div>
     <div class="summary-box">
@@ -141,12 +143,16 @@ function buildLessons(group) {
   const lessons = Array.isArray(group?.teacher?.lessons) ? group.teacher.lessons : [];
   if (!lessons.length) return `<div class="empty">Geen lessen gevonden</div>`;
 
-  return lessons.map((lesson) => `
-    <div class="lesson ${esc(lesson.type)}">
-      <div class="lesson-type">${esc(lesson.type)}</div>
-      <div>${esc(lesson.text)}</div>
-    </div>
-  `).join("");
+  return lessons
+    .map(
+      (lesson) => `
+      <div class="lesson ${esc(lesson.type)}">
+        <div class="lesson-type">${esc(lesson.type)}</div>
+        <div>${esc(lesson.text)}</div>
+      </div>
+    `
+    )
+    .join("");
 }
 
 function flattenConfig(cfg, prefix = "") {
@@ -155,7 +161,6 @@ function flattenConfig(cfg, prefix = "") {
 
   for (const [key, value] of Object.entries(cfg)) {
     const path = prefix ? `${prefix}.${key}` : key;
-
     if (value && typeof value === "object" && !Array.isArray(value)) {
       out.push(...flattenConfig(value, path));
     } else {
@@ -166,9 +171,14 @@ function flattenConfig(cfg, prefix = "") {
   return out;
 }
 
-function buildConfig(group) {
+function buildConfig(groupKey, group) {
   const cfg = group?.liveConfig;
+
   if (!cfg) return `<div class="empty">Geen live config beschikbaar</div>`;
+
+  if (cfg.kind === "aggregate") {
+    return `<div class="empty">${esc(cfg.note || "Samengestelde groep zonder eigen live config.")}</div>`;
+  }
 
   const flattened = flattenConfig(cfg);
   if (!flattened.length) return `<div class="empty">Geen live config beschikbaar</div>`;
@@ -185,25 +195,68 @@ function buildConfig(group) {
     "entry.spreadMaxPct",
     "entry.depthMinUsd1p",
     "entry.obScoreMin",
-    "entry.samplesMax",
     "desk.minBreakoutPressure",
     "exits.timeoutBars",
-    "exits.timeoutMinNetPnlPct"
+    "exits.timeoutMinNetPnlPct",
   ];
 
   const quickStats = priorityKeys
     .map((k) => flattened.find((x) => x.key === k))
     .filter(Boolean);
 
+  const suggestions = Array.isArray(group?.teacher?.suggestions) ? group.teacher.suggestions : [];
+
   return `
-    <div class="config-grid">
-      ${quickStats.map((item) => `
-        <div class="config-stat">
-          <div class="config-stat-label">${esc(item.key)}</div>
-          <div class="config-stat-value">${esc(String(item.value ?? "-"))}</div>
+    ${quickStats.length ? `
+      <div class="config-grid">
+        ${quickStats
+          .map(
+            (item) => `
+          <div class="config-stat">
+            <div class="config-stat-label">${esc(item.key)}</div>
+            <div class="config-stat-value">${esc(String(item.value ?? "-"))}</div>
+          </div>
+        `
+          )
+          .join("")}
+      </div>
+    ` : `<div class="empty">Geen prioriteitsvelden gevonden</div>`}
+
+    ${
+      suggestions.length
+        ? `
+      <div class="details-box">
+        <div class="table-help">Automatische concrete suggesties op basis van live config + eventdata.</div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Pad</th>
+                <th>Huidig</th>
+                <th>Suggestie</th>
+                <th>Richting</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${suggestions
+                .map(
+                  (s) => `
+                <tr>
+                  <td>${esc(s.path)}</td>
+                  <td>${esc(String(s.current))}</td>
+                  <td>${esc(String(s.suggested))}</td>
+                  <td>${esc(String(s.direction))}</td>
+                </tr>
+              `
+                )
+                .join("")}
+            </tbody>
+          </table>
         </div>
-      `).join("")}
-    </div>
+      </div>
+    `
+        : ""
+    }
 
     <details class="details-box">
       <summary>Toon volledige live config</summary>
@@ -227,135 +280,135 @@ function buildDataQuality(group) {
       <div class="quality-label">Rich coverage</div>
       <div class="quality-value">${fmtPct(dq.richCoveragePct)}</div>
     </div>
+    <div class="quality-box">
+      <div class="quality-label">Analysebron</div>
+      <div class="quality-value">${dq.usingRichRows ? "Rich rows" : "Alle rows"}</div>
+    </div>
   `;
 }
 
-function buildActionPlan(groupKey, group) {
-  const lessons = Array.isArray(group?.teacher?.lessons) ? group.teacher.lessons : [];
-  const score = n(group?.teacher?.score, 0);
-  const byReason = group?.buckets?.byReason || [];
-  const byStage = group?.buckets?.byStage || [];
-  const byEntryQuality = group?.buckets?.byEntryQuality || [];
-  const byPersistence = group?.buckets?.byPersistence || [];
-  const bySpread = group?.buckets?.bySpread || [];
+function buildFunnelBlockers(group) {
+  const stuckStats = group?.funnelBlockers?.stuckStats || [];
+  return tableHtml(
+    stuckStats,
+    [
+      { key: "group", label: "Group", render: (r) => esc(r.group || "-") },
+      { key: "stage", label: "Stage" },
+      { key: "seenCoins", label: "Coins gezien" },
+      { key: "laterStrongCoins", label: "Later sterk" },
+      {
+        key: "stuckButLaterStrongRate",
+        label: "Rate",
+        render: (r) => fmtPct(r.stuckButLaterStrongRate),
+      },
+    ],
+    "Hier zie je in welke funnel-stage coins relatief vaak blijven hangen terwijl ze later toch sterk blijken."
+  );
+}
 
-  const timeoutRow = byReason.find((x) => String(x.key) === "timeout");
-  const stopRow = byReason.find((x) => String(x.key) === "stop_loss" || String(x.key) === "sl");
-  const thesisRow = byReason.find((x) => String(x.key) === "thesis_break");
-  const weakStage = byStage.length ? [...byStage].sort((a, b) => n(a.avgPnlPct) - n(b.avgPnlPct))[0] : null;
-  const bestStage = byStage.length ? [...byStage].sort((a, b) => n(b.avgPnlPct) - n(a.avgPnlPct))[0] : null;
-  const bestEq = byEntryQuality.length ? [...byEntryQuality].sort((a, b) => n(b.avgPnlPct) - n(a.avgPnlPct))[0] : null;
-  const bestPs = byPersistence.length ? [...byPersistence].sort((a, b) => n(b.avgPnlPct) - n(a.avgPnlPct))[0] : null;
-  const bestSpread = bySpread.length ? [...bySpread].sort((a, b) => n(b.avgPnlPct) - n(a.avgPnlPct))[0] : null;
+function buildFunnelBlockerLessons(group) {
+  const lessons = group?.funnelBlockers?.lessons || [];
+  if (!lessons.length) return `<div class="empty">Nog geen funnel blocker lessen</div>`;
+
+  return lessons
+    .map(
+      (lesson) => `
+      <div class="lesson ${esc(lesson.type)}">
+        <div class="lesson-type">${esc(lesson.type)}</div>
+        <div>${esc(lesson.text)}</div>
+      </div>
+    `
+    )
+    .join("");
+}
+
+function buildActionPlan(groupKey, group) {
+  const summary = group?.summary || {};
+  const teacher = group?.teacher || {};
+  const suggestions = Array.isArray(teacher?.suggestions) ? teacher.suggestions : [];
+  const byStage = group?.buckets?.byStage || [];
+  const byReason = group?.buckets?.byReason || [];
 
   const items = [];
 
-  items.push({
-    title: "1. Hoofdconclusie",
-    text:
-      score < 5
-        ? "Deze funnel scoort zwak. Focus eerst op strengere entries en minder rommel-trades."
-        : score < 7.5
-          ? "Deze funnel is bruikbaar, maar nog niet strak genoeg. Verbeter vooral selectie en exits."
-          : "Deze funnel is al sterk. Nu draait het om fijne optimalisatie in plaats van grote ingrepen."
-  });
+  if (n(summary.trades, 0) < 5) {
+    items.push({
+      title: "Sample te klein",
+      text: `Er zijn pas ${summary.trades} closed trades. Zie optimalisaties nu als voorlopig.`,
+    });
+  }
+
+  const bestStage = [...byStage]
+    .filter((x) => n(x.count, 0) >= 1)
+    .sort((a, b) => n(b.avgPnlPct, 0) - n(a.avgPnlPct, 0))[0];
+
+  const worstStage = [...byStage]
+    .filter((x) => n(x.count, 0) >= 1)
+    .sort((a, b) => n(a.avgPnlPct, 0) - n(b.avgPnlPct, 0))[0];
 
   if (bestStage) {
     items.push({
-      title: "2. Beste stage",
-      text: `${bestStage.key} is nu de sterkste stage met gemiddeld ${fmtPct(bestStage.avgPnlPct)}. Dat is je referentiepunt.`
+      title: "Beste stage",
+      text: `${bestStage.key} is nu de sterkste stage met gemiddeld ${fmtPct(bestStage.avgPnlPct)}.`,
     });
   }
 
-  if (weakStage) {
+  if (worstStage && worstStage.key !== bestStage?.key) {
     items.push({
-      title: "3. Zwakste stage",
-      text: `${weakStage.key} is nu de zwakste stage met gemiddeld ${fmtPct(weakStage.avgPnlPct)}. Daar moet je filters strenger maken of minder trades toelaten.`
+      title: "Zwakste stage",
+      text: `${worstStage.key} is nu de zwakste stage met gemiddeld ${fmtPct(worstStage.avgPnlPct)}.`,
     });
   }
 
-  if (bestEq) {
+  for (const s of suggestions) {
     items.push({
-      title: "4. Entry quality",
-      text: `Beste bucket is ${bestEq.key}. Gebruik dit als richting voor minimale entry-kwaliteit.`
+      title: `Concrete filter-aanpassing: ${s.path}`,
+      text: `Verander ${s.path} van ${s.current} naar ongeveer ${s.suggested}. Reden: ${s.reason}.`,
     });
   }
 
-  if (bestPs) {
+  const stopLoss = byReason.find((x) => x.key === "stop_loss");
+  const timeout = byReason.find((x) => x.key === "timeout");
+  const thesisBreak = byReason.find((x) => x.key === "thesis_break");
+
+  if (stopLoss) {
     items.push({
-      title: "5. Persistence",
-      text: `Beste persistence-bucket is ${bestPs.key}. Dat laat zien waar de hoofd-lijn van kwaliteit zit.`
+      title: "Stop-loss patroon",
+      text: `Stop-loss laat gemiddeld ${fmtPct(stopLoss.avgPnlPct)} zien over ${stopLoss.count} trades.`,
     });
   }
 
-  if (bestSpread) {
+  if (timeout) {
     items.push({
-      title: "6. Spread",
-      text: `Beste spread-bucket is ${bestSpread.key}. Alles daarbuiten moet je kritischer bekijken.`
+      title: "Timeout patroon",
+      text: `Timeout laat gemiddeld ${fmtPct(timeout.avgPnlPct)} zien over ${timeout.count} trades.`,
     });
   }
 
-  if (timeoutRow) {
+  if (thesisBreak) {
     items.push({
-      title: "7. Timeout",
-      text: `Timeout heeft ${timeoutRow.count} trades met gemiddeld ${fmtPct(timeoutRow.avgPnlPct)}. Als dat negatief blijft, timeout verkorten of kwaliteit vóór entry verhogen.`
+      title: "Thesis-break patroon",
+      text: `Thesis-break laat gemiddeld ${fmtPct(thesisBreak.avgPnlPct)} zien over ${thesisBreak.count} trades.`,
     });
   }
 
-  if (stopRow) {
+  if (!items.length) {
     items.push({
-      title: "8. Stop-loss",
-      text: `Stop-loss laat gemiddeld ${fmtPct(stopRow.avgPnlPct)} zien. Dat wijst meestal op te losse entry-selectie of te zwakke spread / OB filtering.`
+      title: "Nog geen harde aanpassing",
+      text: "Er is nog niet genoeg betrouwbare data om een concrete filterwijziging voor te stellen.",
     });
   }
 
-  if (thesisRow) {
-    items.push({
-      title: "9. Thesis-break",
-      text: `Thesis-break doet gemiddeld ${fmtPct(thesisRow.avgPnlPct)}. Als dit positief is, bewaart deze exit winst beter dan te lang vasthouden.`
-    });
-  }
-
-  if (groupKey === "moon_bull") {
-    items.push({
-      title: "10. Funnel focus",
-      text: "Moon Bull moet vooral voorkomen dat teveel middelmatige setups door ALMOST heen naar een trade gaan."
-    });
-  } else if (groupKey === "moon_bear") {
-    items.push({
-      title: "10. Funnel focus",
-      text: "Moon Bear heeft vaak minder sample. Optimaliseer hier pas hard als de dataset groter is."
-    });
-  } else if (groupKey === "main_bull") {
-    items.push({
-      title: "10. Funnel focus",
-      text: "Main Bull moet vooral stop-loss clusters en zwakke ignition-achtige setups verder reduceren."
-    });
-  } else if (groupKey === "main_bear") {
-    items.push({
-      title: "10. Funnel focus",
-      text: "Main Bear moet voorlopig zeer streng blijven tot er genoeg bewijs is welke setups echt werken."
-    });
-  } else if (groupKey === "trade_funnel") {
-    items.push({
-      title: "10. Funnel focus",
-      text: "Trade Funnel is je overkoepelende leraar. Wat structureel slecht is moet strenger, wat structureel goed is moet zwaarder meewegen."
-    });
-  }
-
-  if (lessons.length) {
-    items.push({
-      title: "11. Teacher samenvatting",
-      text: lessons.map((x) => x.text).join(" ")
-    });
-  }
-
-  return items.map((item) => `
-    <div class="action-item">
-      <h3>${esc(item.title)}</h3>
-      <p>${esc(item.text)}</p>
-    </div>
-  `).join("");
+  return items
+    .map(
+      (item) => `
+      <div class="action-item">
+        <h3>${esc(item.title)}</h3>
+        <p>${esc(item.text)}</p>
+      </div>
+    `
+    )
+    .join("");
 }
 
 function renderGroup(groupKey, data) {
@@ -364,8 +417,10 @@ function renderGroup(groupKey, data) {
 
   document.getElementById("groupSummary").innerHTML = buildSummary(group);
   document.getElementById("teacherLessons").innerHTML = buildLessons(group);
-  document.getElementById("liveConfigBox").innerHTML = buildConfig(group);
+  document.getElementById("liveConfigBox").innerHTML = buildConfig(groupKey, group);
   document.getElementById("dataQualityBox").innerHTML = buildDataQuality(group);
+  document.getElementById("funnelBlockers").innerHTML = buildFunnelBlockers(group);
+  document.getElementById("funnelBlockerLessons").innerHTML = buildFunnelBlockerLessons(group);
 
   document.getElementById("byReason").innerHTML = tableHtml(
     group?.buckets?.byReason,
@@ -374,7 +429,7 @@ function renderGroup(groupKey, data) {
       { key: "count", label: "Trades" },
       { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
       { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-      { key: "totalPnlUsd", label: "Totaal USD", render: (r) => fmtUsd(r.totalPnlUsd) }
+      { key: "totalPnlUsd", label: "Totaal USD", render: (r) => fmtUsd(r.totalPnlUsd) },
     ],
     "Hier zie je welke exit-redenen winst of verlies veroorzaken."
   );
@@ -386,7 +441,7 @@ function renderGroup(groupKey, data) {
       { key: "count", label: "Trades" },
       { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
       { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-      { key: "totalPnlUsd", label: "Totaal USD", render: (r) => fmtUsd(r.totalPnlUsd) }
+      { key: "totalPnlUsd", label: "Totaal USD", render: (r) => fmtUsd(r.totalPnlUsd) },
     ],
     "Hier zie je welke funnel-stage gemiddeld het beste werkt."
   );
@@ -397,7 +452,7 @@ function renderGroup(groupKey, data) {
       { key: "key", label: "Bucket" },
       { key: "count", label: "Trades" },
       { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) }
+      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
     ],
     "Hier zie je of hogere entry quality echt beter presteert."
   );
@@ -408,7 +463,7 @@ function renderGroup(groupKey, data) {
       { key: "key", label: "Bucket" },
       { key: "count", label: "Trades" },
       { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) }
+      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
     ],
     "Hier zie je of persistence een sterk filter is."
   );
@@ -419,7 +474,7 @@ function renderGroup(groupKey, data) {
       { key: "key", label: "Spread bucket" },
       { key: "count", label: "Trades" },
       { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) }
+      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
     ],
     "Hier zie je bij welke spread-range de resultaten beter zijn."
   );
@@ -430,7 +485,7 @@ function renderGroup(groupKey, data) {
       { key: "key", label: "OB bucket" },
       { key: "count", label: "Trades" },
       { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) }
+      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
     ],
     "Hier zie je of orderbook-score echt predictive is."
   );
