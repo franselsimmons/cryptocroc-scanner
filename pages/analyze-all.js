@@ -450,3 +450,177 @@ export default function AnalyzeAllPage() {
 
       {!loading && !err && data ? (
         <>
+          <GroupSection title="Moon Bull" group={groups.moon_bull} />
+          <GroupSection title="Moon Bear" group={groups.moon_bear} />
+          <GroupSection title="Main Bull" group={groups.main_bull} />
+          <GroupSection title="Main Bear" group={groups.main_bear} />
+          <GroupSection title="Trade Funnel Totaal" group={groups.trade_funnel} />
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+const styles = {
+  page: {
+    minHeight: "100vh",
+    background: "#08111f",
+    color: "#f4f7fb",
+    padding: 24,
+    fontFamily: "Inter, Arial, sans-serif",
+  },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 16,
+    marginBottom: 24,
+  },
+  section: {
+    marginBottom: 28,
+  },
+  sectionHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 14,
+  },
+  badge: {
+    border: "1px solid #2855a0",
+    borderRadius: 999,
+    padding: "8px 12px",
+    fontSize: 13,
+    fontWeight: 700,
+  },
+  h1: {
+    margin: 0,
+    fontSize: 34,
+    lineHeight: 1.1,
+  },
+  h2: {
+    margin: 0,
+    fontSize: 24,
+  },
+  h3: {
+    margin: "0 0 12px 0",
+    fontSize: 18,
+  },
+  muted: {
+    opacity: 0.75,
+    marginTop: 6,
+  },
+  button: {
+    background: "#12305f",
+    color: "#fff",
+    border: "1px solid #2855a0",
+    borderRadius: 12,
+    padding: "10px 16px",
+    cursor: "pointer",
+  },
+  grid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+    gap: 14,
+    marginBottom: 20,
+  },
+  twoCol: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+    gap: 20,
+    marginBottom: 20,
+  },
+  card: {
+    background: "#0d1830",
+    border: "1px solid #1c2b4f",
+    borderRadius: 18,
+    padding: 16,
+  },
+  cardTitle: {
+    opacity: 0.75,
+    fontSize: 13,
+    marginBottom: 8,
+  },
+  cardValue: {
+    fontSize: 28,
+    fontWeight: 700,
+  },
+  cardSub: {
+    opacity: 0.7,
+    marginTop: 6,
+    fontSize: 13,
+  },
+  panel: {
+    background: "#0d1830",
+    border: "1px solid #1c2b4f",
+    borderRadius: 18,
+    padding: 18,
+    marginBottom: 20,
+  },
+  lessonItem: {
+    background: "#0a1428",
+    border: "1px solid #1c2b4f",
+    borderRadius: 12,
+    padding: 12,
+  },
+  lessonType: {
+    fontSize: 12,
+    opacity: 0.7,
+    textTransform: "uppercase",
+    marginBottom: 6,
+  },
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+  },
+  th: {
+    textAlign: "left",
+    padding: "10px 8px",
+    borderBottom: "1px solid #23365f",
+    fontSize: 13,
+    opacity: 0.8,
+  },
+  td: {
+    padding: "10px 8px",
+    borderBottom: "1px solid #162544",
+    fontSize: 14,
+    verticalAlign: "top",
+  },
+  pre: {
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    fontSize: 12,
+    lineHeight: 1.5,
+    background: "#09111f",
+    border: "1px solid #1c2b4f",
+    borderRadius: 12,
+    padding: 12,
+    overflowX: "auto",
+  },
+  tableHelp: {
+    fontSize: 13,
+    opacity: 0.72,
+    marginBottom: 12,
+    lineHeight: 1.4,
+  },
+  configGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+    gap: 12,
+  },
+  configItem: {
+    background: "#09111f",
+    border: "1px solid #1c2b4f",
+    borderRadius: 12,
+    padding: 10,
+  },
+  configLabel: {
+    fontSize: 12,
+    opacity: 0.7,
+    marginBottom: 6,
+  },
+  configValue: {
+    fontSize: 16,
+    fontWeight: 700,
+  },
+};
