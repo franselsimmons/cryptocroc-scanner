@@ -133,10 +133,10 @@ const UI_ENTRY_LOCK_MS_MOON = 8 * 60 * 60 * 1000;
 const MAX_UNIVERSE_COINS = 90;
 const STATE_EVENT_SAMPLE_LIMIT = 12;
 
-const LIMIT_PREMIUM = 12;
-const LIMIT_TRADE_READY = 20;
-const LIMIT_WATCH = 20;
-const LIMIT_SCANNER_ONLY = 20;
+const LIMIT_ENTRY = 20;
+const LIMIT_ALMOST = 20;
+const LIMIT_BUILDUP = 20;
+const LIMIT_RADAR = 20;
 
 function keyMoonConfigSnapshot(mode) {
   return `moon:config:snapshot:${String(mode || "bull").toLowerCase()}`;
@@ -1220,73 +1220,37 @@ export default async function handler(req, res) {
     }
 
     // -------------------------------
-    // 4. Funnel bouwen voor UI
+    // 4. Funnel bouwen voor UI (zelfde stijl als main)
     // -------------------------------
-    const stageEliteIgnition = uniqBySymbol(
-      universe.filter((c) => stageOf(c) === "ELITE_IGNITION")
-    ).sort(sortMoonCoins);
-
-    const stageEliteExpansion = uniqBySymbol(
-      universe.filter((c) => {
-        const st = stageOf(c);
-        return st === "ELITE_EXPANSION" || st === "ELITE_CASCADE";
-      })
-    ).sort(sortMoonCoins);
-
-    const stageAlmost = uniqBySymbol(
-      universe.filter((c) => stageOf(c) === "ALMOST")
-    ).sort(sortMoonCoins);
-
-    const stageBuildup = uniqBySymbol(
-      universe.filter((c) => stageOf(c) === "BUILDUP")
-    ).sort(sortMoonCoins);
-
-    const stageRadar = uniqBySymbol(
-      universe.filter((c) => stageOf(c) === "RADAR")
-    ).sort(sortMoonCoins);
-
-    const stageTradeReady = uniqBySymbol(
+    const entryCoins = uniqBySymbol(
       universe.filter((c) => isTradeReadyCoin(c))
-    ).sort(sortMoonCoins);
+    )
+      .sort(sortMoonCoins)
+      .slice(0, LIMIT_ENTRY);
 
-    const holdItems = [];
+    const almostCoins = uniqBySymbol(
+      universe.filter((c) => stageOf(c) === "ALMOST")
+    )
+      .sort(sortMoonCoins)
+      .slice(0, LIMIT_ALMOST);
 
-    for (const p of positions.open) {
-      const coin = universeMap.get(up(p.symbol));
-      holdItems.push({
-        symbol: p.symbol,
-        kind: "IN_TRADE",
-        reason: "open_position",
-        entryAt: p.entryAt,
-        entryPrice: p.entryPrice,
-        lastPrice: p.lastPrice,
-        pnlPct: p.pnlPct,
-        pnlUsd: p.pnlUsd,
-        coin,
-        state: nextState[up(p.symbol)],
-      });
-    }
+    const buildupCoins = uniqBySymbol(
+      universe.filter((c) => stageOf(c) === "BUILDUP")
+    )
+      .sort(sortMoonCoins)
+      .slice(0, LIMIT_BUILDUP);
 
-    for (const sym of Object.keys(nextState)) {
-      if (!refreshedOpenMap.has(sym) && n(nextState[sym]?.uiLockUntil, 0) > now) {
-        holdItems.push({
-          symbol: sym,
-          kind: "ENTRY_LOCK",
-          reason: "entry_signal_lock",
-          lockUntil: nextState[sym].uiLockUntil,
-          coin: universeMap.get(sym),
-          state: nextState[sym],
-        });
-      }
-    }
+    const radarCoins = uniqBySymbol(
+      universe.filter((c) => stageOf(c) === "RADAR")
+    )
+      .sort(sortMoonCoins)
+      .slice(0, LIMIT_RADAR);
 
     const funnel = {
-      elite_expansion: stageEliteExpansion,
-      elite_ignition: stageEliteIgnition,
-      almost: stageAlmost,
-      buildup: stageBuildup,
-      radar: stageRadar,
-      hold: holdItems,
+      entry: entryCoins,
+      almost: almostCoins,
+      buildup: buildupCoins,
+      radar: radarCoins,
     };
 
     // -------------------------------
@@ -1325,10 +1289,10 @@ export default async function handler(req, res) {
         uiEntryLockMs: UI_ENTRY_LOCK_MS_MOON,
       },
       limits: {
-        premium: LIMIT_PREMIUM,
-        tradeReady: LIMIT_TRADE_READY,
-        watch: LIMIT_WATCH,
-        scannerOnly: LIMIT_SCANNER_ONLY,
+        entry: LIMIT_ENTRY,
+        almost: LIMIT_ALMOST,
+        buildup: LIMIT_BUILDUP,
+        radar: LIMIT_RADAR,
         universeTop: MAX_UNIVERSE_COINS,
       },
       updatedAt: now,
@@ -1336,49 +1300,6 @@ export default async function handler(req, res) {
 
     await kv.set(keyMoonConfigSnapshot(mode), configSnapshot, {
       ex: 60 * 60 * 24 * 7,
-    });
-
-    // -------------------------------
-    // 6. Kandidaten voor UI fallback
-    // -------------------------------
-    const premiumCandidates = uniqBySymbol([
-      ...stageEliteExpansion,
-      ...stageEliteIgnition,
-      ...stageTradeReady.filter((c) => !!c.superScannerCoin),
-    ])
-      .sort(sortMoonCoins)
-      .slice(0, LIMIT_PREMIUM);
-
-    const tradeReadyCandidates = uniqBySymbol(stageTradeReady)
-      .sort(sortMoonCoins)
-      .slice(0, LIMIT_TRADE_READY);
-
-    const watchCandidates = uniqBySymbol([
-      ...stageAlmost,
-      ...stageBuildup,
-    ])
-      .sort(sortMoonCoins)
-      .slice(0, LIMIT_WATCH);
-
-    const scannerOnlyCandidates = uniqBySymbol(stageRadar)
-      .sort(sortMoonCoins)
-      .slice(0, LIMIT_SCANNER_ONLY);
-
-    console.log("MOON DEBUG", {
-      mode,
-      universeCount: universe.length,
-      funnelCounts: {
-        elite_expansion: funnel.elite_expansion.length,
-        elite_ignition: funnel.elite_ignition.length,
-        almost: funnel.almost.length,
-        buildup: funnel.buildup.length,
-        radar: funnel.radar.length,
-        hold: funnel.hold.length,
-      },
-      premium: premiumCandidates.length,
-      tradeReady: tradeReadyCandidates.length,
-      watch: watchCandidates.length,
-      scannerOnly: scannerOnlyCandidates.length,
     });
 
     const latest = {
@@ -1395,25 +1316,17 @@ export default async function handler(req, res) {
       whaleFlow,
       funnel,
       counts: {
-        elite_expansion: funnel.elite_expansion.length,
-        elite_ignition: funnel.elite_ignition.length,
+        entry: funnel.entry.length,
         almost: funnel.almost.length,
         buildup: funnel.buildup.length,
         radar: funnel.radar.length,
-        hold: funnel.hold.length,
-      },
-      candidates: {
-        premium: premiumCandidates,
-        tradeReady: tradeReadyCandidates,
-        watch: watchCandidates,
-        scannerOnly: scannerOnlyCandidates,
       },
       debug: {
         universeCount: universe.length,
-        premiumCount: premiumCandidates.length,
-        tradeReadyCount: tradeReadyCandidates.length,
-        watchCount: watchCandidates.length,
-        scannerOnlyCount: scannerOnlyCandidates.length,
+        entryCount: funnel.entry.length,
+        almostCount: funnel.almost.length,
+        buildupCount: funnel.buildup.length,
+        radarCount: funnel.radar.length,
       },
       portfolio,
       positions: {
