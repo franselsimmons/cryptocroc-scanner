@@ -15,10 +15,12 @@ import {
   isBlockedMoonAsset,
 } from "../../lib/_moon_core.js";
 
-import { pushEvent, uid } from "../../lib/_analytics.js";
+import { pushEvent } from "../../lib/_analytics.js";
 import { sendSignal } from "../../lib/discordRouter.js";
 import { buildCoinProfile, buildMoonExecutionDecision } from "../../lib/_trade_engine.js";
 import { logTradeOpened, logTradeClosed } from "../../lib/tradeAnalytics.js";
+
+export const config = RUNTIME_CONFIG;
 
 // ========== helpers ==========
 function n(x, d = 0) {
@@ -33,6 +35,9 @@ function up(x) {
 }
 function sideFromMode(mode) {
   return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG";
+}
+function uid(prefix = "moon") {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function coinForDiscord({ coin, position }) {
@@ -67,7 +72,6 @@ const COOLDOWN_EARLY_EXIT_SEC = 60 * 60;
 const MAX_OPEN_TRADES = 4;
 const POSITION_SIZE_USD = 50;
 const ENTRY_HISTORY_KEEP = 40;
-const ENTRY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const UI_ENTRY_LOCK_MS_MOON = 8 * 60 * 60 * 1000;
 
 function keyMoonConfigSnapshot(mode) {
@@ -401,7 +405,10 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
       isEliteStageForDesk: ["ELITE_IGNITION", "ELITE_EXPANSION", "ELITE_CASCADE"].includes(stage),
     });
 
-    const uiLockUntil = Math.max(n(prev?.uiLockUntil, 0), engineGate === "WATCH" ? now + UI_ENTRY_LOCK_MS_MOON : 0);
+    const uiLockUntil = Math.max(
+      n(prev?.uiLockUntil, 0),
+      engineGate === "WATCH" ? now + UI_ENTRY_LOCK_MS_MOON : 0
+    );
 
     const coinForOutput = {
       ...coin,
@@ -433,8 +440,15 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
         lor: obx.lor,
       },
       thresholds: { depthFloorUsd: floorUsd, depthOk },
-      breakout: { ready: breakout.ready, breakoutPct: breakout.breakoutPct, pressure: breakout.pressure },
-      compression: { isCompressed: compression.isCompressed, flatPct: compression.flatPct },
+      breakout: {
+        ready: breakout.ready,
+        breakoutPct: breakout.breakoutPct,
+        pressure: breakout.pressure,
+      },
+      compression: {
+        isCompressed: compression.isCompressed,
+        flatPct: compression.flatPct,
+      },
       volAcc: { short: volAcc.short, medium: volAcc.medium },
       velocity,
       entryQuality,
@@ -510,7 +524,7 @@ function shouldSendUpgradeSignal(oldStage, newStage) {
   return newIdx > oldIdx;
 }
 
-// ========== extra events voor stuck‑analyse ==========
+// ========== extra events voor stuck-analyse ==========
 async function safePushStageTransition(payload) {
   try {
     await pushEvent("scan_transition", payload);
@@ -528,16 +542,19 @@ export default async function handler(req, res) {
 
     mode = String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
 
-    const mod = mode === "bear"
-      ? await import("../../lib/_moon_core_bear.js")
-      : await import("../../lib/_moon_core_bull.js");
+    const mod =
+      mode === "bear"
+        ? await import("../../lib/_moon_core_bear.js")
+        : await import("../../lib/_moon_core_bull.js");
 
     const CORE = mod?.default && typeof mod.default === "object" ? mod.default : mod;
 
     const lock = await acquireScanLock(mode);
     if (!lock.ok) {
       const latest = await kv.get(keyMoonLatest(mode));
-      res.status(200).json(latest || { ok: true, skipped: true, reason: "scan_lock_active", mode });
+      res.status(200).json(
+        latest || { ok: true, skipped: true, reason: "scan_lock_active", mode }
+      );
       return;
     }
     lockAcquired = true;
@@ -548,10 +565,20 @@ export default async function handler(req, res) {
     const btc = await fetchBTCGateFromUniverse();
 
     const prevPositions = (await kv.get(keyMoonPositions(mode))) || { open: [], closed: [] };
-    const positions = { open: [...(prevPositions.open || [])], closed: [...(prevPositions.closed || [])] };
+    const positions = {
+      open: [...(prevPositions.open || [])],
+      closed: [...(prevPositions.closed || [])],
+    };
     await applyCooldownsFromClosed(mode, positions, now);
 
-    const { regime, coins: universe } = await buildUniverse({ CORE, mode, whaleFlow, btc, now });
+    const { regime, coins: universe } = await buildUniverse({
+      CORE,
+      mode,
+      whaleFlow,
+      btc,
+      now,
+    });
+
     const prevState = (await kv.get(keyMoonState(mode))) || {};
     const nextState = {};
     const universeMap = new Map(universe.map((c) => [c.symbol, c]));
@@ -568,7 +595,6 @@ export default async function handler(req, res) {
       const rawStage = coin.stage;
       const oldStage = prev.stage || "RADAR";
 
-      // ========== TRANSITION EVENT (altijd loggen bij verandering) ==========
       if (rawStage !== oldStage) {
         await safePushStageTransition({
           system: "moon",
@@ -613,9 +639,10 @@ export default async function handler(req, res) {
       const strongScans = rawStage !== "RADAR" ? (prev.strongScans || 0) + 1 : 0;
       const weakScans = rawStage === "RADAR" ? (prev.weakScans || 0) + 1 : 0;
       const eliteScans = rawStage.includes("ELITE") ? (prev.eliteScans || 0) + 1 : 0;
-      const watchScans = coin.engineGate === "WATCH"
-        ? (prev.watchScans || 0) + 1
-        : Math.max(0, (prev.watchScans || 0) - 1);
+      const watchScans =
+        coin.engineGate === "WATCH"
+          ? (prev.watchScans || 0) + 1
+          : Math.max(0, (prev.watchScans || 0) - 1);
 
       let candidateSince = prev.candidateSince;
       if (rawStage !== "RADAR" && !candidateSince) candidateSince = now;
@@ -631,7 +658,10 @@ export default async function handler(req, res) {
 
       const uiLockUntil = Math.max(coin.uiLockUntil, n(prev.uiLockUntil, 0));
 
-      const depthHist = [...(prev.depthHist || []), coin.ob?.depthMinUsd1p].filter((v) => v > 0).slice(-20);
+      const depthHist = [...(prev.depthHist || []), coin.ob?.depthMinUsd1p]
+        .filter((v) => v > 0)
+        .slice(-20);
+
       const thesisDamage = CORE.computeThesisDamage(coin, prev, mode);
 
       const prevPositionState = prev.positionState || {
@@ -648,7 +678,9 @@ export default async function handler(req, res) {
       const nextPositionState = {
         ...prevPositionState,
         inPosition: false,
-        cyclesInTrade: prevPositionState.inPosition ? prevPositionState.cyclesInTrade || 0 : 0,
+        cyclesInTrade: prevPositionState.inPosition
+          ? prevPositionState.cyclesInTrade || 0
+          : 0,
       };
 
       if (!hasOpen) {
@@ -738,7 +770,6 @@ export default async function handler(req, res) {
         filterSnapshot: coin.filterSnapshot || null,
       };
 
-      // ========== EVENT: scan_coin_state (voor stuck‑analyse) ==========
       await safePushEvent("scan_coin_state", {
         system: "moon",
         mode,
@@ -833,8 +864,12 @@ export default async function handler(req, res) {
           persistenceScore: pos.persistenceScore ?? null,
           spreadPct: liveCoin?.ob?.spreadPct ?? pos?.filterSnapshot?.spreadPct ?? null,
           obScore: liveCoin?.ob?.score ?? pos?.filterSnapshot?.obScore ?? null,
-          depthMinUsd1p: liveCoin?.ob?.depthMinUsd1p ?? pos?.filterSnapshot?.depthMinUsd1p ?? null,
-          perfectCandidateScore: liveCoin?.perfectCandidateScore ?? pos?.filterSnapshot?.perfectCandidateScore ?? null,
+          depthMinUsd1p:
+            liveCoin?.ob?.depthMinUsd1p ?? pos?.filterSnapshot?.depthMinUsd1p ?? null,
+          perfectCandidateScore:
+            liveCoin?.perfectCandidateScore ??
+            pos?.filterSnapshot?.perfectCandidateScore ??
+            null,
           filterSnapshot: pos.filterSnapshot || liveCoin.filterSnapshot || null,
           ts: now,
         });
@@ -914,7 +949,9 @@ export default async function handler(req, res) {
       }
     }
 
-    entryCandidates.sort((a, b) => (b.coin?.entryQuality || 0) - (a.coin?.entryQuality || 0));
+    entryCandidates.sort(
+      (a, b) => (b.coin?.entryQuality || 0) - (a.coin?.entryQuality || 0)
+    );
 
     const slotsLeft = MAX_OPEN_TRADES - positions.open.length;
     const toOpen = entryCandidates.slice(0, Math.min(slotsLeft, 1));
@@ -1139,7 +1176,9 @@ export default async function handler(req, res) {
       updatedAt: now,
     };
 
-    await kv.set(keyMoonConfigSnapshot(mode), configSnapshot, { ex: 60 * 60 * 24 * 7 });
+    await kv.set(keyMoonConfigSnapshot(mode), configSnapshot, {
+      ex: 60 * 60 * 24 * 7,
+    });
 
     // -------------------------------
     // 6. Response
@@ -1155,7 +1194,12 @@ export default async function handler(req, res) {
       .slice(0, 20);
 
     const watchCandidates = universe
-      .filter((c) => c.engineGate === "WATCH" || c.execution?.action === "WATCH" || c.execution?.action === "ARM_ENTRY")
+      .filter(
+        (c) =>
+          c.engineGate === "WATCH" ||
+          c.execution?.action === "WATCH" ||
+          c.execution?.action === "ARM_ENTRY"
+      )
       .sort((a, b) => b.perfectCandidateScore - a.perfectCandidateScore)
       .slice(0, 20);
 
