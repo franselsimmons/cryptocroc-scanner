@@ -443,6 +443,17 @@ function getMainMacroMode({ btc, mode }) {
 }
 
 // ======================================================
+// Extra events voor stuck‑analyse
+// ======================================================
+async function safePushStageTransition(payload) {
+  try {
+    await pushEvent("scan_transition", payload);
+  } catch (e) {
+    console.error("pushEvent failed (scan_transition):", e?.message || e);
+  }
+}
+
+// ======================================================
 // Main scan
 // ======================================================
 export default async function handler(req, res) {
@@ -874,18 +885,57 @@ export default async function handler(req, res) {
         filterSnapshot: outCoin.filterSnapshot,
       };
 
-      if (stage === "TRADE_READY") funnel.trade_ready.push(outCoin);
-      else if (stage === "ALMOST") funnel.almost.push(outCoin);
-      else if (stage === "BUILDUP") funnel.buildup.push(outCoin);
-      else funnel.radar.push(outCoin);
+      // ========== EVENT: scan_coin_state (voor stuck‑analyse) ==========
+      await safePushEvent("scan_coin_state", {
+        system: "main",
+        mode,
+        symbol: sym,
+        stage,
+        price: outCoin.price,
+        confidence: outCoin.confidence,
+        entryQuality: outCoin.entryQuality,
+        persistenceScore: outCoin.persistenceScore,
+        perfectCandidateScore: outCoin.perfectCandidateScore,
+        spreadPct: outCoin?.ob?.spreadPct ?? null,
+        obScore: outCoin?.ob?.score ?? null,
+        depthMinUsd1p: outCoin?.ob?.depthMinUsd1p ?? null,
+        scannerGate: outCoin.scannerGate || null,
+        tradeDeskStatus: outCoin.tradeDeskStatus || null,
+        regime,
+        btcState: btc.state,
+        filterSnapshot: outCoin.filterSnapshot || null,
+        ts: now,
+      });
 
+      // ========== STAGE TRANSITION event ==========
       const oldStage = up(prev?.stage || "RADAR");
-
       if (stage !== oldStage && stage !== "RADAR") {
         const isUpgrade =
           (oldStage === "RADAR" && (stage === "BUILDUP" || stage === "ALMOST" || stage === "TRADE_READY")) ||
           (oldStage === "BUILDUP" && (stage === "ALMOST" || stage === "TRADE_READY")) ||
           (oldStage === "ALMOST" && stage === "TRADE_READY");
+
+        await safePushStageTransition({
+          system: "main",
+          mode,
+          symbol: sym,
+          from: oldStage,
+          to: stage,
+          price: outCoin.price,
+          confidence: outCoin.confidence,
+          entryQuality: outCoin.entryQuality,
+          persistenceScore: outCoin.persistenceScore,
+          perfectCandidateScore: outCoin.perfectCandidateScore,
+          spreadPct: outCoin?.ob?.spreadPct ?? null,
+          obScore: outCoin?.ob?.score ?? null,
+          depthMinUsd1p: outCoin?.ob?.depthMinUsd1p ?? null,
+          scannerGate: outCoin.scannerGate || null,
+          tradeDeskStatus: outCoin.tradeDeskStatus || null,
+          regime,
+          btcState: btc.state,
+          filterSnapshot: outCoin.filterSnapshot || null,
+          ts: now,
+        });
 
         if (isUpgrade) {
           console.log(`[Scanner] 🚀 Upgrade voor ${sym}: ${oldStage} -> ${stage}. Discord aanroepen...`);
@@ -937,6 +987,12 @@ export default async function handler(req, res) {
           }).catch((err) => console.error("Discord send error:", err));
         }
       }
+
+      // funnel toevoegen
+      if (stage === "TRADE_READY") funnel.trade_ready.push(outCoin);
+      else if (stage === "ALMOST") funnel.almost.push(outCoin);
+      else if (stage === "BUILDUP") funnel.buildup.push(outCoin);
+      else funnel.radar.push(outCoin);
 
       await sleep(6);
     }
