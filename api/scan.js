@@ -1,7 +1,5 @@
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG } from "../lib/_runtime.js";
-import { sendSignal } from "../lib/discordRouter.js";
-import { pushEvent } from "../lib/_analytics.js";
 import { buildCoinProfile, buildMainExecutionDecision } from "../lib/_trade_engine.js";
 
 export const config = RUNTIME_CONFIG;
@@ -9,6 +7,13 @@ export const config = RUNTIME_CONFIG;
 const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 const BITGET_SYMBOLS = "https://api.bitget.com/api/v2/spot/public/symbols";
 const CG_MARKETS = "https://api.coingecko.com/api/v3/coins/markets";
+
+// =========================
+// HARD PERFORMANCE LIMITS
+// =========================
+const MAX_COINS_FROM_CG = 220;
+const MAX_OB_CANDIDATES = 60;
+const OB_CONCURRENCY = 6;
 
 // ======================================================
 // MAIN KV KEYS
@@ -36,27 +41,6 @@ function n(x, d = 0) {
 function up(x) {
   return String(x || "").toUpperCase();
 }
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function sideFromMode(mode) {
-  return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG";
-}
-
-async function safePushEvent(name, payload) {
-  try {
-    await pushEvent(name, payload);
-  } catch (e) {
-    console.error(`pushEvent failed (${name}):`, e?.message || e);
-  }
-}
-
-function pickRetryAfterSeconds(res) {
-  const ra = res?.headers?.get?.("retry-after");
-  const s = Number(ra);
-  return Number.isFinite(s) && s > 0 ? s : null;
-}
 
 async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
   const controller = new AbortController();
@@ -76,8 +60,6 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
     if (!res.ok) {
       const err = new Error(`HTTP ${res.status}`);
       err.status = res.status;
-      const ra = pickRetryAfterSeconds(res);
-      if (ra != null) err.retryAfter = String(ra);
       throw err;
     }
 
@@ -87,13 +69,28 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
   }
 }
 
-// ======================================================
-// Secret gate
-// ======================================================
+async function mapLimit(list, limit, fn) {
+  const out = new Array(list.length);
+  let idx = 0;
+
+  async function worker() {
+    while (idx < list.length) {
+      const i = idx++;
+      out[i] = await fn(list[i], i);
+    }
+  }
+
+  const workers = Array.from({ length: Math.max(1, limit) }, () => worker());
+  await Promise.all(workers);
+  return out;
+}
+
 function requireSecret(req, res) {
   const qToken = String(req.query?.token || "");
   const bearer = String(req.headers?.authorization || "");
-  const headerToken = bearer.toLowerCase().startsWith("bearer ") ? bearer.slice(7).trim() : "";
+  const headerToken = bearer.toLowerCase().startsWith("bearer ")
+    ? bearer.slice(7).trim()
+    : "";
 
   const ok =
     (process.env.CRON_SECRET && qToken && qToken === String(process.env.CRON_SECRET)) ||
@@ -110,7 +107,7 @@ function requireSecret(req, res) {
 }
 
 // ======================================================
-// Scan lock (30m boundaries)
+// Lock
 // ======================================================
 async function acquireScanLock(mode) {
   const key = keyScanLock(mode);
@@ -130,14 +127,14 @@ async function acquireScanLock(mode) {
   const ttlSec = Math.max(60, Math.ceil((until - now) / 1000));
 
   const ok = await kv.set(key, { ts: now, until, mode }, { nx: true, ex: ttlSec });
-  if (ok) return { ok: true, key, until };
+  if (ok) return { ok: true, until };
 
   const cur = await kv.get(key);
   const curUntil = Number(cur?.until || 0);
-  if (curUntil > now) return { ok: false, key, until: curUntil };
+  if (curUntil > now) return { ok: false, until: curUntil };
 
   await kv.set(key, { ts: now, until, mode }, { ex: ttlSec });
-  return { ok: true, key, until };
+  return { ok: true, until };
 }
 
 async function releaseScanLock(mode) {
@@ -147,15 +144,10 @@ async function releaseScanLock(mode) {
 }
 
 // ======================================================
-// CoinGecko caching
+// CoinGecko cache
 // ======================================================
-const KV_CG_TOP = "main:cg:top:v2";
-const KV_CG_BTC = "main:cg:btc:v2";
-const KV_CG_PAGE_PREFIX = "main:cg:markets:v2:page:";
-
-const CG_PAGE_TTL_SEC = 60 * 5;
-const CG_TOP_TTL_SEC = 60 * 12;
-const CG_BTC_TTL_SEC = 60 * 5;
+const KV_CG_TOP = "main:cg:top:v3";
+const KV_CG_BTC = "main:cg:btc:v3";
 
 function normalizeCgMarketRow(c) {
   const hi = n(c.high_24h, 0);
@@ -176,78 +168,23 @@ function normalizeCgMarketRow(c) {
   };
 }
 
-async function fetchCoinGeckoMarketsPage(page, perPage = 250) {
-  const url =
-    `${CG_MARKETS}?vs_currency=usd&order=market_cap_desc&per_page=${perPage}&page=${page}` +
-    `&sparkline=false&price_change_percentage=1h,24h`;
+async function fetchCoinGeckoTopCached(maxCoins = MAX_COINS_FROM_CG) {
+  try {
+    const url =
+      `${CG_MARKETS}?vs_currency=usd&order=market_cap_desc&per_page=${Math.min(maxCoins, 250)}&page=1` +
+      `&sparkline=false&price_change_percentage=1h,24h`;
 
-  const arr = await fetchJsonWithTimeout(url, {}, 9000);
-  if (!Array.isArray(arr)) return [];
-  return arr.map(normalizeCgMarketRow);
-}
-
-async function fetchCoinGeckoTopCached(maxCoins = 1500) {
-  const perPage = 250;
-  const maxPages = Math.max(1, Math.ceil(maxCoins / perPage));
-  const out = [];
-  const meta = { usedCache: false, partial: false, rateLimited: false };
-
-  for (let page = 1; page <= maxPages; page++) {
-    try {
-      const rows = await fetchCoinGeckoMarketsPage(page, perPage);
-      if (!rows.length) break;
-
-      out.push(...rows);
-      await kv.set(`${KV_CG_PAGE_PREFIX}${page}`, rows, { ex: CG_PAGE_TTL_SEC });
-      await sleep(250);
-
-      if (out.length >= maxCoins) break;
-    } catch (e) {
-      const status = Number(e?.status || 0);
-      if (status === 429) {
-        meta.rateLimited = true;
-
-        if (out.length > 0) {
-          meta.partial = true;
-          await kv.set(KV_CG_TOP, out.slice(0, maxCoins), { ex: CG_TOP_TTL_SEC });
-          return { coins: out.slice(0, maxCoins), meta };
-        }
-
-        const cachedCoins = [];
-        for (let p = 1; p <= maxPages; p++) {
-          const cachedPage = await kv.get(`${KV_CG_PAGE_PREFIX}${p}`);
-          if (Array.isArray(cachedPage) && cachedPage.length) cachedCoins.push(...cachedPage);
-          if (cachedCoins.length >= maxCoins) break;
-        }
-
-        if (cachedCoins.length) {
-          meta.usedCache = true;
-          meta.partial = cachedCoins.length < maxCoins;
-          return { coins: cachedCoins.slice(0, maxCoins), meta };
-        }
-
-        const snap = await kv.get(KV_CG_TOP);
-        if (Array.isArray(snap) && snap.length) {
-          meta.usedCache = true;
-          meta.partial = snap.length < maxCoins;
-          return { coins: snap.slice(0, maxCoins), meta };
-        }
-
-        return { coins: [], meta };
-      }
-
-      if (out.length > 0) {
-        meta.partial = true;
-        await kv.set(KV_CG_TOP, out.slice(0, maxCoins), { ex: CG_TOP_TTL_SEC });
-        return { coins: out.slice(0, maxCoins), meta };
-      }
-
-      throw e;
-    }
+    const rows = await fetchJsonWithTimeout(url, {}, 9000);
+    const coins = Array.isArray(rows) ? rows.map(normalizeCgMarketRow) : [];
+    await kv.set(KV_CG_TOP, coins, { ex: 60 * 10 });
+    return { coins, meta: { usedCache: false, partial: false, rateLimited: false } };
+  } catch (e) {
+    const cached = await kv.get(KV_CG_TOP);
+    return {
+      coins: Array.isArray(cached) ? cached.slice(0, maxCoins) : [],
+      meta: { usedCache: true, partial: true, rateLimited: false, error: String(e?.message || e) },
+    };
   }
-
-  if (out.length) await kv.set(KV_CG_TOP, out.slice(0, maxCoins), { ex: CG_TOP_TTL_SEC });
-  return { coins: out.slice(0, maxCoins), meta };
 }
 
 // ======================================================
@@ -271,43 +208,42 @@ async function fetchBTCGateFromUniverse() {
     const range24 = hi > 0 && lo > 0 ? ((hi - lo) / lo) * 100 : 0;
 
     const out = { price, chg24, chg1h, range24, state: "NEUTRAL" };
-    await kv.set(KV_CG_BTC, out, { ex: CG_BTC_TTL_SEC });
+    await kv.set(KV_CG_BTC, out, { ex: 60 * 5 });
     return out;
   } catch (e) {
     const cached = await kv.get(KV_CG_BTC);
     if (cached && typeof cached === "object") return cached;
-    return { price: 0, chg24: 0, chg1h: 0, range24: 0, state: "NEUTRAL", _err: String(e?.message || e) };
+    return { price: 0, chg24: 0, chg1h: 0, range24: 0, state: "NEUTRAL" };
   }
 }
 
 // ======================================================
-// Bitget symbols
+// Bitget
 // ======================================================
 async function getBitgetSpotUsdtSymbols() {
   try {
     const j = await fetchJsonWithTimeout(BITGET_SYMBOLS, {}, 8000);
     if (String(j?.code || "") !== "00000") return new Set();
-    const data = Array.isArray(j?.data) ? j.data : [];
 
+    const data = Array.isArray(j?.data) ? j.data : [];
     const set = new Set();
+
     for (const s of data) {
       const quote = up(s?.quoteCoin || s?.quoteCoinName || "");
       const base = up(s?.baseCoin || s?.baseCoinName || "");
       if (quote === "USDT" && base) set.add(base);
     }
+
     return set;
   } catch {
     return new Set();
   }
 }
 
-// ======================================================
-// Orderbook
-// ======================================================
 async function fetchOrderbook(symbol) {
   try {
     const url = `${BITGET_OB}?symbol=${symbol}&type=step0&limit=20`;
-    const j = await fetchJsonWithTimeout(url, {}, 6500);
+    const j = await fetchJsonWithTimeout(url, {}, 6000);
     if (String(j?.code || "") !== "00000") return null;
 
     const bids = j?.data?.bids || [];
@@ -321,7 +257,6 @@ async function fetchOrderbook(symbol) {
     const spreadPct = ((bestAsk - bestBid) / bestBid) * 100;
     const depthBidUsd = bids.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
     const depthAskUsd = asks.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
-
     const total = depthBidUsd + depthAskUsd;
     const score = total > 0 ? (depthBidUsd - depthAskUsd) / total : 0;
 
@@ -353,9 +288,6 @@ function pickTier(marketCap, entryCfg) {
   return tiers[tiers.length - 1] || null;
 }
 
-// ======================================================
-// Main helpers for trade engine compatibility
-// ======================================================
 function buildMainTradePlan({ price, range24, confidence, stage, ob, mode }) {
   const p = n(price, 0);
   if (!(p > 0)) return null;
@@ -414,14 +346,9 @@ function deriveMainRegime({ btc }) {
 }
 
 function gateFromStage(stage) {
-  const st = up(stage);
-  if (st === "TRADE_READY") return "WATCH";
-  return "IGNORE";
+  return up(stage) === "TRADE_READY" ? "WATCH" : "IGNORE";
 }
 
-// ======================================================
-// Macro mode for neutral BTC selectivity
-// ======================================================
 function getMainMacroMode({ btc, mode }) {
   const state = up(btc?.state || "NEUTRAL");
   const chg24 = n(btc?.chg24, 0);
@@ -442,20 +369,45 @@ function getMainMacroMode({ btc, mode }) {
   return "SELECTIVE";
 }
 
-// ======================================================
-// Extra events voor stuck‑analyse
-// ======================================================
-async function safePushStageTransition(payload) {
-  try {
-    await pushEvent("scan_transition", payload);
-  } catch (e) {
-    console.error("pushEvent failed (scan_transition):", e?.message || e);
+function preScoreCoin(coin, CORE, CFG, mode, prevStateRow = {}) {
+  const marketCap = n(coin.marketCap, 0);
+  const volume = n(coin.volume, 0);
+  const change24 = n(coin.change24, 0);
+  const change1h = n(coin.change1h, 0);
+  const range24 = n(coin.range24, 0);
+  const vm = CORE.computeVm(volume, marketCap);
+
+  const volHist = Array.isArray(prevStateRow?.volHist) ? prevStateRow.volHist : [];
+  let volAcc = 1;
+  if (volHist.length >= 6) {
+    const ago = volHist[volHist.length - 5] || volume;
+    volAcc = volume / Math.max(ago, 1e-9);
   }
+
+  const dynRadar = CORE.dynamicRadarThresholds(range24, CFG);
+  const R = CFG.radar || {};
+
+  const radarOk =
+    marketCap >= n(R.mcapMin, 0) &&
+    marketCap <= n(R.mcapMax, Number.MAX_SAFE_INTEGER) &&
+    volume >= n(R.volMin, 0) &&
+    vm >= n(R.vmMin, 0) &&
+    Math.abs(change24) <= n(R.maxAbsChg24, 999) &&
+    range24 <= n(dynRadar.maxRange24, n(R.maxRange24, 999)) &&
+    (mode === "bull"
+      ? change1h >= n(dynRadar.dir1hMinBull, n(R.dir1hMinBull, 0)) &&
+        change24 >= n(dynRadar.dir24MinBull, n(R.dir24MinBull, 0))
+      : change1h <= n(dynRadar.dir1hMaxBear, n(R.dir1hMaxBear, 0)) &&
+        change24 <= n(dynRadar.dir24MaxBear, n(R.dir24MaxBear, 0)));
+
+  const buildupOk = radarOk && volAcc >= n(CFG.buildup?.minVolAcc, 1.0);
+  const confidence = CORE.computeConfidence({ vm, change24, range24, obValid: false });
+
+  return {
+    score: (radarOk ? 20 : 0) + (buildupOk ? 20 : 0) + confidence + Math.min(20, volAcc * 8),
+  };
 }
 
-// ======================================================
-// Main scan
-// ======================================================
 export default async function handler(req, res) {
   let mode = "bull";
   let lockAcquired = false;
@@ -484,25 +436,16 @@ export default async function handler(req, res) {
       const latest = await kv.get(keyMainLatest(mode));
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");
-      if (latest) {
-        return res.end(
-          JSON.stringify({
-            ...latest,
-            meta: {
-              ...(latest.meta || {}),
-              scanLock: { active: true, until: lock.until || null },
-              trigger: isVercelCron ? "vercel_cron" : tokenOk ? "cron_token" : "manual_secret",
-            },
-          })
-        );
-      }
-      return res.end(JSON.stringify({ ok: true, skipped: true, reason: "scan_lock_active", mode, until: lock.until || null }));
+      return res.end(
+        JSON.stringify(
+          latest || { ok: true, skipped: true, reason: "scan_lock_active", mode, until: lock.until }
+        )
+      );
     }
     lockAcquired = true;
 
     const now = Date.now();
 
-    // BTC
     const btcRaw = await fetchBTCGateFromUniverse();
     const btc = {
       price: n(btcRaw?.price, 0),
@@ -511,27 +454,43 @@ export default async function handler(req, res) {
       range24: n(btcRaw?.range24, 0),
       state: CORE.computeBtcState(btcRaw, CFG),
     };
+
     const regime = deriveMainRegime({ btc });
     const macroMode = getMainMacroMode({ btc, mode });
 
-    // Universe
-    const cg = await fetchCoinGeckoTopCached(Number(CFG.CG_TOP || 1500));
+    const cg = await fetchCoinGeckoTopCached(MAX_COINS_FROM_CG);
     const rawCoins = Array.isArray(cg?.coins) ? cg.coins : [];
     const cgMeta = cg?.meta || {};
     const bitgetSymbols = await getBitgetSpotUsdtSymbols();
 
     const tradable = rawCoins
       .filter((c) => bitgetSymbols.has(up(c.symbol)))
-      .slice(0, Number(CFG.CG_TOP || 1500));
+      .slice(0, MAX_COINS_FROM_CG);
 
     const prevState = (await kv.get(keyMainState(mode))) || {};
     const nextState = {};
-
     const funnel = { trade_ready: [], almost: [], buildup: [], radar: [] };
 
-    for (const coin of tradable) {
-      const sym = up(coin.symbol);
-      const prev = prevState?.[sym] || {};
+    const prescored = tradable.map((coin) => ({
+      coin,
+      sym: up(coin.symbol),
+      prev: prevState?.[up(coin.symbol)] || {},
+      ...preScoreCoin(coin, CORE, CFG, mode, prevState?.[up(coin.symbol)] || {}),
+    }));
+
+    const obCandidates = [...prescored]
+      .sort((a, b) => n(b.score, 0) - n(a.score, 0))
+      .slice(0, MAX_OB_CANDIDATES);
+
+    const obMap = new Map();
+
+    await mapLimit(obCandidates, OB_CONCURRENCY, async (row) => {
+      const ob = await fetchOrderbook(`${row.sym}USDT`);
+      obMap.set(row.sym, ob);
+    });
+
+    for (const row of prescored) {
+      const { coin, sym, prev } = row;
 
       const marketCap = n(coin.marketCap, 0);
       const volume = n(coin.volume, 0);
@@ -584,7 +543,13 @@ export default async function handler(req, res) {
         flat60Pct = lo > 0 ? ((hi - lo) / lo) * 100 : 999;
       }
 
-      const confidence = CORE.computeConfidence({ vm, change24, range24, obValid: false });
+      const ob = obMap.get(sym) || null;
+      const confidence = CORE.computeConfidence({
+        vm,
+        change24,
+        range24,
+        obValid: !!ob?.valid,
+      });
 
       const almostOk =
         buildupOk &&
@@ -593,37 +558,15 @@ export default async function handler(req, res) {
 
       if (almostOk) stage = "ALMOST";
 
-      let ob = null;
       let entryOk = false;
       let entryReason = "";
-      let obSlope = { ok: true, slope: 0, reason: "disabled" };
-      let spreadOk = false;
       let depthOk = false;
-      let scoreOk = false;
-      let confOk = false;
       let dynThr = null;
 
-      if (stage === "ALMOST") {
-        ob = await fetchOrderbook(`${sym}USDT`);
+      if (stage === "ALMOST" && ob?.valid) {
         const entryCfg = CFG.entry || {};
-
-        const samplesKey = `main:ob:samples:${mode}:${sym}`;
-        const prevSamples = (await kv.get(samplesKey)) || [];
-        const samplesArr = Array.isArray(prevSamples) ? prevSamples : [];
-
-        if (ob?.valid) {
-          samplesArr.push({
-            ts: now,
-            score: n(ob.score, 0),
-            spreadPct: n(ob.spreadPct, 999),
-            depthMinUsd1p: n(ob.depthMinUsd1p, 0),
-          });
-        }
-
-        const trimmed = samplesArr.slice(-Math.max(2, n(entryCfg.samplesMax, 24)));
-        await kv.set(samplesKey, trimmed, { ex: n(entryCfg.samplesTtlSec, 3600) });
-
         const tier = pickTier(marketCap, entryCfg);
+
         const baseThr = {
           minConfidence: n(tier?.minConf, n(entryCfg.minConfidence, 40)),
           spreadMaxPct: n(tier?.spreadMax, n(entryCfg.spreadMaxPct, 1.8)),
@@ -633,62 +576,25 @@ export default async function handler(req, res) {
 
         dynThr = CORE.dynamicEntryThresholds({ marketCap, volume, vm }, baseThr, CFG);
 
-        spreadOk = ob?.valid ? n(ob.spreadPct, 999) <= n(dynThr.spreadMaxPct, 999) : false;
-        depthOk = ob?.valid ? n(ob.depthMinUsd1p, 0) >= n(dynThr.depthMinUsd1p, 0) : false;
+        const spreadOk = n(ob.spreadPct, 999) <= n(dynThr.spreadMaxPct, 999);
+        depthOk = n(ob.depthMinUsd1p, 0) >= n(dynThr.depthMinUsd1p, 0);
+        const confOk = confidence >= n(dynThr.minConfidence, n(entryCfg.minConfidence, 0));
 
-        const score = n(ob?.score, 0);
-        scoreOk =
-          ob?.valid
-            ? mode === "bull"
-              ? score >= n(dynThr.obScoreMin, 0)
-              : score <= -n(dynThr.obScoreMin, 0)
-            : false;
-
-        obSlope = CORE.checkObSlopeGate({ stage: "entry", mode, obSamples: trimmed, settings: CFG });
-        confOk = confidence >= n(dynThr.minConfidence, n(entryCfg.minConfidence, 0));
+        const score = n(ob.score, 0);
+        const scoreOk =
+          mode === "bull"
+            ? score >= n(dynThr.obScoreMin, 0)
+            : score <= -n(dynThr.obScoreMin, 0);
 
         let macroEntryOk = true;
-        if (macroMode === "SELECTIVE") {
-          const selectiveConfOk = confidence >= (n(dynThr.minConfidence, n(entryCfg.minConfidence, 0)) + 4);
-          const selectiveSpreadOk = ob?.valid ? n(ob.spreadPct, 999) <= Math.min(n(dynThr.spreadMaxPct, 999), 1.25) : false;
-          const selectiveScoreOk =
-            ob?.valid
-              ? mode === "bull"
-                ? score >= (n(dynThr.obScoreMin, 0) + 0.004)
-                : score <= -(n(dynThr.obScoreMin, 0) + 0.004)
-              : false;
-          macroEntryOk = selectiveConfOk && selectiveSpreadOk && selectiveScoreOk;
-        }
-        if (macroMode === "RESTRICTIVE") {
-          macroEntryOk = false;
-        }
+        if (macroMode === "RESTRICTIVE") macroEntryOk = false;
 
-        const strictConfOk =
-          confidence >= (n(dynThr.minConfidence, n(entryCfg.minConfidence, 0)) + 2);
+        entryOk = spreadOk && depthOk && confOk && scoreOk && macroEntryOk;
 
-        const strictSpreadOk =
-          ob?.valid
-            ? n(ob.spreadPct, 999) <= Math.min(n(dynThr.spreadMaxPct, 999), 1.20)
-            : false;
-
-        entryOk =
-          spreadOk &&
-          depthOk &&
-          scoreOk &&
-          confOk &&
-          obSlope.ok &&
-          macroEntryOk &&
-          strictConfOk &&
-          strictSpreadOk;
-
-        if (!ob?.valid) entryReason = "no_ob";
-        else if (!confOk) entryReason = "conf_low";
-        else if (!strictConfOk) entryReason = "strict_conf_low";
+        if (!confOk) entryReason = "conf_low";
         else if (!spreadOk) entryReason = "spread";
-        else if (!strictSpreadOk) entryReason = "strict_spread";
         else if (!depthOk) entryReason = "depth";
         else if (!scoreOk) entryReason = "ob_score";
-        else if (!obSlope.ok) entryReason = "ob_slope";
         else if (!macroEntryOk) entryReason = "macro_selective";
         else entryReason = "ok";
 
@@ -727,7 +633,7 @@ export default async function handler(req, res) {
         symbol: sym,
         name: coin.name || "",
         image: coin.image || "",
-        side: sideFromMode(mode),
+        side: mode === "bear" ? "SHORT" : "LONG",
         price: n(coin.price, 0),
         marketCap,
         volume,
@@ -739,7 +645,14 @@ export default async function handler(req, res) {
         entryQuality: confidence,
         persistenceScore: Math.round(Math.max(0, Math.min(100, confidence * 0.85 + Math.min(volAcc * 10, 12)))),
         stage,
-        stageWhy: entryOk ? "entry_ok" : stage === "ALMOST" ? "almost_ready" : stage === "BUILDUP" ? "momentum_building" : "radar_only",
+        stageWhy:
+          entryOk
+            ? "entry_ok"
+            : stage === "ALMOST"
+              ? "almost_ready"
+              : stage === "BUILDUP"
+                ? "momentum_building"
+                : "radar_only",
         ob: ob
           ? {
               bestBid: n(ob.bestBid, 0),
@@ -773,7 +686,9 @@ export default async function handler(req, res) {
         scannerGate,
         tradeDeskStatus: scannerGate,
         qualityScore: confidence,
-        liquidityScore: ob?.valid ? Math.max(0, Math.min(100, 55 + (n(ob.score, 0) * 100) / 2 - Math.max(0, n(ob.spreadPct, 0) - 0.8) * 8)) : 35,
+        liquidityScore: ob?.valid
+          ? Math.max(0, Math.min(100, 55 + (n(ob.score, 0) * 100) / 2 - Math.max(0, n(ob.spreadPct, 0) - 0.8) * 8))
+          : 35,
         timingScore: stage === "TRADE_READY" ? 82 : stage === "ALMOST" ? 68 : stage === "BUILDUP" ? 54 : 35,
         marketScore: regime === "EXPANSION" ? 82 : regime === "TREND" ? 70 : regime === "HEADWIND" ? 35 : 50,
         perfectCandidateScore: stage === "TRADE_READY" ? 78 : stage === "ALMOST" ? 66 : stage === "BUILDUP" ? 52 : 30,
@@ -783,8 +698,8 @@ export default async function handler(req, res) {
         entry: {
           ok: !!entryOk,
           reason: entryReason,
-          slopeOk: !!obSlope?.ok,
-          slope: Number(n(obSlope?.slope, 0).toFixed(8)),
+          slopeOk: true,
+          slope: 0,
         },
         flat60Pct: Number(n(flat60Pct, 0).toFixed(3)),
         filterSnapshot: {
@@ -812,8 +727,6 @@ export default async function handler(req, res) {
             spreadMaxPct: n(dynThr?.spreadMaxPct, n(CFG?.entry?.spreadMaxPct, 0)),
             depthMinUsd1p: n(dynThr?.depthMinUsd1p, n(CFG?.entry?.depthMinUsd1p, 0)),
             obScoreMin: n(dynThr?.obScoreMin, n(CFG?.entry?.obScoreMin, 0)),
-            strictConfBoost: 2,
-            strictSpreadCap: 1.2,
           },
           liveMetrics: {
             confidence: n(confidence, 0),
@@ -847,17 +760,13 @@ export default async function handler(req, res) {
         scannerGate,
       });
 
-      const outCoin = {
-        ...engineCoin,
-        coinProfile,
-        execution,
-      };
+      const outCoin = { ...engineCoin, coinProfile, execution };
 
       nextState[sym] = {
         symbol: sym,
         stage,
         lastSeen: now,
-        side: sideFromMode(mode),
+        side: mode === "bear" ? "SHORT" : "LONG",
         price: n(coin.price, 0),
         marketCap,
         volume,
@@ -885,119 +794,14 @@ export default async function handler(req, res) {
         filterSnapshot: outCoin.filterSnapshot,
       };
 
-      // ========== EVENT: scan_coin_state (voor stuck‑analyse) ==========
-      await safePushEvent("scan_coin_state", {
-        system: "main",
-        mode,
-        symbol: sym,
-        stage,
-        price: outCoin.price,
-        confidence: outCoin.confidence,
-        entryQuality: outCoin.entryQuality,
-        persistenceScore: outCoin.persistenceScore,
-        perfectCandidateScore: outCoin.perfectCandidateScore,
-        spreadPct: outCoin?.ob?.spreadPct ?? null,
-        obScore: outCoin?.ob?.score ?? null,
-        depthMinUsd1p: outCoin?.ob?.depthMinUsd1p ?? null,
-        scannerGate: outCoin.scannerGate || null,
-        tradeDeskStatus: outCoin.tradeDeskStatus || null,
-        regime,
-        btcState: btc.state,
-        filterSnapshot: outCoin.filterSnapshot || null,
-        ts: now,
-      });
-
-      // ========== STAGE TRANSITION event ==========
-      const oldStage = up(prev?.stage || "RADAR");
-      if (stage !== oldStage && stage !== "RADAR") {
-        const isUpgrade =
-          (oldStage === "RADAR" && (stage === "BUILDUP" || stage === "ALMOST" || stage === "TRADE_READY")) ||
-          (oldStage === "BUILDUP" && (stage === "ALMOST" || stage === "TRADE_READY")) ||
-          (oldStage === "ALMOST" && stage === "TRADE_READY");
-
-        await safePushStageTransition({
-          system: "main",
-          mode,
-          symbol: sym,
-          from: oldStage,
-          to: stage,
-          price: outCoin.price,
-          confidence: outCoin.confidence,
-          entryQuality: outCoin.entryQuality,
-          persistenceScore: outCoin.persistenceScore,
-          perfectCandidateScore: outCoin.perfectCandidateScore,
-          spreadPct: outCoin?.ob?.spreadPct ?? null,
-          obScore: outCoin?.ob?.score ?? null,
-          depthMinUsd1p: outCoin?.ob?.depthMinUsd1p ?? null,
-          scannerGate: outCoin.scannerGate || null,
-          tradeDeskStatus: outCoin.tradeDeskStatus || null,
-          regime,
-          btcState: btc.state,
-          filterSnapshot: outCoin.filterSnapshot || null,
-          ts: now,
-        });
-
-        if (isUpgrade) {
-          console.log(`[Scanner] 🚀 Upgrade voor ${sym}: ${oldStage} -> ${stage}. Discord aanroepen...`);
-
-          await safePushEvent("main_signal_upgrade", {
-            source: "main",
-            system: "main",
-            mode,
-            symbol: sym,
-            oldStage,
-            newStage: stage,
-            sourceStage: oldStage,
-            stage,
-            price: outCoin.price,
-            side: outCoin.side,
-            confidence: outCoin.confidence,
-            entryQuality: outCoin.entryQuality,
-            persistenceScore: outCoin.persistenceScore,
-            perfectCandidateScore: outCoin.perfectCandidateScore,
-            spreadPct: outCoin?.ob?.spreadPct ?? null,
-            obScore: outCoin?.ob?.score ?? null,
-            depthMinUsd1p: outCoin?.ob?.depthMinUsd1p ?? null,
-            btcState: btc.state,
-            regime,
-            tradePlan: outCoin.tradePlan || null,
-            stageWhy: outCoin.stageWhy || null,
-            filterSnapshot: outCoin.filterSnapshot || null,
-            scannerGate: outCoin.scannerGate || null,
-            tradeDeskStatus: outCoin.tradeDeskStatus || null,
-            ts: now,
-            entryFilters: {
-              confidenceMin: dynThr?.minConfidence ?? null,
-              spreadMaxPct: dynThr?.spreadMaxPct ?? null,
-              depthMinUsd1p: dynThr?.depthMinUsd1p ?? null,
-              obScoreMin: dynThr?.obScoreMin ?? null,
-              macroMode,
-              strictConfBoost: 2,
-              strictSpreadCap: 1.2,
-            },
-          });
-
-          await sendSignal({
-            source: "main",
-            stage,
-            mode,
-            coin: outCoin,
-            btcState: btc.state,
-            kind: "signal",
-          }).catch((err) => console.error("Discord send error:", err));
-        }
-      }
-
-      // funnel toevoegen
       if (stage === "TRADE_READY") funnel.trade_ready.push(outCoin);
       else if (stage === "ALMOST") funnel.almost.push(outCoin);
       else if (stage === "BUILDUP") funnel.buildup.push(outCoin);
       else funnel.radar.push(outCoin);
-
-      await sleep(6);
     }
 
-    const byConf = (a, b) => n(b.execution?.score, n(b.confidence, 0)) - n(a.execution?.score, n(a.confidence, 0));
+    const byConf = (a, b) =>
+      n(b.execution?.score, n(b.confidence, 0)) - n(a.execution?.score, n(a.confidence, 0));
 
     funnel.trade_ready.sort(byConf);
     funnel.almost.sort(byConf);
@@ -1027,6 +831,11 @@ export default async function handler(req, res) {
         scanLock: { active: false, until: null },
         trigger: isVercelCron ? "vercel_cron" : tokenOk ? "cron_token" : "manual_secret",
         macroMode,
+        performance: {
+          maxCoinsFromCg: MAX_COINS_FROM_CG,
+          maxObCandidates: MAX_OB_CANDIDATES,
+          obConcurrency: OB_CONCURRENCY,
+        },
         cg: {
           coinsFetched: rawCoins.length,
           tradable: tradable.length,
@@ -1040,28 +849,30 @@ export default async function handler(req, res) {
     await kv.set(keyMainState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
     await kv.set(keyMainLatest(mode), latest, { ex: 60 * 60 });
 
-    const configSnapshot = {
-      system: "main",
-      mode,
-      regime,
-      macroMode,
-      scanner: {
-        radar: CFG?.radar || {},
-        buildup: CFG?.buildup || {},
-        almost: CFG?.almost || {},
-        entry: CFG?.entry || {},
+    await kv.set(
+      keyMainConfigSnapshot(mode),
+      {
+        system: "main",
+        mode,
+        regime,
+        macroMode,
+        scanner: {
+          radar: CFG?.radar || {},
+          buildup: CFG?.buildup || {},
+          almost: CFG?.almost || {},
+          entry: CFG?.entry || {},
+        },
+        limits: {
+          ENTRY_LIMIT: CFG?.ENTRY_LIMIT ?? null,
+          ALMOST_LIMIT: CFG?.ALMOST_LIMIT ?? null,
+          BUILDUP_LIMIT: CFG?.BUILDUP_LIMIT ?? null,
+          RADAR_LIMIT: CFG?.RADAR_LIMIT ?? null,
+          CG_TOP: CFG?.CG_TOP ?? null,
+        },
+        updatedAt: now,
       },
-      limits: {
-        ENTRY_LIMIT: CFG?.ENTRY_LIMIT ?? null,
-        ALMOST_LIMIT: CFG?.ALMOST_LIMIT ?? null,
-        BUILDUP_LIMIT: CFG?.BUILDUP_LIMIT ?? null,
-        RADAR_LIMIT: CFG?.RADAR_LIMIT ?? null,
-        CG_TOP: CFG?.CG_TOP ?? null,
-      },
-      updatedAt: now,
-    };
-
-    await kv.set(keyMainConfigSnapshot(mode), configSnapshot, { ex: 60 * 60 * 24 * 7 });
+      { ex: 60 * 60 * 24 * 7 }
+    );
 
     res.status(200).json(latest);
   } catch (err) {
@@ -1070,7 +881,6 @@ export default async function handler(req, res) {
       ok: false,
       error: err?.message || String(err),
       status: err?.status || null,
-      retryAfter: err?.retryAfter || null,
     });
   } finally {
     if (lockAcquired) await releaseScanLock(mode);
