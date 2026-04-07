@@ -91,7 +91,8 @@ function uniqBySymbol(list) {
   const out = [];
 
   for (const item of arr(list)) {
-    const key = String(item?.symbol || item?.id || Math.random()).toUpperCase();
+    const key = String(item?.symbol || item?.id || "").toUpperCase();
+    if (!key) continue;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(item);
@@ -356,6 +357,7 @@ function renderAll(data) {
   const ageText = staleLabel(ts);
   const ageMin = getAgeMinutes(ts);
   const funnel = normalizeMoonFunnel(data);
+  const universeCount = Number(data?.debug?.universeCount || 0);
 
   const statusLine = el("statusLine");
   if (statusLine) {
@@ -365,6 +367,7 @@ function renderAll(data) {
 
     statusLine.textContent =
       `${btcLine(data.btc)} • Laatste update: ${stamp}${staleNote} • ` +
+      `Universe ${universeCount} • ` +
       `TRADE READY ${funnel.tradeReady.length} • ALMOST ${funnel.almost.length} • ` +
       `BUILDUP ${funnel.buildup.length} • RADAR ${funnel.radar.length}` +
       ` • Whale flow ${Number(data?.whaleFlow || 0)}`;
