@@ -11,7 +11,8 @@ syncTopbarHeight();
 const el = (id) => document.getElementById(id);
 
 const API = {
-  latest: (mode) => `/api/moon/public-latest?mode=${encodeURIComponent(mode)}`,
+  latest: (mode, bust = "") =>
+    `/api/moon/public-latest?mode=${encodeURIComponent(mode)}${bust ? `&_=${encodeURIComponent(bust)}` : ""}`,
 };
 
 let MODE =
@@ -21,6 +22,7 @@ let MODE =
 
 const lastTsByMode = { bull: 0, bear: 0 };
 let isLoading = false;
+let refreshTimer = null;
 
 function setMode(mode) {
   MODE = mode === "bear" ? "bear" : "bull";
@@ -43,55 +45,86 @@ function fmtUSD(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(2) + "K";
   return n.toFixed(0);
 }
+
 function fmtPct(n) {
   n = Number(n) || 0;
   const s = n >= 0 ? "+" : "";
   return s + n.toFixed(2) + "%";
 }
+
 function fmt(n) {
   return (Number(n) || 0).toFixed(2);
 }
+
 function safe(n, d = 2) {
   const x = Number(n);
   if (!Number.isFinite(x)) return "—";
   return x.toFixed(d);
 }
+
 function pct(n, d = 2) {
   const x = Number(n);
   if (!Number.isFinite(x)) return "—";
   const s = x >= 0 ? "+" : "";
   return s + x.toFixed(d) + "%";
 }
+
 function upperStage(v) {
   return String(v || "").toUpperCase();
 }
+
 function arr(x) {
   return Array.isArray(x) ? x : [];
 }
 
-// ===== AANGEPAST: scannedAt heeft voorrang =====
+function esc(v) {
+  return String(v ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+// scannedAt heeft voorrang
 function getSnapshotTs(data) {
   return Number(data?.scannedAt || data?.ts || 0);
 }
 
+function getAgeMinutes(ts) {
+  const x = Number(ts || 0);
+  if (!(x > 0)) return null;
+  return Math.max(0, Math.floor((Date.now() - x) / 60000));
+}
+
+function staleLabel(ts) {
+  const mins = getAgeMinutes(ts);
+  if (mins == null) return "snapshot-tijd onbekend";
+  if (mins < 5) return `live • ${mins} min oud`;
+  if (mins < 60) return `${mins} min oud`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${h}u ${m}m oud`;
+}
+
 /**
- * ✅ Funnel mapping (zoals main):
- * RADAR -> BUILDUP -> ALMOST -> ENTRY
- *
- * UI labels:
- * - funnel.entry wordt in de UI "TRADE READY"
- *
- * Extra safety:
- * - Als backend nog elite_* / hold meegeeft, gooien we die óók in TRADE READY
- *   zodat je niks kwijt raakt tijdens de overgang.
+ * Funnel mapping:
+ * backend kan verschillende keys uitsturen.
+ * UI houdt het stabiel op:
+ * - tradeReady
+ * - almost
+ * - buildup
+ * - radar
  */
 function normalizeMoonFunnel(data) {
   const funnel = data?.funnel || {};
 
   const tradeReady = [
+    ...arr(funnel.trade_ready),
     ...arr(funnel.entry),
+    ...arr(funnel.tradeReady),
     ...arr(funnel.elite_expansion),
     ...arr(funnel.elite_ignition),
+    ...arr(funnel.elite_cascade),
     ...arr(funnel.hold),
   ];
 
@@ -109,15 +142,15 @@ function stageReasonText(stage) {
   if (s === "ENTRY") return "TRADE READY: entry-ready signaal (beste kwaliteit).";
   if (s === "TRADE_READY") return "TRADE READY: entry-ready signaal (beste kwaliteit).";
 
-  // legacy/extra labels die je backend misschien nog uitstuurt:
   if (s === "ELITE_EXPANSION" || s === "ELITE_IGNITION" || s === "ELITE_CASCADE") {
     return "TRADE READY (legacy): elite signaal, hoog momentum.";
   }
-  if (s === "HOLD") return "TRADE READY (hold): coin blijft zichtbaar door lock/open positie.";
 
+  if (s === "HOLD") return "TRADE READY (hold): coin blijft zichtbaar door lock/open positie.";
   if (s === "ALMOST") return "ALMOST: bijna klaar — mist nog 1–2 checks.";
   if (s === "BUILDUP") return "BUILDUP: opbouwfase — momentum en volume lopen op.";
   if (s === "RADAR") return "RADAR: vroege selectie — vooral volgen.";
+
   return "Vroeg signaal — volgen, nog veel ruis.";
 }
 
@@ -191,8 +224,6 @@ function actionForStage(c, data) {
   if (stage === "RADAR") {
     return { label: "SKIP / VOLGEN", sub: "Te vroeg voor actie. Alleen watchlist.", tone: "no" };
   }
-
-  // legacy
   if (stage.startsWith("ELITE_") || stage === "HOLD") {
     return { label: "TRADE READY", sub: `Elite/hold signaal. BTC is ${btcState}.`, tone: "ok" };
   }
@@ -207,6 +238,7 @@ function confColor(conf) {
   if (c < 80) return "#3B82F6";
   return "#22C55E";
 }
+
 function confBar(conf) {
   const pctV = Math.max(0, Math.min(100, Number(conf) || 0));
   const col = confColor(pctV);
@@ -230,8 +262,8 @@ function coinRow(c) {
   div.innerHTML = `
     <div class="coinTop">
       <div>
-        <div class="sym">${c.symbol || "—"}</div>
-        <div class="tag">${c.name || ""}</div>
+        <div class="sym">${esc(c.symbol || "—")}</div>
+        <div class="tag">${esc(c.name || "")}</div>
       </div>
       ${confBar(conf)}
     </div>
@@ -247,7 +279,7 @@ function coinRow(c) {
       <span>TP: ${tpTxt}</span>
     </div>
 
-    <div class="tag" style="margin-top:6px;">${stageReasonText(c?.stage)}</div>
+    <div class="tag" style="margin-top:6px;">${esc(stageReasonText(c?.stage))}</div>
   `;
 
   div.addEventListener("click", () => openModalMain(c));
@@ -264,6 +296,7 @@ function renderStage(targetId, items, renderer = coinRow) {
     box.innerHTML = `<div class="empty">Geen coins.</div>`;
     return;
   }
+
   for (const x of list) box.appendChild(renderer(x));
 }
 
@@ -279,13 +312,19 @@ function renderAll(data) {
   window.__LAST_DATA__ = data;
 
   const ts = getSnapshotTs(data);
-  const stamp = ts ? new Date(ts).toLocaleString() : "—";
+  const stamp = ts ? new Date(ts).toLocaleString("nl-NL") : "—";
+  const ageText = staleLabel(ts);
+  const ageMin = getAgeMinutes(ts);
   const funnel = normalizeMoonFunnel(data);
 
   const statusLine = el("statusLine");
   if (statusLine) {
+    let staleNote = "";
+    if (ageMin != null && ageMin >= 30) staleNote = ` • WAARSCHUWING: snapshot oud (${ageText})`;
+    else staleNote = ` • ${ageText}`;
+
     statusLine.textContent =
-      `${btcLine(data.btc)} • Laatste update: ${stamp} • ` +
+      `${btcLine(data.btc)} • Laatste update: ${stamp}${staleNote} • ` +
       `TRADE READY ${funnel.tradeReady.length} • ALMOST ${funnel.almost.length} • ` +
       `BUILDUP ${funnel.buildup.length} • RADAR ${funnel.radar.length}` +
       ` • Whale flow ${Number(data?.whaleFlow || 0)}`;
@@ -305,11 +344,15 @@ async function loadLatest(force = false) {
     const sl = el("statusLine");
     if (sl && force) sl.textContent = "Status: laden…";
 
-    const r = await fetch(API.latest(MODE), {
+    const bust = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const url = API.latest(MODE, bust);
+
+    const r = await fetch(url, {
       cache: "no-store",
       headers: {
-        "cache-control": "no-cache, no-store, max-age=0",
+        "cache-control": "no-cache, no-store, max-age=0, must-revalidate",
         pragma: "no-cache",
+        expires: "0",
       },
     });
 
@@ -324,16 +367,19 @@ async function loadLatest(force = false) {
     if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
 
     const ts = getSnapshotTs(j);
+
     if (!force && ts && ts === (lastTsByMode[MODE] || 0)) {
       isLoading = false;
       return;
     }
-    if (ts) lastTsByMode[MODE] = ts;
 
+    if (ts) lastTsByMode[MODE] = ts;
     renderAll(j || {});
   } catch (e) {
     const statusLine = el("statusLine");
-    if (statusLine) statusLine.textContent = `Status: fout bij laden • ${String(e?.message || e)}`;
+    if (statusLine) {
+      statusLine.textContent = `Status: fout bij laden • ${String(e?.message || e)}`;
+    }
 
     renderStage("stageTradeReady", []);
     renderStage("stageAlmost", []);
@@ -349,6 +395,7 @@ function showModal(on) {
   if (!modal) return;
   modal.classList.toggle("hidden", !on);
 }
+
 function setTab(name) {
   const tabs = ["Action", "Why", "Liq", "Debug"];
   for (const t of tabs) {
@@ -380,8 +427,8 @@ function addCheck(container, ok, title, sub = "", kind = "ok") {
   div.innerHTML = `
     ${icon(ok, kind)}
     <div class="checkText">
-      <div><b>${title}</b></div>
-      ${sub ? `<div class="checkSmall">${sub}</div>` : ""}
+      <div><b>${esc(title)}</b></div>
+      ${sub ? `<div class="checkSmall">${esc(sub)}</div>` : ""}
     </div>
   `;
   container.appendChild(div);
@@ -393,7 +440,7 @@ function setKV(container, rows) {
   for (const [k, v] of rows) {
     const r = document.createElement("div");
     r.className = "kvRow";
-    r.innerHTML = `<div class="kvKey">${k}</div><div class="kvVal">${v}</div>`;
+    r.innerHTML = `<div class="kvKey">${esc(k)}</div><div class="kvVal">${v}</div>`;
     container.appendChild(r);
   }
 }
@@ -564,9 +611,22 @@ function openModalMain(c) {
   el("mDebug").textContent = JSON.stringify(c, null, 2);
 }
 
+function scheduleRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => loadLatest(false), 60 * 1000);
+}
+
 el("modeBull")?.addEventListener("click", () => setMode("bull"));
 el("modeBear")?.addEventListener("click", () => setMode("bear"));
 
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") loadLatest(true);
+});
+
+window.addEventListener("focus", () => {
+  loadLatest(true);
+});
+
 setMode(MODE);
 setTimeout(() => loadLatest(true), 1200);
-setInterval(() => loadLatest(false), 60 * 1000);
+scheduleRefresh();
