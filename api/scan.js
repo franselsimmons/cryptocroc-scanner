@@ -10,6 +10,16 @@ const BITGET_OB = "https://api.bitget.com/api/v2/spot/market/orderbook";
 const BITGET_SYMBOLS = "https://api.bitget.com/api/v2/spot/public/symbols";
 const CG_MARKETS = "https://api.coingecko.com/api/v3/coins/markets";
 
+// =========================
+// HARD PERFORMANCE LIMITS
+// =========================
+const MAX_COINS_FROM_CG = 500;          // hard cap i.p.v. 1500 echt verwerken
+const MAX_OB_CANDIDATES = 120;          // alleen shortlist krijgt OB fetch
+const MAX_STATE_EVENTS = 20;            // sample only
+const MAX_TRANSITION_EVENTS = 25;       // sample only
+const MAX_DISCORD_SIGNALS = 8;          // voorkom spam + latency
+const OB_CONCURRENCY = 8;
+
 // ======================================================
 // MAIN KV KEYS
 // ======================================================
@@ -36,8 +46,8 @@ function n(x, d = 0) {
 function up(x) {
   return String(x || "").toUpperCase();
 }
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+function arr(x) {
+  return Array.isArray(x) ? x : [];
 }
 
 function sideFromMode(mode) {
@@ -87,13 +97,31 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
   }
 }
 
+async function mapLimit(list, limit, fn) {
+  const out = new Array(list.length);
+  let idx = 0;
+
+  async function worker() {
+    while (idx < list.length) {
+      const i = idx++;
+      out[i] = await fn(list[i], i);
+    }
+  }
+
+  const workers = Array.from({ length: Math.max(1, limit) }, () => worker());
+  await Promise.all(workers);
+  return out;
+}
+
 // ======================================================
 // Secret gate
 // ======================================================
 function requireSecret(req, res) {
   const qToken = String(req.query?.token || "");
   const bearer = String(req.headers?.authorization || "");
-  const headerToken = bearer.toLowerCase().startsWith("bearer ") ? bearer.slice(7).trim() : "";
+  const headerToken = bearer.toLowerCase().startsWith("bearer ")
+    ? bearer.slice(7).trim()
+    : "";
 
   const ok =
     (process.env.CRON_SECRET && qToken && qToken === String(process.env.CRON_SECRET)) ||
@@ -170,8 +198,14 @@ function normalizeCgMarketRow(c) {
     price: n(c.current_price, 0),
     marketCap: n(c.market_cap, 0),
     volume: n(c.total_volume, 0),
-    change24: n(c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h, 0),
-    change1h: n(c.price_change_percentage_1h_in_currency ?? c.price_change_percentage_1h, 0),
+    change24: n(
+      c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h,
+      0
+    ),
+    change1h: n(
+      c.price_change_percentage_1h_in_currency ?? c.price_change_percentage_1h,
+      0
+    ),
     range24,
   };
 }
@@ -181,12 +215,12 @@ async function fetchCoinGeckoMarketsPage(page, perPage = 250) {
     `${CG_MARKETS}?vs_currency=usd&order=market_cap_desc&per_page=${perPage}&page=${page}` +
     `&sparkline=false&price_change_percentage=1h,24h`;
 
-  const arr = await fetchJsonWithTimeout(url, {}, 9000);
-  if (!Array.isArray(arr)) return [];
-  return arr.map(normalizeCgMarketRow);
+  const rows = await fetchJsonWithTimeout(url, {}, 9000);
+  if (!Array.isArray(rows)) return [];
+  return rows.map(normalizeCgMarketRow);
 }
 
-async function fetchCoinGeckoTopCached(maxCoins = 1500) {
+async function fetchCoinGeckoTopCached(maxCoins = MAX_COINS_FROM_CG) {
   const perPage = 250;
   const maxPages = Math.max(1, Math.ceil(maxCoins / perPage));
   const out = [];
@@ -199,11 +233,11 @@ async function fetchCoinGeckoTopCached(maxCoins = 1500) {
 
       out.push(...rows);
       await kv.set(`${KV_CG_PAGE_PREFIX}${page}`, rows, { ex: CG_PAGE_TTL_SEC });
-      await sleep(250);
 
       if (out.length >= maxCoins) break;
     } catch (e) {
       const status = Number(e?.status || 0);
+
       if (status === 429) {
         meta.rateLimited = true;
 
@@ -259,13 +293,19 @@ async function fetchBTCGateFromUniverse() {
       `${CG_MARKETS}?vs_currency=usd&ids=bitcoin&order=market_cap_desc&per_page=1&page=1` +
       `&sparkline=false&price_change_percentage=1h,24h`;
 
-    const arr = await fetchJsonWithTimeout(url, {}, 8000);
-    const btc = Array.isArray(arr) && arr.length ? arr[0] : null;
+    const rows = await fetchJsonWithTimeout(url, {}, 8000);
+    const btc = Array.isArray(rows) && rows.length ? rows[0] : null;
     if (!btc) throw new Error("no_btc");
 
     const price = n(btc.current_price, 0);
-    const chg24 = n(btc.price_change_percentage_24h_in_currency ?? btc.price_change_percentage_24h, 0);
-    const chg1h = n(btc.price_change_percentage_1h_in_currency ?? btc.price_change_percentage_1h, 0);
+    const chg24 = n(
+      btc.price_change_percentage_24h_in_currency ?? btc.price_change_percentage_24h,
+      0
+    );
+    const chg1h = n(
+      btc.price_change_percentage_1h_in_currency ?? btc.price_change_percentage_1h,
+      0
+    );
     const hi = n(btc.high_24h, 0);
     const lo = n(btc.low_24h, 0);
     const range24 = hi > 0 && lo > 0 ? ((hi - lo) / lo) * 100 : 0;
@@ -276,7 +316,14 @@ async function fetchBTCGateFromUniverse() {
   } catch (e) {
     const cached = await kv.get(KV_CG_BTC);
     if (cached && typeof cached === "object") return cached;
-    return { price: 0, chg24: 0, chg1h: 0, range24: 0, state: "NEUTRAL", _err: String(e?.message || e) };
+    return {
+      price: 0,
+      chg24: 0,
+      chg1h: 0,
+      range24: 0,
+      state: "NEUTRAL",
+      _err: String(e?.message || e),
+    };
   }
 }
 
@@ -287,14 +334,16 @@ async function getBitgetSpotUsdtSymbols() {
   try {
     const j = await fetchJsonWithTimeout(BITGET_SYMBOLS, {}, 8000);
     if (String(j?.code || "") !== "00000") return new Set();
-    const data = Array.isArray(j?.data) ? j.data : [];
 
+    const data = Array.isArray(j?.data) ? j.data : [];
     const set = new Set();
+
     for (const s of data) {
       const quote = up(s?.quoteCoin || s?.quoteCoinName || "");
       const base = up(s?.baseCoin || s?.baseCoinName || "");
       if (quote === "USDT" && base) set.add(base);
     }
+
     return set;
   } catch {
     return new Set();
@@ -321,7 +370,6 @@ async function fetchOrderbook(symbol) {
     const spreadPct = ((bestAsk - bestBid) / bestBid) * 100;
     const depthBidUsd = bids.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
     const depthAskUsd = asks.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
-
     const total = depthBidUsd + depthAskUsd;
     const score = total > 0 ? (depthBidUsd - depthAskUsd) / total : 0;
 
@@ -419,9 +467,6 @@ function gateFromStage(stage) {
   return "IGNORE";
 }
 
-// ======================================================
-// Macro mode for neutral BTC selectivity
-// ======================================================
 function getMainMacroMode({ btc, mode }) {
   const state = up(btc?.state || "NEUTRAL");
   const chg24 = n(btc?.chg24, 0);
@@ -442,15 +487,66 @@ function getMainMacroMode({ btc, mode }) {
   return "SELECTIVE";
 }
 
-// ======================================================
-// Extra events voor stuck‑analyse
-// ======================================================
 async function safePushStageTransition(payload) {
   try {
     await pushEvent("scan_transition", payload);
   } catch (e) {
     console.error("pushEvent failed (scan_transition):", e?.message || e);
   }
+}
+
+function preScoreCoin(coin, CORE, CFG, mode, prevStateRow = {}) {
+  const marketCap = n(coin.marketCap, 0);
+  const volume = n(coin.volume, 0);
+  const change24 = n(coin.change24, 0);
+  const change1h = n(coin.change1h, 0);
+  const range24 = n(coin.range24, 0);
+  const vm = CORE.computeVm(volume, marketCap);
+
+  const volHist = Array.isArray(prevStateRow?.volHist) ? prevStateRow.volHist : [];
+  let volAcc = 1;
+  if (volHist.length >= 6) {
+    const nowVol = volume;
+    const ago = volHist[volHist.length - 5] || nowVol;
+    volAcc = nowVol / Math.max(ago, 1e-9);
+  }
+
+  const dynRadar = CORE.dynamicRadarThresholds(range24, CFG);
+  const R = CFG.radar || {};
+
+  const radarOk =
+    marketCap >= n(R.mcapMin, 0) &&
+    marketCap <= n(R.mcapMax, Number.MAX_SAFE_INTEGER) &&
+    volume >= n(R.volMin, 0) &&
+    vm >= n(R.vmMin, 0) &&
+    Math.abs(change24) <= n(R.maxAbsChg24, 999) &&
+    range24 <= n(dynRadar.maxRange24, n(R.maxRange24, 999)) &&
+    (mode === "bull"
+      ? change1h >= n(dynRadar.dir1hMinBull, n(R.dir1hMinBull, 0)) &&
+        change24 >= n(dynRadar.dir24MinBull, n(R.dir24MinBull, 0))
+      : change1h <= n(dynRadar.dir1hMaxBear, n(R.dir1hMaxBear, 0)) &&
+        change24 <= n(dynRadar.dir24MaxBear, n(R.dir24MaxBear, 0)));
+
+  const buildupOk = radarOk && volAcc >= n(CFG.buildup?.minVolAcc, 1.0);
+  const confidence = CORE.computeConfidence({ vm, change24, range24, obValid: false });
+
+  return {
+    marketCap,
+    volume,
+    change24,
+    change1h,
+    range24,
+    vm,
+    volAcc,
+    radarOk,
+    buildupOk,
+    confidence,
+    score:
+      (radarOk ? 20 : 0) +
+      (buildupOk ? 20 : 0) +
+      confidence +
+      Math.min(20, volAcc * 8),
+  };
 }
 
 // ======================================================
@@ -496,7 +592,15 @@ export default async function handler(req, res) {
           })
         );
       }
-      return res.end(JSON.stringify({ ok: true, skipped: true, reason: "scan_lock_active", mode, until: lock.until || null }));
+      return res.end(
+        JSON.stringify({
+          ok: true,
+          skipped: true,
+          reason: "scan_lock_active",
+          mode,
+          until: lock.until || null,
+        })
+      );
     }
     lockAcquired = true;
 
@@ -515,23 +619,49 @@ export default async function handler(req, res) {
     const macroMode = getMainMacroMode({ btc, mode });
 
     // Universe
-    const cg = await fetchCoinGeckoTopCached(Number(CFG.CG_TOP || 1500));
+    const cg = await fetchCoinGeckoTopCached(Math.min(Number(CFG.CG_TOP || 1500), MAX_COINS_FROM_CG));
     const rawCoins = Array.isArray(cg?.coins) ? cg.coins : [];
     const cgMeta = cg?.meta || {};
     const bitgetSymbols = await getBitgetSpotUsdtSymbols();
 
     const tradable = rawCoins
       .filter((c) => bitgetSymbols.has(up(c.symbol)))
-      .slice(0, Number(CFG.CG_TOP || 1500));
+      .slice(0, MAX_COINS_FROM_CG);
 
     const prevState = (await kv.get(keyMainState(mode))) || {};
     const nextState = {};
-
     const funnel = { trade_ready: [], almost: [], buildup: [], radar: [] };
 
-    for (const coin of tradable) {
+    // =========================
+    // 1) PRE-SCORE universe
+    // =========================
+    const prescored = tradable.map((coin) => {
       const sym = up(coin.symbol);
       const prev = prevState?.[sym] || {};
+      const base = preScoreCoin(coin, CORE, CFG, mode, prev);
+      return { coin, sym, prev, ...base };
+    });
+
+    // Alleen shortlist krijgt OB fetch
+    const obCandidates = [...prescored]
+      .sort((a, b) => n(b.score, 0) - n(a.score, 0))
+      .slice(0, MAX_OB_CANDIDATES);
+
+    const obMap = new Map();
+
+    await mapLimit(obCandidates, OB_CONCURRENCY, async (row) => {
+      const { sym } = row;
+      const ob = await fetchOrderbook(`${sym}USDT`);
+      obMap.set(sym, ob);
+      return null;
+    });
+
+    let stateEventCount = 0;
+    let transitionEventCount = 0;
+    let discordSignalCount = 0;
+
+    for (const row of prescored) {
+      const { coin, sym, prev } = row;
 
       const marketCap = n(coin.marketCap, 0);
       const volume = n(coin.volume, 0);
@@ -572,7 +702,6 @@ export default async function handler(req, res) {
             change24 <= n(dynRadar.dir24MaxBear, n(R.dir24MaxBear, 0)));
 
       let stage = "RADAR";
-
       const buildupOk = radarOk && volAcc >= n(CFG.buildup?.minVolAcc, 1.0);
       if (buildupOk) stage = "BUILDUP";
 
@@ -584,7 +713,12 @@ export default async function handler(req, res) {
         flat60Pct = lo > 0 ? ((hi - lo) / lo) * 100 : 999;
       }
 
-      const confidence = CORE.computeConfidence({ vm, change24, range24, obValid: false });
+      const confidence = CORE.computeConfidence({
+        vm,
+        change24,
+        range24,
+        obValid: !!obMap.get(sym)?.valid,
+      });
 
       const almostOk =
         buildupOk &&
@@ -593,35 +727,18 @@ export default async function handler(req, res) {
 
       if (almostOk) stage = "ALMOST";
 
-      let ob = null;
+      let ob = obMap.get(sym) || null;
       let entryOk = false;
       let entryReason = "";
-      let obSlope = { ok: true, slope: 0, reason: "disabled" };
+      let obSlope = { ok: true, slope: 0, reason: "skipped_fast_mode" };
       let spreadOk = false;
       let depthOk = false;
       let scoreOk = false;
       let confOk = false;
       let dynThr = null;
 
-      if (stage === "ALMOST") {
-        ob = await fetchOrderbook(`${sym}USDT`);
+      if (stage === "ALMOST" && ob?.valid) {
         const entryCfg = CFG.entry || {};
-
-        const samplesKey = `main:ob:samples:${mode}:${sym}`;
-        const prevSamples = (await kv.get(samplesKey)) || [];
-        const samplesArr = Array.isArray(prevSamples) ? prevSamples : [];
-
-        if (ob?.valid) {
-          samplesArr.push({
-            ts: now,
-            score: n(ob.score, 0),
-            spreadPct: n(ob.spreadPct, 999),
-            depthMinUsd1p: n(ob.depthMinUsd1p, 0),
-          });
-        }
-
-        const trimmed = samplesArr.slice(-Math.max(2, n(entryCfg.samplesMax, 24)));
-        await kv.set(samplesKey, trimmed, { ex: n(entryCfg.samplesTtlSec, 3600) });
 
         const tier = pickTier(marketCap, entryCfg);
         const baseThr = {
@@ -633,62 +750,27 @@ export default async function handler(req, res) {
 
         dynThr = CORE.dynamicEntryThresholds({ marketCap, volume, vm }, baseThr, CFG);
 
-        spreadOk = ob?.valid ? n(ob.spreadPct, 999) <= n(dynThr.spreadMaxPct, 999) : false;
-        depthOk = ob?.valid ? n(ob.depthMinUsd1p, 0) >= n(dynThr.depthMinUsd1p, 0) : false;
+        spreadOk = n(ob.spreadPct, 999) <= n(dynThr.spreadMaxPct, 999);
+        depthOk = n(ob.depthMinUsd1p, 0) >= n(dynThr.depthMinUsd1p, 0);
 
-        const score = n(ob?.score, 0);
+        const score = n(ob.score, 0);
         scoreOk =
-          ob?.valid
-            ? mode === "bull"
-              ? score >= n(dynThr.obScoreMin, 0)
-              : score <= -n(dynThr.obScoreMin, 0)
-            : false;
+          mode === "bull"
+            ? score >= n(dynThr.obScoreMin, 0)
+            : score <= -n(dynThr.obScoreMin, 0);
 
-        obSlope = CORE.checkObSlopeGate({ stage: "entry", mode, obSamples: trimmed, settings: CFG });
         confOk = confidence >= n(dynThr.minConfidence, n(entryCfg.minConfidence, 0));
 
+        // FAST MODE: slope gate overslaan
         let macroEntryOk = true;
-        if (macroMode === "SELECTIVE") {
-          const selectiveConfOk = confidence >= (n(dynThr.minConfidence, n(entryCfg.minConfidence, 0)) + 4);
-          const selectiveSpreadOk = ob?.valid ? n(ob.spreadPct, 999) <= Math.min(n(dynThr.spreadMaxPct, 999), 1.25) : false;
-          const selectiveScoreOk =
-            ob?.valid
-              ? mode === "bull"
-                ? score >= (n(dynThr.obScoreMin, 0) + 0.004)
-                : score <= -(n(dynThr.obScoreMin, 0) + 0.004)
-              : false;
-          macroEntryOk = selectiveConfOk && selectiveSpreadOk && selectiveScoreOk;
-        }
-        if (macroMode === "RESTRICTIVE") {
-          macroEntryOk = false;
-        }
+        if (macroMode === "RESTRICTIVE") macroEntryOk = false;
 
-        const strictConfOk =
-          confidence >= (n(dynThr.minConfidence, n(entryCfg.minConfidence, 0)) + 2);
+        entryOk = spreadOk && depthOk && scoreOk && confOk && macroEntryOk;
 
-        const strictSpreadOk =
-          ob?.valid
-            ? n(ob.spreadPct, 999) <= Math.min(n(dynThr.spreadMaxPct, 999), 1.20)
-            : false;
-
-        entryOk =
-          spreadOk &&
-          depthOk &&
-          scoreOk &&
-          confOk &&
-          obSlope.ok &&
-          macroEntryOk &&
-          strictConfOk &&
-          strictSpreadOk;
-
-        if (!ob?.valid) entryReason = "no_ob";
-        else if (!confOk) entryReason = "conf_low";
-        else if (!strictConfOk) entryReason = "strict_conf_low";
+        if (!confOk) entryReason = "conf_low";
         else if (!spreadOk) entryReason = "spread";
-        else if (!strictSpreadOk) entryReason = "strict_spread";
         else if (!depthOk) entryReason = "depth";
         else if (!scoreOk) entryReason = "ob_score";
-        else if (!obSlope.ok) entryReason = "ob_slope";
         else if (!macroEntryOk) entryReason = "macro_selective";
         else entryReason = "ok";
 
@@ -737,9 +819,18 @@ export default async function handler(req, res) {
         vm,
         confidence,
         entryQuality: confidence,
-        persistenceScore: Math.round(Math.max(0, Math.min(100, confidence * 0.85 + Math.min(volAcc * 10, 12)))),
+        persistenceScore: Math.round(
+          Math.max(0, Math.min(100, confidence * 0.85 + Math.min(volAcc * 10, 12)))
+        ),
         stage,
-        stageWhy: entryOk ? "entry_ok" : stage === "ALMOST" ? "almost_ready" : stage === "BUILDUP" ? "momentum_building" : "radar_only",
+        stageWhy:
+          entryOk
+            ? "entry_ok"
+            : stage === "ALMOST"
+              ? "almost_ready"
+              : stage === "BUILDUP"
+                ? "momentum_building"
+                : "radar_only",
         ob: ob
           ? {
               bestBid: n(ob.bestBid, 0),
@@ -768,15 +859,29 @@ export default async function handler(req, res) {
         thresholds,
         breakout,
         compression,
-        volAcc: { short: Number(volAcc.toFixed(3)), medium: Number(volAcc.toFixed(3)) },
+        volAcc: {
+          short: Number(volAcc.toFixed(3)),
+          medium: Number(volAcc.toFixed(3)),
+        },
         tradePlan,
         scannerGate,
         tradeDeskStatus: scannerGate,
         qualityScore: confidence,
-        liquidityScore: ob?.valid ? Math.max(0, Math.min(100, 55 + (n(ob.score, 0) * 100) / 2 - Math.max(0, n(ob.spreadPct, 0) - 0.8) * 8)) : 35,
-        timingScore: stage === "TRADE_READY" ? 82 : stage === "ALMOST" ? 68 : stage === "BUILDUP" ? 54 : 35,
-        marketScore: regime === "EXPANSION" ? 82 : regime === "TREND" ? 70 : regime === "HEADWIND" ? 35 : 50,
-        perfectCandidateScore: stage === "TRADE_READY" ? 78 : stage === "ALMOST" ? 66 : stage === "BUILDUP" ? 52 : 30,
+        liquidityScore: ob?.valid
+          ? Math.max(
+              0,
+              Math.min(
+                100,
+                55 + (n(ob.score, 0) * 100) / 2 - Math.max(0, n(ob.spreadPct, 0) - 0.8) * 8
+              )
+            )
+          : 35,
+        timingScore:
+          stage === "TRADE_READY" ? 82 : stage === "ALMOST" ? 68 : stage === "BUILDUP" ? 54 : 35,
+        marketScore:
+          regime === "EXPANSION" ? 82 : regime === "TREND" ? 70 : regime === "HEADWIND" ? 35 : 50,
+        perfectCandidateScore:
+          stage === "TRADE_READY" ? 78 : stage === "ALMOST" ? 66 : stage === "BUILDUP" ? 52 : 30,
         tradeCandidate: stage === "TRADE_READY",
         superScannerCoin: stage === "TRADE_READY",
         scannerOnly: stage !== "TRADE_READY",
@@ -812,8 +917,8 @@ export default async function handler(req, res) {
             spreadMaxPct: n(dynThr?.spreadMaxPct, n(CFG?.entry?.spreadMaxPct, 0)),
             depthMinUsd1p: n(dynThr?.depthMinUsd1p, n(CFG?.entry?.depthMinUsd1p, 0)),
             obScoreMin: n(dynThr?.obScoreMin, n(CFG?.entry?.obScoreMin, 0)),
-            strictConfBoost: 2,
-            strictSpreadCap: 1.2,
+            strictConfBoost: 0,
+            strictSpreadCap: null,
           },
           liveMetrics: {
             confidence: n(confidence, 0),
@@ -847,11 +952,7 @@ export default async function handler(req, res) {
         scannerGate,
       });
 
-      const outCoin = {
-        ...engineCoin,
-        coinProfile,
-        execution,
-      };
+      const outCoin = { ...engineCoin, coinProfile, execution };
 
       nextState[sym] = {
         symbol: sym,
@@ -885,33 +986,37 @@ export default async function handler(req, res) {
         filterSnapshot: outCoin.filterSnapshot,
       };
 
-      // ========== EVENT: scan_coin_state (voor stuck‑analyse) ==========
-      await safePushEvent("scan_coin_state", {
-        system: "main",
-        mode,
-        symbol: sym,
-        stage,
-        price: outCoin.price,
-        confidence: outCoin.confidence,
-        entryQuality: outCoin.entryQuality,
-        persistenceScore: outCoin.persistenceScore,
-        perfectCandidateScore: outCoin.perfectCandidateScore,
-        spreadPct: outCoin?.ob?.spreadPct ?? null,
-        obScore: outCoin?.ob?.score ?? null,
-        depthMinUsd1p: outCoin?.ob?.depthMinUsd1p ?? null,
-        scannerGate: outCoin.scannerGate || null,
-        tradeDeskStatus: outCoin.tradeDeskStatus || null,
-        regime,
-        btcState: btc.state,
-        filterSnapshot: outCoin.filterSnapshot || null,
-        ts: now,
-      });
+      if (stateEventCount < MAX_STATE_EVENTS) {
+        stateEventCount += 1;
+        await safePushEvent("scan_coin_state", {
+          system: "main",
+          mode,
+          symbol: sym,
+          stage,
+          price: outCoin.price,
+          confidence: outCoin.confidence,
+          entryQuality: outCoin.entryQuality,
+          persistenceScore: outCoin.persistenceScore,
+          perfectCandidateScore: outCoin.perfectCandidateScore,
+          spreadPct: outCoin?.ob?.spreadPct ?? null,
+          obScore: outCoin?.ob?.score ?? null,
+          depthMinUsd1p: outCoin?.ob?.depthMinUsd1p ?? null,
+          scannerGate: outCoin.scannerGate || null,
+          tradeDeskStatus: outCoin.tradeDeskStatus || null,
+          regime,
+          btcState: btc.state,
+          filterSnapshot: outCoin.filterSnapshot || null,
+          ts: now,
+        });
+      }
 
-      // ========== STAGE TRANSITION event ==========
       const oldStage = up(prev?.stage || "RADAR");
-      if (stage !== oldStage && stage !== "RADAR") {
+      if (stage !== oldStage && stage !== "RADAR" && transitionEventCount < MAX_TRANSITION_EVENTS) {
+        transitionEventCount += 1;
+
         const isUpgrade =
-          (oldStage === "RADAR" && (stage === "BUILDUP" || stage === "ALMOST" || stage === "TRADE_READY")) ||
+          (oldStage === "RADAR" &&
+            (stage === "BUILDUP" || stage === "ALMOST" || stage === "TRADE_READY")) ||
           (oldStage === "BUILDUP" && (stage === "ALMOST" || stage === "TRADE_READY")) ||
           (oldStage === "ALMOST" && stage === "TRADE_READY");
 
@@ -937,8 +1042,8 @@ export default async function handler(req, res) {
           ts: now,
         });
 
-        if (isUpgrade) {
-          console.log(`[Scanner] 🚀 Upgrade voor ${sym}: ${oldStage} -> ${stage}. Discord aanroepen...`);
+        if (isUpgrade && discordSignalCount < MAX_DISCORD_SIGNALS) {
+          discordSignalCount += 1;
 
           await safePushEvent("main_signal_upgrade", {
             source: "main",
@@ -972,8 +1077,6 @@ export default async function handler(req, res) {
               depthMinUsd1p: dynThr?.depthMinUsd1p ?? null,
               obScoreMin: dynThr?.obScoreMin ?? null,
               macroMode,
-              strictConfBoost: 2,
-              strictSpreadCap: 1.2,
             },
           });
 
@@ -988,16 +1091,14 @@ export default async function handler(req, res) {
         }
       }
 
-      // funnel toevoegen
       if (stage === "TRADE_READY") funnel.trade_ready.push(outCoin);
       else if (stage === "ALMOST") funnel.almost.push(outCoin);
       else if (stage === "BUILDUP") funnel.buildup.push(outCoin);
       else funnel.radar.push(outCoin);
-
-      await sleep(6);
     }
 
-    const byConf = (a, b) => n(b.execution?.score, n(b.confidence, 0)) - n(a.execution?.score, n(a.confidence, 0));
+    const byConf = (a, b) =>
+      n(b.execution?.score, n(b.confidence, 0)) - n(a.execution?.score, n(a.confidence, 0));
 
     funnel.trade_ready.sort(byConf);
     funnel.almost.sort(byConf);
@@ -1027,6 +1128,14 @@ export default async function handler(req, res) {
         scanLock: { active: false, until: null },
         trigger: isVercelCron ? "vercel_cron" : tokenOk ? "cron_token" : "manual_secret",
         macroMode,
+        performance: {
+          maxCoinsFromCg: MAX_COINS_FROM_CG,
+          maxObCandidates: MAX_OB_CANDIDATES,
+          obConcurrency: OB_CONCURRENCY,
+          stateEventsWritten: stateEventCount,
+          transitionEventsWritten: transitionEventCount,
+          discordSignalsSent: discordSignalCount,
+        },
         cg: {
           coinsFetched: rawCoins.length,
           tradable: tradable.length,
@@ -1061,7 +1170,9 @@ export default async function handler(req, res) {
       updatedAt: now,
     };
 
-    await kv.set(keyMainConfigSnapshot(mode), configSnapshot, { ex: 60 * 60 * 24 * 7 });
+    await kv.set(keyMainConfigSnapshot(mode), configSnapshot, {
+      ex: 60 * 60 * 24 * 7,
+    });
 
     res.status(200).json(latest);
   } catch (err) {
