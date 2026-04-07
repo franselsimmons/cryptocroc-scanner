@@ -13,9 +13,21 @@ function arr(x) {
   return Array.isArray(x) ? x : [];
 }
 
+function setNoCache(res) {
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
+}
+
 export default async function handler(req, res) {
   try {
-    const mode = String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
+    setNoCache(res);
+
+    const mode =
+      String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
+
     const latest = (await kv.get(keyMoonLatest(mode))) || null;
 
     if (!latest) {
@@ -24,6 +36,7 @@ export default async function handler(req, res) {
         mode,
         ts: 0,
         scannedAt: 0,
+        snapshotAgeMs: null,
         btc: { state: "NEUTRAL", chg24: 0, range24: 0 },
         whaleFlow: 0,
         funnel: {
@@ -60,12 +73,17 @@ export default async function handler(req, res) {
     const radar = arr(funnel.radar);
     const hold = arr(funnel.hold);
 
-    const ts = n(latest?.ts, n(latest?.scannedAt, 0));
+    const scannedAt = n(latest?.scannedAt, n(latest?.ts, 0));
+    const ts = scannedAt || n(latest?.ts, 0);
+    const snapshotAgeMs = scannedAt > 0 ? Math.max(0, Date.now() - scannedAt) : null;
 
     return res.status(200).json({
       ...latest,
+      ok: true,
+      mode,
       ts,
-      scannedAt: n(latest?.scannedAt, ts),
+      scannedAt,
+      snapshotAgeMs,
       btc: latest?.btc || { state: "NEUTRAL", chg24: 0, range24: 0 },
       whaleFlow: n(latest?.whaleFlow, 0),
       funnel: {
@@ -86,6 +104,7 @@ export default async function handler(req, res) {
       },
     });
   } catch (e) {
+    setNoCache(res);
     return res.status(500).json({
       ok: false,
       error: e?.message || "moon_public_latest_failed",
