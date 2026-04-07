@@ -35,11 +35,17 @@ function badgeClass(score) {
   return "bad";
 }
 
-function tableHtml(rows, columns) {
+function tableHtml(rows, columns, helpText = "") {
   const safeRows = Array.isArray(rows) ? rows : [];
-  if (!safeRows.length) return `<div class="empty">Geen data</div>`;
+  if (!safeRows.length) {
+    return `
+      ${helpText ? `<div class="table-help">${esc(helpText)}</div>` : ""}
+      <div class="empty">Geen data</div>
+    `;
+  }
 
   return `
+    ${helpText ? `<div class="table-help">${esc(helpText)}</div>` : ""}
     <div class="table-wrap">
       <table class="table">
         <thead>
@@ -143,21 +149,85 @@ function buildLessons(group) {
   `).join("");
 }
 
+function flattenConfig(cfg, prefix = "") {
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return [];
+  const out = [];
+
+  for (const [key, value] of Object.entries(cfg)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      out.push(...flattenConfig(value, path));
+    } else {
+      out.push({ key: path, value });
+    }
+  }
+
+  return out;
+}
+
 function buildConfig(group) {
   const cfg = group?.liveConfig;
   if (!cfg) return `<div class="empty">Geen live config beschikbaar</div>`;
 
-  const items = [];
-  for (const [key, value] of Object.entries(cfg)) {
-    items.push(`
-      <div class="config-item">
-        <div class="config-key">${esc(key)}</div>
-        <div>${typeof value === "object" ? esc(JSON.stringify(value)) : esc(String(value))}</div>
-      </div>
-    `);
-  }
+  const flattened = flattenConfig(cfg);
+  if (!flattened.length) return `<div class="empty">Geen live config beschikbaar</div>`;
 
-  return items.length ? items.join("") : `<div class="empty">Geen live config beschikbaar</div>`;
+  const priorityKeys = [
+    "radar.volMin",
+    "radar.vmMin",
+    "radar.mcapMin",
+    "radar.mcapMax",
+    "buildup.minVolAcc",
+    "almost.minConfidence",
+    "almost.maxFlat60Pct",
+    "entry.minConfidence",
+    "entry.spreadMaxPct",
+    "entry.depthMinUsd1p",
+    "entry.obScoreMin",
+    "entry.samplesMax",
+    "desk.minBreakoutPressure",
+    "exits.timeoutBars",
+    "exits.timeoutMinNetPnlPct"
+  ];
+
+  const quickStats = priorityKeys
+    .map((k) => flattened.find((x) => x.key === k))
+    .filter(Boolean);
+
+  return `
+    <div class="config-grid">
+      ${quickStats.map((item) => `
+        <div class="config-stat">
+          <div class="config-stat-label">${esc(item.key)}</div>
+          <div class="config-stat-value">${esc(String(item.value ?? "-"))}</div>
+        </div>
+      `).join("")}
+    </div>
+
+    <details class="details-box">
+      <summary>Toon volledige live config</summary>
+      <pre class="pre">${esc(JSON.stringify(cfg, null, 2))}</pre>
+    </details>
+  `;
+}
+
+function buildDataQuality(group) {
+  const dq = group?.dataQuality || {};
+  return `
+    <div class="quality-box">
+      <div class="quality-label">Closed trades totaal</div>
+      <div class="quality-value">${n(dq.totalClosedTrades, 0)}</div>
+    </div>
+    <div class="quality-box">
+      <div class="quality-label">Rich trades</div>
+      <div class="quality-value">${n(dq.richClosedTrades, 0)}</div>
+    </div>
+    <div class="quality-box">
+      <div class="quality-label">Rich coverage</div>
+      <div class="quality-value">${fmtPct(dq.richCoveragePct)}</div>
+    </div>
+  `;
 }
 
 function buildActionPlan(groupKey, group) {
@@ -165,92 +235,118 @@ function buildActionPlan(groupKey, group) {
   const score = n(group?.teacher?.score, 0);
   const byReason = group?.buckets?.byReason || [];
   const byStage = group?.buckets?.byStage || [];
+  const byEntryQuality = group?.buckets?.byEntryQuality || [];
+  const byPersistence = group?.buckets?.byPersistence || [];
+  const bySpread = group?.buckets?.bySpread || [];
 
   const timeoutRow = byReason.find((x) => String(x.key) === "timeout");
-  const stopRow = byReason.find((x) => String(x.key) === "stop_loss");
+  const stopRow = byReason.find((x) => String(x.key) === "stop_loss" || String(x.key) === "sl");
   const thesisRow = byReason.find((x) => String(x.key) === "thesis_break");
   const weakStage = byStage.length ? [...byStage].sort((a, b) => n(a.avgPnlPct) - n(b.avgPnlPct))[0] : null;
   const bestStage = byStage.length ? [...byStage].sort((a, b) => n(b.avgPnlPct) - n(a.avgPnlPct))[0] : null;
+  const bestEq = byEntryQuality.length ? [...byEntryQuality].sort((a, b) => n(b.avgPnlPct) - n(a.avgPnlPct))[0] : null;
+  const bestPs = byPersistence.length ? [...byPersistence].sort((a, b) => n(b.avgPnlPct) - n(a.avgPnlPct))[0] : null;
+  const bestSpread = bySpread.length ? [...bySpread].sort((a, b) => n(b.avgPnlPct) - n(a.avgPnlPct))[0] : null;
 
   const items = [];
 
   items.push({
-    title: "1. Eerst dit verbeteren",
+    title: "1. Hoofdconclusie",
     text:
       score < 5
-        ? "Deze funnel scoort zwak. Zet de entry strenger, verlaag rommel-entries en focus eerst op setups met duidelijk betere structuur."
+        ? "Deze funnel scoort zwak. Focus eerst op strengere entries en minder rommel-trades."
         : score < 7.5
-          ? "Deze funnel is bruikbaar maar nog niet scherp genoeg. Werk vooral aan betere selectie en snellere afkapping van zwakke trades."
-          : "Deze funnel presteert al redelijk sterk. Nu moet je fine-tunen in plaats van grote dingen slopen."
+          ? "Deze funnel is bruikbaar, maar nog niet strak genoeg. Verbeter vooral selectie en exits."
+          : "Deze funnel is al sterk. Nu draait het om fijne optimalisatie in plaats van grote ingrepen."
   });
 
-  if (timeoutRow) {
+  if (bestStage) {
     items.push({
-      title: "2. Timeout aanpak",
-      text: `Timeout heeft ${timeoutRow.count} trades met gemiddeld ${fmtPct(timeoutRow.avgPnlPct)}. Als dit negatief blijft, moet timeout korter of entry-selectie strenger worden.`
-    });
-  }
-
-  if (stopRow) {
-    items.push({
-      title: "3. Stop-loss aanpak",
-      text: `Stop-loss laat gemiddeld ${fmtPct(stopRow.avgPnlPct)} zien. Dat betekent meestal dat entries te los zijn of dat spread / orderbook / confidence strenger moeten.`
-    });
-  }
-
-  if (thesisRow) {
-    items.push({
-      title: "4. Thesis-break gebruiken als leraar",
-      text: `Thesis-break is nu gemiddeld ${fmtPct(thesisRow.avgPnlPct)}. Als die positief is, dan bewaart deze exit jouw winst beter dan te lang blijven zitten.`
+      title: "2. Beste stage",
+      text: `${bestStage.key} is nu de sterkste stage met gemiddeld ${fmtPct(bestStage.avgPnlPct)}. Dat is je referentiepunt.`
     });
   }
 
   if (weakStage) {
     items.push({
-      title: "5. Zwakste stage",
-      text: `${weakStage.key} is nu de zwakste stage met gemiddeld ${fmtPct(weakStage.avgPnlPct)}. Daar moet je dus filters aanscherpen of minder vaak toelaten.`
+      title: "3. Zwakste stage",
+      text: `${weakStage.key} is nu de zwakste stage met gemiddeld ${fmtPct(weakStage.avgPnlPct)}. Daar moet je filters strenger maken of minder trades toelaten.`
     });
   }
 
-  if (bestStage) {
+  if (bestEq) {
     items.push({
-      title: "6. Beste stage",
-      text: `${bestStage.key} is nu de beste stage met gemiddeld ${fmtPct(bestStage.avgPnlPct)}. Gebruik deze als hoofd-lijn voor jouw funnel en probeer andere stages daar dichter naartoe te brengen.`
+      title: "4. Entry quality",
+      text: `Beste bucket is ${bestEq.key}. Gebruik dit als richting voor minimale entry-kwaliteit.`
+    });
+  }
+
+  if (bestPs) {
+    items.push({
+      title: "5. Persistence",
+      text: `Beste persistence-bucket is ${bestPs.key}. Dat laat zien waar de hoofd-lijn van kwaliteit zit.`
+    });
+  }
+
+  if (bestSpread) {
+    items.push({
+      title: "6. Spread",
+      text: `Beste spread-bucket is ${bestSpread.key}. Alles daarbuiten moet je kritischer bekijken.`
+    });
+  }
+
+  if (timeoutRow) {
+    items.push({
+      title: "7. Timeout",
+      text: `Timeout heeft ${timeoutRow.count} trades met gemiddeld ${fmtPct(timeoutRow.avgPnlPct)}. Als dat negatief blijft, timeout verkorten of kwaliteit vóór entry verhogen.`
+    });
+  }
+
+  if (stopRow) {
+    items.push({
+      title: "8. Stop-loss",
+      text: `Stop-loss laat gemiddeld ${fmtPct(stopRow.avgPnlPct)} zien. Dat wijst meestal op te losse entry-selectie of te zwakke spread / OB filtering.`
+    });
+  }
+
+  if (thesisRow) {
+    items.push({
+      title: "9. Thesis-break",
+      text: `Thesis-break doet gemiddeld ${fmtPct(thesisRow.avgPnlPct)}. Als dit positief is, bewaart deze exit winst beter dan te lang vasthouden.`
     });
   }
 
   if (groupKey === "moon_bull") {
     items.push({
-      title: "7. Moon Bull richting",
-      text: "Moon Bull moet minder losse ALMOST entries pakken en meer kwaliteit afdwingen voordat een trade open mag."
+      title: "10. Funnel focus",
+      text: "Moon Bull moet vooral voorkomen dat teveel middelmatige setups door ALMOST heen naar een trade gaan."
+    });
+  } else if (groupKey === "moon_bear") {
+    items.push({
+      title: "10. Funnel focus",
+      text: "Moon Bear heeft vaak minder sample. Optimaliseer hier pas hard als de dataset groter is."
+    });
+  } else if (groupKey === "main_bull") {
+    items.push({
+      title: "10. Funnel focus",
+      text: "Main Bull moet vooral stop-loss clusters en zwakke ignition-achtige setups verder reduceren."
+    });
+  } else if (groupKey === "main_bear") {
+    items.push({
+      title: "10. Funnel focus",
+      text: "Main Bear moet voorlopig zeer streng blijven tot er genoeg bewijs is welke setups echt werken."
+    });
+  } else if (groupKey === "trade_funnel") {
+    items.push({
+      title: "10. Funnel focus",
+      text: "Trade Funnel is je overkoepelende leraar. Wat structureel slecht is moet strenger, wat structureel goed is moet zwaarder meewegen."
     });
   }
 
-  if (groupKey === "moon_bear") {
+  if (lessons.length) {
     items.push({
-      title: "7. Moon Bear richting",
-      text: "Moon Bear heeft nog weinig trades. Hier moet je nog niet te hard op optimaliseren; eerst meer sample opbouwen."
-    });
-  }
-
-  if (groupKey === "main_bull") {
-    items.push({
-      title: "7. Main Bull richting",
-      text: "Main Bull moet vooral stop-loss en zwakke ignition entries reduceren. Beter minder trades, maar schonere entries."
-    });
-  }
-
-  if (groupKey === "main_bear") {
-    items.push({
-      title: "7. Main Bear richting",
-      text: "Main Bear is nu te dun en te zwak. Eerst entries veel strenger maken of tijdelijk bijna niets toelaten tot de bear-setup echt klopt."
-    });
-  }
-
-  if (groupKey === "trade_funnel") {
-    items.push({
-      title: "7. Trade Funnel richting",
-      text: "Gebruik trade funnel als overkoepelende leraar: alles wat structureel negatief is moet strenger, alles wat structureel positief is moet je zwaarder laten meetellen."
+      title: "11. Teacher samenvatting",
+      text: lessons.map((x) => x.text).join(" ")
     });
   }
 
@@ -269,50 +365,75 @@ function renderGroup(groupKey, data) {
   document.getElementById("groupSummary").innerHTML = buildSummary(group);
   document.getElementById("teacherLessons").innerHTML = buildLessons(group);
   document.getElementById("liveConfigBox").innerHTML = buildConfig(group);
+  document.getElementById("dataQualityBox").innerHTML = buildDataQuality(group);
 
-  document.getElementById("byReason").innerHTML = tableHtml(group?.buckets?.byReason, [
-    { key: "key", label: "Reden" },
-    { key: "count", label: "Trades" },
-    { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-    { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-    { key: "totalPnlUsd", label: "Totaal USD", render: (r) => fmtUsd(r.totalPnlUsd) },
-  ]);
+  document.getElementById("byReason").innerHTML = tableHtml(
+    group?.buckets?.byReason,
+    [
+      { key: "key", label: "Reden" },
+      { key: "count", label: "Trades" },
+      { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+      { key: "totalPnlUsd", label: "Totaal USD", render: (r) => fmtUsd(r.totalPnlUsd) }
+    ],
+    "Hier zie je welke exit-redenen winst of verlies veroorzaken."
+  );
 
-  document.getElementById("byStage").innerHTML = tableHtml(group?.buckets?.byStage, [
-    { key: "key", label: "Stage" },
-    { key: "count", label: "Trades" },
-    { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-    { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-    { key: "totalPnlUsd", label: "Totaal USD", render: (r) => fmtUsd(r.totalPnlUsd) },
-  ]);
+  document.getElementById("byStage").innerHTML = tableHtml(
+    group?.buckets?.byStage,
+    [
+      { key: "key", label: "Stage" },
+      { key: "count", label: "Trades" },
+      { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+      { key: "totalPnlUsd", label: "Totaal USD", render: (r) => fmtUsd(r.totalPnlUsd) }
+    ],
+    "Hier zie je welke funnel-stage gemiddeld het beste werkt."
+  );
 
-  document.getElementById("byEntryQuality").innerHTML = tableHtml(group?.buckets?.byEntryQuality, [
-    { key: "key", label: "Bucket" },
-    { key: "count", label: "Trades" },
-    { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-    { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-  ]);
+  document.getElementById("byEntryQuality").innerHTML = tableHtml(
+    group?.buckets?.byEntryQuality,
+    [
+      { key: "key", label: "Bucket" },
+      { key: "count", label: "Trades" },
+      { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) }
+    ],
+    "Hier zie je of hogere entry quality echt beter presteert."
+  );
 
-  document.getElementById("byPersistence").innerHTML = tableHtml(group?.buckets?.byPersistence, [
-    { key: "key", label: "Bucket" },
-    { key: "count", label: "Trades" },
-    { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-    { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-  ]);
+  document.getElementById("byPersistence").innerHTML = tableHtml(
+    group?.buckets?.byPersistence,
+    [
+      { key: "key", label: "Bucket" },
+      { key: "count", label: "Trades" },
+      { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) }
+    ],
+    "Hier zie je of persistence een sterk filter is."
+  );
 
-  document.getElementById("bySpread").innerHTML = tableHtml(group?.buckets?.bySpread, [
-    { key: "key", label: "Bucket" },
-    { key: "count", label: "Trades" },
-    { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-    { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-  ]);
+  document.getElementById("bySpread").innerHTML = tableHtml(
+    group?.buckets?.bySpread,
+    [
+      { key: "key", label: "Spread bucket" },
+      { key: "count", label: "Trades" },
+      { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) }
+    ],
+    "Hier zie je bij welke spread-range de resultaten beter zijn."
+  );
 
-  document.getElementById("byObScore").innerHTML = tableHtml(group?.buckets?.byObScore, [
-    { key: "key", label: "Bucket" },
-    { key: "count", label: "Trades" },
-    { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-    { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-  ]);
+  document.getElementById("byObScore").innerHTML = tableHtml(
+    group?.buckets?.byObScore,
+    [
+      { key: "key", label: "OB bucket" },
+      { key: "count", label: "Trades" },
+      { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) }
+    ],
+    "Hier zie je of orderbook-score echt predictive is."
+  );
 
   document.getElementById("actionPlan").innerHTML = buildActionPlan(groupKey, group);
 }
