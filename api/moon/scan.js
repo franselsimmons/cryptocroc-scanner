@@ -36,20 +36,8 @@ function arr(x) {
   return Array.isArray(x) ? x : [];
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
 function sideFromMode(mode) {
   return String(mode || "bull").toLowerCase() === "bear" ? "SHORT" : "LONG";
-}
-
-function coinForDiscord({ coin, position }) {
-  const plan = coin?.tradePlan || coin?.execution?.meta?.tradePlan || null;
-  const entry = position?.entryPrice ?? plan?.entry ?? coin?.entry ?? coin?.price ?? null;
-  const tp = position?.tp ?? plan?.tp ?? coin?.tp ?? null;
-  const sl = position?.sl ?? plan?.sl ?? coin?.sl ?? null;
-  return { ...coin, entry, tp, sl, tradePlan: plan };
 }
 
 function uniqBySymbol(list) {
@@ -96,6 +84,14 @@ function isTradeReadyCoin(c) {
   return false;
 }
 
+function coinForDiscord({ coin, position }) {
+  const plan = coin?.tradePlan || coin?.execution?.meta?.tradePlan || null;
+  const entry = position?.entryPrice ?? plan?.entry ?? coin?.entry ?? coin?.price ?? null;
+  const tp = position?.tp ?? plan?.tp ?? coin?.tp ?? null;
+  const sl = position?.sl ?? plan?.sl ?? coin?.sl ?? null;
+  return { ...coin, entry, tp, sl, tradePlan: plan };
+}
+
 async function safeSendSignal(payload) {
   try {
     await sendSignal(payload);
@@ -120,6 +116,26 @@ async function safePushStageTransition(payload) {
   }
 }
 
+async function mapLimit(items, limit, worker) {
+  const list = Array.isArray(items) ? items : [];
+  const out = new Array(list.length);
+  let index = 0;
+
+  async function run() {
+    while (true) {
+      const i = index++;
+      if (i >= list.length) break;
+      out[i] = await worker(list[i], i);
+    }
+  }
+
+  const runners = [];
+  const size = Math.max(1, Math.min(limit, list.length || 1));
+  for (let i = 0; i < size; i++) runners.push(run());
+  await Promise.all(runners);
+  return out;
+}
+
 // ========== constants ==========
 const COOLDOWN_SL_SEC = 4 * 60 * 60;
 const COOLDOWN_TP_SEC = 90 * 60;
@@ -130,8 +146,9 @@ const POSITION_SIZE_USD = 50;
 const ENTRY_HISTORY_KEEP = 40;
 const UI_ENTRY_LOCK_MS_MOON = 8 * 60 * 60 * 1000;
 
-const MAX_UNIVERSE_COINS = 90;
-const STATE_EVENT_SAMPLE_LIMIT = 12;
+const MAX_UNIVERSE_COINS = 55;
+const UNIVERSE_CONCURRENCY = 6;
+const STATE_EVENT_SAMPLE_LIMIT = 6;
 
 const LIMIT_ENTRY = 20;
 const LIMIT_ALMOST = 20;
@@ -142,7 +159,7 @@ function keyMoonConfigSnapshot(mode) {
   return `moon:config:snapshot:${String(mode || "bull").toLowerCase()}`;
 }
 
-// ========== lock (15 min boundaries) ==========
+// ========== lock ==========
 function scanLockKey(mode) {
   return `moon:scan:lock:${String(mode || "bull").toLowerCase()}`;
 }
@@ -224,24 +241,24 @@ async function applyCooldownsFromClosed(mode, positions, now) {
   const closed = Array.isArray(positions?.closed) ? positions.closed : [];
   const lookbackMs = 24 * 60 * 60 * 1000;
 
-  for (const p of closed) {
+  await mapLimit(closed, 8, async (p) => {
     const sym = up(p?.symbol);
-    if (!sym) continue;
+    if (!sym) return;
 
     const closedAt = Number(p?.closedAt || p?.exitAt || p?.updatedAt || p?.ts || 0) || 0;
-    if (closedAt <= 0 || closedAt < now - lookbackMs) continue;
+    if (closedAt <= 0 || closedAt < now - lookbackMs) return;
 
     const reasonKey = parseExitReason(p);
     const cdSec = cooldownSecondsForExitReason(reasonKey);
     const until = closedAt + cdSec * 1000;
-    if (until <= now) continue;
+    if (until <= now) return;
 
     const cdKey = cooldownKey(mode, sym);
     const prevUntil = Number((await kv.get(cdKey)) || 0);
-    if (prevUntil >= until) continue;
+    if (prevUntil >= until) return;
 
     await kv.set(cdKey, until, { ex: cdSec });
-  }
+  });
 }
 
 // ========== external data ==========
@@ -279,7 +296,7 @@ async function fetchOrderbook(symbol) {
     const j = await fetchJsonWithTimeout(
       url,
       { headers: { accept: "application/json" } },
-      6000
+      5000
     );
 
     if (String(j?.code || "") !== "00000") return null;
@@ -369,10 +386,9 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
   const step2 = step1.filter((c) => bitgetSymbols.has(up(c.symbol)));
   const filtered = step2.slice(0, MAX_UNIVERSE_COINS);
 
-  const out = [];
   const state = (await kv.get(keyMoonState(mode))) || {};
 
-  for (const coin of filtered) {
+  const results = await mapLimit(filtered, UNIVERSE_CONCURRENCY, async (coin) => {
     const sym = up(coin.symbol);
     const prev = state?.[sym] || {};
 
@@ -622,10 +638,10 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
     coinForOutput.coinProfile = coinProfile;
     coinForOutput.execution = execution;
 
-    out.push(coinForOutput);
-  }
+    return coinForOutput;
+  });
 
-  return { regime, coins: out };
+  return { regime, coins: results.filter(Boolean) };
 }
 
 function shouldSendUpgradeSignal(oldStage, newStage) {
@@ -670,17 +686,15 @@ export default async function handler(req, res) {
 
     const now = Date.now();
 
-    const whaleFlow = await fetchExchangeFlows();
-    const btc = await fetchBTCGateFromUniverse();
-
-    const prevPositions = (await kv.get(keyMoonPositions(mode))) || {
-      open: [],
-      closed: [],
-    };
+    const [whaleFlow, btc, prevPositions] = await Promise.all([
+      fetchExchangeFlows(),
+      fetchBTCGateFromUniverse(),
+      kv.get(keyMoonPositions(mode)),
+    ]);
 
     const positions = {
-      open: [...(prevPositions.open || [])],
-      closed: [...(prevPositions.closed || [])],
+      open: [...((prevPositions?.open) || [])],
+      closed: [...((prevPositions?.closed) || [])],
     };
 
     await applyCooldownsFromClosed(mode, positions, now);
@@ -699,11 +713,9 @@ export default async function handler(req, res) {
     const universeMap = new Map(universe.map((c) => [c.symbol, c]));
     const openMap = new Map(positions.open.map((p) => [up(p.symbol), p]));
 
+    const signalJobs = [];
     let stateSampleCount = 0;
 
-    // -------------------------------
-    // 1. Update state voor ALLE coins
-    // -------------------------------
     for (const coin of universe) {
       const sym = up(coin.symbol);
       const prev = prevState?.[sym] || {};
@@ -713,44 +725,47 @@ export default async function handler(req, res) {
       const oldStage = prev.stage || "RADAR";
 
       if (rawStage !== oldStage) {
-        await safePushStageTransition({
-          system: "moon",
-          mode,
-          symbol: sym,
-          from: oldStage,
-          to: rawStage,
-          price: coin.price,
-          entryQuality: coin.entryQuality,
-          persistenceScore: coin.persistenceScore,
-          perfectCandidateScore: coin.perfectCandidateScore,
-          spreadPct: coin?.ob?.spreadPct ?? null,
-          obScore: coin?.ob?.score ?? null,
-          depthMinUsd1p: coin?.ob?.depthMinUsd1p ?? null,
-          scannerGate: coin.engineGate || null,
-          tradeDeskStatus: coin.tradeDeskStatus || null,
-          regime,
-          btcState: btc?.state || "NEUTRAL",
-          filterSnapshot: coin.filterSnapshot || null,
-          ts: now,
-        });
+        signalJobs.push(
+          safePushStageTransition({
+            system: "moon",
+            mode,
+            symbol: sym,
+            from: oldStage,
+            to: rawStage,
+            price: coin.price,
+            entryQuality: coin.entryQuality,
+            persistenceScore: coin.persistenceScore,
+            perfectCandidateScore: coin.perfectCandidateScore,
+            spreadPct: coin?.ob?.spreadPct ?? null,
+            obScore: coin?.ob?.score ?? null,
+            depthMinUsd1p: coin?.ob?.depthMinUsd1p ?? null,
+            scannerGate: coin.engineGate || null,
+            tradeDeskStatus: coin.tradeDeskStatus || null,
+            regime,
+            btcState: btc?.state || "NEUTRAL",
+            filterSnapshot: coin.filterSnapshot || null,
+            ts: now,
+          })
+        );
       }
 
       if (!hasOpen && shouldSendUpgradeSignal(oldStage, rawStage)) {
         const isWatchStage = coin.engineGate === "WATCH";
-
-        await safeSendSignal({
-          source: "moon",
-          action: "STAGE_UPGRADE",
-          symbol: sym,
-          price: coin.price,
-          stage: isWatchStage ? "WATCH" : rawStage,
-          oldStage,
-          mode,
-          coin: coinForDiscord({ coin }),
-          btcState: btc?.state || "NEUTRAL",
-          kind: isWatchStage ? "elite_watch" : "signal",
-          reason: `Stage upgrade: ${oldStage} → ${rawStage}`,
-        });
+        signalJobs.push(
+          safeSendSignal({
+            source: "moon",
+            action: "STAGE_UPGRADE",
+            symbol: sym,
+            price: coin.price,
+            stage: isWatchStage ? "WATCH" : rawStage,
+            oldStage,
+            mode,
+            coin: coinForDiscord({ coin }),
+            btcState: btc?.state || "NEUTRAL",
+            kind: isWatchStage ? "elite_watch" : "signal",
+            reason: `Stage upgrade: ${oldStage} → ${rawStage}`,
+          })
+        );
       }
 
       const strongScans = rawStage !== "RADAR" ? (prev.strongScans || 0) + 1 : 0;
@@ -888,25 +903,27 @@ export default async function handler(req, res) {
 
       if (stateSampleCount < STATE_EVENT_SAMPLE_LIMIT) {
         stateSampleCount += 1;
-        await safePushEvent("scan_coin_state", {
-          system: "moon",
-          mode,
-          symbol: sym,
-          stage: rawStage,
-          price: coin.price,
-          entryQuality: coin.entryQuality,
-          persistenceScore: coin.persistenceScore,
-          perfectCandidateScore: coin.perfectCandidateScore,
-          spreadPct: coin?.ob?.spreadPct ?? null,
-          obScore: coin?.ob?.score ?? null,
-          depthMinUsd1p: coin?.ob?.depthMinUsd1p ?? null,
-          scannerGate: coin.engineGate || null,
-          tradeDeskStatus: coin.tradeDeskStatus || null,
-          regime,
-          btcState: btc?.state || "NEUTRAL",
-          filterSnapshot: coin.filterSnapshot || null,
-          ts: now,
-        });
+        signalJobs.push(
+          safePushEvent("scan_coin_state", {
+            system: "moon",
+            mode,
+            symbol: sym,
+            stage: rawStage,
+            price: coin.price,
+            entryQuality: coin.entryQuality,
+            persistenceScore: coin.persistenceScore,
+            perfectCandidateScore: coin.perfectCandidateScore,
+            spreadPct: coin?.ob?.spreadPct ?? null,
+            obScore: coin?.ob?.score ?? null,
+            depthMinUsd1p: coin?.ob?.depthMinUsd1p ?? null,
+            scannerGate: coin.engineGate || null,
+            tradeDeskStatus: coin.tradeDeskStatus || null,
+            regime,
+            btcState: btc?.state || "NEUTRAL",
+            filterSnapshot: coin.filterSnapshot || null,
+            ts: now,
+          })
+        );
       }
     }
 
@@ -968,58 +985,64 @@ export default async function handler(req, res) {
 
         positions.closed.push(closedPos);
 
-        await safePushEvent("trade_closed", {
-          id: pos.id,
-          system: "moon",
-          mode,
-          symbol: sym,
-          side: pos.side,
-          stage: pos.stage || "ENTRY",
-          sourceStage: pos.sourceStage || liveCoin.stage || "UNKNOWN",
-          exitStage: liveCoin.stage || "UNKNOWN",
-          exitPrice: liveCoin.price,
-          pnlPct: closedPos.pnlPct,
-          pnlUsd: closedPos.pnlUsd,
-          reason: closedPos.exitReason,
-          entryQuality: pos.entryQuality ?? null,
-          persistenceScore: pos.persistenceScore ?? null,
-          spreadPct: liveCoin?.ob?.spreadPct ?? pos?.filterSnapshot?.spreadPct ?? null,
-          obScore: liveCoin?.ob?.score ?? pos?.filterSnapshot?.obScore ?? null,
-          depthMinUsd1p:
-            liveCoin?.ob?.depthMinUsd1p ?? pos?.filterSnapshot?.depthMinUsd1p ?? null,
-          perfectCandidateScore:
-            liveCoin?.perfectCandidateScore ??
-            pos?.filterSnapshot?.perfectCandidateScore ??
-            null,
-          filterSnapshot: pos.filterSnapshot || liveCoin.filterSnapshot || null,
-          ts: now,
-        });
+        signalJobs.push(
+          safePushEvent("trade_closed", {
+            id: pos.id,
+            system: "moon",
+            mode,
+            symbol: sym,
+            side: pos.side,
+            stage: pos.stage || "ENTRY",
+            sourceStage: pos.sourceStage || liveCoin.stage || "UNKNOWN",
+            exitStage: liveCoin.stage || "UNKNOWN",
+            exitPrice: liveCoin.price,
+            pnlPct: closedPos.pnlPct,
+            pnlUsd: closedPos.pnlUsd,
+            reason: closedPos.exitReason,
+            entryQuality: pos.entryQuality ?? null,
+            persistenceScore: pos.persistenceScore ?? null,
+            spreadPct: liveCoin?.ob?.spreadPct ?? pos?.filterSnapshot?.spreadPct ?? null,
+            obScore: liveCoin?.ob?.score ?? pos?.filterSnapshot?.obScore ?? null,
+            depthMinUsd1p:
+              liveCoin?.ob?.depthMinUsd1p ?? pos?.filterSnapshot?.depthMinUsd1p ?? null,
+            perfectCandidateScore:
+              liveCoin?.perfectCandidateScore ??
+              pos?.filterSnapshot?.perfectCandidateScore ??
+              null,
+            filterSnapshot: pos.filterSnapshot || liveCoin.filterSnapshot || null,
+            ts: now,
+          })
+        );
 
-        await logTradeClosed({
-          system: "moon",
-          tradeId: pos.id,
-          symbol: sym,
-          exitAt: now,
-          exitPrice: liveCoin.price,
-          pnlPct: closedPos.pnlPct,
-          pnlUsd: closedPos.pnlUsd,
-          exitReason: closedPos.exitReason,
-        });
+        signalJobs.push(
+          logTradeClosed({
+            system: "moon",
+            tradeId: pos.id,
+            symbol: sym,
+            exitAt: now,
+            exitPrice: liveCoin.price,
+            pnlPct: closedPos.pnlPct,
+            pnlUsd: closedPos.pnlUsd,
+            exitReason: closedPos.exitReason,
+          })
+        );
 
-        await safeSendSignal({
-          source: "moon",
-          action: "TRADE_CLOSED",
-          symbol: sym,
-          price: liveCoin.price,
-          side: pos.side,
-          mode,
-          coin: coinForDiscord({ coin: liveCoin, position: pos }),
-          position: closedPos,
-          btcState: btc?.state || "NEUTRAL",
-          kind: "trade_closed",
-          pnl: closedPos.pnlPct,
-          reason: closedPos.exitReason,
-        });
+        signalJobs.push(
+          safeSendSignal({
+            source: "moon",
+            action: "TRADE_CLOSED",
+            symbol: sym,
+            price: liveCoin.price,
+            side: pos.side,
+            mode,
+            coin: coinForDiscord({ coin: liveCoin, position: pos }),
+            position: closedPos,
+            btcState: btc?.state || "NEUTRAL",
+            kind: "trade_closed",
+            pnl: closedPos.pnlPct,
+            reason: closedPos.exitReason,
+          })
+        );
 
         if (nextState[sym]) {
           nextState[sym].positionState = {
@@ -1131,126 +1154,127 @@ export default async function handler(req, res) {
 
       await appendEntryHistory(mode);
 
-      await safePushEvent("trade_opened", {
-        id,
-        system: "moon",
-        mode,
-        side: newPos.side,
-        symbol: sym,
-        entry: newPos.entryPrice,
-        size: newPos.sizeUsd,
-        tp: newPos.tp,
-        sl: newPos.sl,
-        rr: newPos.rr,
-        stage: newPos.stage,
-        sourceStage: newPos.sourceStage,
-        eliteType: newPos.eliteType,
-        regime,
-        scannerStageAtOpen: coin.stage,
-        engineGateAtOpen: coin.engineGate || coin.tradeDeskStatus,
-        stageWhy: coin.stageWhy || null,
-        entryQuality: coin.entryQuality,
-        persistenceScore: coin.persistenceScore,
-        qualityScore: coin.qualityScore,
-        timingScore: coin.timingScore,
-        marketScore: coin.marketScore,
-        perfectCandidateScore: coin.perfectCandidateScore,
-        spreadPct: coin?.ob?.spreadPct ?? null,
-        obScore: coin?.ob?.score ?? null,
-        depthMinUsd1p: coin?.ob?.depthMinUsd1p ?? null,
-        filterSnapshot: coin.filterSnapshot || null,
-      });
+      signalJobs.push(
+        safePushEvent("trade_opened", {
+          id,
+          system: "moon",
+          mode,
+          side: newPos.side,
+          symbol: sym,
+          entry: newPos.entryPrice,
+          size: newPos.sizeUsd,
+          tp: newPos.tp,
+          sl: newPos.sl,
+          rr: newPos.rr,
+          stage: newPos.stage,
+          sourceStage: newPos.sourceStage,
+          eliteType: newPos.eliteType,
+          regime,
+          scannerStageAtOpen: coin.stage,
+          engineGateAtOpen: coin.engineGate || coin.tradeDeskStatus,
+          stageWhy: coin.stageWhy || null,
+          entryQuality: coin.entryQuality,
+          persistenceScore: coin.persistenceScore,
+          qualityScore: coin.qualityScore,
+          timingScore: coin.timingScore,
+          marketScore: coin.marketScore,
+          perfectCandidateScore: coin.perfectCandidateScore,
+          spreadPct: coin?.ob?.spreadPct ?? null,
+          obScore: coin?.ob?.score ?? null,
+          depthMinUsd1p: coin?.ob?.depthMinUsd1p ?? null,
+          filterSnapshot: coin.filterSnapshot || null,
+        })
+      );
 
-      await logTradeOpened({
-        system: "moon",
-        tradeId: id,
-        symbol: sym,
-        mode,
-        side: newPos.side,
-        entryAt: now,
-        entryPrice: newPos.entryPrice,
-        sizeUsd: newPos.sizeUsd,
-        tp: newPos.tp,
-        sl: newPos.sl,
-        rr: newPos.rr,
-        tpPct: newPos.tpPct,
-        slPct: newPos.slPct,
-        scannerStageAtOpen: coin.stage,
-        engineGateAtOpen: coin.engineGate || coin.tradeDeskStatus,
-        entryQuality: coin.entryQuality,
-        persistenceScore: coin.persistenceScore,
-        qualityScore: coin.qualityScore,
-        timingScore: coin.timingScore,
-        marketScore: coin.marketScore,
-        perfectCandidateScore: coin.perfectCandidateScore,
-        spreadAtOpen: coin?.ob?.spreadPct,
-        obScoreAtOpen: coin?.ob?.score,
-        depthAtOpen: coin?.ob?.depthMinUsd1p,
-        btcState: btc?.state || "NEUTRAL",
-        regime,
-        meta: {
-          eliteType: coin.eliteType || null,
-          source: "moon_scan",
-        },
-        entryFilters: {
-          spreadMaxPct: coin?.execution?.meta?.entryTicketMaxSpreadPct ?? null,
-          minBreakoutPressure: coin?.execution?.meta?.minBreakoutPressure ?? null,
-          entryQuality: coin?.entryQuality ?? null,
-          persistenceScore: coin?.persistenceScore ?? null,
-          spreadAtOpen: coin?.ob?.spreadPct ?? null,
-          obScoreAtOpen: coin?.ob?.score ?? null,
-          depthAtOpen: coin?.ob?.depthMinUsd1p ?? null,
-        },
-      });
+      signalJobs.push(
+        logTradeOpened({
+          system: "moon",
+          tradeId: id,
+          symbol: sym,
+          mode,
+          side: newPos.side,
+          entryAt: now,
+          entryPrice: newPos.entryPrice,
+          sizeUsd: newPos.sizeUsd,
+          tp: newPos.tp,
+          sl: newPos.sl,
+          rr: newPos.rr,
+          tpPct: newPos.tpPct,
+          slPct: newPos.slPct,
+          scannerStageAtOpen: coin.stage,
+          engineGateAtOpen: coin.engineGate || coin.tradeDeskStatus,
+          entryQuality: coin.entryQuality,
+          persistenceScore: coin.persistenceScore,
+          qualityScore: coin.qualityScore,
+          timingScore: coin.timingScore,
+          marketScore: coin.marketScore,
+          perfectCandidateScore: coin.perfectCandidateScore,
+          spreadAtOpen: coin?.ob?.spreadPct,
+          obScoreAtOpen: coin?.ob?.score,
+          depthAtOpen: coin?.ob?.depthMinUsd1p,
+          btcState: btc?.state || "NEUTRAL",
+          regime,
+          meta: {
+            eliteType: coin.eliteType || null,
+            source: "moon_scan",
+          },
+          entryFilters: {
+            spreadMaxPct: coin?.execution?.meta?.entryTicketMaxSpreadPct ?? null,
+            minBreakoutPressure: coin?.execution?.meta?.minBreakoutPressure ?? null,
+            entryQuality: coin?.entryQuality ?? null,
+            persistenceScore: coin?.persistenceScore ?? null,
+            spreadAtOpen: coin?.ob?.spreadPct ?? null,
+            obScoreAtOpen: coin?.ob?.score ?? null,
+            depthAtOpen: coin?.ob?.depthMinUsd1p ?? null,
+          },
+        })
+      );
 
-      await safeSendSignal({
-        source: "moon",
-        action: "OPEN_TRADE",
-        symbol: sym,
-        price: newPos.entryPrice,
-        side: newPos.side,
-        stage: "ENTRY",
-        mode,
-        coin: coinForDiscord({ coin, position: newPos }),
-        position: newPos,
-        btcState: btc?.state || "NEUTRAL",
-        kind: "trade_opened",
-        reason: "Nieuwe positie geopend door Moon engine",
-      });
+      signalJobs.push(
+        safeSendSignal({
+          source: "moon",
+          action: "OPEN_TRADE",
+          symbol: sym,
+          price: newPos.entryPrice,
+          side: newPos.side,
+          stage: "ENTRY",
+          mode,
+          coin: coinForDiscord({ coin, position: newPos }),
+          position: newPos,
+          btcState: btc?.state || "NEUTRAL",
+          kind: "trade_opened",
+          reason: "Nieuwe positie geopend door Moon engine",
+        })
+      );
     }
 
     // -------------------------------
-    // 4. Funnel bouwen voor UI (zelfde stijl als main)
+    // 4. Funnel bouwen voor UI (zelfde shape als main)
     // -------------------------------
-    const entryCoins = uniqBySymbol(
-      universe.filter((c) => isTradeReadyCoin(c))
-    )
-      .sort(sortMoonCoins)
-      .slice(0, LIMIT_ENTRY);
-
-    const almostCoins = uniqBySymbol(
-      universe.filter((c) => stageOf(c) === "ALMOST")
-    )
-      .sort(sortMoonCoins)
-      .slice(0, LIMIT_ALMOST);
-
-    const buildupCoins = uniqBySymbol(
-      universe.filter((c) => stageOf(c) === "BUILDUP")
-    )
-      .sort(sortMoonCoins)
-      .slice(0, LIMIT_BUILDUP);
-
-    const radarCoins = uniqBySymbol(
-      universe.filter((c) => stageOf(c) === "RADAR")
-    )
-      .sort(sortMoonCoins)
-      .slice(0, LIMIT_RADAR);
-
     const funnel = {
-      entry: entryCoins,
-      almost: almostCoins,
-      buildup: buildupCoins,
-      radar: radarCoins,
+      entry: uniqBySymbol(
+        universe.filter((c) => isTradeReadyCoin(c))
+      )
+        .sort(sortMoonCoins)
+        .slice(0, LIMIT_ENTRY),
+
+      almost: uniqBySymbol(
+        universe.filter((c) => stageOf(c) === "ALMOST")
+      )
+        .sort(sortMoonCoins)
+        .slice(0, LIMIT_ALMOST),
+
+      buildup: uniqBySymbol(
+        universe.filter((c) => stageOf(c) === "BUILDUP")
+      )
+        .sort(sortMoonCoins)
+        .slice(0, LIMIT_BUILDUP),
+
+      radar: uniqBySymbol(
+        universe.filter((c) => stageOf(c) === "RADAR")
+      )
+        .sort(sortMoonCoins)
+        .slice(0, LIMIT_RADAR),
     };
 
     // -------------------------------
@@ -1267,13 +1291,6 @@ export default async function handler(req, res) {
         : 0,
       updatedAt: now,
     };
-
-    await kv.set(keyMoonPortfolio(mode), portfolio, { ex: 60 * 60 * 24 * 7 });
-
-    positions.closed = positions.closed.slice(-1000);
-
-    await kv.set(keyMoonState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
-    await kv.set(keyMoonPositions(mode), positions, { ex: 60 * 60 * 24 * 7 });
 
     const configSnapshot = {
       system: "moon",
@@ -1297,10 +1314,6 @@ export default async function handler(req, res) {
       },
       updatedAt: now,
     };
-
-    await kv.set(keyMoonConfigSnapshot(mode), configSnapshot, {
-      ex: 60 * 60 * 24 * 7,
-    });
 
     const latest = {
       ok: true,
@@ -1355,7 +1368,15 @@ export default async function handler(req, res) {
       scannedAt: now,
     };
 
-    await kv.set(keyMoonLatest(mode), latest, { ex: 60 * 60 });
+    await Promise.all([
+      kv.set(keyMoonPortfolio(mode), portfolio, { ex: 60 * 60 * 24 * 7 }),
+      kv.set(keyMoonState(mode), nextState, { ex: 60 * 60 * 24 * 3 }),
+      kv.set(keyMoonPositions(mode), { ...positions, closed: positions.closed.slice(-1000) }, { ex: 60 * 60 * 24 * 7 }),
+      kv.set(keyMoonConfigSnapshot(mode), configSnapshot, { ex: 60 * 60 * 24 * 7 }),
+      kv.set(keyMoonLatest(mode), latest, { ex: 60 * 60 }),
+    ]);
+
+    await Promise.allSettled(signalJobs);
 
     return res.status(200).json(latest);
   } catch (err) {
