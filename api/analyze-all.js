@@ -26,11 +26,17 @@ function up(v) {
   return String(v || "").toUpperCase();
 }
 
+function low(v) {
+  return String(v || "").toLowerCase();
+}
+
 function bucketNumber(v, steps = [40, 50, 60, 70, 80]) {
   const x = n(v, 0);
   if (x < steps[0]) return `<${steps[0]}`;
   for (let i = 0; i < steps.length - 1; i++) {
-    if (x >= steps[i] && x < steps[i + 1]) return `${steps[i]}-${steps[i + 1] - 1}`;
+    if (x >= steps[i] && x < steps[i + 1]) {
+      return `${steps[i]}-${steps[i + 1] - 1}`;
+    }
   }
   return `${steps[steps.length - 1]}+`;
 }
@@ -55,7 +61,7 @@ function bucketOb(v) {
 function groupStats(rows, keyFn, limit = 20) {
   const map = new Map();
 
-  for (const row of rows) {
+  for (const row of safeArray(rows)) {
     const key = keyFn(row);
     if (!key) continue;
 
@@ -91,19 +97,20 @@ function groupStats(rows, keyFn, limit = 20) {
 }
 
 function buildSummary(rows) {
-  const wins = rows.filter((x) => n(x.pnlPct, 0) >= 0).length;
-  const losses = rows.length - wins;
-  const totalPnlPct = rows.reduce((a, b) => a + n(b.pnlPct, 0), 0);
-  const totalPnlUsd = rows.reduce((a, b) => a + n(b.pnlUsd, 0), 0);
+  const list = safeArray(rows);
+  const wins = list.filter((x) => n(x.pnlPct, 0) >= 0).length;
+  const losses = list.length - wins;
+  const totalPnlPct = list.reduce((a, b) => a + n(b.pnlPct, 0), 0);
+  const totalPnlUsd = list.reduce((a, b) => a + n(b.pnlUsd, 0), 0);
 
   return {
-    trades: rows.length,
+    trades: list.length,
     wins,
     losses,
-    winRate: rows.length ? pct((wins / rows.length) * 100) : 0,
+    winRate: list.length ? pct((wins / list.length) * 100) : 0,
     totalPnlPct: pct(totalPnlPct),
     totalPnlUsd: pct(totalPnlUsd),
-    avgPnlPct: rows.length ? pct(totalPnlPct / rows.length) : 0,
+    avgPnlPct: list.length ? pct(totalPnlPct / list.length) : 0,
   };
 }
 
@@ -120,6 +127,7 @@ function pickLiveConfig(core, type) {
     if (type === "main") {
       return {
         kind: "single_system",
+        source: "live_core_cfg",
         radar: cfg?.radar || null,
         buildup: cfg?.buildup || null,
         almost: cfg?.almost || null,
@@ -137,6 +145,7 @@ function pickLiveConfig(core, type) {
     if (type === "moon") {
       return {
         kind: "single_system",
+        source: "live_core_cfg",
         radar: cfg?.radar || null,
         buildup: cfg?.buildup || null,
         almost: cfg?.almost || null,
@@ -172,7 +181,7 @@ function explainConfigValue(liveConfig, path, fallback = null) {
 }
 
 function normalizeReason(v) {
-  const s = String(v || "").toLowerCase();
+  const s = low(v);
   if (!s) return "unknown";
   if (s === "sl") return "stop_loss";
   if (s === "tp") return "take_profit";
@@ -218,7 +227,7 @@ function enrichClosedTrades(opened, closed) {
     return {
       id: ev.id,
       system,
-      mode: String(ev.mode || open?.mode || "unknown").toLowerCase(),
+      mode: low(ev.mode || open?.mode || "unknown"),
       symbol: up(ev.symbol || open?.symbol),
       side: up(ev.side || open?.side),
       stage,
@@ -324,6 +333,7 @@ function suggestHigherOb(currentValue, bucketKey) {
 
   if (key === "0.05+") return Math.max(cur, 0.05);
   if (key === "0-0.04") return Math.max(cur, 0);
+
   return cur;
 }
 
@@ -402,10 +412,7 @@ function buildAutomaticSuggestions({
 
   if (bestSpread && entrySpreadMaxPct != null) {
     const suggested = suggestTighterSpread(entrySpreadMaxPct, bestSpread.key);
-    if (
-      suggested < n(entrySpreadMaxPct, 999) &&
-      n(bestSpread.count, 0) >= 3
-    ) {
+    if (suggested < n(entrySpreadMaxPct, 999) && n(bestSpread.count, 0) >= 3) {
       suggestions.push({
         path: "entry.spreadMaxPct",
         direction: "lower",
@@ -512,20 +519,17 @@ function buildTeacher({
 
   const bestEq = bestBucket(byEntryQuality);
   const worstEq = worstBucket(byEntryQuality);
-
   const bestPs = bestBucket(byPersistence);
   const worstPs = worstBucket(byPersistence);
-
   const bestSpread = bestBucket(bySpread);
   const worstSpread = worstBucket(bySpread);
-
   const bestOb = bestBucket(byObScore);
   const worstOb = worstBucket(byObScore);
 
   if (n(summary.trades, 0) < 5) {
     lessons.push({
       type: "warn",
-      text: `Sample is nog klein (${summary.trades} closed trades). Zie onderstaande inzichten als voorlopig, niet als definitief.`,
+      text: `Sample is nog klein (${summary.trades} closed trades). Zie deze inzichten als voorlopig.`,
     });
   }
 
@@ -639,10 +643,7 @@ function buildTeacher({
 
   const score = Math.max(
     1,
-    Math.min(
-      10,
-      5 + (n(summary.winRate) - 40) / 10 + n(summary.avgPnlPct) / 2
-    )
+    Math.min(10, 5 + (n(summary.winRate) - 40) / 10 + n(summary.avgPnlPct) / 2)
   );
 
   return {
@@ -699,9 +700,7 @@ function analyzeStuckCoins(scanStates, transitions, system, mode) {
 
   for (const st of relevantStages) {
     const rows = states.filter((x) => up(x.stage) === st);
-    const uniqueSymbols = [
-      ...new Set(rows.map((x) => up(x.symbol)).filter(Boolean)),
-    ];
+    const uniqueSymbols = [...new Set(rows.map((x) => up(x.symbol)).filter(Boolean))];
 
     let laterStrong = 0;
     for (const sym of uniqueSymbols) {
@@ -825,7 +824,7 @@ export default async function handler(req, res) {
     const mainBullStuck = analyzeStuckCoins(scanCoinStates, scanTransitions, "main", "bull");
     const mainBearStuck = analyzeStuckCoins(scanCoinStates, scanTransitions, "main", "bear");
 
-    res.status(200).json({
+    return res.status(200).json({
       ok: true,
       groups: {
         moon_bull: {
@@ -877,7 +876,7 @@ export default async function handler(req, res) {
       ts: Date.now(),
     });
   } catch (err) {
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
       error: err?.message || String(err),
     });
