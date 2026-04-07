@@ -197,8 +197,13 @@ body {
   border-color: rgba(255, 209, 102, 0.35);
 }
 
-.lesson.warn {
+.lesson.warn,
+.lesson.blocker {
   border-color: rgba(255, 125, 125, 0.35);
+}
+
+.lesson.action {
+  border-color: rgba(106, 166, 255, 0.45);
 }
 
 .lesson-type {
