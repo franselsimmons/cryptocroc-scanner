@@ -1,3 +1,17 @@
+function el(id) {
+  return document.getElementById(id);
+}
+
+function setHtml(id, html) {
+  const node = el(id);
+  if (node) node.innerHTML = html;
+}
+
+function setText(id, text) {
+  const node = el(id);
+  if (node) node.textContent = text;
+}
+
 function n(x, d = 0) {
   const v = Number(x);
   return Number.isFinite(v) ? v : d;
@@ -65,7 +79,9 @@ function tableHtml(rows, columns, helpText = "") {
             .map(
               (row) => `
             <tr>
-              ${columns.map((c) => `<td>${c.render ? c.render(row) : esc(row?.[c.key])}</td>`).join("")}
+              ${columns
+                .map((c) => `<td>${c.render ? c.render(row) : esc(row?.[c.key])}</td>`)
+                .join("")}
             </tr>
           `
             )
@@ -263,7 +279,9 @@ function buildConfig(groupKey, group) {
   const suggestions = Array.isArray(group?.teacher?.suggestions) ? group.teacher.suggestions : [];
 
   return `
-    ${quickStats.length ? `
+    ${
+      quickStats.length
+        ? `
       <div class="config-grid">
         ${quickStats
           .map(
@@ -276,7 +294,9 @@ function buildConfig(groupKey, group) {
           )
           .join("")}
       </div>
-    ` : `<div class="empty">Geen prioriteitsvelden gevonden</div>`}
+    `
+        : `<div class="empty">Geen prioriteitsvelden gevonden</div>`
+    }
 
     ${
       suggestions.length
@@ -479,118 +499,136 @@ function renderGroup(groupKey, data) {
   const group = data?.groups?.[groupKey];
   if (!group) return;
 
-  document.getElementById("groupSummary").innerHTML = buildSummary(group);
-  document.getElementById("teacherLessons").innerHTML = buildLessons(group);
-  document.getElementById("liveConfigBox").innerHTML = buildConfig(groupKey, group);
-  document.getElementById("dataQualityBox").innerHTML = buildDataQuality(group);
-  document.getElementById("funnelBlockers").innerHTML = buildFunnelBlockers(group);
-  document.getElementById("funnelBlockerLessons").innerHTML = buildFunnelBlockerLessons(group);
+  setHtml("groupSummary", buildSummary(group));
+  setHtml("teacherLessons", buildLessons(group));
+  setHtml("liveConfigBox", buildConfig(groupKey, group));
+  setHtml("dataQualityBox", buildDataQuality(group));
+  setHtml("funnelBlockers", buildFunnelBlockers(group));
+  setHtml("funnelBlockerLessons", buildFunnelBlockerLessons(group));
 
-  document.getElementById("byReason").innerHTML = tableHtml(
-    group?.buckets?.byReason,
-    [
-      { key: "key", label: "Reden" },
-      { key: "count", label: "Trades" },
-      { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-      { key: "totalPnlUsd", label: "Totaal USD", render: (r) => fmtUsd(r.totalPnlUsd) },
-    ],
-    "Hier zie je welke exit-redenen winst of verlies veroorzaken."
+  setHtml(
+    "byReason",
+    tableHtml(
+      group?.buckets?.byReason,
+      [
+        { key: "key", label: "Reden" },
+        { key: "count", label: "Trades" },
+        { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+        { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+        { key: "totalPnlUsd", label: "Totaal USD", render: (r) => fmtUsd(r.totalPnlUsd) },
+      ],
+      "Hier zie je welke exit-redenen winst of verlies veroorzaken."
+    )
   );
 
-  document.getElementById("byStage").innerHTML = tableHtml(
-    group?.buckets?.byStage,
-    [
-      { key: "key", label: "Stage" },
-      { key: "count", label: "Trades" },
-      { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-      { key: "totalPnlUsd", label: "Totaal USD", render: (r) => fmtUsd(r.totalPnlUsd) },
-    ],
-    "Hier zie je welke funnel-stage gemiddeld het beste werkt."
+  setHtml(
+    "byStage",
+    tableHtml(
+      group?.buckets?.byStage,
+      [
+        { key: "key", label: "Stage" },
+        { key: "count", label: "Trades" },
+        { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+        { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+        { key: "totalPnlUsd", label: "Totaal USD", render: (r) => fmtUsd(r.totalPnlUsd) },
+      ],
+      "Hier zie je welke funnel-stage gemiddeld het beste werkt."
+    )
   );
 
-  document.getElementById("byEntryQuality").innerHTML = tableHtml(
-    group?.buckets?.byEntryQuality,
-    [
-      { key: "key", label: "Bucket" },
-      { key: "count", label: "Trades" },
-      { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-    ],
-    "Hier zie je of hogere entry quality echt beter presteert."
+  setHtml(
+    "byEntryQuality",
+    tableHtml(
+      group?.buckets?.byEntryQuality,
+      [
+        { key: "key", label: "Bucket" },
+        { key: "count", label: "Trades" },
+        { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+        { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+      ],
+      "Hier zie je of hogere entry quality echt beter presteert."
+    )
   );
 
-  document.getElementById("byPersistence").innerHTML = tableHtml(
-    group?.buckets?.byPersistence,
-    [
-      { key: "key", label: "Bucket" },
-      { key: "count", label: "Trades" },
-      { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-    ],
-    "Hier zie je of persistence een sterk filter is."
+  setHtml(
+    "byPersistence",
+    tableHtml(
+      group?.buckets?.byPersistence,
+      [
+        { key: "key", label: "Bucket" },
+        { key: "count", label: "Trades" },
+        { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+        { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+      ],
+      "Hier zie je of persistence een sterk filter is."
+    )
   );
 
-  document.getElementById("bySpread").innerHTML = tableHtml(
-    group?.buckets?.bySpread,
-    [
-      { key: "key", label: "Spread bucket" },
-      { key: "count", label: "Trades" },
-      { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-    ],
-    "Hier zie je bij welke spread-range de resultaten beter zijn."
+  setHtml(
+    "bySpread",
+    tableHtml(
+      group?.buckets?.bySpread,
+      [
+        { key: "key", label: "Spread bucket" },
+        { key: "count", label: "Trades" },
+        { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+        { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+      ],
+      "Hier zie je bij welke spread-range de resultaten beter zijn."
+    )
   );
 
-  document.getElementById("byObScore").innerHTML = tableHtml(
-    group?.buckets?.byObScore,
-    [
-      { key: "key", label: "OB bucket" },
-      { key: "count", label: "Trades" },
-      { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
-      { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
-    ],
-    "Hier zie je of orderbook-score echt predictive is."
+  setHtml(
+    "byObScore",
+    tableHtml(
+      group?.buckets?.byObScore,
+      [
+        { key: "key", label: "OB bucket" },
+        { key: "count", label: "Trades" },
+        { key: "winRate", label: "Winrate", render: (r) => fmtPct(r.winRate) },
+        { key: "avgPnlPct", label: "Gem. PnL %", render: (r) => fmtPct(r.avgPnlPct) },
+      ],
+      "Hier zie je of orderbook-score echt predictive is."
+    )
   );
 
-  document.getElementById("actionPlan").innerHTML = buildActionPlan(groupKey, group);
+  setHtml("actionPlan", buildActionPlan(groupKey, group));
 }
 
 async function load() {
-  const loadingBox = document.getElementById("loadingBox");
-  const errorBox = document.getElementById("errorBox");
-  const app = document.getElementById("app");
-  const statsGrid = document.getElementById("statsGrid");
-  const lastUpdated = document.getElementById("lastUpdated");
-  const topPriorities = document.getElementById("topPriorities");
+  const loadingBox = el("loadingBox");
+  const errorBox = el("errorBox");
+  const app = el("app");
 
   try {
-    loadingBox.classList.remove("hidden");
-    errorBox.classList.add("hidden");
-    app.classList.add("hidden");
+    if (loadingBox) loadingBox.classList.remove("hidden");
+    if (errorBox) errorBox.classList.add("hidden");
+    if (app) app.classList.add("hidden");
 
     const res = await fetch("/api/analyze-all", { cache: "no-store" });
     const json = await res.json();
 
-    if (!json?.ok) {
+    if (!res.ok || !json?.ok) {
       throw new Error(json?.error || "Laden mislukt");
     }
 
     window.__analyzeAllData = json;
 
-    topPriorities.innerHTML = buildTopPriorities(json);
-    statsGrid.innerHTML = buildStatsGrid(json);
-    lastUpdated.textContent = `Laatste refresh: ${fmtTs(json?.ts)}`;
+    setHtml("topPriorities", buildTopPriorities(json));
+    setHtml("statsGrid", buildStatsGrid(json));
+    setText("lastUpdated", `Laatste refresh: ${fmtTs(json?.ts)}`);
 
     renderGroup("moon_bull", json);
 
-    loadingBox.classList.add("hidden");
-    app.classList.remove("hidden");
+    if (loadingBox) loadingBox.classList.add("hidden");
+    if (app) app.classList.remove("hidden");
   } catch (err) {
-    loadingBox.classList.add("hidden");
-    errorBox.classList.remove("hidden");
-    errorBox.textContent = err?.message || "Onbekende fout";
+    if (loadingBox) loadingBox.classList.add("hidden");
+    if (errorBox) {
+      errorBox.classList.remove("hidden");
+      errorBox.textContent = err?.message || "Onbekende fout";
+    }
+    console.error("Analyze All load error:", err);
   }
 }
 
@@ -604,6 +642,14 @@ function bindTabs() {
   });
 }
 
-document.getElementById("refreshBtn").addEventListener("click", load);
-bindTabs();
-load();
+function initAnalyzeAll() {
+  const refreshBtn = el("refreshBtn");
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", load);
+  }
+
+  bindTabs();
+  load();
+}
+
+document.addEventListener("DOMContentLoaded", initAnalyzeAll);
