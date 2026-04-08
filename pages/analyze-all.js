@@ -1,4 +1,3 @@
-// Pages/analyze-all.js (of waar je frontend staat)
 import { useEffect, useState } from "react";
 
 function n(x, d = 0) {
@@ -11,7 +10,7 @@ function fmtPct(v) {
 }
 
 function fmtUsd(v) {
-  return `$${n(v, 0).toFixed(2)}`;
+  return `$${n(v, 0).toFixed(0)}`; // Geen decimalen voor USD scheelt ruimte op mobiel
 }
 
 function fmtJson(v) {
@@ -25,7 +24,9 @@ function fmtJson(v) {
 function fmtTs(ts) {
   if (!ts) return "-";
   try {
-    return new Date(ts).toLocaleString("nl-NL");
+    return new Date(ts).toLocaleString("nl-NL", { 
+      hour: '2-digit', minute:'2-digit', day: '2-digit', month: '2-digit' 
+    });
   } catch {
     return "-";
   }
@@ -45,7 +46,7 @@ function scoreBg(score) {
   return "#221111";
 }
 
-// ---- NIEUWE COMPONENT: Duidelijke Actiekaart ----
+// ---- COMPONENT: Duidelijke Actiekaart ----
 function TopActionCard({ adjustment, groupName = "" }) {
   if (!adjustment) return null;
 
@@ -54,40 +55,39 @@ function TopActionCard({ adjustment, groupName = "" }) {
   let icon = "💡";
 
   if (adjustment.type === "config_change") {
-    bgColor = "#102414"; // Donkergroen
+    bgColor = "#102414"; 
     borderColor = "#2c5e2e";
     icon = "🚀";
   } else if (adjustment.type === "risk_problem" || adjustment.type === "timeout_problem") {
-    bgColor = "#2b1414"; // Donkerrood
+    bgColor = "#2b1414"; 
     borderColor = "#732424";
     icon = "⚠️";
   } else if (adjustment.type === "monitor" || adjustment.type === "sample_small") {
-    bgColor = "#14171c"; // Neutraal grijs
+    bgColor = "#14171c"; 
     borderColor = "#2a2f38";
     icon = "🔍";
   }
 
   return (
-    <div style={{ ...styles.actionCard, background: bgColor, borderColor: borderColor }}>
-      <div style={styles.actionHeader}>
+    <div className="action-card" style={{ background: bgColor, borderColor: borderColor }}>
+      <div className="action-header">
         <span style={{ fontSize: 22 }}>{icon}</span>
-        <h3 style={{ margin: 0, fontSize: 17, color: "#fff" }}>
+        <h3 className="action-title">
           {groupName ? `${groupName.replace("_", " ").toUpperCase()}: ` : ""}
           {adjustment.title}
         </h3>
       </div>
-      <p style={{ marginTop: 10, marginBottom: 0, fontSize: 14, opacity: 0.9, lineHeight: 1.5 }}>
+      <p className="action-text">
         {adjustment.longText || adjustment.shortText}
       </p>
     </div>
   );
 }
 
-// ---- NIEUWE COMPONENT: Global Overview bovenaan de pagina ----
+// ---- COMPONENT: Global Overview bovenaan de pagina ----
 function GlobalActionBoard({ overview }) {
   if (!overview) return null;
 
-  // Haal alleen de groepen op die ECHT actie vereisen (geen monitor of te klein sample)
   const actionableGroups = Object.keys(overview)
     .map((key) => ({ key, data: overview[key] }))
     .filter(
@@ -96,23 +96,23 @@ function GlobalActionBoard({ overview }) {
         g.data?.topAdjustment?.type === "risk_problem" ||
         g.data?.topAdjustment?.type === "timeout_problem"
     )
-    .sort((a, b) => n(b.data?.topAdjustment?.priority) - n(a.data?.topAdjustment?.priority)); // Belangrijkste eerst
+    .sort((a, b) => n(b.data?.topAdjustment?.priority) - n(a.data?.topAdjustment?.priority));
 
   if (!actionableGroups.length) {
     return (
-      <div style={{ ...styles.panel, borderColor: "#1f7a46" }}>
-        <h2 style={{ ...styles.h2, color: "#4ae88d", marginBottom: 8 }}>✅ Alles staat stabiel</h2>
-        <div style={styles.muted}>
-          Er zijn op dit moment geen harde configuratiewijzigingen of risico-ingrepen nodig op basis van de huidige data.
+      <div className="panel" style={{ borderColor: "#1f7a46" }}>
+        <h2 className="h2" style={{ color: "#4ae88d", marginBottom: 8 }}>✅ Alles staat stabiel</h2>
+        <div className="muted">
+          Er zijn op dit moment geen harde configuratiewijzigingen of risico-ingrepen nodig.
         </div>
       </div>
     );
   }
 
   return (
-    <div style={{ ...styles.panel, borderColor: "#732424", background: "#1a0b0b" }}>
-      <h2 style={{ ...styles.h2, color: "#ff8b8b", marginBottom: 16 }}>⚡ Directe Acties Vereist</h2>
-      <div style={styles.twoCol}>
+    <div className="panel" style={{ borderColor: "#732424", background: "#1a0b0b" }}>
+      <h2 className="h2" style={{ color: "#ff8b8b", marginBottom: 16 }}>⚡ Directe Acties Vereist</h2>
+      <div className="grid-1-col">
         {actionableGroups.map((g) => (
           <TopActionCard key={g.key} groupName={g.key} adjustment={g.data.topAdjustment} />
         ))}
@@ -123,26 +123,26 @@ function GlobalActionBoard({ overview }) {
 
 function StatCard({ title, value, sub }) {
   return (
-    <div style={styles.card}>
-      <div style={styles.cardTitle}>{title}</div>
-      <div style={styles.cardValue}>{value}</div>
-      {sub ? <div style={styles.cardSub}>{sub}</div> : null}
+    <div className="stat-card">
+      <div className="stat-title">{title}</div>
+      <div className="stat-value">{value}</div>
+      {sub ? <div className="stat-sub">{sub}</div> : null}
     </div>
   );
 }
 
-function TableBlock({ title, rows, columns }) {
+function TableBlock({ title, rows, columns, helpText }) {
   return (
-    <div style={styles.panel}>
-      <h3 style={styles.h3}>{title}</h3>
-      <div style={{ overflowX: "auto" }}>
-        <table style={styles.table}>
+    <div className="panel">
+      <h3 className="h3">{title}</h3>
+      {helpText && <div className="table-help">{helpText}</div>}
+      
+      <div className="table-scroll-wrap">
+        <table className="data-table">
           <thead>
             <tr>
               {columns.map((col) => (
-                <th key={col.key} style={styles.th}>
-                  {col.label}
-                </th>
+                <th key={col.key}>{col.label}</th>
               ))}
             </tr>
           </thead>
@@ -150,7 +150,7 @@ function TableBlock({ title, rows, columns }) {
             {(rows || []).map((row, idx) => (
               <tr key={`${title}-${idx}`}>
                 {columns.map((col) => (
-                  <td key={col.key} style={styles.td}>
+                  <td key={col.key}>
                     {col.render ? col.render(row) : row[col.key]}
                   </td>
                 ))}
@@ -158,7 +158,7 @@ function TableBlock({ title, rows, columns }) {
             ))}
             {!rows?.length ? (
               <tr>
-                <td colSpan={columns.length} style={styles.td}>
+                <td colSpan={columns.length} style={{ textAlign: "center" }}>
                   Geen data
                 </td>
               </tr>
@@ -170,35 +170,31 @@ function TableBlock({ title, rows, columns }) {
   );
 }
 
-function LessonList({ lessons }) {
+function LessonList({ lessons, title = "Teacher feedback" }) {
   return (
-    <div style={styles.panel}>
-      <h3 style={styles.h3}>Teacher feedback</h3>
+    <div className="panel">
+      <h3 className="h3">{title}</h3>
 
       {!lessons?.length ? (
-        <div style={styles.muted}>Geen feedback</div>
+        <div className="muted">Geen feedback</div>
       ) : (
-        <div style={{ display: "grid", gap: 10 }}>
+        <div className="lesson-grid">
           {lessons.map((item, idx) => (
             <div
               key={idx}
+              className="lesson-item"
               style={{
-                ...styles.lessonItem,
                 borderColor:
-                  item.type === "good"
-                    ? "#1f7a46"
-                    : item.type === "improve" || item.type === "warn" || item.type === "blocker"
-                      ? "#8a2f2f"
-                      : "#8a6d1f",
+                  item.type === "good" ? "#1f7a46"
+                    : item.type === "improve" || item.type === "warn" || item.type === "blocker" ? "#8a2f2f"
+                    : "#8a6d1f",
                 background:
-                  item.type === "good"
-                    ? "#0d1f17"
-                    : item.type === "improve" || item.type === "warn" || item.type === "blocker"
-                      ? "#221111"
-                      : "#20190d",
+                  item.type === "good" ? "#0d1f17"
+                    : item.type === "improve" || item.type === "warn" || item.type === "blocker" ? "#221111"
+                    : "#20190d",
               }}
             >
-              <div style={styles.lessonType}>{item.type || "note"}</div>
+              <div className="lesson-type">{item.type || "note"}</div>
               <div>{item.text}</div>
             </div>
           ))}
@@ -223,149 +219,132 @@ function GroupSection({ title, group }) {
   const buildupCfg = liveConfig?.buildup || {};
 
   return (
-    <section style={styles.section}>
-      <div style={styles.sectionHeader}>
-        <h2 style={styles.h2}>{title}</h2>
-        <div
-          style={{
-            ...styles.badge,
-            borderColor: scoreColor(teacher?.score),
-            background: scoreBg(teacher?.score),
-          }}
-        >
-          Score {n(teacher?.score, 0).toFixed(2)} / 10
+    <section className="group-section">
+      <div className="section-header">
+        <h2 className="h2">{title}</h2>
+        <div className="score-badge" style={{ borderColor: scoreColor(teacher?.score), background: scoreBg(teacher?.score) }}>
+          Score {n(teacher?.score, 0).toFixed(1)}/10
         </div>
       </div>
 
-      {/* ACTIEKAART DIRECT ONDER DE TITEL */}
       <div style={{ marginBottom: 20 }}>
         <TopActionCard adjustment={topAdjustment} />
       </div>
 
-      <div style={styles.grid}>
+      <div className="grid-2-col">
         <StatCard title="Trades" value={summary.trades || 0} />
         <StatCard title="Winrate" value={fmtPct(summary.winRate)} />
-        <StatCard title="Avg PnL %" value={fmtPct(summary.avgPnlPct)} sub="Gemiddelde per trade" />
-        <StatCard title="Total PnL USD" value={fmtUsd(summary.totalPnlUsd)} />
-        <StatCard
-          title="Rich coverage"
-          value={fmtPct(dataQuality.richCoveragePct ?? 0)}
-          sub="Bruikbaar voor filter-analyse"
-        />
+        <StatCard title="Avg PnL" value={fmtPct(summary.avgPnlPct)} />
+        <StatCard title="Total PnL" value={fmtUsd(summary.totalPnlUsd)} />
+        <StatCard title="Rich coverage" value={fmtPct(dataQuality.richCoveragePct ?? 0)} sub="Data kwaliteit" />
       </div>
 
-      <div style={styles.twoCol}>
-        <LessonList lessons={teacher?.lessons || []} />
+      <div className="grid-2-col-large">
+        <LessonList lessons={teacher?.lessons || []} title="Belangrijkste lessen" />
 
-        <div style={styles.panel}>
-          <h3 style={styles.h3}>Live filters / config</h3>
-
+        <div className="panel">
+          <h3 className="h3">Live filters / config</h3>
           {liveConfig ? (
             <>
-              <div style={styles.configGrid}>
-                <div style={styles.configItem}>
-                  <div style={styles.configLabel}>Radar volMin</div>
-                  <div style={styles.configValue}>{radarCfg?.volMin ?? "-"}</div>
-                </div>
-                <div style={styles.configItem}>
-                  <div style={styles.configLabel}>Radar vmMin</div>
-                  <div style={styles.configValue}>{radarCfg?.vmMin ?? "-"}</div>
-                </div>
-                <div style={styles.configItem}>
-                  <div style={styles.configLabel}>Buildup minVolAcc</div>
-                  <div style={styles.configValue}>{buildupCfg?.minVolAcc ?? "-"}</div>
-                </div>
-                <div style={styles.configItem}>
-                  <div style={styles.configLabel}>Almost minConf</div>
-                  <div style={styles.configValue}>{almostCfg?.minConfidence ?? "-"}</div>
-                </div>
-                <div style={styles.configItem}>
-                  <div style={styles.configLabel}>Entry minConf</div>
-                  <div style={styles.configValue}>{entryCfg?.minConfidence ?? "-"}</div>
-                </div>
-                <div style={styles.configItem}>
-                  <div style={styles.configLabel}>Entry spreadMax</div>
-                  <div style={styles.configValue}>{entryCfg?.spreadMaxPct ?? "-"}</div>
-                </div>
-                <div style={styles.configItem}>
-                  <div style={styles.configLabel}>Entry obScoreMin</div>
-                  <div style={styles.configValue}>{entryCfg?.obScoreMin ?? "-"}</div>
-                </div>
+              <div className="config-grid">
+                <div className="config-item"><div className="config-label">Radar volMin</div><div className="config-value">{radarCfg?.volMin ?? "-"}</div></div>
+                <div className="config-item"><div className="config-label">Radar vmMin</div><div className="config-value">{radarCfg?.vmMin ?? "-"}</div></div>
+                <div className="config-item"><div className="config-label">Almost minConf</div><div className="config-value">{almostCfg?.minConfidence ?? "-"}</div></div>
+                <div className="config-item"><div className="config-label">Entry minConf</div><div className="config-value">{entryCfg?.minConfidence ?? "-"}</div></div>
+                <div className="config-item"><div className="config-label">Entry spreadMax</div><div className="config-value">{entryCfg?.spreadMaxPct ?? "-"}</div></div>
+                <div className="config-item"><div className="config-label">Entry obScore</div><div className="config-value">{entryCfg?.obScoreMin ?? "-"}</div></div>
               </div>
               <details style={{ marginTop: 14 }}>
-                <summary style={{ cursor: "pointer", opacity: 0.85 }}>Toon volledige live config</summary>
-                <pre style={styles.pre}>{fmtJson(liveConfig)}</pre>
+                <summary style={{ cursor: "pointer", opacity: 0.85, fontSize: 13 }}>Toon volledige JSON config</summary>
+                <pre className="pre-box">{fmtJson(liveConfig)}</pre>
               </details>
             </>
           ) : (
-            <div style={styles.muted}>Geen live config gevonden</div>
+            <div className="muted">Geen live config gevonden</div>
           )}
         </div>
       </div>
 
-      <div style={styles.twoCol}>
-        <div style={styles.panel}>
-          <h3 style={styles.h3}>Waar sterke coins blijven hangen</h3>
-          <div style={styles.tableHelp}>
-            Dit laat zien in welke funnel-stage coins vaak vastzitten terwijl ze later alsnog sterk blijken.
-          </div>
-          {!funnelBlockers?.stuckStats?.length ? (
-            <div style={styles.muted}>Nog geen funnel blocker data</div>
-          ) : (
-            <div style={{ overflowX: "auto" }}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>Stage</th>
-                    <th style={styles.th}>Gezien</th>
-                    <th style={styles.th}>Later sterk</th>
-                    <th style={styles.th}>Rate</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {funnelBlockers.stuckStats.map((row, idx) => (
-                    <tr key={`stuck-${idx}`}>
-                      <td style={styles.td}>{row.group ? `${row.group} / ${row.stage}` : row.stage}</td>
-                      <td style={styles.td}>{row.seenCoins}</td>
-                      <td style={styles.td}>{row.laterStrongCoins}</td>
-                      <td style={styles.td}>{fmtPct(row.stuckButLaterStrongRate)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
+      <div className="grid-2-col-large">
         <TableBlock
-          title="Per reden"
+          title="Waar sterke coins blijven hangen"
+          helpText="Funnel-stages waar coins vaak vastzitten terwijl ze later sterk blijken."
+          rows={funnelBlockers.stuckStats || []}
+          columns={[
+            { key: "stage", label: "Stage", render: (r) => r.group ? `${r.group}/${r.stage}` : r.stage },
+            { key: "seenCoins", label: "Gezien" },
+            { key: "laterStrongCoins", label: "Later Sterk" },
+            { key: "rate", label: "Rate", render: (r) => fmtPct(r.stuckButLaterStrongRate) },
+          ]}
+        />
+        <LessonList lessons={funnelBlockers?.lessons || []} title="Funnel blocker lessen" />
+      </div>
+
+      <div className="grid-2-col-large">
+        <TableBlock
+          title="Per exit reden"
           rows={buckets.byReason || []}
           columns={[
-            { key: "key", label: "Reason" },
+            { key: "key", label: "Reden" },
             { key: "count", label: "Trades" },
             { key: "winRate", label: "WinRate", render: (r) => fmtPct(r.winRate) },
-            { key: "avgPnlPct", label: "Gem PnL", render: (r) => fmtPct(r.avgPnlPct) },
+            { key: "avgPnlPct", label: "Gem. PnL", render: (r) => fmtPct(r.avgPnlPct) },
+          ]}
+        />
+        <TableBlock
+          title="Per stage"
+          rows={buckets.byStage || []}
+          columns={[
+            { key: "key", label: "Stage" },
+            { key: "count", label: "Trades" },
+            { key: "winRate", label: "WinRate", render: (r) => fmtPct(r.winRate) },
+            { key: "avgPnlPct", label: "Gem. PnL", render: (r) => fmtPct(r.avgPnlPct) },
           ]}
         />
       </div>
 
-      <div style={styles.twoCol}>
+      <div className="grid-2-col-large">
         <TableBlock
           title="Per entry quality"
           rows={buckets.byEntryQuality || []}
           columns={[
             { key: "key", label: "Bucket" },
             { key: "count", label: "Trades" },
-            { key: "avgPnlPct", label: "Gem PnL", render: (r) => fmtPct(r.avgPnlPct) },
+            { key: "winRate", label: "WinRate", render: (r) => fmtPct(r.winRate) },
+            { key: "avgPnlPct", label: "Gem. PnL", render: (r) => fmtPct(r.avgPnlPct) },
           ]}
         />
+        <TableBlock
+          title="Per persistence"
+          rows={buckets.byPersistence || []}
+          columns={[
+            { key: "key", label: "Bucket" },
+            { key: "count", label: "Trades" },
+            { key: "winRate", label: "WinRate", render: (r) => fmtPct(r.winRate) },
+            { key: "avgPnlPct", label: "Gem. PnL", render: (r) => fmtPct(r.avgPnlPct) },
+          ]}
+        />
+      </div>
+      
+      <div className="grid-2-col-large">
         <TableBlock
           title="Per spread"
           rows={buckets.bySpread || []}
           columns={[
             { key: "key", label: "Spread" },
             { key: "count", label: "Trades" },
-            { key: "avgPnlPct", label: "Gem PnL", render: (r) => fmtPct(r.avgPnlPct) },
+            { key: "winRate", label: "WinRate", render: (r) => fmtPct(r.winRate) },
+            { key: "avgPnlPct", label: "Gem. PnL", render: (r) => fmtPct(r.avgPnlPct) },
+          ]}
+        />
+        <TableBlock
+          title="Per OB score"
+          rows={buckets.byObScore || []}
+          columns={[
+            { key: "key", label: "OB Score" },
+            { key: "count", label: "Trades" },
+            { key: "winRate", label: "WinRate", render: (r) => fmtPct(r.winRate) },
+            { key: "avgPnlPct", label: "Gem. PnL", render: (r) => fmtPct(r.avgPnlPct) },
           ]}
         />
       </div>
@@ -401,25 +380,95 @@ export default function AnalyzeAllPage() {
   const overview = data?.overview || null;
 
   return (
-    <div style={styles.page}>
-      <div style={styles.header}>
+    <div className="page-container">
+      {/* INJECTEER CSS VOOR MOBIELE RESPONSIVENESS */}
+      <style dangerouslySetInnerHTML={{__html: `
+        :root {
+          --bg-dark: #050b14;
+          --bg-panel: #0a1326;
+          --border: #162544;
+          --text-main: #f4f7fb;
+          --text-muted: #8da9dc;
+        }
+        body { margin: 0; background: var(--bg-dark); color: var(--text-main); font-family: Inter, system-ui, sans-serif; }
+        * { box-sizing: border-box; }
+        
+        .page-container { padding: 24px; max-width: 1200px; margin: 0 auto; }
+        .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 12px; }
+        .h1 { margin: 0; font-size: 28px; line-height: 1.2; }
+        .h2 { margin: 0; font-size: 22px; }
+        .h3 { margin: 0 0 12px 0; font-size: 16px; color: var(--text-muted); }
+        .muted { opacity: 0.7; font-size: 13px; margin-top: 4px; }
+        
+        .refresh-btn { background: #12305f; color: #fff; border: 1px solid #2855a0; border-radius: 8px; padding: 10px 16px; font-weight: 600; cursor: pointer; }
+        .refresh-btn:active { background: #0c2040; }
+
+        .panel { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+        .group-section { margin-bottom: 40px; padding-top: 24px; border-top: 1px solid var(--border); }
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .score-badge { border: 1px solid; border-radius: 99px; padding: 6px 12px; font-size: 13px; font-weight: bold; white-space: nowrap; }
+
+        /* Grids */
+        .grid-1-col { display: grid; gap: 12px; }
+        .grid-2-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 16px; }
+        .grid-2-col-large { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-bottom: 16px; }
+
+        /* Stat Cards */
+        .stat-card { background: #060d1a; border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+        .stat-title { opacity: 0.7; font-size: 12px; margin-bottom: 6px; }
+        .stat-value { font-size: 20px; font-weight: bold; }
+        .stat-sub { opacity: 0.6; font-size: 11px; margin-top: 4px; }
+
+        /* Action Cards */
+        .action-card { border: 1px solid; border-radius: 12px; padding: 16px; }
+        .action-header { display: flex; align-items: center; gap: 10px; }
+        .action-title { margin: 0; font-size: 16px; color: #fff; }
+        .action-text { margin: 8px 0 0 0; font-size: 13px; opacity: 0.9; line-height: 1.5; }
+
+        /* Tables (Scrollable op mobiel) */
+        .table-scroll-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -16px; padding: 0 16px; }
+        .data-table { width: 100%; border-collapse: collapse; min-width: 280px; }
+        .data-table th { text-align: left; padding: 8px; border-bottom: 1px solid #1c2b4f; font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+        .data-table td { padding: 10px 8px; border-bottom: 1px solid #111e36; font-size: 13px; white-space: nowrap; }
+        .table-help { font-size: 12px; opacity: 0.7; margin-bottom: 12px; line-height: 1.4; }
+
+        /* Lessons */
+        .lesson-grid { display: grid; gap: 8px; }
+        .lesson-item { border: 1px solid; border-radius: 8px; padding: 12px; font-size: 13px; line-height: 1.4; }
+        .lesson-type { font-size: 10px; opacity: 0.7; text-transform: uppercase; margin-bottom: 4px; font-weight: bold; }
+
+        /* Config */
+        .config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 8px; }
+        .config-item { background: #060d1a; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+        .config-label { font-size: 10px; opacity: 0.7; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .config-value { font-size: 14px; font-weight: bold; }
+        .pre-box { background: #050b14; border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-size: 11px; overflow-x: auto; }
+
+        /* Mobiele optimalisaties */
+        @media (max-width: 600px) {
+          .page-container { padding: 16px; }
+          .grid-2-col-large { grid-template-columns: 1fr; }
+          .stat-value { font-size: 18px; }
+          .panel { padding: 14px; }
+        }
+      `}} />
+
+      <div className="page-header">
         <div>
-          <h1 style={styles.h1}>System Analyze</h1>
-          <div style={styles.muted}>Laatste refresh: {fmtTs(data?.ts)}</div>
+          <h1 className="h1">System Analyze</h1>
+          <div className="muted">Refresh: {fmtTs(data?.ts)}</div>
         </div>
-        <button onClick={load} style={styles.button}>
-          Refresh Data
+        <button onClick={load} className="refresh-btn">
+          Herlaad
         </button>
       </div>
 
-      {loading && <div style={styles.panel}>Laden van data en berekenen van optimalisaties...</div>}
-      {err && <div style={{ ...styles.panel, color: "#ff8b8b" }}>{err}</div>}
+      {loading && <div className="panel">Laden van data en berekenen van optimalisaties...</div>}
+      {err && <div className="panel" style={{ color: "#ff8b8b" }}>{err}</div>}
 
       {!loading && !err && data ? (
         <>
-          {/* NIEUW: Direct de belangrijkste acties in beeld */}
           <GlobalActionBoard overview={overview} />
-
           <GroupSection title="Trade Funnel Totaal" group={groups.trade_funnel} />
           <GroupSection title="Moon Bull" group={groups.moon_bull} />
           <GroupSection title="Moon Bear" group={groups.moon_bear} />
@@ -430,118 +479,3 @@ export default function AnalyzeAllPage() {
     </div>
   );
 }
-
-const styles = {
-  page: {
-    minHeight: "100vh",
-    background: "#050b14",
-    color: "#f4f7fb",
-    padding: 24,
-    fontFamily: "Inter, Arial, sans-serif",
-  },
-  header: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 16,
-    marginBottom: 32,
-  },
-  section: {
-    marginBottom: 40,
-    paddingTop: 24,
-    borderTop: "1px solid #162544",
-  },
-  sectionHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 16,
-  },
-  badge: {
-    border: "1px solid #2855a0",
-    borderRadius: 999,
-    padding: "6px 12px",
-    fontSize: 13,
-    fontWeight: 700,
-  },
-  h1: { margin: 0, fontSize: 32, lineHeight: 1.1 },
-  h2: { margin: 0, fontSize: 24 },
-  h3: { margin: "0 0 12px 0", fontSize: 16, color: "#a5c2f5" },
-  muted: { opacity: 0.65, marginTop: 6, fontSize: 14 },
-  button: {
-    background: "#12305f",
-    color: "#fff",
-    border: "1px solid #2855a0",
-    borderRadius: 8,
-    padding: "10px 18px",
-    cursor: "pointer",
-    fontWeight: 600,
-  },
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-    gap: 16,
-    marginBottom: 20,
-  },
-  twoCol: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))",
-    gap: 16,
-    marginBottom: 20,
-  },
-  card: {
-    background: "#0a1326",
-    border: "1px solid #162544",
-    borderRadius: 12,
-    padding: 16,
-  },
-  cardTitle: { opacity: 0.7, fontSize: 13, marginBottom: 8 },
-  cardValue: { fontSize: 24, fontWeight: 700 },
-  cardSub: { opacity: 0.6, marginTop: 6, fontSize: 12 },
-  panel: {
-    background: "#0a1326",
-    border: "1px solid #162544",
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 16,
-  },
-  actionCard: {
-    border: "1px solid",
-    borderRadius: 12,
-    padding: 16,
-  },
-  actionHeader: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-  },
-  lessonItem: {
-    background: "#060d1a",
-    border: "1px solid #162544",
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 14,
-    lineHeight: 1.5,
-  },
-  lessonType: { fontSize: 11, opacity: 0.6, textTransform: "uppercase", marginBottom: 6, fontWeight: 600 },
-  table: { width: "100%", borderCollapse: "collapse" },
-  th: { textAlign: "left", padding: "10px 8px", borderBottom: "1px solid #1c2b4f", fontSize: 13, color: "#8da9dc" },
-  td: { padding: "10px 8px", borderBottom: "1px solid #111e36", fontSize: 14, verticalAlign: "top" },
-  pre: {
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
-    fontSize: 12,
-    lineHeight: 1.5,
-    background: "#050b14",
-    border: "1px solid #162544",
-    borderRadius: 8,
-    padding: 12,
-    overflowX: "auto",
-  },
-  tableHelp: { fontSize: 13, opacity: 0.6, marginBottom: 12, lineHeight: 1.4 },
-  configGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 8 },
-  configItem: { background: "#060d1a", border: "1px solid #162544", borderRadius: 8, padding: 10 },
-  configLabel: { fontSize: 11, opacity: 0.6, marginBottom: 4 },
-  configValue: { fontSize: 15, fontWeight: 600 },
-};
