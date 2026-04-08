@@ -59,6 +59,9 @@ function sortMoonCoins(a, b) {
     n(b?.perfectCandidateScore, 0) - n(a?.perfectCandidateScore, 0) ||
     n(b?.entryQuality, 0) - n(a?.entryQuality, 0) ||
     n(b?.persistenceScore, 0) - n(a?.persistenceScore, 0) ||
+    n(b?.qualityScore, 0) - n(a?.qualityScore, 0) ||
+    n(b?.liquidityScore, 0) - n(a?.liquidityScore, 0) ||
+    n(a?.ob?.spreadPct, 999) - n(b?.ob?.spreadPct, 999) ||
     n(b?.marketCap, 0) - n(a?.marketCap, 0)
   );
 }
@@ -71,17 +74,156 @@ function execActionOf(c) {
   return up(c?.execution?.action);
 }
 
-function isTradeReadyCoin(c) {
-  const st = stageOf(c);
-  const act = execActionOf(c);
-  const gate = up(c?.engineGate || c?.tradeDeskStatus || "");
+function isEliteStage(stage) {
+  const st = up(stage);
+  return st === "ELITE_IGNITION" || st === "ELITE_EXPANSION" || st === "ELITE_CASCADE";
+}
 
-  if (st === "ENTRY" || st === "TRADE_READY") return true;
-  if (st === "ELITE_IGNITION" || st === "ELITE_EXPANSION" || st === "ELITE_CASCADE") return true;
-  if (gate === "WATCH") return true;
-  if (act === "ALLOW_ENTRY" || act === "ARM_ENTRY" || act === "WATCH" || act === "PENDING_ENTRY") return true;
+function isStableLikeSymbol(symbol) {
+  const s = up(symbol);
+  if (!s) return true;
+
+  const blocked = [
+    "USDT",
+    "USDC",
+    "USDE",
+    "FDUSD",
+    "PYUSD",
+    "TUSD",
+    "BUSD",
+    "DAI",
+    "USDS",
+    "USD0",
+    "USDY",
+    "EURC",
+    "EURI",
+    "EURR",
+    "AEUR",
+    "WBTC",
+    "WETH",
+    "PAXG",
+  ];
+
+  if (blocked.includes(s)) return true;
+  if (s.endsWith("USD")) return true;
+  if (s.endsWith("EUR")) return true;
 
   return false;
+}
+
+function passesHardMoonUniverseFilter(coin) {
+  const symbol = up(coin?.symbol);
+  const mc = n(coin?.marketCap, 0);
+  const vol = n(coin?.volume, 0);
+  const price = n(coin?.price, 0);
+  const ch1 = Math.abs(n(coin?.change1h, 0));
+  const ch24 = Math.abs(n(coin?.change24, 0));
+  const range24 = n(coin?.range24, 0);
+
+  if (!symbol || isStableLikeSymbol(symbol)) return false;
+  if (!(price > 0)) return false;
+
+  // moon is niet voor mega caps en niet voor dode coins
+  if (mc <= 0 || mc > 900_000_000) return false;
+  if (vol < 500_000) return false;
+
+  // filter micro-moves eruit
+  if (ch1 < 0.35 && ch24 < 3.0) return false;
+  if (range24 < 3.0) return false;
+
+  // extreme rotzooi eruit
+  if (ch24 > 120) return false;
+
+  return true;
+}
+
+function passesMoonEntryGate(coin, mode) {
+  const stage = up(coin?.stage);
+  const gate = up(coin?.engineGate || coin?.tradeDeskStatus || "");
+  const entryQuality = n(coin?.entryQuality, 0);
+  const persistenceScore = n(coin?.persistenceScore, 0);
+  const perfectCandidateScore = n(coin?.perfectCandidateScore, 0);
+  const qualityScore = n(coin?.qualityScore, 0);
+  const liquidityScore = n(coin?.liquidityScore, 0);
+  const timingScore = n(coin?.timingScore, 0);
+  const spreadPct = n(coin?.ob?.spreadPct, 999);
+  const obScore = n(coin?.ob?.score, 0);
+  const depth = n(coin?.ob?.depthMinUsd1p, 0);
+  const breakoutReady = !!coin?.breakout?.ready;
+  const breakoutPressure = n(coin?.breakout?.pressure, 0);
+  const tradePlan = !!coin?.tradePlan;
+
+  if (!tradePlan) return false;
+  if (gate !== "WATCH" && gate !== "OPEN") return false;
+
+  if (mode === "bull") {
+    if (spreadPct > 0.95) return false;
+    if (depth < 4000) return false;
+    if (obScore < 0.03) return false;
+
+    if (stage === "ELITE_EXPANSION" || stage === "ELITE_IGNITION") {
+      return (
+        entryQuality >= 74 &&
+        persistenceScore >= 64 &&
+        perfectCandidateScore >= 72 &&
+        qualityScore >= 70 &&
+        liquidityScore >= 58 &&
+        timingScore >= 64 &&
+        breakoutPressure >= 54
+      );
+    }
+
+    if (stage === "ALMOST") {
+      return (
+        breakoutReady &&
+        entryQuality >= 82 &&
+        persistenceScore >= 72 &&
+        perfectCandidateScore >= 78 &&
+        qualityScore >= 74 &&
+        liquidityScore >= 60 &&
+        timingScore >= 68 &&
+        breakoutPressure >= 60
+      );
+    }
+
+    return false;
+  }
+
+  // bear
+  if (spreadPct > 1.05) return false;
+  if (depth < 3500) return false;
+  if (obScore > -0.03) return false;
+
+  if (stage === "ELITE_CASCADE" || stage === "ELITE_IGNITION") {
+    return (
+      entryQuality >= 74 &&
+      persistenceScore >= 62 &&
+      perfectCandidateScore >= 72 &&
+      qualityScore >= 70 &&
+      liquidityScore >= 56 &&
+      timingScore >= 64 &&
+      breakoutPressure >= 52
+    );
+  }
+
+  if (stage === "ALMOST") {
+    return (
+      breakoutReady &&
+      entryQuality >= 82 &&
+      persistenceScore >= 70 &&
+      perfectCandidateScore >= 78 &&
+      qualityScore >= 74 &&
+      liquidityScore >= 58 &&
+      timingScore >= 68 &&
+      breakoutPressure >= 58
+    );
+  }
+
+  return false;
+}
+
+function isTradeReadyCoin(c) {
+  return passesMoonEntryGate(c, c?.side === "SHORT" ? "bear" : "bull");
 }
 
 function coinForDiscord({ coin, position }) {
@@ -137,23 +279,24 @@ async function mapLimit(items, limit, worker) {
 }
 
 // ========== constants ==========
-const COOLDOWN_SL_SEC = 4 * 60 * 60;
-const COOLDOWN_TP_SEC = 90 * 60;
-const COOLDOWN_TIMEOUT_SEC = 2 * 60 * 60;
-const COOLDOWN_EARLY_EXIT_SEC = 60 * 60;
-const MAX_OPEN_TRADES = 4;
+const COOLDOWN_SL_SEC = 5 * 60 * 60;
+const COOLDOWN_TP_SEC = 2 * 60 * 60;
+const COOLDOWN_TIMEOUT_SEC = 3 * 60 * 60;
+const COOLDOWN_EARLY_EXIT_SEC = 2 * 60 * 60;
+
+const MAX_OPEN_TRADES = 2;
 const POSITION_SIZE_USD = 50;
 const ENTRY_HISTORY_KEEP = 40;
-const UI_ENTRY_LOCK_MS_MOON = 8 * 60 * 60 * 1000;
+const UI_ENTRY_LOCK_MS_MOON = 12 * 60 * 60 * 1000;
 
-const MAX_UNIVERSE_COINS = 55;
+const MAX_UNIVERSE_COINS = 45;
 const UNIVERSE_CONCURRENCY = 6;
 const STATE_EVENT_SAMPLE_LIMIT = 6;
 
-const LIMIT_ENTRY = 20;
-const LIMIT_ALMOST = 20;
-const LIMIT_BUILDUP = 20;
-const LIMIT_RADAR = 20;
+const LIMIT_ENTRY = 8;
+const LIMIT_ALMOST = 12;
+const LIMIT_BUILDUP = 12;
+const LIMIT_RADAR = 15;
 
 function keyMoonConfigSnapshot(mode) {
   return `moon:config:snapshot:${String(mode || "bull").toLowerCase()}`;
@@ -384,7 +527,8 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
   const bitgetSymbols = await getBitgetSpotUsdtSymbols();
   const step1 = rawCoins.filter((c) => !isBlockedMoonAsset(c));
   const step2 = step1.filter((c) => bitgetSymbols.has(up(c.symbol)));
-  const filtered = step2.slice(0, MAX_UNIVERSE_COINS);
+  const step3 = step2.filter((c) => passesHardMoonUniverseFilter(c));
+  const filtered = step3.slice(0, MAX_UNIVERSE_COINS);
 
   const state = (await kv.get(keyMoonState(mode))) || {};
 
@@ -393,14 +537,18 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
     const prev = state?.[sym] || {};
 
     let ob = null;
-    if (n(coin.volume, 0) >= 250_000) {
+    if (n(coin.volume, 0) >= 500_000) {
       ob = await fetchOrderbook(`${sym}USDT`);
     }
 
     const obx = computeObScore(ob);
 
     const tier = getTierForMcap(coin.marketCap);
-    const floorUsd = depthFloorUsd(coin.marketCap, tier, prev?.depthHist);
+    const floorUsd = Math.max(
+      depthFloorUsd(coin.marketCap, tier, prev?.depthHist),
+      n(coin.marketCap, 0) <= 80_000_000 ? 4000 : 2500
+    );
+
     const depthOk = n(obx.depthMinUsd1p, 0) >= floorUsd;
 
     const priceHist = Array.isArray(prev?.priceHist) ? [...prev.priceHist] : [];
@@ -415,8 +563,8 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
     const volAcc = { short: 1, medium: 1 };
     if (volHistNext.length >= 5) {
       const nowVol = volHistNext[volHistNext.length - 1];
-      const shortAgo = volHistNext[volHistNext.length - 1 - 5] || nowVol;
-      const mediumAgo = volHistNext[volHistNext.length - 1 - 20] || nowVol;
+      const shortAgo = volHistNext[Math.max(0, volHistNext.length - 1 - 5)] || nowVol;
+      const mediumAgo = volHistNext[Math.max(0, volHistNext.length - 1 - 20)] || nowVol;
       volAcc.short = nowVol / Math.max(shortAgo, 1e-9);
       volAcc.medium = nowVol / Math.max(mediumAgo, 1e-9);
     }
@@ -517,11 +665,7 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
       now,
       prevGate: prev?.engineGate,
       prevMeta: prev?.deskMeta,
-      isEliteStageForDesk: [
-        "ELITE_IGNITION",
-        "ELITE_EXPANSION",
-        "ELITE_CASCADE",
-      ].includes(stage),
+      isEliteStageForDesk: isEliteStage(stage),
     });
 
     const uiLockUntil = Math.max(
@@ -539,8 +683,24 @@ async function buildUniverse({ CORE, mode, whaleFlow, btc, now }) {
       confidence: entryQuality || moveScore,
       moonProbability: probs?.moonProbability ?? 0,
       dumpProbability: probs?.dumpProbability ?? 0,
-      tradeCandidate: engineGate === "WATCH",
-      superScannerCoin: engineGate === "WATCH",
+      tradeCandidate: passesMoonEntryGate(
+        {
+          stage,
+          engineGate,
+          tradeDeskStatus: uiGate,
+          entryQuality,
+          persistenceScore,
+          perfectCandidateScore,
+          qualityScore,
+          liquidityScore,
+          timingScore,
+          breakout,
+          ob: obx,
+          tradePlan,
+        },
+        mode
+      ),
+      superScannerCoin: isEliteStage(stage),
       qualityScore,
       liquidityScore,
       timingScore,
@@ -749,20 +909,19 @@ export default async function handler(req, res) {
         );
       }
 
-      if (!hasOpen && shouldSendUpgradeSignal(oldStage, rawStage)) {
-        const isWatchStage = coin.engineGate === "WATCH";
+      if (!hasOpen && shouldSendUpgradeSignal(oldStage, rawStage) && isEliteStage(rawStage)) {
         signalJobs.push(
           safeSendSignal({
             source: "moon",
             action: "STAGE_UPGRADE",
             symbol: sym,
             price: coin.price,
-            stage: isWatchStage ? "WATCH" : rawStage,
+            stage: rawStage,
             oldStage,
             mode,
             coin: coinForDiscord({ coin }),
             btcState: btc?.state || "NEUTRAL",
-            kind: isWatchStage ? "elite_watch" : "signal",
+            kind: "elite_watch",
             reason: `Stage upgrade: ${oldStage} → ${rawStage}`,
           })
         );
@@ -786,7 +945,8 @@ export default async function handler(req, res) {
         !hasOpen &&
         coin.execution?.action === "ALLOW_ENTRY" &&
         !entryLocked &&
-        coin.tradePlan != null;
+        coin.tradePlan != null &&
+        passesMoonEntryGate(coin, mode);
 
       const uiLockUntil = Math.max(coin.uiLockUntil, n(prev.uiLockUntil, 0));
 
@@ -816,7 +976,7 @@ export default async function handler(req, res) {
       };
 
       if (!hasOpen) {
-        if (coin.execution?.action === "ARM_ENTRY") {
+        if (coin.execution?.action === "ARM_ENTRY" && passesMoonEntryGate(coin, mode)) {
           nextPositionState.entryTicketActive = true;
           nextPositionState.entryTicketSince =
             prevPositionState.entryTicketActive && prevPositionState.entryTicketSince
@@ -829,11 +989,12 @@ export default async function handler(req, res) {
         } else if (
           coin.execution?.action === "CANCEL_ENTRY" ||
           coin.execution?.action === "NO_TRADE" ||
-          coin.execution?.action === "WATCH"
+          coin.execution?.action === "WATCH" ||
+          !passesMoonEntryGate(coin, mode)
         ) {
           nextPositionState.entryTicketActive = false;
           nextPositionState.entryTicketSince = 0;
-        } else if (coin.execution?.action === "ALLOW_ENTRY") {
+        } else if (coin.execution?.action === "ALLOW_ENTRY" && passesMoonEntryGate(coin, mode)) {
           nextPositionState.entryTicketActive = true;
           nextPositionState.entryTicketSince = prevPositionState.entryTicketSince || now;
           nextPositionState.entryTicketTtlMs =
@@ -976,7 +1137,7 @@ export default async function handler(req, res) {
           closedAt: now,
           exitPrice: liveCoin.price,
           pnlPct: execution.meta?.pnlPct ?? 0,
-          pnlUsd: (execution.meta?.pnlPct ?? 0) / 100 * POSITION_SIZE_USD,
+          pnlUsd: ((execution.meta?.pnlPct ?? 0) / 100) * POSITION_SIZE_USD,
           exitReason: execution.meta?.exitReason || execution.meta?.reason,
           entryStage: pos.stage || "ENTRY",
           sourceStage: pos.sourceStage || liveCoin.stage || "UNKNOWN",
@@ -1085,25 +1246,28 @@ export default async function handler(req, res) {
 
     for (const sym of Object.keys(nextState)) {
       const state = nextState[sym];
-      if (state.entryReady && !refreshedOpenMap.has(sym)) {
+      const coin = universeMap.get(sym);
+      if (!coin) continue;
+
+      if (state.entryReady && !refreshedOpenMap.has(sym) && passesMoonEntryGate(coin, mode)) {
         const cdKey = cooldownKey(mode, sym);
         const cdUntil = await kv.get(cdKey);
         if (n(cdUntil, 0) <= now) {
-          entryCandidates.push({ sym, state, coin: universeMap.get(sym) });
+          entryCandidates.push({ sym, state, coin });
         }
       }
     }
 
-    entryCandidates.sort(
-      (a, b) => (b.coin?.entryQuality || 0) - (a.coin?.entryQuality || 0)
-    );
+    entryCandidates.sort(sortMoonCoins.bind(null));
+    entryCandidates.sort((a, b) => sortMoonCoins(a.coin, b.coin));
 
     const slotsLeft = MAX_OPEN_TRADES - positions.open.length;
-    const toOpen = entryCandidates.slice(0, Math.min(slotsLeft, 1));
+    const toOpen = entryCandidates.slice(0, Math.max(0, Math.min(slotsLeft, 1)));
 
     for (const cand of toOpen) {
       const { sym, coin, state } = cand;
       if (!coin?.tradePlan) continue;
+      if (!passesMoonEntryGate(coin, mode)) continue;
 
       const id = uid("moon");
 
@@ -1249,29 +1413,44 @@ export default async function handler(req, res) {
     }
 
     // -------------------------------
-    // 4. Funnel bouwen voor UI (zelfde shape als main)
+    // 4. Funnel bouwen voor UI
     // -------------------------------
     const funnel = {
-      entry: uniqBySymbol(
-        universe.filter((c) => isTradeReadyCoin(c))
-      )
+      entry: uniqBySymbol(universe.filter((c) => passesMoonEntryGate(c, mode)))
         .sort(sortMoonCoins)
         .slice(0, LIMIT_ENTRY),
 
       almost: uniqBySymbol(
-        universe.filter((c) => stageOf(c) === "ALMOST")
+        universe.filter(
+          (c) =>
+            stageOf(c) === "ALMOST" &&
+            n(c.entryQuality, 0) >= 68 &&
+            n(c.persistenceScore, 0) >= 58 &&
+            n(c.perfectCandidateScore, 0) >= 66
+        )
       )
         .sort(sortMoonCoins)
         .slice(0, LIMIT_ALMOST),
 
       buildup: uniqBySymbol(
-        universe.filter((c) => stageOf(c) === "BUILDUP")
+        universe.filter(
+          (c) =>
+            stageOf(c) === "BUILDUP" &&
+            n(c.entryQuality, 0) >= 58 &&
+            n(c.persistenceScore, 0) >= 48 &&
+            n(c.perfectCandidateScore, 0) >= 56
+        )
       )
         .sort(sortMoonCoins)
         .slice(0, LIMIT_BUILDUP),
 
       radar: uniqBySymbol(
-        universe.filter((c) => stageOf(c) === "RADAR")
+        universe.filter(
+          (c) =>
+            stageOf(c) === "RADAR" &&
+            n(c.entryQuality, 0) >= 45 &&
+            n(c.perfectCandidateScore, 0) >= 44
+        )
       )
         .sort(sortMoonCoins)
         .slice(0, LIMIT_RADAR),
@@ -1371,7 +1550,11 @@ export default async function handler(req, res) {
     await Promise.all([
       kv.set(keyMoonPortfolio(mode), portfolio, { ex: 60 * 60 * 24 * 7 }),
       kv.set(keyMoonState(mode), nextState, { ex: 60 * 60 * 24 * 3 }),
-      kv.set(keyMoonPositions(mode), { ...positions, closed: positions.closed.slice(-1000) }, { ex: 60 * 60 * 24 * 7 }),
+      kv.set(
+        keyMoonPositions(mode),
+        { ...positions, closed: positions.closed.slice(-1000) },
+        { ex: 60 * 60 * 24 * 7 }
+      ),
       kv.set(keyMoonConfigSnapshot(mode), configSnapshot, { ex: 60 * 60 * 24 * 7 }),
       kv.set(keyMoonLatest(mode), latest, { ex: 60 * 60 }),
     ]);
