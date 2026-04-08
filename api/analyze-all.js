@@ -2,12 +2,12 @@ import {
   readTradeEventBook,
   inferSystemFromTradeId,
   readManyEvents,
-} from "../../lib/_analytics.js";
+} from "../lib/_analytics.js";
 
-import * as mainBullCore from "../../lib/_core_bull.js";
-import * as mainBearCore from "../../lib/_core_bear.js";
-import * as moonBullCore from "../../lib/_moon_core_bull.js";
-import * as moonBearCore from "../../lib/_moon_core_bear.js";
+import * as mainBullCore from "../lib/_core_bull.js";
+import * as mainBearCore from "../lib/_core_bear.js";
+import * as moonBullCore from "../lib/_moon_core_bull.js";
+import * as moonBearCore from "../lib/_moon_core_bear.js";
 
 function n(x, d = 0) {
   const v = Number(x);
