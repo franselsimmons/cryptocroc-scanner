@@ -12,8 +12,8 @@ const CG_MARKETS = "https://api.coingecko.com/api/v3/coins/markets";
 // HARD PERFORMANCE LIMITS
 // =========================
 const MAX_COINS_FROM_CG = 220;
-const MAX_OB_CANDIDATES = 60;
-const OB_CONCURRENCY = 6;
+const MAX_OB_CANDIDATES = 100;
+const OB_CONCURRENCY = 8;
 
 // ======================================================
 // MAIN KV KEYS
@@ -291,7 +291,9 @@ function pickTier(marketCap, entryCfg) {
 function buildMainTradePlan({ price, range24, confidence, stage, ob, mode }) {
   const p = n(price, 0);
   if (!(p > 0)) return null;
-  if (String(stage || "").toUpperCase() !== "TRADE_READY") return null;
+
+  const st = up(stage);
+  if (st !== "TRADE_READY" && st !== "ALMOST") return null;
 
   const r24 = Math.max(2, Math.min(18, n(range24, 0)));
   const conf = Math.max(0, Math.min(100, n(confidence, 0)));
@@ -300,13 +302,19 @@ function buildMainTradePlan({ price, range24, confidence, stage, ob, mode }) {
   let slPct = 3.2 + r24 * 0.06;
   let tpPct = 6.8 + r24 * 0.14;
 
-  if (conf >= 40) tpPct += 0.4;
-  if (conf >= 50) tpPct += 0.5;
+  if (conf >= 35) tpPct += 0.3;
+  if (conf >= 45) tpPct += 0.4;
+  if (conf >= 55) tpPct += 0.5;
   if (spread <= 0.7) slPct -= 0.15;
   if (spread > 1.2) slPct += 0.2;
 
-  slPct = Math.max(2.8, Math.min(4.8, slPct));
-  tpPct = Math.max(5.8, Math.min(10.5, tpPct));
+  if (st === "ALMOST") {
+    slPct += 0.25;
+    tpPct -= 0.35;
+  }
+
+  slPct = Math.max(2.8, Math.min(5.2, slPct));
+  tpPct = Math.max(5.4, Math.min(10.5, tpPct));
 
   if (String(mode || "bull").toLowerCase() === "bear") {
     const sl = p * (1 + slPct / 100);
@@ -345,8 +353,15 @@ function deriveMainRegime({ btc }) {
   return "CHOP";
 }
 
-function gateFromStage(stage) {
-  return up(stage) === "TRADE_READY" ? "WATCH" : "IGNORE";
+function gateFromStage(stage, confidence = 0, ob = null) {
+  const st = up(stage);
+  const conf = n(confidence, 0);
+  const spread = n(ob?.spreadPct, 999);
+
+  if (st === "TRADE_READY") return "WATCH";
+  if (st === "ALMOST" && conf >= 10) return "WATCH";
+  if (st === "BUILDUP" && conf >= 18 && spread <= 5.0) return "WATCH";
+  return "IGNORE";
 }
 
 function getMainMacroMode({ btc, mode }) {
@@ -355,15 +370,17 @@ function getMainMacroMode({ btc, mode }) {
   const range24 = n(btc?.range24, 0);
 
   if (mode === "bull") {
-    if (state === "BULL" && chg24 >= 1.2 && range24 >= 3.2) return "PERMISSIVE";
+    if (state === "BULL" && chg24 >= 1.0 && range24 >= 2.6) return "PERMISSIVE";
     if (state === "NEUTRAL") return "SELECTIVE";
-    return "RESTRICTIVE";
+    if (state === "BEAR" && chg24 <= -1.8 && range24 >= 4.0) return "RESTRICTIVE";
+    return "SELECTIVE";
   }
 
   if (mode === "bear") {
-    if (state === "BEAR" && chg24 <= -1.2 && range24 >= 3.2) return "PERMISSIVE";
+    if (state === "BEAR" && chg24 <= -1.0 && range24 >= 2.6) return "PERMISSIVE";
     if (state === "NEUTRAL") return "SELECTIVE";
-    return "RESTRICTIVE";
+    if (state === "BULL" && chg24 >= 1.8 && range24 >= 4.0) return "RESTRICTIVE";
+    return "SELECTIVE";
   }
 
   return "SELECTIVE";
@@ -568,34 +585,49 @@ export default async function handler(req, res) {
         const tier = pickTier(marketCap, entryCfg);
 
         const baseThr = {
-          minConfidence: n(tier?.minConf, n(entryCfg.minConfidence, 40)),
-          spreadMaxPct: n(tier?.spreadMax, n(entryCfg.spreadMaxPct, 1.8)),
-          depthMinUsd1p: n(tier?.depth1pMin, n(entryCfg.depthMinUsd1p, 11_000)),
-          obScoreMin: n(tier?.obScoreMin, n(entryCfg.obScoreMin, 0.02)),
+          minConfidence: n(tier?.minConf, n(entryCfg.minConfidence, 14)),
+          spreadMaxPct: n(tier?.spreadMax, n(entryCfg.spreadMaxPct, 4.6)),
+          depthMinUsd1p: n(tier?.depth1pMin, n(entryCfg.depthMinUsd1p, 1_200)),
+          obScoreMin: n(tier?.obScoreMin, n(entryCfg.obScoreMin, 0.0015)),
         };
 
         dynThr = CORE.dynamicEntryThresholds({ marketCap, volume, vm }, baseThr, CFG);
 
-        const spreadOk = n(ob.spreadPct, 999) <= n(dynThr.spreadMaxPct, 999);
-        depthOk = n(ob.depthMinUsd1p, 0) >= n(dynThr.depthMinUsd1p, 0);
-        const confOk = confidence >= n(dynThr.minConfidence, n(entryCfg.minConfidence, 0));
-
         const score = n(ob.score, 0);
+
+        let spreadLimit = n(dynThr.spreadMaxPct, 999);
+        let confNeed = n(dynThr.minConfidence, n(entryCfg.minConfidence, 0));
+        let depthNeed = n(dynThr.depthMinUsd1p, 0);
+        let scoreNeed = n(dynThr.obScoreMin, 0);
+
+        if (macroMode === "PERMISSIVE") {
+          spreadLimit = Math.min(5.4, spreadLimit + 0.35);
+          confNeed = Math.max(8, confNeed - 1);
+          depthNeed = Math.max(800, depthNeed * 0.9);
+          scoreNeed = Math.max(0.0008, scoreNeed * 0.9);
+        } else if (macroMode === "SELECTIVE") {
+          spreadLimit = Math.min(5.0, spreadLimit + 0.15);
+          confNeed = Math.max(9, confNeed);
+        } else if (macroMode === "RESTRICTIVE") {
+          spreadLimit = Math.min(4.2, spreadLimit);
+          confNeed += 1;
+          depthNeed *= 1.05;
+          scoreNeed *= 1.1;
+        }
+
+        const spreadOk = n(ob.spreadPct, 999) <= spreadLimit;
+        depthOk = n(ob.depthMinUsd1p, 0) >= depthNeed;
+        const confOk = confidence >= confNeed;
+
         const scoreOk =
-          mode === "bull"
-            ? score >= n(dynThr.obScoreMin, 0)
-            : score <= -n(dynThr.obScoreMin, 0);
+          mode === "bull" ? score >= scoreNeed : score <= -scoreNeed;
 
-        let macroEntryOk = true;
-        if (macroMode === "RESTRICTIVE") macroEntryOk = false;
-
-        entryOk = spreadOk && depthOk && confOk && scoreOk && macroEntryOk;
+        entryOk = spreadOk && depthOk && confOk && scoreOk;
 
         if (!confOk) entryReason = "conf_low";
         else if (!spreadOk) entryReason = "spread";
         else if (!depthOk) entryReason = "depth";
         else if (!scoreOk) entryReason = "ob_score";
-        else if (!macroEntryOk) entryReason = "macro_selective";
         else entryReason = "ok";
 
         if (entryOk) stage = "TRADE_READY";
@@ -608,7 +640,7 @@ export default async function handler(req, res) {
 
       const breakout = {
         ready: stage === "TRADE_READY",
-        pressure: stage === "TRADE_READY" ? 60 : stage === "ALMOST" ? 48 : 0,
+        pressure: stage === "TRADE_READY" ? 60 : stage === "ALMOST" ? 48 : stage === "BUILDUP" ? 32 : 0,
         breakoutPct: 0,
       };
 
@@ -626,9 +658,14 @@ export default async function handler(req, res) {
         mode,
       });
 
-      const scannerGate = gateFromStage(stage);
+      const scannerGate = gateFromStage(stage, confidence, ob);
 
-      const engineCoin = {
+      const entryQuality = confidence;
+      const persistenceScore = Math.round(
+        Math.max(0, Math.min(100, confidence * 0.85 + Math.min(volAcc * 10, 12)))
+      );
+
+      const coinProfileBase = {
         id: coin.id,
         symbol: sym,
         name: coin.name || "",
@@ -642,8 +679,8 @@ export default async function handler(req, res) {
         range24,
         vm,
         confidence,
-        entryQuality: confidence,
-        persistenceScore: Math.round(Math.max(0, Math.min(100, confidence * 0.85 + Math.min(volAcc * 10, 12)))),
+        entryQuality,
+        persistenceScore,
         stage,
         stageWhy:
           entryOk
@@ -687,14 +724,22 @@ export default async function handler(req, res) {
         tradeDeskStatus: scannerGate,
         qualityScore: confidence,
         liquidityScore: ob?.valid
-          ? Math.max(0, Math.min(100, 55 + (n(ob.score, 0) * 100) / 2 - Math.max(0, n(ob.spreadPct, 0) - 0.8) * 8))
+          ? Math.max(
+              0,
+              Math.min(
+                100,
+                55 + (n(ob.score, 0) * 100) / 2 - Math.max(0, n(ob.spreadPct, 0) - 0.8) * 8
+              )
+            )
           : 35,
-        timingScore: stage === "TRADE_READY" ? 82 : stage === "ALMOST" ? 68 : stage === "BUILDUP" ? 54 : 35,
+        timingScore:
+          stage === "TRADE_READY" ? 82 : stage === "ALMOST" ? 68 : stage === "BUILDUP" ? 54 : 35,
         marketScore: regime === "EXPANSION" ? 82 : regime === "TREND" ? 70 : regime === "HEADWIND" ? 35 : 50,
-        perfectCandidateScore: stage === "TRADE_READY" ? 78 : stage === "ALMOST" ? 66 : stage === "BUILDUP" ? 52 : 30,
-        tradeCandidate: stage === "TRADE_READY",
-        superScannerCoin: stage === "TRADE_READY",
-        scannerOnly: stage !== "TRADE_READY",
+        perfectCandidateScore:
+          stage === "TRADE_READY" ? 78 : stage === "ALMOST" ? 66 : stage === "BUILDUP" ? 52 : 30,
+        tradeCandidate: stage === "TRADE_READY" || (stage === "ALMOST" && scannerGate === "WATCH"),
+        superScannerCoin: stage === "TRADE_READY" || stage === "ALMOST",
+        scannerOnly: scannerGate === "IGNORE",
         entry: {
           ok: !!entryOk,
           reason: entryReason,
@@ -741,11 +786,11 @@ export default async function handler(req, res) {
 
       const coinProfile = buildCoinProfile({
         systemType: "main",
-        coin: engineCoin,
+        coin: coinProfileBase,
       });
 
       const execution = buildMainExecutionDecision({
-        coin: engineCoin,
+        coin: coinProfileBase,
         btc,
         regime,
         mode,
@@ -760,7 +805,7 @@ export default async function handler(req, res) {
         scannerGate,
       });
 
-      const outCoin = { ...engineCoin, coinProfile, execution };
+      const outCoin = { ...coinProfileBase, coinProfile, execution };
 
       nextState[sym] = {
         symbol: sym,
@@ -777,8 +822,8 @@ export default async function handler(req, res) {
         volAcc: Number(volAcc.toFixed(3)),
         flat60Pct: Number(n(flat60Pct, 0).toFixed(3)),
         confidence,
-        entryQuality: engineCoin.entryQuality,
-        persistenceScore: engineCoin.persistenceScore,
+        entryQuality,
+        persistenceScore,
         ob: outCoin.ob,
         thresholds,
         breakout,
@@ -788,7 +833,7 @@ export default async function handler(req, res) {
         tradeDeskStatus: scannerGate,
         execution,
         coinProfile,
-        entry: engineCoin.entry,
+        entry: coinProfileBase.entry,
         priceHist: priceHistNext,
         volHist: volHistNext,
         filterSnapshot: outCoin.filterSnapshot,
