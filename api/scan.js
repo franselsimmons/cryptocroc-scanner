@@ -32,6 +32,22 @@ function keyMainConfigSnapshot(mode) {
 }
 
 // ======================================================
+// TRADE FUNNEL KV KEYS
+// ======================================================
+function keyTradeFunnelLatest(mode) {
+  return `trade_funnel:latest:${String(mode || "bull").toLowerCase()}`;
+}
+function keyTradeFunnelQueue(mode) {
+  return `trade_funnel:queue:${String(mode || "bull").toLowerCase()}`;
+}
+function keyTradeFunnelLatestGlobal() {
+  return "trade_funnel:latest";
+}
+function keyTradeFunnelQueueGlobal() {
+  return "trade_funnel:queue";
+}
+
+// ======================================================
 // Helpers
 // ======================================================
 function n(x, d = 0) {
@@ -358,7 +374,7 @@ function gateFromStage(stage, confidence = 0, ob = null) {
   const conf = n(confidence, 0);
   const spread = n(ob?.spreadPct, 999);
 
-  if (st === "TRADE_READY") return "WATCH";
+  if (st === "TRADE_READY") return "OPEN";
   if (st === "ALMOST" && conf >= 10) return "WATCH";
   if (st === "BUILDUP" && conf >= 18 && spread <= 5.0) return "WATCH";
   return "IGNORE";
@@ -423,6 +439,106 @@ function preScoreCoin(coin, CORE, CFG, mode, prevStateRow = {}) {
   return {
     score: (radarOk ? 20 : 0) + (buildupOk ? 20 : 0) + confidence + Math.min(20, volAcc * 8),
   };
+}
+
+function toFunnelCoin(coin, mode, now) {
+  return {
+    ...coin,
+    sourceSystem: "main",
+    sourceMode: mode,
+    sourceKey: `main:${mode}:${String(coin?.symbol || "").toUpperCase()}`,
+    queuedAt: now,
+    funnelEligible:
+      up(coin?.scannerGate) === "OPEN" || up(coin?.scannerGate) === "WATCH",
+  };
+}
+
+async function pushMainScannerToTradeFunnel({
+  mode,
+  regime,
+  btc,
+  macroMode,
+  latest,
+  now,
+}) {
+  const tradeReady = Array.isArray(latest?.funnel?.trade_ready) ? latest.funnel.trade_ready : [];
+  const almost = Array.isArray(latest?.funnel?.almost) ? latest.funnel.almost : [];
+  const buildup = Array.isArray(latest?.funnel?.buildup) ? latest.funnel.buildup : [];
+
+  const candidates = [
+    ...tradeReady.filter((c) => up(c?.scannerGate) === "OPEN"),
+    ...almost.filter((c) => up(c?.scannerGate) === "WATCH").slice(0, 20),
+    ...buildup.filter((c) => up(c?.scannerGate) === "WATCH").slice(0, 12),
+  ];
+
+  const deduped = [];
+  const seen = new Set();
+
+  for (const c of candidates) {
+    const sym = up(c?.symbol);
+    if (!sym || seen.has(sym)) continue;
+    seen.add(sym);
+    deduped.push(toFunnelCoin(c, mode, now));
+  }
+
+  const payload = {
+    ok: true,
+    sourceSystem: "main",
+    mode,
+    regime,
+    btc,
+    macroMode,
+    counts: {
+      open: deduped.filter((c) => up(c?.scannerGate) === "OPEN").length,
+      watch: deduped.filter((c) => up(c?.scannerGate) === "WATCH").length,
+      total: deduped.length,
+    },
+    items: deduped,
+    ts: now,
+  };
+
+  await kv.set(keyTradeFunnelLatest(mode), payload, { ex: 60 * 60 });
+  await kv.set(keyTradeFunnelLatestGlobal(), payload, { ex: 60 * 60 });
+
+  const existingModeQueue = await kv.get(keyTradeFunnelQueue(mode));
+  const existingGlobalQueue = await kv.get(keyTradeFunnelQueueGlobal());
+
+  const mergeQueue = (cur, incoming) => {
+    const arr = Array.isArray(cur?.items) ? cur.items : [];
+    const merged = [...incoming, ...arr];
+    const out = [];
+    const s = new Set();
+
+    for (const item of merged) {
+      const key = `${up(item?.symbol)}:${up(item?.scannerGate)}:${String(item?.sourceSystem || "main")}`;
+      if (s.has(key)) continue;
+      s.add(key);
+      out.push(item);
+      if (out.length >= 80) break;
+    }
+
+    return {
+      ok: true,
+      sourceSystem: "main",
+      mode,
+      ts: now,
+      items: out,
+    };
+  };
+
+  await kv.set(
+    keyTradeFunnelQueue(mode),
+    mergeQueue(existingModeQueue, deduped),
+    { ex: 60 * 60 * 6 }
+  );
+
+  await kv.set(
+    keyTradeFunnelQueueGlobal(),
+    mergeQueue(existingGlobalQueue, deduped),
+    { ex: 60 * 60 * 6 }
+  );
+
+  return payload;
 }
 
 export default async function handler(req, res) {
@@ -894,6 +1010,15 @@ export default async function handler(req, res) {
     await kv.set(keyMainState(mode), nextState, { ex: 60 * 60 * 24 * 3 });
     await kv.set(keyMainLatest(mode), latest, { ex: 60 * 60 });
 
+    const funnelForward = await pushMainScannerToTradeFunnel({
+      mode,
+      regime,
+      btc,
+      macroMode,
+      latest,
+      now,
+    });
+
     await kv.set(
       keyMainConfigSnapshot(mode),
       {
@@ -914,12 +1039,21 @@ export default async function handler(req, res) {
           RADAR_LIMIT: CFG?.RADAR_LIMIT ?? null,
           CG_TOP: CFG?.CG_TOP ?? null,
         },
+        forwarding: {
+          pushedToTradeFunnel: true,
+          open: n(funnelForward?.counts?.open, 0),
+          watch: n(funnelForward?.counts?.watch, 0),
+          total: n(funnelForward?.counts?.total, 0),
+        },
         updatedAt: now,
       },
       { ex: 60 * 60 * 24 * 7 }
     );
 
-    res.status(200).json(latest);
+    res.status(200).json({
+      ...latest,
+      forwarding: funnelForward,
+    });
   } catch (err) {
     console.error("scan error:", err);
     res.status(500).json({
