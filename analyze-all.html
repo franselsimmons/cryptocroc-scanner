@@ -14,7 +14,7 @@
         <p class="muted" id="lastUpdated">Laden...</p>
       </div>
       <div class="topbar-actions">
-        <button id="refreshBtn">Refresh</button>
+        <button id="refreshBtn" type="button">Refresh</button>
       </div>
     </header>
 
@@ -22,17 +22,19 @@
     <section id="errorBox" class="panel error hidden"></section>
 
     <main id="app" class="hidden">
+      <section id="topPriorities"></section>
+
       <section class="stats-grid" id="statsGrid"></section>
 
       <section class="panel">
         <div class="panel-head">
           <h2>Teacher overzicht</h2>
           <div class="tabs">
-            <button class="tab active" data-group="moon_bull">Moon Bull</button>
-            <button class="tab" data-group="moon_bear">Moon Bear</button>
-            <button class="tab" data-group="main_bull">Main Bull</button>
-            <button class="tab" data-group="main_bear">Main Bear</button>
-            <button class="tab" data-group="trade_funnel">Trade Funnel</button>
+            <button type="button" class="tab active" data-group="moon_bull">Moon Bull</button>
+            <button type="button" class="tab" data-group="moon_bear">Moon Bear</button>
+            <button type="button" class="tab" data-group="main_bull">Main Bull</button>
+            <button type="button" class="tab" data-group="main_bear">Main Bear</button>
+            <button type="button" class="tab" data-group="trade_funnel">Trade Funnel</button>
           </div>
         </div>
 
