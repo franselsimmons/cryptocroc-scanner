@@ -11,9 +11,9 @@ const CG_MARKETS = "https://api.coingecko.com/api/v3/coins/markets";
 // =========================
 // HARD PERFORMANCE LIMITS
 // =========================
-const MAX_COINS_FROM_CG = 220;
-const MAX_OB_CANDIDATES = 120;
-const OB_CONCURRENCY = 8;
+const MAX_COINS_FROM_CG = 260;
+const MAX_OB_CANDIDATES = 160;
+const OB_CONCURRENCY = 10;
 
 // ======================================================
 // MAIN KV KEYS
@@ -217,8 +217,14 @@ async function fetchBTCGateFromUniverse() {
     if (!btc) throw new Error("no_btc");
 
     const price = n(btc.current_price, 0);
-    const chg24 = n(btc.price_change_percentage_24h_in_currency ?? btc.price_change_percentage_24h, 0);
-    const chg1h = n(btc.price_change_percentage_1h_in_currency ?? btc.price_change_percentage_1h, 0);
+    const chg24 = n(
+      btc.price_change_percentage_24h_in_currency ?? btc.price_change_percentage_24h,
+      0
+    );
+    const chg1h = n(
+      btc.price_change_percentage_1h_in_currency ?? btc.price_change_percentage_1h,
+      0
+    );
     const hi = n(btc.high_24h, 0);
     const lo = n(btc.low_24h, 0);
     const range24 = hi > 0 && lo > 0 ? ((hi - lo) / lo) * 100 : 0;
@@ -309,29 +315,34 @@ function buildMainTradePlan({ price, range24, confidence, stage, ob, mode }) {
   if (!(p > 0)) return null;
 
   const st = up(stage);
-  if (st !== "TRADE_READY" && st !== "ALMOST") return null;
+  if (st !== "TRADE_READY" && st !== "ALMOST" && st !== "BUILDUP") return null;
 
-  const r24 = Math.max(2, Math.min(18, n(range24, 0)));
+  const r24 = Math.max(1.5, Math.min(20, n(range24, 0)));
   const conf = Math.max(0, Math.min(100, n(confidence, 0)));
   const spread = n(ob?.spreadPct, 999);
 
-  let slPct = 3.1 + r24 * 0.06;
-  let tpPct = 6.9 + r24 * 0.15;
+  let slPct = 3.0 + r24 * 0.055;
+  let tpPct = 6.6 + r24 * 0.16;
 
-  if (conf >= 28) tpPct += 0.3;
-  if (conf >= 38) tpPct += 0.4;
-  if (conf >= 48) tpPct += 0.5;
+  if (conf >= 20) tpPct += 0.2;
+  if (conf >= 30) tpPct += 0.35;
+  if (conf >= 40) tpPct += 0.45;
 
-  if (spread <= 0.9) slPct -= 0.12;
-  if (spread > 1.6) slPct += 0.15;
+  if (spread <= 1.0) slPct -= 0.1;
+  if (spread > 2.0) slPct += 0.2;
 
   if (st === "ALMOST") {
-    slPct += 0.2;
-    tpPct -= 0.25;
+    slPct += 0.18;
+    tpPct -= 0.2;
   }
 
-  slPct = Math.max(2.7, Math.min(5.3, slPct));
-  tpPct = Math.max(5.2, Math.min(10.8, tpPct));
+  if (st === "BUILDUP") {
+    slPct += 0.25;
+    tpPct -= 0.35;
+  }
+
+  slPct = Math.max(2.6, Math.min(5.5, slPct));
+  tpPct = Math.max(5.0, Math.min(11.0, tpPct));
 
   if (String(mode || "bull").toLowerCase() === "bear") {
     const sl = p * (1 + slPct / 100);
@@ -376,9 +387,9 @@ function gateFromStage(stage, confidence = 0, ob = null) {
   const spread = n(ob?.spreadPct, 999);
 
   if (st === "TRADE_READY") return "OPEN";
-  if (st === "ALMOST" && conf >= 8) return "WATCH";
-  if (st === "BUILDUP" && conf >= 14 && spread <= 6.0) return "WATCH";
-  if (st === "RADAR" && conf >= 18 && spread <= 4.8) return "WATCH";
+  if (st === "ALMOST" && conf >= 6) return "WATCH";
+  if (st === "BUILDUP" && conf >= 10 && spread <= 7.0) return "WATCH";
+  if (st === "RADAR" && conf >= 16 && spread <= 5.5) return "WATCH";
   return "IGNORE";
 }
 
@@ -575,7 +586,13 @@ export default async function handler(req, res) {
       res.setHeader("content-type", "application/json");
       return res.end(
         JSON.stringify(
-          latest || { ok: true, skipped: true, reason: "scan_lock_active", mode, until: lock.until }
+          latest || {
+            ok: true,
+            skipped: true,
+            reason: "scan_lock_active",
+            mode,
+            until: lock.until,
+          }
         )
       );
     }
@@ -700,15 +717,22 @@ export default async function handler(req, res) {
       let depthOk = false;
       let dynThr = null;
 
-      if ((stage === "ALMOST" || (stage === "BUILDUP" && confidence >= 12)) && ob?.valid) {
+      if (
+        (
+          stage === "ALMOST" ||
+          (stage === "BUILDUP" && confidence >= 8) ||
+          (stage === "RADAR" && confidence >= 16)
+        ) &&
+        ob?.valid
+      ) {
         const entryCfg = CFG.entry || {};
         const tier = pickTier(marketCap, entryCfg);
 
         const baseThr = {
-          minConfidence: n(tier?.minConf, n(entryCfg.minConfidence, 12)),
-          spreadMaxPct: n(tier?.spreadMax, n(entryCfg.spreadMaxPct, 5.0)),
-          depthMinUsd1p: n(tier?.depth1pMin, n(entryCfg.depthMinUsd1p, 1_000)),
-          obScoreMin: n(tier?.obScoreMin, n(entryCfg.obScoreMin, 0.0012)),
+          minConfidence: n(tier?.minConf, n(entryCfg.minConfidence, 10)),
+          spreadMaxPct: n(tier?.spreadMax, n(entryCfg.spreadMaxPct, 5.6)),
+          depthMinUsd1p: n(tier?.depth1pMin, n(entryCfg.depthMinUsd1p, 800)),
+          obScoreMin: n(tier?.obScoreMin, n(entryCfg.obScoreMin, 0.0008)),
         };
 
         dynThr = CORE.dynamicEntryThresholds({ marketCap, volume, vm }, baseThr, CFG);
@@ -721,27 +745,34 @@ export default async function handler(req, res) {
         let scoreNeed = n(dynThr.obScoreMin, 0);
 
         if (macroMode === "PERMISSIVE") {
-          spreadLimit = Math.min(6.0, spreadLimit + 0.55);
-          confNeed = Math.max(7, confNeed - 2);
-          depthNeed = Math.max(700, depthNeed * 0.82);
-          scoreNeed = Math.max(0.0006, scoreNeed * 0.75);
+          spreadLimit = Math.min(6.8, spreadLimit + 0.8);
+          confNeed = Math.max(5, confNeed - 3);
+          depthNeed = Math.max(500, depthNeed * 0.72);
+          scoreNeed = Math.max(0.00035, scoreNeed * 0.58);
         } else if (macroMode === "SELECTIVE") {
-          spreadLimit = Math.min(5.6, spreadLimit + 0.3);
-          confNeed = Math.max(8, confNeed - 1);
-          depthNeed = Math.max(850, depthNeed * 0.92);
-          scoreNeed = Math.max(0.0009, scoreNeed * 0.88);
+          spreadLimit = Math.min(6.2, spreadLimit + 0.45);
+          confNeed = Math.max(6, confNeed - 2);
+          depthNeed = Math.max(650, depthNeed * 0.84);
+          scoreNeed = Math.max(0.0005, scoreNeed * 0.72);
         } else if (macroMode === "RESTRICTIVE") {
-          spreadLimit = Math.min(4.6, spreadLimit + 0.05);
-          confNeed += 0;
-          depthNeed *= 1.0;
-          scoreNeed *= 1.0;
+          spreadLimit = Math.min(5.0, spreadLimit + 0.1);
+          confNeed = Math.max(8, confNeed - 1);
+          depthNeed = Math.max(750, depthNeed * 0.95);
+          scoreNeed = Math.max(0.0007, scoreNeed * 0.9);
         }
 
         if (stage === "BUILDUP") {
-          confNeed = Math.max(7, confNeed - 2);
-          spreadLimit = Math.min(6.2, spreadLimit + 0.4);
-          depthNeed = Math.max(650, depthNeed * 0.8);
-          scoreNeed = Math.max(0.0005, scoreNeed * 0.65);
+          confNeed = Math.max(5, confNeed - 2);
+          spreadLimit = Math.min(7.0, spreadLimit + 0.6);
+          depthNeed = Math.max(450, depthNeed * 0.7);
+          scoreNeed = Math.max(0.00025, scoreNeed * 0.45);
+        }
+
+        if (stage === "RADAR") {
+          confNeed = Math.max(12, confNeed - 1);
+          spreadLimit = Math.min(5.8, spreadLimit + 0.2);
+          depthNeed = Math.max(700, depthNeed * 0.9);
+          scoreNeed = Math.max(0.0006, scoreNeed * 0.9);
         }
 
         const spreadOk = n(ob.spreadPct, 999) <= spreadLimit;
@@ -870,15 +901,24 @@ export default async function handler(req, res) {
           : 35,
         timingScore:
           stage === "TRADE_READY" ? 82 : stage === "ALMOST" ? 70 : stage === "BUILDUP" ? 58 : 40,
-        marketScore: regime === "EXPANSION" ? 82 : regime === "TREND" ? 70 : regime === "HEADWIND" ? 35 : 50,
+        marketScore:
+          regime === "EXPANSION"
+            ? 82
+            : regime === "TREND"
+              ? 70
+              : regime === "HEADWIND"
+                ? 35
+                : 50,
         perfectCandidateScore:
           stage === "TRADE_READY" ? 78 : stage === "ALMOST" ? 68 : stage === "BUILDUP" ? 56 : 36,
         tradeCandidate:
           stage === "TRADE_READY" ||
-          (stage === "ALMOST" && scannerGate === "WATCH") ||
-          (stage === "BUILDUP" && scannerGate === "WATCH"),
+          ((stage === "ALMOST" || stage === "BUILDUP") && scannerGate === "WATCH"),
         superScannerCoin:
-          stage === "TRADE_READY" || stage === "ALMOST" || stage === "BUILDUP",
+          stage === "TRADE_READY" ||
+          stage === "ALMOST" ||
+          stage === "BUILDUP" ||
+          (stage === "RADAR" && scannerGate === "WATCH"),
         scannerOnly: scannerGate === "IGNORE",
         entry: {
           ok: !!entryOk,
