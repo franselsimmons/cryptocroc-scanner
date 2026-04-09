@@ -1,6 +1,7 @@
 import { kv } from "@vercel/kv";
 import { RUNTIME_CONFIG } from "../lib/_runtime.js";
 import { buildCoinProfile, buildMainExecutionDecision } from "../lib/_trade_engine.js";
+import { sendSignal } from "../lib/discord.js";
 
 export const config = RUNTIME_CONFIG;
 
@@ -959,6 +960,17 @@ export default async function handler(req, res) {
         volHist: volHistNext,
         filterSnapshot: outCoin.filterSnapshot,
       };
+
+      // STUUR NAAR DISCORD
+      // We negeren RADAR, anders spam je jezelf helemaal plat met 400 berichten
+      if (stage === "TRADE_READY" || stage === "ALMOST" || stage === "BUILDUP") {
+        sendSignal({
+          source: "main",
+          stage: stage,
+          coin: outCoin,
+          kind: "signal"
+        }).catch(err => console.error("Discord error voor", sym, err));
+      }
 
       if (stage === "TRADE_READY") funnel.trade_ready.push(outCoin);
       else if (stage === "ALMOST") funnel.almost.push(outCoin);
