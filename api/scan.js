@@ -11,9 +11,9 @@ const CG_MARKETS = "https://api.coingecko.com/api/v3/coins/markets";
 // =========================
 // HARD PERFORMANCE LIMITS
 // =========================
-const MAX_COINS_FROM_CG = 220;
-const MAX_OB_CANDIDATES = 100;
-const OB_CONCURRENCY = 8;
+const MAX_COINS_FROM_CG = 400; // Versoepeld (was 220)
+const MAX_OB_CANDIDATES = 250; // Versoepeld (was 100)
+const OB_CONCURRENCY = 10; // Iets verhoogd voor de grotere batch
 
 // ======================================================
 // MAIN KV KEYS
@@ -187,7 +187,7 @@ function normalizeCgMarketRow(c) {
 async function fetchCoinGeckoTopCached(maxCoins = MAX_COINS_FROM_CG) {
   try {
     const url =
-      `${CG_MARKETS}?vs_currency=usd&order=market_cap_desc&per_page=${Math.min(maxCoins, 250)}&page=1` +
+      `${CG_MARKETS}?vs_currency=usd&order=market_cap_desc&per_page=${Math.min(maxCoins, 400)}&page=1` +
       `&sparkline=false&price_change_percentage=1h,24h`;
 
     const rows = await fetchJsonWithTimeout(url, {}, 9000);
@@ -362,10 +362,11 @@ function deriveMainRegime({ btc }) {
   const chg24 = n(btc?.chg24, 0);
   const range24 = n(btc?.range24, 0);
 
-  if (state === "BULL" && chg24 >= 1.5 && range24 >= 4.0) return "EXPANSION";
+  // Versoepelde regime drempels
+  if (state === "BULL" && chg24 >= 1.0 && range24 >= 3.0) return "EXPANSION"; 
   if (state === "BULL") return "TREND";
   if (state === "BEAR") return "HEADWIND";
-  if (range24 <= 1.5 && Math.abs(chg24) <= 0.5) return "DRY";
+  if (range24 <= 2.5 && Math.abs(chg24) <= 1.0) return "DRY";
   return "CHOP";
 }
 
@@ -375,8 +376,9 @@ function gateFromStage(stage, confidence = 0, ob = null) {
   const spread = n(ob?.spreadPct, 999);
 
   if (st === "TRADE_READY") return "OPEN";
-  if (st === "ALMOST" && conf >= 10) return "WATCH";
-  if (st === "BUILDUP" && conf >= 18 && spread <= 5.0) return "WATCH";
+  // Versoepeld: sneller naar WATCH
+  if (st === "ALMOST" && conf >= 5) return "WATCH";
+  if (st === "BUILDUP" && conf >= 10 && spread <= 8.0) return "WATCH";
   return "IGNORE";
 }
 
@@ -385,17 +387,18 @@ function getMainMacroMode({ btc, mode }) {
   const chg24 = n(btc?.chg24, 0);
   const range24 = n(btc?.range24, 0);
 
+  // Versoepelde macro-modi: makkelijker permissief, minder snel restrictief
   if (mode === "bull") {
-    if (state === "BULL" && chg24 >= 1.0 && range24 >= 2.6) return "PERMISSIVE";
+    if (state === "BULL" && chg24 >= 0.5 && range24 >= 2.0) return "PERMISSIVE";
     if (state === "NEUTRAL") return "SELECTIVE";
-    if (state === "BEAR" && chg24 <= -1.8 && range24 >= 4.0) return "RESTRICTIVE";
+    if (state === "BEAR" && chg24 <= -2.5 && range24 >= 5.0) return "RESTRICTIVE";
     return "SELECTIVE";
   }
 
   if (mode === "bear") {
-    if (state === "BEAR" && chg24 <= -1.0 && range24 >= 2.6) return "PERMISSIVE";
+    if (state === "BEAR" && chg24 <= -0.5 && range24 >= 2.0) return "PERMISSIVE";
     if (state === "NEUTRAL") return "SELECTIVE";
-    if (state === "BULL" && chg24 >= 1.8 && range24 >= 4.0) return "RESTRICTIVE";
+    if (state === "BULL" && chg24 >= 2.5 && range24 >= 5.0) return "RESTRICTIVE";
     return "SELECTIVE";
   }
 
@@ -465,10 +468,11 @@ async function pushMainScannerToTradeFunnel({
   const almost = Array.isArray(latest?.funnel?.almost) ? latest.funnel.almost : [];
   const buildup = Array.isArray(latest?.funnel?.buildup) ? latest.funnel.buildup : [];
 
+  // Versoepeld: stuur meer watches door
   const candidates = [
     ...tradeReady.filter((c) => up(c?.scannerGate) === "OPEN"),
-    ...almost.filter((c) => up(c?.scannerGate) === "WATCH").slice(0, 20),
-    ...buildup.filter((c) => up(c?.scannerGate) === "WATCH").slice(0, 12),
+    ...almost.filter((c) => up(c?.scannerGate) === "WATCH").slice(0, 40),
+    ...buildup.filter((c) => up(c?.scannerGate) === "WATCH").slice(0, 25),
   ];
 
   const deduped = [];
@@ -716,19 +720,20 @@ export default async function handler(req, res) {
         let depthNeed = n(dynThr.depthMinUsd1p, 0);
         let scoreNeed = n(dynThr.obScoreMin, 0);
 
+        // Versoepeld!
         if (macroMode === "PERMISSIVE") {
-          spreadLimit = Math.min(5.4, spreadLimit + 0.35);
-          confNeed = Math.max(8, confNeed - 1);
-          depthNeed = Math.max(800, depthNeed * 0.9);
-          scoreNeed = Math.max(0.0008, scoreNeed * 0.9);
+          spreadLimit = Math.min(7.0, spreadLimit + 1.0);
+          confNeed = Math.max(5, confNeed - 3);
+          depthNeed = Math.max(400, depthNeed * 0.7);
+          scoreNeed = Math.max(0.0004, scoreNeed * 0.7);
         } else if (macroMode === "SELECTIVE") {
-          spreadLimit = Math.min(5.0, spreadLimit + 0.15);
-          confNeed = Math.max(9, confNeed);
+          spreadLimit = Math.min(6.0, spreadLimit + 0.5);
+          confNeed = Math.max(7, confNeed - 1);
         } else if (macroMode === "RESTRICTIVE") {
-          spreadLimit = Math.min(4.2, spreadLimit);
-          confNeed += 1;
-          depthNeed *= 1.05;
-          scoreNeed *= 1.1;
+          spreadLimit = Math.min(4.8, spreadLimit);
+          confNeed += 0;
+          depthNeed *= 1.0;
+          scoreNeed *= 1.0;
         }
 
         const spreadOk = n(ob.spreadPct, 999) <= spreadLimit;
@@ -844,7 +849,7 @@ export default async function handler(req, res) {
               0,
               Math.min(
                 100,
-                55 + (n(ob.score, 0) * 100) / 2 - Math.max(0, n(ob.spreadPct, 0) - 0.8) * 8
+                55 + (n(ob.score, 0) * 100) / 2 - Math.max(0, n(ob.spreadPct, 0) - 1.5) * 8
               )
             )
           : 35,
@@ -969,10 +974,11 @@ export default async function handler(req, res) {
     funnel.buildup.sort(byConf);
     funnel.radar.sort(byConf);
 
-    funnel.trade_ready = funnel.trade_ready.slice(0, n(CFG.ENTRY_LIMIT, 12));
-    funnel.almost = funnel.almost.slice(0, n(CFG.ALMOST_LIMIT, 25));
-    funnel.buildup = funnel.buildup.slice(0, n(CFG.BUILDUP_LIMIT, 40));
-    funnel.radar = funnel.radar.slice(0, n(CFG.RADAR_LIMIT, 80));
+    // Grotere limieten
+    funnel.trade_ready = funnel.trade_ready.slice(0, n(CFG.ENTRY_LIMIT, 30));
+    funnel.almost = funnel.almost.slice(0, n(CFG.ALMOST_LIMIT, 60));
+    funnel.buildup = funnel.buildup.slice(0, n(CFG.BUILDUP_LIMIT, 100));
+    funnel.radar = funnel.radar.slice(0, n(CFG.RADAR_LIMIT, 150));
 
     const latest = {
       ok: true,
