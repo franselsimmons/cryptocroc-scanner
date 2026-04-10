@@ -68,22 +68,31 @@ function arr(x) {
   return Array.isArray(x) ? x : [];
 }
 
+// BELANGRIJK:
+// deskGate moet vóór engineGate komen, anders werkt hold nooit echt.
 function effectiveGate(item) {
   return up(
-    item?.engineGate ||
-      item?.deskGate ||
+    item?.deskGate ||
       item?.tradeDeskStatus ||
+      item?.engineGate ||
       item?.scannerGate ||
       "IGNORE"
   );
 }
 
+function gatePriority(gate) {
+  const g = up(gate);
+  if (g === "OPEN") return 3;
+  if (g === "WATCH") return 2;
+  return 1;
+}
+
 function isForwardableMainCoin(item) {
   const gate = effectiveGate(item);
   const stage = up(item?.stage);
+
+  if (gate !== "OPEN" && gate !== "WATCH") return false;
   if (!item?.tradePlan) return false;
-  if (gate === "OPEN") return true;
-  if (gate !== "WATCH") return false;
 
   return (
     stage === "TRADE_READY" ||
@@ -93,23 +102,45 @@ function isForwardableMainCoin(item) {
   );
 }
 
-function buildDeskMeta({ prevGate, prevMeta, gate, now }) {
+function resolveDeskGate({ prevGate, prevMeta, engineGate, now }) {
   const prev = up(prevGate || "IGNORE");
-  const next = up(gate || "IGNORE");
+  const engine = up(engineGate || "IGNORE");
+  const holdUntil = n(prevMeta?.deskHoldUntil, 0);
+
+  if (engine === "OPEN") return "OPEN";
+
+  if (engine === "WATCH") {
+    if (prev === "OPEN" && holdUntil > now) return "OPEN";
+    return "WATCH";
+  }
+
+  if (prev === "OPEN" && holdUntil > now) return "OPEN";
+  if (prev === "WATCH" && holdUntil > now) return "WATCH";
+
+  return "IGNORE";
+}
+
+function buildDeskMeta({ prevGate, prevMeta, deskGate, engineGate, now }) {
+  const prev = up(prevGate || "IGNORE");
+  const desk = up(deskGate || "IGNORE");
+  const engine = up(engineGate || "IGNORE");
   const meta = prevMeta && typeof prevMeta === "object" ? prevMeta : {};
 
-  const changed = prev !== next;
+  let holdUntil = 0;
+
+  if (engine === "OPEN") {
+    holdUntil = now + OPEN_HOLD_MS;
+  } else if (engine === "WATCH") {
+    holdUntil = now + WATCH_HOLD_MS;
+  } else if ((prev === "OPEN" || prev === "WATCH") && n(meta.deskHoldUntil, 0) > now && desk === prev) {
+    holdUntil = n(meta.deskHoldUntil, 0);
+  }
 
   return {
-    deskGateSince: changed ? now : n(meta.deskGateSince, now),
-    deskHoldUntil:
-      next === "OPEN"
-        ? now + OPEN_HOLD_MS
-        : next === "WATCH"
-          ? now + WATCH_HOLD_MS
-          : 0,
-    openStreak: next === "OPEN" ? n(meta.openStreak, 0) + 1 : 0,
-    watchStreak: next === "WATCH" ? n(meta.watchStreak, 0) + 1 : 0,
+    deskGateSince: prev === desk ? n(meta.deskGateSince, now) : now,
+    deskHoldUntil: holdUntil,
+    openStreak: engine === "OPEN" ? n(meta.openStreak, 0) + 1 : 0,
+    watchStreak: engine === "WATCH" ? n(meta.watchStreak, 0) + 1 : 0,
   };
 }
 
@@ -118,7 +149,17 @@ function mergeTradeItems(existingItems, incomingItems, limit = 120) {
   const out = [];
   const seen = new Set();
 
-  merged.sort((a, b) => n(b?.queuedAt || b?.ts || 0) - n(a?.queuedAt || a?.ts || 0));
+  merged.sort((a, b) => {
+    const gp = gatePriority(effectiveGate(b)) - gatePriority(effectiveGate(a));
+    if (gp !== 0) return gp;
+
+    const scoreDiff =
+      n(b?.execution?.score, n(b?.confidence, 0)) -
+      n(a?.execution?.score, n(a?.confidence, 0));
+    if (scoreDiff !== 0) return scoreDiff;
+
+    return n(b?.queuedAt || b?.ts || 0) - n(a?.queuedAt || a?.ts || 0);
+  });
 
   for (const item of merged) {
     const sym = up(item?.symbol);
@@ -592,6 +633,12 @@ async function pushMainScannerToTradeFunnel({
     ...radar.filter(isForwardableMainCoin).slice(0, 10),
   ];
 
+  candidates.sort((a, b) => {
+    const gp = gatePriority(effectiveGate(b)) - gatePriority(effectiveGate(a));
+    if (gp !== 0) return gp;
+    return n(b?.execution?.score, n(b?.confidence, 0)) - n(a?.execution?.score, n(a?.confidence, 0));
+  });
+
   const deduped = [];
   const seen = new Set();
 
@@ -722,6 +769,8 @@ export default async function handler(req, res) {
 
     const tradable = rawCoins
       .filter((c) => bitgetSymbols.has(up(c.symbol)))
+      .filter((c) => (typeof CORE.isBlockedMainAsset === "function" ? !CORE.isBlockedMainAsset(c) : true))
+      .filter((c) => n(c?.price, 0) > 0)
       .slice(0, MAX_COINS_FROM_CG);
 
     const prevState = (await kv.get(keyMainState(mode))) || {};
@@ -765,7 +814,6 @@ export default async function handler(req, res) {
 
       const priceHistNext = priceHist.slice(-120);
       const volHistNext = volHist.slice(-120);
-      const stageHistNext = [...stageHist, prev?.stage || "RADAR"].slice(-12);
 
       let volAcc = 1;
       if (volHistNext.length >= 6) {
@@ -932,19 +980,32 @@ export default async function handler(req, res) {
 
       const scannerGate = gateFromStage(stage, confidence, ob);
       const engineGate = scannerGate;
-      const deskGate = scannerGate;
+
       const prevGate =
-        prev?.engineGate || prev?.deskGate || prev?.tradeDeskStatus || prev?.scannerGate || "IGNORE";
+        prev?.deskGate ||
+        prev?.tradeDeskStatus ||
+        prev?.engineGate ||
+        prev?.scannerGate ||
+        "IGNORE";
+
+      const deskGate = resolveDeskGate({
+        prevGate,
+        prevMeta: prev?.deskMeta || {},
+        engineGate,
+        now,
+      });
+
       const deskMeta = buildDeskMeta({
         prevGate,
         prevMeta: prev?.deskMeta || {},
-        gate: engineGate,
+        deskGate,
+        engineGate,
         now,
       });
 
       const uiLockUntil = Math.max(
         n(prev?.uiLockUntil, 0),
-        engineGate === "WATCH" || engineGate === "OPEN"
+        deskGate === "WATCH" || deskGate === "OPEN"
           ? now + UI_ENTRY_LOCK_MS_MAIN
           : 0
       );
@@ -1055,13 +1116,13 @@ export default async function handler(req, res) {
         tradeCandidate:
           stage === "TRADE_READY" ||
           ((stage === "ALMOST" || stage === "BUILDUP" || stage === "RADAR") &&
-            scannerGate === "WATCH"),
+            effectiveGate({ deskGate, engineGate, scannerGate }) === "WATCH"),
         superScannerCoin:
           stage === "TRADE_READY" ||
           stage === "ALMOST" ||
           stage === "BUILDUP" ||
-          (stage === "RADAR" && scannerGate === "WATCH"),
-        scannerOnly: scannerGate === "IGNORE",
+          (stage === "RADAR" && effectiveGate({ deskGate, engineGate, scannerGate }) === "WATCH"),
+        scannerOnly: effectiveGate({ deskGate, engineGate, scannerGate }) === "IGNORE",
         entry: {
           ok: !!entryOk,
           reason: entryReason,
@@ -1130,6 +1191,7 @@ export default async function handler(req, res) {
       });
 
       const outCoin = { ...coinProfileBase, coinProfile, execution };
+      const stageHistNext = [...stageHist, stage].slice(-12);
 
       nextState[sym] = {
         symbol: sym,
@@ -1164,7 +1226,7 @@ export default async function handler(req, res) {
         entry: coinProfileBase.entry,
         priceHist: priceHistNext,
         volHist: volHistNext,
-        stageHist: [...stageHistNext, stage].slice(-12),
+        stageHist: stageHistNext,
         filterSnapshot: outCoin.filterSnapshot,
         positionState: prev?.positionState || {
           inPosition: false,
