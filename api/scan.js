@@ -15,6 +15,13 @@ const MAX_COINS_FROM_CG = 260;
 const MAX_OB_CANDIDATES = 160;
 const OB_CONCURRENCY = 10;
 
+// =========================
+// UI / DESK HANDOFF
+// =========================
+const UI_ENTRY_LOCK_MS_MAIN = 8 * 60 * 60 * 1000;
+const WATCH_HOLD_MS = 8 * 60 * 1000;
+const OPEN_HOLD_MS = 5 * 60 * 1000;
+
 // ======================================================
 // MAIN KV KEYS
 // ======================================================
@@ -56,6 +63,80 @@ function n(x, d = 0) {
 }
 function up(x) {
   return String(x || "").toUpperCase();
+}
+function arr(x) {
+  return Array.isArray(x) ? x : [];
+}
+
+function effectiveGate(item) {
+  return up(
+    item?.engineGate ||
+      item?.deskGate ||
+      item?.tradeDeskStatus ||
+      item?.scannerGate ||
+      "IGNORE"
+  );
+}
+
+function isForwardableMainCoin(item) {
+  const gate = effectiveGate(item);
+  const stage = up(item?.stage);
+  if (!item?.tradePlan) return false;
+  if (gate === "OPEN") return true;
+  if (gate !== "WATCH") return false;
+
+  return (
+    stage === "TRADE_READY" ||
+    stage === "ALMOST" ||
+    stage === "BUILDUP" ||
+    stage === "RADAR"
+  );
+}
+
+function buildDeskMeta({ prevGate, prevMeta, gate, now }) {
+  const prev = up(prevGate || "IGNORE");
+  const next = up(gate || "IGNORE");
+  const meta = prevMeta && typeof prevMeta === "object" ? prevMeta : {};
+
+  const changed = prev !== next;
+
+  return {
+    deskGateSince: changed ? now : n(meta.deskGateSince, now),
+    deskHoldUntil:
+      next === "OPEN"
+        ? now + OPEN_HOLD_MS
+        : next === "WATCH"
+          ? now + WATCH_HOLD_MS
+          : 0,
+    openStreak: next === "OPEN" ? n(meta.openStreak, 0) + 1 : 0,
+    watchStreak: next === "WATCH" ? n(meta.watchStreak, 0) + 1 : 0,
+  };
+}
+
+function mergeTradeItems(existingItems, incomingItems, limit = 120) {
+  const merged = [...arr(incomingItems), ...arr(existingItems)];
+  const out = [];
+  const seen = new Set();
+
+  merged.sort((a, b) => n(b?.queuedAt || b?.ts || 0) - n(a?.queuedAt || a?.ts || 0));
+
+  for (const item of merged) {
+    const sym = up(item?.symbol);
+    const mode = String(item?.sourceMode || item?.mode || "").toLowerCase();
+    const gate = effectiveGate(item);
+    const sourceSystem = String(item?.sourceSystem || "unknown").toLowerCase();
+
+    if (!sym) continue;
+
+    const key = `${sourceSystem}:${mode}:${sym}:${gate}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+
+    if (out.length >= limit) break;
+  }
+
+  return out;
 }
 
 async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
@@ -111,8 +192,12 @@ function requireSecret(req, res) {
   const ok =
     (process.env.CRON_SECRET && qToken && qToken === String(process.env.CRON_SECRET)) ||
     (process.env.SCAN_SECRET && qToken && qToken === String(process.env.SCAN_SECRET)) ||
-    (process.env.CRON_SECRET && headerToken && headerToken === String(process.env.CRON_SECRET)) ||
-    (process.env.SCAN_SECRET && headerToken && headerToken === String(process.env.SCAN_SECRET));
+    (process.env.CRON_SECRET &&
+      headerToken &&
+      headerToken === String(process.env.CRON_SECRET)) ||
+    (process.env.SCAN_SECRET &&
+      headerToken &&
+      headerToken === String(process.env.SCAN_SECRET));
 
   if (ok) return true;
 
@@ -178,8 +263,14 @@ function normalizeCgMarketRow(c) {
     price: n(c.current_price, 0),
     marketCap: n(c.market_cap, 0),
     volume: n(c.total_volume, 0),
-    change24: n(c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h, 0),
-    change1h: n(c.price_change_percentage_1h_in_currency ?? c.price_change_percentage_1h, 0),
+    change24: n(
+      c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h,
+      0
+    ),
+    change1h: n(
+      c.price_change_percentage_1h_in_currency ?? c.price_change_percentage_1h,
+      0
+    ),
     range24,
   };
 }
@@ -198,7 +289,12 @@ async function fetchCoinGeckoTopCached(maxCoins = MAX_COINS_FROM_CG) {
     const cached = await kv.get(KV_CG_TOP);
     return {
       coins: Array.isArray(cached) ? cached.slice(0, maxCoins) : [],
-      meta: { usedCache: true, partial: true, rateLimited: false, error: String(e?.message || e) },
+      meta: {
+        usedCache: true,
+        partial: true,
+        rateLimited: false,
+        error: String(e?.message || e),
+      },
     };
   }
 }
@@ -315,7 +411,9 @@ function buildMainTradePlan({ price, range24, confidence, stage, ob, mode }) {
   if (!(p > 0)) return null;
 
   const st = up(stage);
-  if (st !== "TRADE_READY" && st !== "ALMOST" && st !== "BUILDUP") return null;
+  if (st !== "TRADE_READY" && st !== "ALMOST" && st !== "BUILDUP" && st !== "RADAR") {
+    return null;
+  }
 
   const r24 = Math.max(1.5, Math.min(20, n(range24, 0)));
   const conf = Math.max(0, Math.min(100, n(confidence, 0)));
@@ -341,8 +439,13 @@ function buildMainTradePlan({ price, range24, confidence, stage, ob, mode }) {
     tpPct -= 0.35;
   }
 
-  slPct = Math.max(2.6, Math.min(5.5, slPct));
-  tpPct = Math.max(5.0, Math.min(11.0, tpPct));
+  if (st === "RADAR") {
+    slPct += 0.4;
+    tpPct -= 0.6;
+  }
+
+  slPct = Math.max(2.6, Math.min(5.7, slPct));
+  tpPct = Math.max(4.8, Math.min(11.0, tpPct));
 
   if (String(mode || "bull").toLowerCase() === "bear") {
     const sl = p * (1 + slPct / 100);
@@ -455,14 +558,17 @@ function preScoreCoin(coin, CORE, CFG, mode, prevStateRow = {}) {
 }
 
 function toFunnelCoin(coin, mode, now) {
+  const gate = effectiveGate(coin);
   return {
     ...coin,
     sourceSystem: "main",
     sourceMode: mode,
     sourceKey: `main:${mode}:${String(coin?.symbol || "").toUpperCase()}`,
     queuedAt: now,
-    funnelEligible:
-      up(coin?.scannerGate) === "OPEN" || up(coin?.scannerGate) === "WATCH",
+    engineGate: up(coin?.engineGate || gate),
+    deskGate: up(coin?.deskGate || gate),
+    tradeDeskStatus: up(coin?.tradeDeskStatus || gate),
+    funnelEligible: gate === "OPEN" || gate === "WATCH",
   };
 }
 
@@ -480,10 +586,10 @@ async function pushMainScannerToTradeFunnel({
   const radar = Array.isArray(latest?.funnel?.radar) ? latest.funnel.radar : [];
 
   const candidates = [
-    ...tradeReady.filter((c) => up(c?.scannerGate) === "OPEN"),
-    ...almost.filter((c) => up(c?.scannerGate) === "WATCH").slice(0, 30),
-    ...buildup.filter((c) => up(c?.scannerGate) === "WATCH").slice(0, 20),
-    ...radar.filter((c) => up(c?.scannerGate) === "WATCH").slice(0, 10),
+    ...tradeReady.filter(isForwardableMainCoin),
+    ...almost.filter(isForwardableMainCoin).slice(0, 30),
+    ...buildup.filter(isForwardableMainCoin).slice(0, 20),
+    ...radar.filter(isForwardableMainCoin).slice(0, 10),
   ];
 
   const deduped = [];
@@ -491,12 +597,52 @@ async function pushMainScannerToTradeFunnel({
 
   for (const c of candidates) {
     const sym = up(c?.symbol);
-    if (!sym || seen.has(sym)) continue;
-    seen.add(sym);
+    const gate = effectiveGate(c);
+    if (!sym) continue;
+
+    const key = `${sym}:${gate}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     deduped.push(toFunnelCoin(c, mode, now));
   }
 
-  const payload = {
+  const modeLatestExisting = await kv.get(keyTradeFunnelLatest(mode));
+  const globalLatestExisting = await kv.get(keyTradeFunnelLatestGlobal());
+  const modeQueueExisting = await kv.get(keyTradeFunnelQueue(mode));
+  const globalQueueExisting = await kv.get(keyTradeFunnelQueueGlobal());
+
+  const mergedModeLatestItems = mergeTradeItems(modeLatestExisting?.items, deduped, 120);
+  const mergedGlobalLatestItems = mergeTradeItems(globalLatestExisting?.items, deduped, 160);
+  const mergedModeQueueItems = mergeTradeItems(modeQueueExisting?.items, deduped, 120);
+  const mergedGlobalQueueItems = mergeTradeItems(globalQueueExisting?.items, deduped, 180);
+
+  const buildPayload = (items, payloadMode) => ({
+    ok: true,
+    sourceSystem: "aggregate",
+    mode: payloadMode,
+    regime,
+    btc,
+    macroMode,
+    counts: {
+      open: items.filter((c) => effectiveGate(c) === "OPEN").length,
+      watch: items.filter((c) => effectiveGate(c) === "WATCH").length,
+      total: items.length,
+    },
+    items,
+    ts: now,
+  });
+
+  const modeLatestPayload = buildPayload(mergedModeLatestItems, mode);
+  const globalLatestPayload = buildPayload(mergedGlobalLatestItems, "all");
+  const modeQueuePayload = buildPayload(mergedModeQueueItems, mode);
+  const globalQueuePayload = buildPayload(mergedGlobalQueueItems, "all");
+
+  await kv.set(keyTradeFunnelLatest(mode), modeLatestPayload, { ex: 60 * 60 });
+  await kv.set(keyTradeFunnelLatestGlobal(), globalLatestPayload, { ex: 60 * 60 });
+  await kv.set(keyTradeFunnelQueue(mode), modeQueuePayload, { ex: 60 * 60 * 6 });
+  await kv.set(keyTradeFunnelQueueGlobal(), globalQueuePayload, { ex: 60 * 60 * 6 });
+
+  return {
     ok: true,
     sourceSystem: "main",
     mode,
@@ -504,56 +650,13 @@ async function pushMainScannerToTradeFunnel({
     btc,
     macroMode,
     counts: {
-      open: deduped.filter((c) => up(c?.scannerGate) === "OPEN").length,
-      watch: deduped.filter((c) => up(c?.scannerGate) === "WATCH").length,
+      open: deduped.filter((c) => effectiveGate(c) === "OPEN").length,
+      watch: deduped.filter((c) => effectiveGate(c) === "WATCH").length,
       total: deduped.length,
     },
     items: deduped,
     ts: now,
   };
-
-  await kv.set(keyTradeFunnelLatest(mode), payload, { ex: 60 * 60 });
-  await kv.set(keyTradeFunnelLatestGlobal(), payload, { ex: 60 * 60 });
-
-  const existingModeQueue = await kv.get(keyTradeFunnelQueue(mode));
-  const existingGlobalQueue = await kv.get(keyTradeFunnelQueueGlobal());
-
-  const mergeQueue = (cur, incoming) => {
-    const arr = Array.isArray(cur?.items) ? cur.items : [];
-    const merged = [...incoming, ...arr];
-    const out = [];
-    const s = new Set();
-
-    for (const item of merged) {
-      const key = `${up(item?.symbol)}:${up(item?.scannerGate)}:${String(item?.sourceSystem || "main")}`;
-      if (s.has(key)) continue;
-      s.add(key);
-      out.push(item);
-      if (out.length >= 90) break;
-    }
-
-    return {
-      ok: true,
-      sourceSystem: "main",
-      mode,
-      ts: now,
-      items: out,
-    };
-  };
-
-  await kv.set(
-    keyTradeFunnelQueue(mode),
-    mergeQueue(existingModeQueue, deduped),
-    { ex: 60 * 60 * 6 }
-  );
-
-  await kv.set(
-    keyTradeFunnelQueueGlobal(),
-    mergeQueue(existingGlobalQueue, deduped),
-    { ex: 60 * 60 * 6 }
-  );
-
-  return payload;
 }
 
 export default async function handler(req, res) {
@@ -655,11 +758,14 @@ export default async function handler(req, res) {
 
       const priceHist = Array.isArray(prev?.priceHist) ? [...prev.priceHist] : [];
       const volHist = Array.isArray(prev?.volHist) ? [...prev.volHist] : [];
+      const stageHist = Array.isArray(prev?.stageHist) ? [...prev.stageHist] : [];
+
       priceHist.push(n(coin.price, 0));
       volHist.push(volume);
 
       const priceHistNext = priceHist.slice(-120);
       const volHistNext = volHist.slice(-120);
+      const stageHistNext = [...stageHist, prev?.stage || "RADAR"].slice(-12);
 
       let volAcc = 1;
       if (volHistNext.length >= 6) {
@@ -779,8 +885,7 @@ export default async function handler(req, res) {
         depthOk = n(ob.depthMinUsd1p, 0) >= depthNeed;
         const confOk = confidence >= confNeed;
 
-        const scoreOk =
-          mode === "bull" ? score >= scoreNeed : score <= -scoreNeed;
+        const scoreOk = mode === "bull" ? score >= scoreNeed : score <= -scoreNeed;
 
         entryOk = spreadOk && depthOk && confOk && scoreOk;
 
@@ -812,7 +917,7 @@ export default async function handler(req, res) {
       };
 
       const thresholds = {
-        depthFloorUsd: stage === "TRADE_READY" && dynThr ? n(dynThr.depthMinUsd1p, 0) : 0,
+        depthFloorUsd: dynThr ? n(dynThr.depthMinUsd1p, 0) : 0,
         depthOk,
       };
 
@@ -826,6 +931,23 @@ export default async function handler(req, res) {
       });
 
       const scannerGate = gateFromStage(stage, confidence, ob);
+      const engineGate = scannerGate;
+      const deskGate = scannerGate;
+      const prevGate =
+        prev?.engineGate || prev?.deskGate || prev?.tradeDeskStatus || prev?.scannerGate || "IGNORE";
+      const deskMeta = buildDeskMeta({
+        prevGate,
+        prevMeta: prev?.deskMeta || {},
+        gate: engineGate,
+        now,
+      });
+
+      const uiLockUntil = Math.max(
+        n(prev?.uiLockUntil, 0),
+        engineGate === "WATCH" || engineGate === "OPEN"
+          ? now + UI_ENTRY_LOCK_MS_MAIN
+          : 0
+      );
 
       const entryQuality = confidence;
       const persistenceScore = Math.round(
@@ -885,10 +1007,17 @@ export default async function handler(req, res) {
         thresholds,
         breakout,
         compression,
-        volAcc: { short: Number(volAcc.toFixed(3)), medium: Number(volAcc.toFixed(3)) },
+        volAcc: {
+          short: Number(volAcc.toFixed(3)),
+          medium: Number(volAcc.toFixed(3)),
+        },
         tradePlan,
         scannerGate,
-        tradeDeskStatus: scannerGate,
+        engineGate,
+        deskGate,
+        tradeDeskStatus: deskGate,
+        deskMeta,
+        uiLockUntil,
         qualityScore: confidence,
         liquidityScore: ob?.valid
           ? Math.max(
@@ -900,7 +1029,13 @@ export default async function handler(req, res) {
             )
           : 35,
         timingScore:
-          stage === "TRADE_READY" ? 82 : stage === "ALMOST" ? 70 : stage === "BUILDUP" ? 58 : 40,
+          stage === "TRADE_READY"
+            ? 82
+            : stage === "ALMOST"
+              ? 70
+              : stage === "BUILDUP"
+                ? 58
+                : 40,
         marketScore:
           regime === "EXPANSION"
             ? 82
@@ -910,10 +1045,17 @@ export default async function handler(req, res) {
                 ? 35
                 : 50,
         perfectCandidateScore:
-          stage === "TRADE_READY" ? 78 : stage === "ALMOST" ? 68 : stage === "BUILDUP" ? 56 : 36,
+          stage === "TRADE_READY"
+            ? 78
+            : stage === "ALMOST"
+              ? 68
+              : stage === "BUILDUP"
+                ? 56
+                : 36,
         tradeCandidate:
           stage === "TRADE_READY" ||
-          ((stage === "ALMOST" || stage === "BUILDUP") && scannerGate === "WATCH"),
+          ((stage === "ALMOST" || stage === "BUILDUP" || stage === "RADAR") &&
+            scannerGate === "WATCH"),
         superScannerCoin:
           stage === "TRADE_READY" ||
           stage === "ALMOST" ||
@@ -933,6 +1075,8 @@ export default async function handler(req, res) {
           regime,
           macroMode,
           stage,
+          engineGate,
+          tradeDeskStatus: deskGate,
           radar: {
             mcapMin: n(CFG?.radar?.mcapMin, 0),
             mcapMax: n(CFG?.radar?.mcapMax, 0),
@@ -975,14 +1119,14 @@ export default async function handler(req, res) {
         regime,
         mode,
         coinProfile,
-        positionState: {
+        positionState: prev?.positionState || {
           inPosition: false,
           cyclesInTrade: 0,
           minHoldCycles: 5,
           weakHoldCount: 0,
           maxWeakHoldCycles: 2,
         },
-        scannerGate,
+        scannerGate: engineGate,
       });
 
       const outCoin = { ...coinProfileBase, coinProfile, execution };
@@ -1010,13 +1154,25 @@ export default async function handler(req, res) {
         compression,
         tradePlan,
         scannerGate,
-        tradeDeskStatus: scannerGate,
+        engineGate,
+        deskGate,
+        tradeDeskStatus: deskGate,
+        deskMeta,
+        uiLockUntil,
         execution,
         coinProfile,
         entry: coinProfileBase.entry,
         priceHist: priceHistNext,
         volHist: volHistNext,
+        stageHist: [...stageHistNext, stage].slice(-12),
         filterSnapshot: outCoin.filterSnapshot,
+        positionState: prev?.positionState || {
+          inPosition: false,
+          cyclesInTrade: 0,
+          minHoldCycles: 5,
+          weakHoldCount: 0,
+          maxWeakHoldCycles: 2,
+        },
       };
 
       if (stage === "TRADE_READY") funnel.trade_ready.push(outCoin);
