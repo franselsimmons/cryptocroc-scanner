@@ -20,7 +20,6 @@ const OB_CONCURRENCY = 10;
 // =========================
 const UI_ENTRY_LOCK_MS_MAIN = 8 * 60 * 60 * 1000;
 const WATCH_HOLD_MS = 8 * 60 * 1000;
-const OPEN_HOLD_MS = 5 * 60 * 1000;
 
 // ======================================================
 // MAIN KV KEYS
@@ -68,8 +67,32 @@ function arr(x) {
   return Array.isArray(x) ? x : [];
 }
 
-// BELANGRIJK:
-// deskGate moet vóór engineGate komen, anders werkt hold nooit echt.
+function pipelineRank(stage) {
+  const s = up(stage);
+  if (s === "ENTRY_READY") return 5;
+  if (s === "SETUP") return 4;
+  if (s === "WARMUP") return 3;
+  if (s === "RADAR") return 2;
+  if (s === "UNIVERSE") return 1;
+  return 0;
+}
+
+function pipelineToLegacyStage(stage) {
+  const s = up(stage);
+  if (s === "ENTRY_READY") return "ALMOST";
+  if (s === "SETUP") return "BUILDUP";
+  if (s === "WARMUP") return "RADAR";
+  if (s === "RADAR") return "RADAR";
+  return "RADAR";
+}
+
+// Scanner mag zelf niet openen.
+// ENTRY_READY == WATCH voor trade engine.
+function gateFromPipelineStage(stage) {
+  return up(stage) === "ENTRY_READY" ? "WATCH" : "IGNORE";
+}
+
+// deskGate eerst, dan engineGate
 function effectiveGate(item) {
   return up(
     item?.deskGate ||
@@ -82,24 +105,16 @@ function effectiveGate(item) {
 
 function gatePriority(gate) {
   const g = up(gate);
-  if (g === "OPEN") return 3;
   if (g === "WATCH") return 2;
   return 1;
 }
 
 function isForwardableMainCoin(item) {
   const gate = effectiveGate(item);
-  const stage = up(item?.stage);
-
-  if (gate !== "OPEN" && gate !== "WATCH") return false;
+  const stage = up(item?.stage || item?.pipelineStage);
+  if (gate !== "WATCH") return false;
   if (!item?.tradePlan) return false;
-
-  return (
-    stage === "TRADE_READY" ||
-    stage === "ALMOST" ||
-    stage === "BUILDUP" ||
-    stage === "RADAR"
-  );
+  return stage === "ENTRY_READY";
 }
 
 function resolveDeskGate({ prevGate, prevMeta, engineGate, now }) {
@@ -107,16 +122,8 @@ function resolveDeskGate({ prevGate, prevMeta, engineGate, now }) {
   const engine = up(engineGate || "IGNORE");
   const holdUntil = n(prevMeta?.deskHoldUntil, 0);
 
-  if (engine === "OPEN") return "OPEN";
-
-  if (engine === "WATCH") {
-    if (prev === "OPEN" && holdUntil > now) return "OPEN";
-    return "WATCH";
-  }
-
-  if (prev === "OPEN" && holdUntil > now) return "OPEN";
-  if (prev === "WATCH" && holdUntil > now) return "WATCH";
-
+  if (engine === "WATCH") return "WATCH";
+  if ((prev === "WATCH" || prev === "OPEN") && holdUntil > now) return "WATCH";
   return "IGNORE";
 }
 
@@ -128,18 +135,16 @@ function buildDeskMeta({ prevGate, prevMeta, deskGate, engineGate, now }) {
 
   let holdUntil = 0;
 
-  if (engine === "OPEN") {
-    holdUntil = now + OPEN_HOLD_MS;
-  } else if (engine === "WATCH") {
+  if (engine === "WATCH") {
     holdUntil = now + WATCH_HOLD_MS;
-  } else if ((prev === "OPEN" || prev === "WATCH") && n(meta.deskHoldUntil, 0) > now && desk === prev) {
+  } else if ((prev === "WATCH" || prev === "OPEN") && n(meta.deskHoldUntil, 0) > now && desk === "WATCH") {
     holdUntil = n(meta.deskHoldUntil, 0);
   }
 
   return {
     deskGateSince: prev === desk ? n(meta.deskGateSince, now) : now,
     deskHoldUntil: holdUntil,
-    openStreak: engine === "OPEN" ? n(meta.openStreak, 0) + 1 : 0,
+    openStreak: 0,
     watchStreak: engine === "WATCH" ? n(meta.watchStreak, 0) + 1 : 0,
   };
 }
@@ -152,6 +157,10 @@ function mergeTradeItems(existingItems, incomingItems, limit = 120) {
   merged.sort((a, b) => {
     const gp = gatePriority(effectiveGate(b)) - gatePriority(effectiveGate(a));
     if (gp !== 0) return gp;
+
+    const stageDiff =
+      pipelineRank(b?.stage || b?.pipelineStage) - pipelineRank(a?.stage || a?.pipelineStage);
+    if (stageDiff !== 0) return stageDiff;
 
     const scoreDiff =
       n(b?.execution?.score, n(b?.confidence, 0)) -
@@ -452,7 +461,7 @@ function buildMainTradePlan({ price, range24, confidence, stage, ob, mode }) {
   if (!(p > 0)) return null;
 
   const st = up(stage);
-  if (st !== "TRADE_READY" && st !== "ALMOST" && st !== "BUILDUP" && st !== "RADAR") {
+  if (st !== "ENTRY_READY" && st !== "SETUP" && st !== "WARMUP" && st !== "RADAR") {
     return null;
   }
 
@@ -470,12 +479,12 @@ function buildMainTradePlan({ price, range24, confidence, stage, ob, mode }) {
   if (spread <= 1.0) slPct -= 0.1;
   if (spread > 2.0) slPct += 0.2;
 
-  if (st === "ALMOST") {
+  if (st === "SETUP") {
     slPct += 0.18;
     tpPct -= 0.2;
   }
 
-  if (st === "BUILDUP") {
+  if (st === "WARMUP") {
     slPct += 0.25;
     tpPct -= 0.35;
   }
@@ -525,18 +534,6 @@ function deriveMainRegime({ btc }) {
   return "CHOP";
 }
 
-function gateFromStage(stage, confidence = 0, ob = null) {
-  const st = up(stage);
-  const conf = n(confidence, 0);
-  const spread = n(ob?.spreadPct, 999);
-
-  if (st === "TRADE_READY") return "OPEN";
-  if (st === "ALMOST" && conf >= 6) return "WATCH";
-  if (st === "BUILDUP" && conf >= 10 && spread <= 7.0) return "WATCH";
-  if (st === "RADAR" && conf >= 16 && spread <= 5.5) return "WATCH";
-  return "IGNORE";
-}
-
 function getMainMacroMode({ btc, mode }) {
   const state = up(btc?.state || "NEUTRAL");
   const chg24 = n(btc?.chg24, 0);
@@ -563,7 +560,6 @@ function preScoreCoin(coin, CORE, CFG, mode, prevStateRow = {}) {
   const marketCap = n(coin.marketCap, 0);
   const volume = n(coin.volume, 0);
   const change24 = n(coin.change24, 0);
-  const change1h = n(coin.change1h, 0);
   const range24 = n(coin.range24, 0);
   const vm = CORE.computeVm(volume, marketCap);
 
@@ -585,16 +581,16 @@ function preScoreCoin(coin, CORE, CFG, mode, prevStateRow = {}) {
     Math.abs(change24) <= n(R.maxAbsChg24, 999) &&
     range24 <= n(dynRadar.maxRange24, n(R.maxRange24, 999)) &&
     (mode === "bull"
-      ? change1h >= n(dynRadar.dir1hMinBull, n(R.dir1hMinBull, 0)) &&
+      ? n(coin.change1h, 0) >= n(dynRadar.dir1hMinBull, n(R.dir1hMinBull, 0)) &&
         change24 >= n(dynRadar.dir24MinBull, n(R.dir24MinBull, 0))
-      : change1h <= n(dynRadar.dir1hMaxBear, n(R.dir1hMaxBear, 0)) &&
+      : n(coin.change1h, 0) <= n(dynRadar.dir1hMaxBear, n(R.dir1hMaxBear, 0)) &&
         change24 <= n(dynRadar.dir24MaxBear, n(R.dir24MaxBear, 0)));
 
-  const buildupOk = radarOk && volAcc >= n(CFG.buildup?.minVolAcc, 1.0);
+  const warmupOk = radarOk && volAcc >= n(CFG.buildup?.minVolAcc, 1.0);
   const confidence = CORE.computeConfidence({ vm, change24, range24, obValid: false });
 
   return {
-    score: (radarOk ? 20 : 0) + (buildupOk ? 18 : 0) + confidence + Math.min(24, volAcc * 10),
+    score: (radarOk ? 20 : 0) + (warmupOk ? 18 : 0) + confidence + Math.min(24, volAcc * 10),
   };
 }
 
@@ -609,7 +605,7 @@ function toFunnelCoin(coin, mode, now) {
     engineGate: up(coin?.engineGate || gate),
     deskGate: up(coin?.deskGate || gate),
     tradeDeskStatus: up(coin?.tradeDeskStatus || gate),
-    funnelEligible: gate === "OPEN" || gate === "WATCH",
+    funnelEligible: gate === "WATCH",
   };
 }
 
@@ -621,17 +617,8 @@ async function pushMainScannerToTradeFunnel({
   latest,
   now,
 }) {
-  const tradeReady = Array.isArray(latest?.funnel?.trade_ready) ? latest.funnel.trade_ready : [];
-  const almost = Array.isArray(latest?.funnel?.almost) ? latest.funnel.almost : [];
-  const buildup = Array.isArray(latest?.funnel?.buildup) ? latest.funnel.buildup : [];
-  const radar = Array.isArray(latest?.funnel?.radar) ? latest.funnel.radar : [];
-
-  const candidates = [
-    ...tradeReady.filter(isForwardableMainCoin),
-    ...almost.filter(isForwardableMainCoin).slice(0, 30),
-    ...buildup.filter(isForwardableMainCoin).slice(0, 20),
-    ...radar.filter(isForwardableMainCoin).slice(0, 10),
-  ];
+  const entryReady = arr(latest?.funnel?.entry_ready);
+  const candidates = [...entryReady.filter(isForwardableMainCoin)];
 
   candidates.sort((a, b) => {
     const gp = gatePriority(effectiveGate(b)) - gatePriority(effectiveGate(a));
@@ -671,7 +658,7 @@ async function pushMainScannerToTradeFunnel({
     btc,
     macroMode,
     counts: {
-      open: items.filter((c) => effectiveGate(c) === "OPEN").length,
+      open: 0,
       watch: items.filter((c) => effectiveGate(c) === "WATCH").length,
       total: items.length,
     },
@@ -697,7 +684,7 @@ async function pushMainScannerToTradeFunnel({
     btc,
     macroMode,
     counts: {
-      open: deduped.filter((c) => effectiveGate(c) === "OPEN").length,
+      open: 0,
       watch: deduped.filter((c) => effectiveGate(c) === "WATCH").length,
       total: deduped.length,
     },
@@ -775,7 +762,18 @@ export default async function handler(req, res) {
 
     const prevState = (await kv.get(keyMainState(mode))) || {};
     const nextState = {};
-    const funnel = { trade_ready: [], almost: [], buildup: [], radar: [] };
+
+    const funnel = {
+      entry_ready: [],
+      setup: [],
+      warmup: [],
+      radar: [],
+
+      // legacy aliases
+      trade_ready: [],
+      almost: [],
+      buildup: [],
+    };
 
     const prescored = tradable.map((coin) => ({
       coin,
@@ -822,10 +820,26 @@ export default async function handler(req, res) {
         volAcc = nowVol / Math.max(ago, 1e-9);
       }
 
+      let flat60Pct = 999;
+      if (priceHistNext.length >= 10) {
+        const tail = priceHistNext.slice(-60);
+        const hi = Math.max(...tail.map((x) => n(x, 0)));
+        const lo = Math.min(...tail.map((x) => n(x, 0)));
+        flat60Pct = lo > 0 ? ((hi - lo) / lo) * 100 : 999;
+      }
+
       const dynRadar = CORE.dynamicRadarThresholds(range24, CFG);
       const R = CFG.radar || {};
+      const ob = obMap.get(sym) || null;
 
-      const radarOk =
+      const confidence = CORE.computeConfidence({
+        vm,
+        change24,
+        range24,
+        obValid: !!ob?.valid,
+      });
+
+      const radarPass =
         marketCap >= n(R.mcapMin, 0) &&
         marketCap <= n(R.mcapMax, Number.MAX_SAFE_INTEGER) &&
         volume >= n(R.volMin, 0) &&
@@ -838,47 +852,21 @@ export default async function handler(req, res) {
           : change1h <= n(dynRadar.dir1hMaxBear, n(R.dir1hMaxBear, 0)) &&
             change24 <= n(dynRadar.dir24MaxBear, n(R.dir24MaxBear, 0)));
 
-      let stage = "RADAR";
+      const warmupPass =
+        radarPass &&
+        volAcc >= n(CFG.buildup?.minVolAcc, 1.0);
 
-      const buildupOk = radarOk && volAcc >= n(CFG.buildup?.minVolAcc, 1.0);
-      if (buildupOk) stage = "BUILDUP";
-
-      let flat60Pct = 999;
-      if (priceHistNext.length >= 10) {
-        const tail = priceHistNext.slice(-60);
-        const hi = Math.max(...tail.map((x) => n(x, 0)));
-        const lo = Math.min(...tail.map((x) => n(x, 0)));
-        flat60Pct = lo > 0 ? ((hi - lo) / lo) * 100 : 999;
-      }
-
-      const ob = obMap.get(sym) || null;
-      const confidence = CORE.computeConfidence({
-        vm,
-        change24,
-        range24,
-        obValid: !!ob?.valid,
-      });
-
-      const almostOk =
-        buildupOk &&
+      const setupPass =
+        warmupPass &&
         confidence >= n(CFG.almost?.minConfidence, 0) &&
         flat60Pct <= n(CFG.almost?.maxFlat60Pct, 999);
 
-      if (almostOk) stage = "ALMOST";
-
-      let entryOk = false;
+      let entryReadyPass = false;
       let entryReason = "";
       let depthOk = false;
       let dynThr = null;
 
-      if (
-        (
-          stage === "ALMOST" ||
-          (stage === "BUILDUP" && confidence >= 8) ||
-          (stage === "RADAR" && confidence >= 16)
-        ) &&
-        ob?.valid
-      ) {
+      if (setupPass && ob?.valid) {
         const entryCfg = CFG.entry || {};
         const tier = pickTier(marketCap, entryCfg);
 
@@ -915,70 +903,31 @@ export default async function handler(req, res) {
           scoreNeed = Math.max(0.0007, scoreNeed * 0.9);
         }
 
-        if (stage === "BUILDUP") {
-          confNeed = Math.max(5, confNeed - 2);
-          spreadLimit = Math.min(7.0, spreadLimit + 0.6);
-          depthNeed = Math.max(450, depthNeed * 0.7);
-          scoreNeed = Math.max(0.00025, scoreNeed * 0.45);
-        }
-
-        if (stage === "RADAR") {
-          confNeed = Math.max(12, confNeed - 1);
-          spreadLimit = Math.min(5.8, spreadLimit + 0.2);
-          depthNeed = Math.max(700, depthNeed * 0.9);
-          scoreNeed = Math.max(0.0006, scoreNeed * 0.9);
-        }
-
         const spreadOk = n(ob.spreadPct, 999) <= spreadLimit;
         depthOk = n(ob.depthMinUsd1p, 0) >= depthNeed;
         const confOk = confidence >= confNeed;
-
         const scoreOk = mode === "bull" ? score >= scoreNeed : score <= -scoreNeed;
 
-        entryOk = spreadOk && depthOk && confOk && scoreOk;
+        entryReadyPass = spreadOk && depthOk && confOk && scoreOk;
 
         if (!confOk) entryReason = "conf_low";
         else if (!spreadOk) entryReason = "spread";
         else if (!depthOk) entryReason = "depth";
         else if (!scoreOk) entryReason = "ob_score";
         else entryReason = "ok";
-
-        if (entryOk) stage = "TRADE_READY";
+      } else if (!setupPass) {
+        entryReason = "setup_not_ready";
+      } else if (!ob?.valid) {
+        entryReason = "missing_ob";
       }
 
-      const compression = {
-        isCompressed: flat60Pct <= n(CFG.almost?.maxFlat60Pct, 999),
-        flatPct: Number(n(flat60Pct, 0).toFixed(3)),
-      };
+      let stage = "UNIVERSE";
+      if (radarPass) stage = "RADAR";
+      if (warmupPass) stage = "WARMUP";
+      if (setupPass) stage = "SETUP";
+      if (entryReadyPass) stage = "ENTRY_READY";
 
-      const breakout = {
-        ready: stage === "TRADE_READY",
-        pressure:
-          stage === "TRADE_READY"
-            ? 60
-            : stage === "ALMOST"
-              ? 46
-              : stage === "BUILDUP"
-                ? 34
-                : 18,
-        breakoutPct: 0,
-      };
-
-      const thresholds = {
-        depthFloorUsd: dynThr ? n(dynThr.depthMinUsd1p, 0) : 0,
-        depthOk,
-      };
-
-      const tradePlan = buildMainTradePlan({
-        price: n(coin.price, 0),
-        range24,
-        confidence,
-        stage,
-        ob,
-        mode,
-      });
-
-      const scannerGate = gateFromStage(stage, confidence, ob);
+      const scannerGate = gateFromPipelineStage(stage);
       const engineGate = scannerGate;
 
       const prevGate =
@@ -1005,15 +954,47 @@ export default async function handler(req, res) {
 
       const uiLockUntil = Math.max(
         n(prev?.uiLockUntil, 0),
-        deskGate === "WATCH" || deskGate === "OPEN"
-          ? now + UI_ENTRY_LOCK_MS_MAIN
-          : 0
+        deskGate === "WATCH" ? now + UI_ENTRY_LOCK_MS_MAIN : 0
       );
+
+      const compression = {
+        isCompressed: flat60Pct <= n(CFG.almost?.maxFlat60Pct, 999),
+        flatPct: Number(n(flat60Pct, 0).toFixed(3)),
+      };
+
+      const breakout = {
+        ready: stage === "ENTRY_READY",
+        pressure:
+          stage === "ENTRY_READY"
+            ? 60
+            : stage === "SETUP"
+              ? 46
+              : stage === "WARMUP"
+                ? 34
+                : 18,
+        breakoutPct: 0,
+      };
+
+      const thresholds = {
+        depthFloorUsd: dynThr ? n(dynThr.depthMinUsd1p, 0) : 0,
+        depthOk,
+      };
+
+      const tradePlan = buildMainTradePlan({
+        price: n(coin.price, 0),
+        range24,
+        confidence,
+        stage,
+        ob,
+        mode,
+      });
 
       const entryQuality = confidence;
       const persistenceScore = Math.round(
         Math.max(0, Math.min(100, confidence * 0.82 + Math.min(volAcc * 12, 16)))
       );
+
+      const stageLegacy = pipelineToLegacyStage(stage);
 
       const coinProfileBase = {
         id: coin.id,
@@ -1031,15 +1012,23 @@ export default async function handler(req, res) {
         confidence,
         entryQuality,
         persistenceScore,
+
+        // nieuwe pipeline
         stage,
+        pipelineStage: stage,
+        stageLegacy,
+
         stageWhy:
-          entryOk
-            ? "entry_ok"
-            : stage === "ALMOST"
-              ? "almost_ready"
-              : stage === "BUILDUP"
-                ? "momentum_building"
-                : "radar_only",
+          entryReadyPass
+            ? "entry_ready"
+            : stage === "SETUP"
+              ? "setup_ready"
+              : stage === "WARMUP"
+                ? "warmup_ready"
+                : stage === "RADAR"
+                  ? "radar_ready"
+                  : "universe_only",
+
         ob: ob
           ? {
               bestBid: n(ob.bestBid, 0),
@@ -1065,6 +1054,7 @@ export default async function handler(req, res) {
               reason: "missing_ob",
               lor: 0,
             },
+
         thresholds,
         breakout,
         compression,
@@ -1072,6 +1062,7 @@ export default async function handler(req, res) {
           short: Number(volAcc.toFixed(3)),
           medium: Number(volAcc.toFixed(3)),
         },
+
         tradePlan,
         scannerGate,
         engineGate,
@@ -1079,6 +1070,7 @@ export default async function handler(req, res) {
         tradeDeskStatus: deskGate,
         deskMeta,
         uiLockUntil,
+
         qualityScore: confidence,
         liquidityScore: ob?.valid
           ? Math.max(
@@ -1089,14 +1081,16 @@ export default async function handler(req, res) {
               )
             )
           : 35,
+
         timingScore:
-          stage === "TRADE_READY"
+          stage === "ENTRY_READY"
             ? 82
-            : stage === "ALMOST"
+            : stage === "SETUP"
               ? 70
-              : stage === "BUILDUP"
+              : stage === "WARMUP"
                 ? 58
                 : 40,
+
         marketScore:
           regime === "EXPANSION"
             ? 82
@@ -1105,37 +1099,42 @@ export default async function handler(req, res) {
               : regime === "HEADWIND"
                 ? 35
                 : 50,
+
         perfectCandidateScore:
-          stage === "TRADE_READY"
+          stage === "ENTRY_READY"
             ? 78
-            : stage === "ALMOST"
+            : stage === "SETUP"
               ? 68
-              : stage === "BUILDUP"
+              : stage === "WARMUP"
                 ? 56
                 : 36,
-        tradeCandidate:
-          stage === "TRADE_READY" ||
-          ((stage === "ALMOST" || stage === "BUILDUP" || stage === "RADAR") &&
-            effectiveGate({ deskGate, engineGate, scannerGate }) === "WATCH"),
+
+        tradeCandidate: stage === "ENTRY_READY" && effectiveGate({ deskGate, engineGate, scannerGate }) === "WATCH",
         superScannerCoin:
-          stage === "TRADE_READY" ||
-          stage === "ALMOST" ||
-          stage === "BUILDUP" ||
-          (stage === "RADAR" && effectiveGate({ deskGate, engineGate, scannerGate }) === "WATCH"),
+          stage === "ENTRY_READY" ||
+          stage === "SETUP" ||
+          stage === "WARMUP" ||
+          stage === "RADAR",
+
         scannerOnly: effectiveGate({ deskGate, engineGate, scannerGate }) === "IGNORE",
+
         entry: {
-          ok: !!entryOk,
+          ok: !!entryReadyPass,
           reason: entryReason,
           slopeOk: true,
           slope: 0,
         },
+
         flat60Pct: Number(n(flat60Pct, 0).toFixed(3)),
+
         filterSnapshot: {
           system: "main",
           mode,
           regime,
           macroMode,
           stage,
+          pipelineStage: stage,
+          stageLegacy,
           engineGate,
           tradeDeskStatus: deskGate,
           radar: {
@@ -1145,14 +1144,14 @@ export default async function handler(req, res) {
             vmMin: n(CFG?.radar?.vmMin, 0),
             maxAbsChg24: n(CFG?.radar?.maxAbsChg24, 0),
           },
-          buildup: {
+          warmup: {
             minVolAcc: n(CFG?.buildup?.minVolAcc, 0),
           },
-          almost: {
+          setup: {
             minConfidence: n(CFG?.almost?.minConfidence, 0),
             maxFlat60Pct: n(CFG?.almost?.maxFlat60Pct, 0),
           },
-          entry: {
+          entry_ready: {
             minConfidence: n(dynThr?.minConfidence, n(CFG?.entry?.minConfidence, 0)),
             spreadMaxPct: n(dynThr?.spreadMaxPct, n(CFG?.entry?.spreadMaxPct, 0)),
             depthMinUsd1p: n(dynThr?.depthMinUsd1p, n(CFG?.entry?.depthMinUsd1p, 0)),
@@ -1169,13 +1168,20 @@ export default async function handler(req, res) {
         },
       };
 
+      // Voor trade_engine compatibiliteit geven we legacy stage door.
+      const engineCoin = {
+        ...coinProfileBase,
+        stage: stageLegacy,
+        pipelineStage: stage,
+      };
+
       const coinProfile = buildCoinProfile({
         systemType: "main",
-        coin: coinProfileBase,
+        coin: engineCoin,
       });
 
       const execution = buildMainExecutionDecision({
-        coin: coinProfileBase,
+        coin: engineCoin,
         btc,
         regime,
         mode,
@@ -1190,12 +1196,19 @@ export default async function handler(req, res) {
         scannerGate: engineGate,
       });
 
-      const outCoin = { ...coinProfileBase, coinProfile, execution };
+      const outCoin = {
+        ...coinProfileBase,
+        coinProfile,
+        execution,
+      };
+
       const stageHistNext = [...stageHist, stage].slice(-12);
 
       nextState[sym] = {
         symbol: sym,
         stage,
+        pipelineStage: stage,
+        stageLegacy,
         lastSeen: now,
         side: mode === "bear" ? "SHORT" : "LONG",
         price: n(coin.price, 0),
@@ -1237,24 +1250,29 @@ export default async function handler(req, res) {
         },
       };
 
-      if (stage === "TRADE_READY") funnel.trade_ready.push(outCoin);
-      else if (stage === "ALMOST") funnel.almost.push(outCoin);
-      else if (stage === "BUILDUP") funnel.buildup.push(outCoin);
-      else funnel.radar.push(outCoin);
+      if (stage === "ENTRY_READY") funnel.entry_ready.push(outCoin);
+      else if (stage === "SETUP") funnel.setup.push(outCoin);
+      else if (stage === "WARMUP") funnel.warmup.push(outCoin);
+      else if (stage === "RADAR") funnel.radar.push(outCoin);
     }
 
     const byConf = (a, b) =>
       n(b.execution?.score, n(b.confidence, 0)) - n(a.execution?.score, n(a.confidence, 0));
 
-    funnel.trade_ready.sort(byConf);
-    funnel.almost.sort(byConf);
-    funnel.buildup.sort(byConf);
+    funnel.entry_ready.sort(byConf);
+    funnel.setup.sort(byConf);
+    funnel.warmup.sort(byConf);
     funnel.radar.sort(byConf);
 
-    funnel.trade_ready = funnel.trade_ready.slice(0, n(CFG.ENTRY_LIMIT, 18));
-    funnel.almost = funnel.almost.slice(0, n(CFG.ALMOST_LIMIT, 35));
-    funnel.buildup = funnel.buildup.slice(0, n(CFG.BUILDUP_LIMIT, 55));
+    funnel.entry_ready = funnel.entry_ready.slice(0, n(CFG.ENTRY_LIMIT, 18));
+    funnel.setup = funnel.setup.slice(0, n(CFG.ALMOST_LIMIT, 35));
+    funnel.warmup = funnel.warmup.slice(0, n(CFG.BUILDUP_LIMIT, 55));
     funnel.radar = funnel.radar.slice(0, n(CFG.RADAR_LIMIT, 100));
+
+    // legacy aliases
+    funnel.trade_ready = [...funnel.entry_ready];
+    funnel.almost = [...funnel.setup];
+    funnel.buildup = [...funnel.warmup];
 
     const latest = {
       ok: true,
@@ -1263,10 +1281,15 @@ export default async function handler(req, res) {
       btc,
       funnel,
       counts: {
+        entry_ready: funnel.entry_ready.length,
+        setup: funnel.setup.length,
+        warmup: funnel.warmup.length,
+        radar: funnel.radar.length,
+
+        // legacy
         trade_ready: funnel.trade_ready.length,
         almost: funnel.almost.length,
         buildup: funnel.buildup.length,
-        radar: funnel.radar.length,
       },
       ts: now,
       scannedAt: now,
@@ -1310,9 +1333,9 @@ export default async function handler(req, res) {
         macroMode,
         scanner: {
           radar: CFG?.radar || {},
-          buildup: CFG?.buildup || {},
-          almost: CFG?.almost || {},
-          entry: CFG?.entry || {},
+          warmup: CFG?.buildup || {},
+          setup: CFG?.almost || {},
+          entry_ready: CFG?.entry || {},
         },
         limits: {
           ENTRY_LIMIT: CFG?.ENTRY_LIMIT ?? null,
@@ -1323,7 +1346,7 @@ export default async function handler(req, res) {
         },
         forwarding: {
           pushedToTradeFunnel: true,
-          open: n(funnelForward?.counts?.open, 0),
+          open: 0,
           watch: n(funnelForward?.counts?.watch, 0),
           total: n(funnelForward?.counts?.total, 0),
         },
