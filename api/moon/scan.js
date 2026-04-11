@@ -58,13 +58,13 @@ function keyTradeFunnelQueueGlobal() {
 // ======================================================
 function n(x, d = 0) {
   const v = Number(x);
-  return Number.isFinite(v)? v : d;
+  return Number.isFinite(v) ? v : d;
 }
 function up(x) {
   return String(x || "").toUpperCase();
 }
 function arr(x) {
-  return Array.isArray(x)? x :;
+  return Array.isArray(x) ? x : [];
 }
 
 function pipelineRank(stage) {
@@ -86,10 +86,13 @@ function pipelineToLegacyStage(stage) {
   return "RADAR";
 }
 
+// Scanner mag zelf niet openen.
+// ENTRY_READY == WATCH voor trade engine.
 function gateFromPipelineStage(stage) {
-  return up(stage) === "ENTRY_READY"? "WATCH" : "IGNORE";
+  return up(stage) === "ENTRY_READY" ? "WATCH" : "IGNORE";
 }
 
+// deskGate eerst, dan engineGate
 function effectiveGate(item) {
   return up(
     item?.deskGate ||
@@ -109,7 +112,7 @@ function gatePriority(gate) {
 function isForwardableMainCoin(item) {
   const gate = effectiveGate(item);
   const stage = up(item?.stage || item?.pipelineStage);
-  if (gate!== "WATCH") return false;
+  if (gate !== "WATCH") return false;
   if (!item?.tradePlan) return false;
   return stage === "ENTRY_READY";
 }
@@ -128,41 +131,45 @@ function buildDeskMeta({ prevGate, prevMeta, deskGate, engineGate, now }) {
   const prev = up(prevGate || "IGNORE");
   const desk = up(deskGate || "IGNORE");
   const engine = up(engineGate || "IGNORE");
-  const meta = prevMeta && typeof prevMeta === "object"? prevMeta : {};
+  const meta = prevMeta && typeof prevMeta === "object" ? prevMeta : {};
 
   let holdUntil = 0;
 
   if (engine === "WATCH") {
     holdUntil = now + WATCH_HOLD_MS;
-  } else if ((prev === "WATCH" || prev === "OPEN") && n(meta.deskHoldUntil, 0) > now && desk === "WATCH") {
+  } else if (
+    (prev === "WATCH" || prev === "OPEN") &&
+    n(meta.deskHoldUntil, 0) > now &&
+    desk === "WATCH"
+  ) {
     holdUntil = n(meta.deskHoldUntil, 0);
   }
 
   return {
-    deskGateSince: prev === desk? n(meta.deskGateSince, now) : now,
+    deskGateSince: prev === desk ? n(meta.deskGateSince, now) : now,
     deskHoldUntil: holdUntil,
     openStreak: 0,
-    watchStreak: engine === "WATCH"? n(meta.watchStreak, 0) + 1 : 0,
+    watchStreak: engine === "WATCH" ? n(meta.watchStreak, 0) + 1 : 0,
   };
 }
 
 function mergeTradeItems(existingItems, incomingItems, limit = 120) {
-  const merged = [...arr(incomingItems),...arr(existingItems)];
-  const out =;
+  const merged = [...arr(incomingItems), ...arr(existingItems)];
+  const out = [];
   const seen = new Set();
 
   merged.sort((a, b) => {
     const gp = gatePriority(effectiveGate(b)) - gatePriority(effectiveGate(a));
-    if (gp!== 0) return gp;
+    if (gp !== 0) return gp;
 
     const stageDiff =
       pipelineRank(b?.stage || b?.pipelineStage) - pipelineRank(a?.stage || a?.pipelineStage);
-    if (stageDiff!== 0) return stageDiff;
+    if (stageDiff !== 0) return stageDiff;
 
     const scoreDiff =
       n(b?.execution?.score, n(b?.confidence, 0)) -
       n(a?.execution?.score, n(a?.confidence, 0));
-    if (scoreDiff!== 0) return scoreDiff;
+    if (scoreDiff !== 0) return scoreDiff;
 
     return n(b?.queuedAt || b?.ts || 0) - n(a?.queuedAt || a?.ts || 0);
   });
@@ -192,12 +199,12 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 8000) {
 
   try {
     const res = await fetch(url, {
-     ...options,
+      ...options,
       signal: controller.signal,
       headers: {
         accept: "application/json",
         "user-agent": "CryptoCrocScanner/1.0",
-       ...(options.headers || {}),
+        ...(options.headers || {}),
       },
     });
 
@@ -233,7 +240,7 @@ function requireSecret(req, res) {
   const qToken = String(req.query?.token || "");
   const bearer = String(req.headers?.authorization || "");
   const headerToken = bearer.toLowerCase().startsWith("bearer ")
-   ? bearer.slice(7).trim()
+    ? bearer.slice(7).trim()
     : "";
 
   const ok =
@@ -254,6 +261,9 @@ function requireSecret(req, res) {
   return false;
 }
 
+// ======================================================
+// Lock
+// ======================================================
 async function acquireScanLock(mode) {
   const key = keyScanLock(mode);
   const now = Date.now();
@@ -288,13 +298,16 @@ async function releaseScanLock(mode) {
   } catch {}
 }
 
+// ======================================================
+// CoinGecko cache
+// ======================================================
 const KV_CG_TOP = "main:cg:top:v3";
 const KV_CG_BTC = "main:cg:btc:v3";
 
 function normalizeCgMarketRow(c) {
   const hi = n(c.high_24h, 0);
   const lo = n(c.low_24h, 0);
-  const range24 = hi > 0 && lo > 0? ((hi - lo) / lo) * 100 : 0;
+  const range24 = hi > 0 && lo > 0 ? ((hi - lo) / lo) * 100 : 0;
 
   return {
     id: String(c.id || ""),
@@ -305,11 +318,11 @@ function normalizeCgMarketRow(c) {
     marketCap: n(c.market_cap, 0),
     volume: n(c.total_volume, 0),
     change24: n(
-      c.price_change_percentage_24h_in_currency?? c.price_change_percentage_24h,
+      c.price_change_percentage_24h_in_currency ?? c.price_change_percentage_24h,
       0
     ),
     change1h: n(
-      c.price_change_percentage_1h_in_currency?? c.price_change_percentage_1h,
+      c.price_change_percentage_1h_in_currency ?? c.price_change_percentage_1h,
       0
     ),
     range24,
@@ -323,13 +336,13 @@ async function fetchCoinGeckoTopCached(maxCoins = MAX_COINS_FROM_CG) {
       `&sparkline=false&price_change_percentage=1h,24h`;
 
     const rows = await fetchJsonWithTimeout(url, {}, 9000);
-    const coins = Array.isArray(rows)? rows.map(normalizeCgMarketRow) :;
+    const coins = Array.isArray(rows) ? rows.map(normalizeCgMarketRow) : [];
     await kv.set(KV_CG_TOP, coins, { ex: 60 * 10 });
     return { coins, meta: { usedCache: false, partial: false, rateLimited: false } };
   } catch (e) {
     const cached = await kv.get(KV_CG_TOP);
     return {
-      coins: Array.isArray(cached)? cached.slice(0, maxCoins) :,
+      coins: Array.isArray(cached) ? cached.slice(0, maxCoins) : [],
       meta: {
         usedCache: true,
         partial: true,
@@ -340,6 +353,9 @@ async function fetchCoinGeckoTopCached(maxCoins = MAX_COINS_FROM_CG) {
   }
 }
 
+// ======================================================
+// BTC
+// ======================================================
 async function fetchBTCGateFromUniverse() {
   try {
     const url =
@@ -347,21 +363,21 @@ async function fetchBTCGateFromUniverse() {
       `&sparkline=false&price_change_percentage=1h,24h`;
 
     const arr = await fetchJsonWithTimeout(url, {}, 8000);
-    const btc = Array.isArray(arr) && arr.length? arr : null;
+    const btc = Array.isArray(arr) && arr.length ? arr[0] : null;
     if (!btc) throw new Error("no_btc");
 
     const price = n(btc.current_price, 0);
     const chg24 = n(
-      btc.price_change_percentage_24h_in_currency?? btc.price_change_percentage_24h,
+      btc.price_change_percentage_24h_in_currency ?? btc.price_change_percentage_24h,
       0
     );
     const chg1h = n(
-      btc.price_change_percentage_1h_in_currency?? btc.price_change_percentage_1h,
+      btc.price_change_percentage_1h_in_currency ?? btc.price_change_percentage_1h,
       0
     );
     const hi = n(btc.high_24h, 0);
     const lo = n(btc.low_24h, 0);
-    const range24 = hi > 0 && lo > 0? ((hi - lo) / lo) * 100 : 0;
+    const range24 = hi > 0 && lo > 0 ? ((hi - lo) / lo) * 100 : 0;
 
     const out = { price, chg24, chg1h, range24, state: "NEUTRAL" };
     await kv.set(KV_CG_BTC, out, { ex: 60 * 5 });
@@ -373,12 +389,15 @@ async function fetchBTCGateFromUniverse() {
   }
 }
 
+// ======================================================
+// Bitget
+// ======================================================
 async function getBitgetSpotUsdtSymbols() {
   try {
     const j = await fetchJsonWithTimeout(BITGET_SYMBOLS, {}, 8000);
-    if (String(j?.code || "")!== "00000") return new Set();
+    if (String(j?.code || "") !== "00000") return new Set();
 
-    const data = Array.isArray(j?.data)? j.data :;
+    const data = Array.isArray(j?.data) ? j.data : [];
     const set = new Set();
 
     for (const s of data) {
@@ -397,21 +416,21 @@ async function fetchOrderbook(symbol) {
   try {
     const url = `${BITGET_OB}?symbol=${symbol}&type=step0&limit=20`;
     const j = await fetchJsonWithTimeout(url, {}, 6000);
-    if (String(j?.code || "")!== "00000") return null;
+    if (String(j?.code || "") !== "00000") return null;
 
-    const bids = j?.data?.bids ||;
-    const asks = j?.data?.asks ||;
-    if (!bids.length ||!asks.length) return null;
+    const bids = j?.data?.bids || [];
+    const asks = j?.data?.asks || [];
+    if (!bids.length || !asks.length) return null;
 
-    const bestBid = n(bids?., 0);
-    const bestAsk = n(asks?., 0);
+    const bestBid = n(bids[0]?.[0], 0);
+    const bestAsk = n(asks[0]?.[0], 0);
     if (!(bestBid > 0 && bestAsk > 0)) return null;
 
     const spreadPct = ((bestAsk - bestBid) / bestBid) * 100;
-    const depthBidUsd = bids.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.), 0);
-    const depthAskUsd = asks.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.), 0);
+    const depthBidUsd = bids.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
+    const depthAskUsd = asks.slice(0, 8).reduce((a, b) => a + n(b?.[1]) * n(b?.[0]), 0);
     const total = depthBidUsd + depthAskUsd;
-    const score = total > 0? (depthBidUsd - depthAskUsd) / total : 0;
+    const score = total > 0 ? (depthBidUsd - depthAskUsd) / total : 0;
 
     return {
       bestBid,
@@ -433,7 +452,7 @@ async function fetchOrderbook(symbol) {
 }
 
 function pickTier(marketCap, entryCfg) {
-  const tiers = Array.isArray(entryCfg?.adaptiveTiers)? entryCfg.adaptiveTiers :;
+  const tiers = Array.isArray(entryCfg?.adaptiveTiers) ? entryCfg.adaptiveTiers : [];
   const mc = Number(marketCap || 0);
   for (const t of tiers) {
     if (mc <= Number(t?.maxMc || 0)) return t;
@@ -446,7 +465,7 @@ function buildMainTradePlan({ price, range24, confidence, stage, ob, mode }) {
   if (!(p > 0)) return null;
 
   const st = up(stage);
-  if (st!== "ENTRY_READY" && st!== "SETUP" && st!== "WARMUP" && st!== "RADAR") {
+  if (st !== "ENTRY_READY" && st !== "SETUP" && st !== "WARMUP" && st !== "RADAR") {
     return null;
   }
 
@@ -548,7 +567,7 @@ function preScoreCoin(coin, CORE, CFG, mode, prevStateRow = {}) {
   const range24 = n(coin.range24, 0);
   const vm = CORE.computeVm(volume, marketCap);
 
-  const volHist = Array.isArray(prevStateRow?.volHist)? prevStateRow.volHist :;
+  const volHist = Array.isArray(prevStateRow?.volHist) ? prevStateRow.volHist : [];
   let volAcc = 1;
   if (volHist.length >= 6) {
     const ago = volHist[volHist.length - 5] || volume;
@@ -566,7 +585,7 @@ function preScoreCoin(coin, CORE, CFG, mode, prevStateRow = {}) {
     Math.abs(change24) <= n(R.maxAbsChg24, 999) &&
     range24 <= n(dynRadar.maxRange24, n(R.maxRange24, 999)) &&
     (mode === "bull"
-     ? n(coin.change1h, 0) >= n(dynRadar.dir1hMinBull, n(R.dir1hMinBull, 0)) &&
+      ? n(coin.change1h, 0) >= n(dynRadar.dir1hMinBull, n(R.dir1hMinBull, 0)) &&
         change24 >= n(dynRadar.dir24MinBull, n(R.dir24MinBull, 0))
       : n(coin.change1h, 0) <= n(dynRadar.dir1hMaxBear, n(R.dir1hMaxBear, 0)) &&
         change24 <= n(dynRadar.dir24MaxBear, n(R.dir24MaxBear, 0)));
@@ -574,23 +593,15 @@ function preScoreCoin(coin, CORE, CFG, mode, prevStateRow = {}) {
   const warmupOk = radarOk && volAcc >= n(CFG.buildup?.minVolAcc, 1.0);
   const confidence = CORE.computeConfidence({ vm, change24, range24, obValid: false });
 
-  // Memory Overflow Bonus: Behoud coins die al bezig waren
-  const prevGate = up(prevStateRow?.deskGate || "IGNORE");
-  const prevStage = up(prevStateRow?.stage || "");
-  let memoryBonus = 0;
-  if (prevGate === "WATCH" || prevGate === "OPEN") memoryBonus = 100;
-  else if (prevStage === "ENTRY_READY" || prevStage === "SETUP" || prevStage === "ALMOST" || prevStage.includes("ELITE")) memoryBonus = 50;
-  else if (prevStage === "WARMUP" || prevStage === "BUILDUP") memoryBonus = 20;
-
   return {
-    score: (radarOk? 20 : 0) + (warmupOk? 18 : 0) + confidence + Math.min(24, volAcc * 10) + memoryBonus,
+    score: (radarOk ? 20 : 0) + (warmupOk ? 18 : 0) + confidence + Math.min(24, volAcc * 10),
   };
 }
 
 function toFunnelCoin(coin, mode, now) {
   const gate = effectiveGate(coin);
   return {
-   ...coin,
+    ...coin,
     sourceSystem: "main",
     sourceMode: mode,
     sourceKey: `main:${mode}:${String(coin?.symbol || "").toUpperCase()}`,
@@ -611,15 +622,15 @@ async function pushMainScannerToTradeFunnel({
   now,
 }) {
   const entryReady = arr(latest?.funnel?.entry_ready);
-  const candidates =;
+  const candidates = [...entryReady.filter(isForwardableMainCoin)];
 
   candidates.sort((a, b) => {
     const gp = gatePriority(effectiveGate(b)) - gatePriority(effectiveGate(a));
-    if (gp!== 0) return gp;
+    if (gp !== 0) return gp;
     return n(b?.execution?.score, n(b?.confidence, 0)) - n(a?.execution?.score, n(a?.confidence, 0));
   });
 
-  const deduped =;
+  const deduped = [];
   const seen = new Set();
 
   for (const c of candidates) {
@@ -696,15 +707,15 @@ export default async function handler(req, res) {
       process.env.CRON_SECRET &&
       String(req.query?.token || "") === String(process.env.CRON_SECRET);
 
-    if (!isVercelCron &&!tokenOk) {
+    if (!isVercelCron && !tokenOk) {
       if (!requireSecret(req, res)) return;
     }
 
-    mode = String(req.query?.mode || "bull").toLowerCase() === "bear"? "bear" : "bull";
+    mode = String(req.query?.mode || "bull").toLowerCase() === "bear" ? "bear" : "bull";
 
     const CORE =
       mode === "bear"
-       ? await import("../lib/_core_bear.js")
+        ? await import("../lib/_core_bear.js")
         : await import("../lib/_core_bull.js");
 
     const CFG = CORE.getCfg();
@@ -743,41 +754,43 @@ export default async function handler(req, res) {
     const macroMode = getMainMacroMode({ btc, mode });
 
     const cg = await fetchCoinGeckoTopCached(MAX_COINS_FROM_CG);
-    const rawCoins = Array.isArray(cg?.coins)? cg.coins :;
+    const rawCoins = Array.isArray(cg?.coins) ? cg.coins : [];
     const cgMeta = cg?.meta || {};
     const bitgetSymbols = await getBitgetSpotUsdtSymbols();
 
     const tradable = rawCoins
-     .filter((c) => bitgetSymbols.has(up(c.symbol)))
-     .filter((c) => (typeof CORE.isBlockedMainAsset === "function"?!CORE.isBlockedMainAsset(c) : true))
-     .filter((c) => n(c?.price, 0) > 0)
-     .slice(0, MAX_COINS_FROM_CG);
+      .filter((c) => bitgetSymbols.has(up(c.symbol)))
+      .filter((c) =>
+        typeof CORE.isBlockedMainAsset === "function" ? !CORE.isBlockedMainAsset(c) : true
+      )
+      .filter((c) => n(c?.price, 0) > 0)
+      .slice(0, MAX_COINS_FROM_CG);
 
     const prevState = (await kv.get(keyMainState(mode))) || {};
     const nextState = {};
 
     const funnel = {
-      entry_ready:,
-      setup:,
-      warmup:,
-      radar:,
+      entry_ready: [],
+      setup: [],
+      warmup: [],
+      radar: [],
 
       // legacy aliases
-      trade_ready:,
-      almost:,
-      buildup:,
+      trade_ready: [],
+      almost: [],
+      buildup: [],
     };
 
     const prescored = tradable.map((coin) => ({
       coin,
       sym: up(coin.symbol),
       prev: prevState?.[up(coin.symbol)] || {},
-     ...preScoreCoin(coin, CORE, CFG, mode, prevState?.[up(coin.symbol)] || {}),
+      ...preScoreCoin(coin, CORE, CFG, mode, prevState?.[up(coin.symbol)] || {}),
     }));
 
     const obCandidates = [...prescored]
-     .sort((a, b) => n(b.score, 0) - n(a.score, 0))
-     .slice(0, MAX_OB_CANDIDATES);
+      .sort((a, b) => n(b.score, 0) - n(a.score, 0))
+      .slice(0, MAX_OB_CANDIDATES);
 
     const obMap = new Map();
 
@@ -795,61 +808,16 @@ export default async function handler(req, res) {
       const change1h = n(coin.change1h, 0);
       const range24 = n(coin.range24, 0);
       const vm = CORE.computeVm(volume, marketCap);
-      const ob = obMap.get(sym) || null;
 
-      const priceHist = Array.isArray(prev?.priceHist)? [...prev.priceHist] :;
-      const volHist = Array.isArray(prev?.volHist)? [...prev.volHist] :;
-      const stageHist = Array.isArray(prev?.stageHist)? [...prev.stageHist] :;
-      
-      // V3: Fast Pulse KV voor micro-features
-      const pulseHist = Array.isArray(prev?.pulseHist)? [...prev.pulseHist] :;
+      const priceHist = Array.isArray(prev?.priceHist) ? [...prev.priceHist] : [];
+      const volHist = Array.isArray(prev?.volHist) ? [...prev.volHist] : [];
+      const stageHist = Array.isArray(prev?.stageHist) ? [...prev.stageHist] : [];
 
       priceHist.push(n(coin.price, 0));
       volHist.push(volume);
 
-      if (ob?.valid) {
-        pulseHist.push({
-          ts: now,
-          midPrice: (ob.bestBid + ob.bestAsk) / 2,
-          spreadPct: ob.spreadPct,
-          obScore: ob.score,
-          depthBid: ob.depthBidUsd,
-          depthAsk: ob.depthAskUsd
-        });
-      }
-
       const priceHistNext = priceHist.slice(-120);
       const volHistNext = volHist.slice(-120);
-      const pulseHistNext = pulseHist.slice(-15); // ca. 15 metingen
-
-      // Bereken V3 Micro-features
-      let obScoreSlope = 0, spreadSlope = 0, askDepletionRate = 0, bidRefillRate = 0, fastAnomalyScore = 0;
-      
-      if (pulseHistNext.length >= 3) {
-        const firstP = pulseHistNext;
-        const lastP = pulseHistNext[pulseHistNext.length - 1];
-        obScoreSlope = lastP.obScore - firstP.obScore;
-        spreadSlope = lastP.spreadPct - firstP.spreadPct;
-
-        if (firstP.depthAsk > 0) askDepletionRate = (firstP.depthAsk - lastP.depthAsk) / firstP.depthAsk;
-        if (firstP.depthBid > 0) bidRefillRate = (lastP.depthBid - firstP.depthBid) / firstP.depthBid;
-
-        let fas = 0;
-        if (mode === "bull") {
-            if (obScoreSlope > 0.03) fas += 25; else if (obScoreSlope > 0.01) fas += 10;
-            if (spreadSlope < -0.05) fas += 20;
-            if (askDepletionRate > 0.10) fas += 25;
-            if (bidRefillRate > 0.10) fas += 30;
-        } else {
-            if (obScoreSlope < -0.03) fas += 25; else if (obScoreSlope < -0.01) fas += 10;
-            if (spreadSlope < -0.05) fas += 20;
-            let bidDepletion = firstP.depthBid > 0? (firstP.depthBid - lastP.depthBid) / firstP.depthBid : 0;
-            let askRefill = firstP.depthAsk > 0? (lastP.depthAsk - firstP.depthAsk) / firstP.depthAsk : 0;
-            if (bidDepletion > 0.10) fas += 25;
-            if (askRefill > 0.10) fas += 30;
-        }
-        fastAnomalyScore = Math.max(0, Math.min(100, Math.round(fas)));
-      }
 
       let volAcc = 1;
       if (volHistNext.length >= 6) {
@@ -863,17 +831,18 @@ export default async function handler(req, res) {
         const tail = priceHistNext.slice(-60);
         const hi = Math.max(...tail.map((x) => n(x, 0)));
         const lo = Math.min(...tail.map((x) => n(x, 0)));
-        flat60Pct = lo > 0? ((hi - lo) / lo) * 100 : 999;
+        flat60Pct = lo > 0 ? ((hi - lo) / lo) * 100 : 999;
       }
 
       const dynRadar = CORE.dynamicRadarThresholds(range24, CFG);
       const R = CFG.radar || {};
+      const ob = obMap.get(sym) || null;
 
       const confidence = CORE.computeConfidence({
         vm,
         change24,
         range24,
-        obValid:!!ob?.valid,
+        obValid: !!ob?.valid,
       });
 
       const radarPass =
@@ -884,14 +853,12 @@ export default async function handler(req, res) {
         Math.abs(change24) <= n(R.maxAbsChg24, 999) &&
         range24 <= n(dynRadar.maxRange24, n(R.maxRange24, 999)) &&
         (mode === "bull"
-         ? change1h >= n(dynRadar.dir1hMinBull, n(R.dir1hMinBull, 0)) &&
+          ? change1h >= n(dynRadar.dir1hMinBull, n(R.dir1hMinBull, 0)) &&
             change24 >= n(dynRadar.dir24MinBull, n(R.dir24MinBull, 0))
           : change1h <= n(dynRadar.dir1hMaxBear, n(R.dir1hMaxBear, 0)) &&
             change24 <= n(dynRadar.dir24MaxBear, n(R.dir24MaxBear, 0)));
 
-      const warmupPass =
-        radarPass &&
-        volAcc >= n(CFG.buildup?.minVolAcc, 1.0);
+      const warmupPass = radarPass && volAcc >= n(CFG.buildup?.minVolAcc, 1.0);
 
       const setupPass =
         warmupPass &&
@@ -940,18 +907,10 @@ export default async function handler(req, res) {
           scoreNeed = Math.max(0.0007, scoreNeed * 0.9);
         }
 
-        // V3 Fast Anomaly Versoepeling voor ENTRY GATE
-        if (fastAnomalyScore >= 50) {
-            spreadLimit = Math.min(3.0, spreadLimit * 1.4); // Laat wijdere spread toe bij sterke momentum
-            depthNeed = depthNeed * 0.6; // Lagere bodem voor orderboek depth
-            confNeed = Math.max(0, confNeed - 5);
-            scoreNeed = scoreNeed * 0.5;
-        }
-
         const spreadOk = n(ob.spreadPct, 999) <= spreadLimit;
         depthOk = n(ob.depthMinUsd1p, 0) >= depthNeed;
         const confOk = confidence >= confNeed;
-        const scoreOk = mode === "bull"? score >= scoreNeed : score <= -scoreNeed;
+        const scoreOk = mode === "bull" ? score >= scoreNeed : score <= -scoreNeed;
 
         entryReadyPass = spreadOk && depthOk && confOk && scoreOk;
 
@@ -999,7 +958,7 @@ export default async function handler(req, res) {
 
       const uiLockUntil = Math.max(
         n(prev?.uiLockUntil, 0),
-        deskGate === "WATCH"? now + UI_ENTRY_LOCK_MS_MAIN : 0
+        deskGate === "WATCH" ? now + UI_ENTRY_LOCK_MS_MAIN : 0
       );
 
       const compression = {
@@ -1011,17 +970,17 @@ export default async function handler(req, res) {
         ready: stage === "ENTRY_READY",
         pressure:
           stage === "ENTRY_READY"
-           ? 60
+            ? 60
             : stage === "SETUP"
-             ? 46
+              ? 46
               : stage === "WARMUP"
-               ? 34
+                ? 34
                 : 18,
         breakoutPct: 0,
       };
 
       const thresholds = {
-        depthFloorUsd: dynThr? n(dynThr.depthMinUsd1p, 0) : 0,
+        depthFloorUsd: dynThr ? n(dynThr.depthMinUsd1p, 0) : 0,
         depthOk,
       };
 
@@ -1046,7 +1005,7 @@ export default async function handler(req, res) {
         symbol: sym,
         name: coin.name || "",
         image: coin.image || "",
-        side: mode === "bear"? "SHORT" : "LONG",
+        side: mode === "bear" ? "SHORT" : "LONG",
         price: n(coin.price, 0),
         marketCap,
         volume,
@@ -1058,31 +1017,32 @@ export default async function handler(req, res) {
         entryQuality,
         persistenceScore,
 
+        // nieuwe pipeline
         stage,
         pipelineStage: stage,
         stageLegacy,
 
         stageWhy:
           entryReadyPass
-           ? "entry_ready"
+            ? "entry_ready"
             : stage === "SETUP"
-             ? "setup_ready"
+              ? "setup_ready"
               : stage === "WARMUP"
-               ? "warmup_ready"
+                ? "warmup_ready"
                 : stage === "RADAR"
-                 ? "radar_ready"
+                  ? "radar_ready"
                   : "universe_only",
 
         ob: ob
-         ? {
+          ? {
               bestBid: n(ob.bestBid, 0),
               bestAsk: n(ob.bestAsk, 0),
               spreadPct: Number(n(ob.spreadPct, 999).toFixed(4)),
               depthMinUsd1p: Math.round(n(ob.depthMinUsd1p, 0)),
               score: Number(n(ob.score, 0).toFixed(6)),
-              valid:!!ob.valid,
-              fresh:!!ob.fresh,
-              stale:!!ob.stale,
+              valid: !!ob.valid,
+              fresh: !!ob.fresh,
+              stale: !!ob.stale,
               reason: String(ob.reason || ""),
               lor: n(ob.lor, 0),
             }
@@ -1117,7 +1077,7 @@ export default async function handler(req, res) {
 
         qualityScore: confidence,
         liquidityScore: ob?.valid
-         ? Math.max(
+          ? Math.max(
               0,
               Math.min(
                 100,
@@ -1128,32 +1088,35 @@ export default async function handler(req, res) {
 
         timingScore:
           stage === "ENTRY_READY"
-           ? 82
+            ? 82
             : stage === "SETUP"
-             ? 70
+              ? 70
               : stage === "WARMUP"
-               ? 58
+                ? 58
                 : 40,
 
         marketScore:
           regime === "EXPANSION"
-           ? 82
+            ? 82
             : regime === "TREND"
-             ? 70
+              ? 70
               : regime === "HEADWIND"
-               ? 35
+                ? 35
                 : 50,
 
         perfectCandidateScore:
           stage === "ENTRY_READY"
-           ? 78
+            ? 78
             : stage === "SETUP"
-             ? 68
+              ? 68
               : stage === "WARMUP"
-               ? 56
+                ? 56
                 : 36,
 
-        tradeCandidate: stage === "ENTRY_READY" && effectiveGate({ deskGate, engineGate, scannerGate }) === "WATCH",
+        tradeCandidate:
+          stage === "ENTRY_READY" &&
+          effectiveGate({ deskGate, engineGate, scannerGate }) === "WATCH",
+
         superScannerCoin:
           stage === "ENTRY_READY" ||
           stage === "SETUP" ||
@@ -1163,11 +1126,10 @@ export default async function handler(req, res) {
         scannerOnly: effectiveGate({ deskGate, engineGate, scannerGate }) === "IGNORE",
 
         entry: {
-          ok:!!entryReadyPass,
+          ok: !!entryReadyPass,
           reason: entryReason,
           slopeOk: true,
-          slope: Number(obScoreSlope.toFixed(4)),
-          fastAnomalyScore: fastAnomalyScore
+          slope: 0,
         },
 
         flat60Pct: Number(n(flat60Pct, 0).toFixed(3)),
@@ -1182,6 +1144,26 @@ export default async function handler(req, res) {
           stageLegacy,
           engineGate,
           tradeDeskStatus: deskGate,
+          radar: {
+            mcapMin: n(CFG?.radar?.mcapMin, 0),
+            mcapMax: n(CFG?.radar?.mcapMax, 0),
+            volMin: n(CFG?.radar?.volMin, 0),
+            vmMin: n(CFG?.radar?.vmMin, 0),
+            maxAbsChg24: n(CFG?.radar?.maxAbsChg24, 0),
+          },
+          warmup: {
+            minVolAcc: n(CFG?.buildup?.minVolAcc, 0),
+          },
+          setup: {
+            minConfidence: n(CFG?.almost?.minConfidence, 0),
+            maxFlat60Pct: n(CFG?.almost?.maxFlat60Pct, 0),
+          },
+          entry_ready: {
+            minConfidence: n(dynThr?.minConfidence, n(CFG?.entry?.minConfidence, 0)),
+            spreadMaxPct: n(dynThr?.spreadMaxPct, n(CFG?.entry?.spreadMaxPct, 0)),
+            depthMinUsd1p: n(dynThr?.depthMinUsd1p, n(CFG?.entry?.depthMinUsd1p, 0)),
+            obScoreMin: n(dynThr?.obScoreMin, n(CFG?.entry?.obScoreMin, 0)),
+          },
           liveMetrics: {
             confidence: n(confidence, 0),
             volAcc: n(volAcc, 0),
@@ -1189,13 +1171,13 @@ export default async function handler(req, res) {
             spreadPct: n(ob?.spreadPct, 999),
             depthMinUsd1p: n(ob?.depthMinUsd1p, 0),
             obScore: n(ob?.score, 0),
-            fastAnomalyScore: fastAnomalyScore
           },
         },
       };
 
+      // Voor trade_engine compatibiliteit geven we legacy stage door.
       const engineCoin = {
-       ...coinProfileBase,
+        ...coinProfileBase,
         stage: stageLegacy,
         pipelineStage: stage,
       };
@@ -1222,7 +1204,7 @@ export default async function handler(req, res) {
       });
 
       const outCoin = {
-       ...coinProfileBase,
+        ...coinProfileBase,
         coinProfile,
         execution,
       };
@@ -1235,7 +1217,7 @@ export default async function handler(req, res) {
         pipelineStage: stage,
         stageLegacy,
         lastSeen: now,
-        side: mode === "bear"? "SHORT" : "LONG",
+        side: mode === "bear" ? "SHORT" : "LONG",
         price: n(coin.price, 0),
         marketCap,
         volume,
@@ -1248,7 +1230,6 @@ export default async function handler(req, res) {
         confidence,
         entryQuality,
         persistenceScore,
-        fastAnomalyScore,
         ob: outCoin.ob,
         thresholds,
         breakout,
@@ -1266,7 +1247,6 @@ export default async function handler(req, res) {
         priceHist: priceHistNext,
         volHist: volHistNext,
         stageHist: stageHistNext,
-        pulseHist: pulseHistNext,
         filterSnapshot: outCoin.filterSnapshot,
         positionState: prev?.positionState || {
           inPosition: false,
@@ -1296,6 +1276,7 @@ export default async function handler(req, res) {
     funnel.warmup = funnel.warmup.slice(0, n(CFG.BUILDUP_LIMIT, 55));
     funnel.radar = funnel.radar.slice(0, n(CFG.RADAR_LIMIT, 100));
 
+    // legacy aliases
     funnel.trade_ready = [...funnel.entry_ready];
     funnel.almost = [...funnel.setup];
     funnel.buildup = [...funnel.warmup];
@@ -1312,6 +1293,7 @@ export default async function handler(req, res) {
         warmup: funnel.warmup.length,
         radar: funnel.radar.length,
 
+        // legacy
         trade_ready: funnel.trade_ready.length,
         almost: funnel.almost.length,
         buildup: funnel.buildup.length,
@@ -1320,7 +1302,7 @@ export default async function handler(req, res) {
       scannedAt: now,
       meta: {
         scanLock: { active: false, until: null },
-        trigger: isVercelCron? "vercel_cron" : tokenOk? "cron_token" : "manual_secret",
+        trigger: isVercelCron ? "vercel_cron" : tokenOk ? "cron_token" : "manual_secret",
         macroMode,
         performance: {
           maxCoinsFromCg: MAX_COINS_FROM_CG,
@@ -1330,9 +1312,9 @@ export default async function handler(req, res) {
         cg: {
           coinsFetched: rawCoins.length,
           tradable: tradable.length,
-          usedCache:!!cgMeta.usedCache,
-          partial:!!cgMeta.partial,
-          rateLimited:!!cgMeta.rateLimited,
+          usedCache: !!cgMeta.usedCache,
+          partial: !!cgMeta.partial,
+          rateLimited: !!cgMeta.rateLimited,
         },
       },
     };
@@ -1363,11 +1345,11 @@ export default async function handler(req, res) {
           entry_ready: CFG?.entry || {},
         },
         limits: {
-          ENTRY_LIMIT: CFG?.ENTRY_LIMIT?? null,
-          ALMOST_LIMIT: CFG?.ALMOST_LIMIT?? null,
-          BUILDUP_LIMIT: CFG?.BUILDUP_LIMIT?? null,
-          RADAR_LIMIT: CFG?.RADAR_LIMIT?? null,
-          CG_TOP: CFG?.CG_TOP?? null,
+          ENTRY_LIMIT: CFG?.ENTRY_LIMIT ?? null,
+          ALMOST_LIMIT: CFG?.ALMOST_LIMIT ?? null,
+          BUILDUP_LIMIT: CFG?.BUILDUP_LIMIT ?? null,
+          RADAR_LIMIT: CFG?.RADAR_LIMIT ?? null,
+          CG_TOP: CFG?.CG_TOP ?? null,
         },
         forwarding: {
           pushedToTradeFunnel: true,
@@ -1381,7 +1363,7 @@ export default async function handler(req, res) {
     );
 
     res.status(200).json({
-     ...latest,
+      ...latest,
       forwarding: funnelForward,
     });
   } catch (err) {
