@@ -278,6 +278,51 @@ async function mapLimit(items, limit, worker) {
   return out;
 }
 
+const REQUIRED_MOON_FNS = [
+  "getCfg",
+  "computeMarketRegime",
+  "computeVelocity",
+  "computeCompression",
+  "computeBreakoutPressure",
+  "computePersistenceScore",
+  "computeEliteQuality",
+  "computeMoonProbabilities",
+  "computeMoonRisk",
+  "computeBtcAlignmentScore",
+  "computeQualityScore",
+  "computeLiquidityScore",
+  "computeTimingScore",
+  "computeMarketScore",
+  "computePerfectCandidateScore",
+  "computeDeskGate",
+  "computeThesisDamage",
+  "decideMoonStage",
+  "buildMoonTradePlan",
+  "computeBullMoveScore",
+  "computeBearMoveScore",
+  "isBullExhausted",
+  "isBearBounceTrap",
+  "isLateBullEntry",
+  "isLateBearEntry",
+];
+
+function resolveMoonCore(mod, mode) {
+  const core = {
+    ...(mod || {}),
+    ...((mod?.default && typeof mod.default === "object") ? mod.default : {}),
+  };
+
+  const missing = REQUIRED_MOON_FNS.filter((k) => typeof core?.[k] !== "function");
+
+  if (missing.length) {
+    throw new Error(
+      `Invalid moon core module for mode=${mode}. Missing functions: ${missing.join(", ")}`
+    );
+  }
+
+  return core;
+}
+
 // ========== constants ==========
 const COOLDOWN_SL_SEC = 5 * 60 * 60;
 const COOLDOWN_TP_SEC = 2 * 60 * 60;
@@ -833,7 +878,7 @@ export default async function handler(req, res) {
         ? await import("../../lib/_moon_core_bear.js")
         : await import("../../lib/_moon_core_bull.js");
 
-    const CORE = mod?.default && typeof mod.default === "object" ? mod.default : mod;
+    const CORE = resolveMoonCore(mod, mode);
 
     const lock = await acquireScanLock(mode);
     if (!lock.ok) {
@@ -853,8 +898,8 @@ export default async function handler(req, res) {
     ]);
 
     const positions = {
-      open: [...((prevPositions?.open) || [])],
-      closed: [...((prevPositions?.closed) || [])],
+      open: [...(prevPositions?.open || [])],
+      closed: [...(prevPositions?.closed || [])],
     };
 
     await applyCooldownsFromClosed(mode, positions, now);
@@ -1258,7 +1303,6 @@ export default async function handler(req, res) {
       }
     }
 
-    entryCandidates.sort(sortMoonCoins.bind(null));
     entryCandidates.sort((a, b) => sortMoonCoins(a.coin, b.coin));
 
     const slotsLeft = MAX_OPEN_TRADES - positions.open.length;
