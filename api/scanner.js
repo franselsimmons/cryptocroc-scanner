@@ -1,4 +1,3 @@
-// api/runner-scan.js
 import {
   fetchCoinGeckoTopCached,
   generateShallowOb,
