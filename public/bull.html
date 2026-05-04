@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Bull Runner Funnel</title>
+
+  <link rel="stylesheet" href="main.css">
+  <link rel="stylesheet" href="bull.css">
+</head>
+
+<body>
+  <div class="pageShell">
+
+    <div class="header">
+      <h1>🟢 BULL RUNNER FUNNEL</h1>
+      <div id="statusLine">Laden...</div>
+
+      <div class="nav">
+        <a href="index.html" class="btn">Home</a>
+        <a href="bull.html" class="btn active green">Bull</a>
+        <a href="bear.html" class="btn">Bear</a>
+        <a href="signals.html" class="btn">Runner</a>
+        <a href="analytics.html" class="btn">Analyse</a>
+      </div>
+    </div>
+
+    <div class="funnel-section">
+      <h2>🔥 RUNNER HOT</h2>
+      <small class="stageNote">Sterke long runner kandidaat. Nog geen echte Discord-entry.</small>
+      <div id="entry"></div>
+    </div>
+
+    <div class="funnel-section">
+      <h2>⚠️ RUNNER SETUP</h2>
+      <small class="stageNote">Bijna sterk genoeg voor runner execution.</small>
+      <div id="almost"></div>
+    </div>
+
+    <div class="funnel-section">
+      <h2>📈 PRE-RUNNER BUILDUP</h2>
+      <small class="stageNote">Vroege long acceleration / pressure opbouw.</small>
+      <div id="buildup"></div>
+    </div>
+
+    <div class="funnel-section">
+      <h2>📡 RUNNER WATCH</h2>
+      <small class="stageNote">Watchlist-only. Niet naar TradeSystem pushen als entry.</small>
+      <div id="radar"></div>
+    </div>
+
+    <div id="modalOverlay" class="modal-overlay" onclick="closeModal()">
+      <div class="modal" onclick="event.stopPropagation()">
+
+        <div class="modal-header">
+          <div>
+            <h2 id="m-title">Coin</h2>
+            <p>Bull Runner Analyse</p>
+          </div>
+          <button class="close-btn" onclick="closeModal()">✕</button>
+        </div>
+
+        <div class="modal-grid">
+          <div class="m-box"><span>Prijs</span><strong id="m-price">$0</strong></div>
+          <div class="m-box"><span>Runner Score</span><strong id="m-score">0</strong></div>
+
+          <div class="m-box"><span>Flow</span><strong id="m-flow">-</strong></div>
+          <div class="m-box"><span>Stage</span><strong id="m-stage">-</strong></div>
+
+          <div class="m-box"><span>Intent</span><strong id="m-intent">-</strong></div>
+          <div class="m-box"><span>Source</span><strong id="m-source">-</strong></div>
+
+          <div class="m-box"><span>1h Change</span><strong id="m-change1h">0%</strong></div>
+          <div class="m-box"><span>24h Change</span><strong id="m-change24">0%</strong></div>
+
+          <div class="m-box"><span>TF Score</span><strong id="m-tf">-</strong></div>
+          <div class="m-box"><span>TF Alignment</span><strong id="m-tfalign">-</strong></div>
+
+          <div class="m-box"><span>VM</span><strong id="m-vm">-</strong></div>
+          <div class="m-box"><span>Freshness</span><strong id="m-fresh">-</strong></div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <script src="bull.js"></script>
+</body>
+</html>
