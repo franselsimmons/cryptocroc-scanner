@@ -7,17 +7,18 @@
   "scripts": {
     "dev": "vercel dev",
     "start": "vercel dev",
-    "check": "node --check api/trade-funnel.js && node --check api/public-latest.js && node --check api/trade-history.js && node --check api/trade-stats.js",
-    "check:runner": "node --check lib/tradeSystem.js"
+    "check": "node --check api/cron.js && node --check api/scanner.js && node --check api/trade-funnel.js && node --check api/public-latest.js && node --check api/trade-history.js && node --check api/trade-stats.js",
+    "check:runner": "node --check lib/tradeSystem.js",
+    "check:all": "npm run check && npm run check:runner"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "@vercel/kv": "^1.0.1",
-    "pg": "^8.13.1"
+    "@vercel/kv": "^3.0.0",
+    "pg": "^8.20.0"
   },
   "devDependencies": {
-    "vercel": "^39.0.0"
+    "vercel": "^52.0.0"
   }
 }
