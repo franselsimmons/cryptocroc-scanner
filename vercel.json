@@ -1,0 +1,56 @@
+{
+  "version": 2,
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/trade-funnel?notify=true&store=true",
+      "schedule": "*/2 * * * *"
+    }
+  ],
+  "functions": {
+    "api/cron.js": {
+      "maxDuration": 60
+    },
+    "api/trade-funnel.js": {
+      "maxDuration": 60
+    },
+    "api/public-latest.js": {
+      "maxDuration": 10
+    },
+    "api/trade-history.js": {
+      "maxDuration": 10
+    },
+    "api/trade-stats.js": {
+      "maxDuration": 10
+    },
+    "api/performance.js": {
+      "maxDuration": 10
+    },
+    "api/filter-config.js": {
+      "maxDuration": 10
+    }
+  },
+  "headers": [
+    {
+      "source": "/(.*).html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, no-cache, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, no-cache, must-revalidate"
+        }
+      ]
+    }
+  ]
+}
