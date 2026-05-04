@@ -32,21 +32,32 @@ const SCANNER_PROFILE = "RUNNER";
 
 // ================= RUNNER SCANNER CONFIG =================
 function getRunnerScannerConfig(regime, market) {
-  const trend = String(market?.trend || market?.state || "").toUpperCase();
+  const trend = String(
+    market?.trend ||
+    market?.state ||
+    market ||
+    ""
+  ).toUpperCase();
+
   const r = String(regime || "NORMAL").toUpperCase();
 
   const cfg = {
     profile: SCANNER_PROFILE,
+
     vmMin: 0.016,
     hardChange24: 0.45,
     hardChange1h: 0.18,
+
     minDirectionalPressure: 0.18,
     minRunnerScore: 30,
     minEntryScore: 76,
+
     targetMinimum: 16,
     fallbackMax: 36,
+
     scoreBoost: 0,
     allowNeutralDirection: false,
+
     maxCh1Chaos: 8.5,
     maxCh24Exhaustion: 34,
     exhaustionPenaltyEnabled: true
@@ -82,6 +93,17 @@ function getRunnerScannerConfig(regime, market) {
     cfg.fallbackMax += 8;
   }
 
+  if (trend === "TRENDING") {
+    cfg.targetMinimum += 6;
+    cfg.fallbackMax += 10;
+    cfg.minRunnerScore = Math.max(20, cfg.minRunnerScore - 2);
+  }
+
+  if (trend === "CHOPPY") {
+    cfg.minEntryScore += 3;
+    cfg.minRunnerScore += 2;
+  }
+
   return cfg;
 }
 
@@ -115,19 +137,23 @@ function emptyDashboardStats(now = Date.now()) {
     startedAt: now,
     lastResetAt: now,
     lastScanAt: 0,
+
     totalScans: 0,
     totalEntries: 0,
     totalRejected: 0,
     totalOtherTrades: 0,
     totalFunnelCoins: 0,
     totalCandidates: 0,
+
     lastEntries: 0,
     lastRejected: 0,
     lastOtherTrades: 0,
     lastFunnelCoins: 0,
     lastCandidates: 0,
+
     rejectReasonCounts: {},
     actionCounts: {},
+
     entryRows: [],
     rejectedRows: [],
     tradeRows: []
@@ -141,19 +167,23 @@ function normalizeDashboardStats(stats, now = Date.now()) {
     startedAt: safeNumber(base?.startedAt, now),
     lastResetAt: safeNumber(base?.lastResetAt, safeNumber(base?.startedAt, now)),
     lastScanAt: safeNumber(base?.lastScanAt, 0),
+
     totalScans: safeNumber(base?.totalScans, 0),
     totalEntries: safeNumber(base?.totalEntries, 0),
     totalRejected: safeNumber(base?.totalRejected, 0),
     totalOtherTrades: safeNumber(base?.totalOtherTrades, 0),
     totalFunnelCoins: safeNumber(base?.totalFunnelCoins, 0),
     totalCandidates: safeNumber(base?.totalCandidates, 0),
+
     lastEntries: safeNumber(base?.lastEntries, 0),
     lastRejected: safeNumber(base?.lastRejected, 0),
     lastOtherTrades: safeNumber(base?.lastOtherTrades, 0),
     lastFunnelCoins: safeNumber(base?.lastFunnelCoins, 0),
     lastCandidates: safeNumber(base?.lastCandidates, 0),
+
     rejectReasonCounts: normalizeCounterMap(base?.rejectReasonCounts),
     actionCounts: normalizeCounterMap(base?.actionCounts),
+
     entryRows: safeArray(base?.entryRows),
     rejectedRows: safeArray(base?.rejectedRows),
     tradeRows: safeArray(base?.tradeRows)
@@ -163,13 +193,16 @@ function normalizeDashboardStats(stats, now = Date.now()) {
 // ================= QUERY NORMALIZERS =================
 function normalizeScanSide(side) {
   const s = String(side || "both").toLowerCase();
+
   if (s === "bull") return "bull";
   if (s === "bear") return "bear";
+
   return "both";
 }
 
 function normalizeNotify(value) {
   const v = String(value || "").toLowerCase();
+
   return v === "true" || v === "1" || v === "yes";
 }
 
@@ -193,7 +226,6 @@ function getDirectionalPressure(c) {
   const ch24 = Number(c.change24 || 0);
   const ch1 = Number(c.change1h || 0);
 
-  // Runner scanner: 1h momentum weegt zwaar.
   return (ch1 * 0.78) + (ch24 * 0.22);
 }
 
@@ -223,7 +255,10 @@ function getDirectionalValues(c, side) {
 function displayDirectionAllowed(c, side, adaptive = {}) {
   const v = getDirectionalValues(c, side);
 
-  if (v.pressure >= Number(adaptive.minDirectionalPressure || 0.18) && v.ch1 > 0) {
+  if (
+    v.pressure >= Number(adaptive.minDirectionalPressure || 0.18) &&
+    v.ch1 > 0
+  ) {
     return true;
   }
 
@@ -354,15 +389,25 @@ function calculateRunnerScore(c, regime, side, adaptive = {}) {
 function fallbackStage(score, flow, freshness = 0, adaptive = {}) {
   const minEntry = Number(adaptive.minEntryScore || 76);
 
-  if ((flow === "SQUEEZE" || flow === "RUNNING") && score >= minEntry && freshness >= 12) {
+  if (
+    (flow === "SQUEEZE" || flow === "RUNNING") &&
+    score >= minEntry &&
+    freshness >= 12
+  ) {
     return "entry";
   }
 
-  if ((flow === "SQUEEZE" || flow === "RUNNING" || flow === "BREAKOUT") && score >= 64) {
+  if (
+    (flow === "SQUEEZE" || flow === "RUNNING" || flow === "BREAKOUT") &&
+    score >= 64
+  ) {
     return "almost";
   }
 
-  if ((flow === "RUNNING" || flow === "BREAKOUT" || flow === "BUILDING") && score >= 44) {
+  if (
+    (flow === "RUNNING" || flow === "BREAKOUT" || flow === "BUILDING") &&
+    score >= 44
+  ) {
     return "buildup";
   }
 
@@ -373,6 +418,7 @@ function fallbackStage(score, flow, freshness = 0, adaptive = {}) {
 
 function mergeStage(prevStage, filterStage) {
   const order = ["radar", "buildup", "almost", "entry"];
+
   const prevIndex = order.indexOf(prevStage || "radar");
   const newIndex = order.indexOf(filterStage || "radar");
 
@@ -414,8 +460,13 @@ function getRunnerFilterStage(coin, adaptive = {}) {
     return "entry";
   }
 
-  if (score >= 62 && ["SQUEEZE", "RUNNING", "BREAKOUT"].includes(flow)) return "almost";
-  if (score >= 42 && ["RUNNING", "BREAKOUT", "BUILDING"].includes(flow)) return "buildup";
+  if (score >= 62 && ["SQUEEZE", "RUNNING", "BREAKOUT"].includes(flow)) {
+    return "almost";
+  }
+
+  if (score >= 42 && ["RUNNING", "BREAKOUT", "BUILDING"].includes(flow)) {
+    return "buildup";
+  }
 
   return "radar";
 }
@@ -434,17 +485,34 @@ function normalizeBitgetContractSymbol(symbolKey) {
 }
 
 function normalizeBitgetKey(symbolKey) {
-  return normalizeBitgetContractSymbol(symbolKey).replace(/USDT$/, "").replace(/USDC$/, "");
+  return normalizeBitgetContractSymbol(symbolKey)
+    .replace(/USDT$/, "")
+    .replace(/USDC$/, "");
 }
 
 function normalizeBitgetProductType(productType, rawSymbol = "") {
   const p = String(productType || "").toUpperCase();
   const raw = String(rawSymbol || "").toUpperCase();
 
-  if (p === "USDT-FUTURES" || p === "COIN-FUTURES" || p === "USDC-FUTURES") return p;
-  if (raw.includes("_UMCBL") || raw.includes("-UMCBL") || raw.endsWith("USDT")) return "USDT-FUTURES";
-  if (raw.includes("_DMCBL") || raw.includes("-DMCBL")) return "COIN-FUTURES";
-  if (raw.includes("_CMCBL") || raw.includes("-CMCBL") || raw.endsWith("USDC")) return "USDC-FUTURES";
+  if (
+    p === "USDT-FUTURES" ||
+    p === "COIN-FUTURES" ||
+    p === "USDC-FUTURES"
+  ) {
+    return p;
+  }
+
+  if (raw.includes("_UMCBL") || raw.includes("-UMCBL") || raw.endsWith("USDT")) {
+    return "USDT-FUTURES";
+  }
+
+  if (raw.includes("_DMCBL") || raw.includes("-DMCBL")) {
+    return "COIN-FUTURES";
+  }
+
+  if (raw.includes("_CMCBL") || raw.includes("-CMCBL") || raw.endsWith("USDC")) {
+    return "USDC-FUTURES";
+  }
 
   return "USDT-FUTURES";
 }
@@ -454,7 +522,11 @@ function buildTradableSymbolMap(futures) {
 
   for (const [key, value] of futures instanceof Map ? futures.entries() : []) {
     const rawBitgetSymbol = String(
-      value?.symbol || value?.instId || value?.tickerId || key || ""
+      value?.symbol ||
+      value?.instId ||
+      value?.tickerId ||
+      key ||
+      ""
     ).toUpperCase().trim();
 
     if (!rawBitgetSymbol) continue;
@@ -465,7 +537,13 @@ function buildTradableSymbolMap(futures) {
 
     if (!bitgetSymbol || !baseSymbol) continue;
 
-    const candidate = { baseSymbol, bitgetSymbol, productType, rawBitgetSymbol };
+    const candidate = {
+      baseSymbol,
+      bitgetSymbol,
+      productType,
+      rawBitgetSymbol
+    };
+
     const prev = out.get(baseSymbol);
 
     if (!prev) {
@@ -473,7 +551,10 @@ function buildTradableSymbolMap(futures) {
       continue;
     }
 
-    if (prev.productType !== "USDT-FUTURES" && candidate.productType === "USDT-FUTURES") {
+    if (
+      prev.productType !== "USDT-FUTURES" &&
+      candidate.productType === "USDT-FUTURES"
+    ) {
       out.set(baseSymbol, candidate);
     }
   }
@@ -490,11 +571,14 @@ function normalize(raw) {
     symbol: String(raw?.symbol || "").toUpperCase(),
     name: raw?.name || "",
     price: Number(raw?.current_price || 0),
+
     change24: Number(raw?.price_change_percentage_24h || 0),
     change1h: Number(raw?.price_change_percentage_1h_in_currency || 0),
+
     volume: totalVolume,
     marketCap,
     vm: marketCap > 0 ? totalVolume / marketCap : 0,
+
     ob: generateShallowOb()
   };
 }
@@ -511,7 +595,12 @@ function buildCoinTimeframeMeta(coin) {
       tfAlignment: String(ctx?.alignment || "UNKNOWN")
     };
   } catch {
-    return { tfContext: {}, tfScore: 0, tfStrength: 0, tfAlignment: "UNKNOWN" };
+    return {
+      tfContext: {},
+      tfScore: 0,
+      tfStrength: 0,
+      tfAlignment: "UNKNOWN"
+    };
   }
 }
 
@@ -524,17 +613,20 @@ function enrichRunnerCoin(base, contractMeta, regime, side, adaptive) {
 
   const coin = {
     ...base,
+
     side,
     flow,
     freshness,
     moveScore: score,
     edge,
+
     runnerProfile: SCANNER_PROFILE,
     runnerPressure: directional.pressure,
     runnerAcceleration: directional.acceleration,
     runnerAbsChange1h: directional.absCh1,
     runnerAbsChange24: directional.absCh24,
     runnerVm: directional.vm,
+
     symbolTradable: true,
     bitgetSymbol: contractMeta.bitgetSymbol,
     productType: contractMeta.productType,
@@ -555,8 +647,18 @@ function enrichRunnerCoin(base, contractMeta, regime, side, adaptive) {
 // ================= FUNNEL HELPERS =================
 function emptyFunnel() {
   return {
-    bull: { entry: [], almost: [], buildup: [], radar: [] },
-    bear: { entry: [], almost: [], buildup: [], radar: [] }
+    bull: {
+      entry: [],
+      almost: [],
+      buildup: [],
+      radar: []
+    },
+    bear: {
+      entry: [],
+      almost: [],
+      buildup: [],
+      radar: []
+    }
   };
 }
 
@@ -566,7 +668,9 @@ function countSide(funnel, side) {
   let total = 0;
 
   for (const stage of STAGES) {
-    total += Array.isArray(funnel[side][stage]) ? funnel[side][stage].length : 0;
+    total += Array.isArray(funnel[side][stage])
+      ? funnel[side][stage].length
+      : 0;
   }
 
   return total;
@@ -578,7 +682,9 @@ function countFunnel(funnel) {
 
 function hasSymbolInSide(funnel, side, symbol) {
   for (const stage of STAGES) {
-    if (Array.isArray(funnel?.[side]?.[stage]) && funnel[side][stage].some(c => c.symbol === symbol)) {
+    const rows = funnel?.[side]?.[stage];
+
+    if (Array.isArray(rows) && rows.some(c => c.symbol === symbol)) {
       return true;
     }
   }
@@ -610,6 +716,7 @@ function fillUiFallback({
   adaptive = {}
 }) {
   const targetMinimum = adaptive.targetMinimum || 16;
+
   if (countSide(funnel, side) >= targetMinimum) return;
 
   const list = [];
@@ -628,8 +735,13 @@ function fillUiFallback({
 
     const coin = enrichRunnerCoin(base, contractMeta, regime, side, adaptive);
 
-    if (!["SQUEEZE", "RUNNING", "BREAKOUT", "BUILDING"].includes(coin.flow)) continue;
-    if (coin.moveScore < Number(adaptive.minRunnerScore || 30) - 6) continue;
+    if (!["SQUEEZE", "RUNNING", "BREAKOUT", "BUILDING"].includes(coin.flow)) {
+      continue;
+    }
+
+    if (coin.moveScore < Number(adaptive.minRunnerScore || 30) - 6) {
+      continue;
+    }
 
     list.push({
       ...coin,
@@ -675,11 +787,15 @@ async function mergeWithPreviousSideScan(currentPayload, scanSide) {
 
   const mergedFunnel = emptyFunnel();
 
-  mergedFunnel[scanSide] = currentPayload.funnel?.[scanSide] || mergedFunnel[scanSide];
+  mergedFunnel[scanSide] =
+    currentPayload.funnel?.[scanSide] ||
+    mergedFunnel[scanSide];
 
   const otherSide = scanSide === "bull" ? "bear" : "bull";
 
-  mergedFunnel[otherSide] = previous.funnel?.[otherSide] || mergedFunnel[otherSide];
+  mergedFunnel[otherSide] =
+    previous.funnel?.[otherSide] ||
+    mergedFunnel[otherSide];
 
   const mergedAnalytics = {
     ...(previous.analytics || {}),
@@ -691,29 +807,58 @@ async function mergeWithPreviousSideScan(currentPayload, scanSide) {
     [scanSide]: currentPayload.advice?.[scanSide]
   };
 
-  const candidatesBull = scanSide === "bull" ? currentPayload.candidatesBull : previous.candidatesBull || 0;
-  const candidatesBear = scanSide === "bear" ? currentPayload.candidatesBear : previous.candidatesBear || 0;
+  const candidatesBull =
+    scanSide === "bull"
+      ? currentPayload.candidatesBull
+      : previous.candidatesBull || 0;
+
+  const candidatesBear =
+    scanSide === "bear"
+      ? currentPayload.candidatesBear
+      : previous.candidatesBear || 0;
 
   sortFunnel(mergedFunnel);
 
   return {
     ...previous,
     ...currentPayload,
+
     scannerProfile: SCANNER_PROFILE,
+
     funnel: mergedFunnel,
     funnelCount: countFunnel(mergedFunnel),
     bullCount: countSide(mergedFunnel, "bull"),
     bearCount: countSide(mergedFunnel, "bear"),
+
     analytics: mergedAnalytics,
     advice: mergedAdvice,
+
     trades: safeArray(currentPayload.trades),
-    dashboardStats: currentPayload.dashboardStats || previous.dashboardStats || emptyDashboardStats(Date.now()),
-    tradeSystemAnalysis: currentPayload.tradeSystemAnalysis || previous.tradeSystemAnalysis || null,
+
+    dashboardStats:
+      currentPayload.dashboardStats ||
+      previous.dashboardStats ||
+      emptyDashboardStats(Date.now()),
+
+    tradeSystemAnalysis:
+      currentPayload.tradeSystemAnalysis ||
+      previous.tradeSystemAnalysis ||
+      null,
+
     candidatesBull,
     candidatesBear,
     candidates: candidatesBull + candidatesBear,
-    lastBullScan: scanSide === "bull" ? Date.now() : previous.lastBullScan || null,
-    lastBearScan: scanSide === "bear" ? Date.now() : previous.lastBearScan || null,
+
+    lastBullScan:
+      scanSide === "bull"
+        ? Date.now()
+        : previous.lastBullScan || null,
+
+    lastBearScan:
+      scanSide === "bear"
+        ? Date.now()
+        : previous.lastBearScan || null,
+
     lastSideScan: scanSide,
     scanMode: "merged",
     updatedAt: Date.now()
@@ -730,10 +875,13 @@ async function handleBitgetUniverseUnavailable(scanSide) {
       ok: true,
       stale: true,
       staleReason: "bitget_universe_unavailable",
+
       bitgetSymbols: 0,
       bitgetUniverseReady: false,
+
       scannerProfile: SCANNER_PROFILE,
       scanRequestedSide: scanSide,
+
       servedAt: Date.now()
     };
   }
@@ -743,10 +891,13 @@ async function handleBitgetUniverseUnavailable(scanSide) {
 
 // ================= BTC RUNNER STATE =================
 function buildBtcState(rawCoins) {
-  const btcRaw = rawCoins.find(c => String(c?.symbol || "").toUpperCase() === "BTC") || rawCoins[0];
+  const btcRaw =
+    rawCoins.find(c => String(c?.symbol || "").toUpperCase() === "BTC") ||
+    rawCoins[0];
 
   const btcChange24 = Number(btcRaw?.price_change_percentage_24h || 0);
   const btcChange1h = Number(btcRaw?.price_change_percentage_1h_in_currency || 0);
+
   const pressure = (btcChange1h * 0.78) + (btcChange24 * 0.22);
 
   let state = "NEUTRAL";
@@ -787,9 +938,14 @@ export async function buildScanPayload(options = {}) {
   resetAnalytics();
 
   const previousLatest = await getLatestScan().catch(() => null);
+
   const rawCoins = await fetchCoinGeckoTopCached();
 
-  if (!Array.isArray(rawCoins)) throw new Error("API error");
+  if (!Array.isArray(rawCoins)) {
+    throw new Error("coingecko_scan_failed");
+  }
+
+  const normalizedCoins = rawCoins.map(normalize).filter(c => c.symbol && c.price > 0);
 
   let futures = new Map();
 
@@ -809,7 +965,10 @@ export async function buildScanPayload(options = {}) {
 
   const btc = buildBtcState(rawCoins);
   const regime = detectRegime(rawCoins) || "NORMAL";
-  const market = classifyMarket(rawCoins);
+
+  // Belangrijk: classifyMarket moet genormaliseerde coins krijgen.
+  const market = classifyMarket(normalizedCoins);
+
   const adaptive = getRunnerScannerConfig(regime, market);
 
   const funnel = emptyFunnel();
@@ -822,9 +981,7 @@ export async function buildScanPayload(options = {}) {
   const activeSymbols = [];
   const sidesToScan = scanSide === "both" ? SIDES : [scanSide];
 
-  for (const raw of rawCoins) {
-    const base = normalize(raw);
-
+  for (const base of normalizedCoins) {
     if (shouldSkipBaseCoin(base, adaptive)) continue;
 
     const contractMeta = tradableSymbolMap.get(base.symbol);
@@ -896,7 +1053,9 @@ export async function buildScanPayload(options = {}) {
 
   memory = cleanMemory(memory, activeSymbols);
 
-  if (store) await saveStageMemory(memory);
+  if (store) {
+    await saveStageMemory(memory);
+  }
 
   sortFunnel(funnel);
 
@@ -906,55 +1065,90 @@ export async function buildScanPayload(options = {}) {
 
   const currentPayload = {
     ok: true,
+
     scannerProfile: SCANNER_PROFILE,
+
     scanSide,
     scanMode: scanSide,
+
     notify,
     store,
+
     btc,
     regime,
     market,
     adaptive,
+
     funnel,
+
     funnelCount: countFunnel(funnel),
     bullCount: countSide(funnel, "bull"),
     bearCount: countSide(funnel, "bear"),
+
     trades: safeArray(previousLatest?.trades),
+
     dashboardStats: normalizeDashboardStats(previousLatest?.dashboardStats, now),
     tradeSystemAnalysis: previousLatest?.tradeSystemAnalysis || null,
+
     analytics,
     advice,
+
     total: rawCoins.length,
+
     candidates: candidatesBull + candidatesBear,
     candidatesBull,
     candidatesBear,
+
     bitgetSymbols: validSymbols.size,
     bitgetUniverseReady: true,
+
     scannerUpdatedAt: now,
     tradeFunnelUpdatedAt: previousLatest?.tradeFunnelUpdatedAt || null,
     updatedAt: now,
-    lastBullScan: scanSide === "bull" || scanSide === "both" ? now : previousLatest?.lastBullScan || null,
-    lastBearScan: scanSide === "bear" || scanSide === "both" ? now : previousLatest?.lastBearScan || null
+
+    lastBullScan:
+      scanSide === "bull" || scanSide === "both"
+        ? now
+        : previousLatest?.lastBullScan || null,
+
+    lastBearScan:
+      scanSide === "bear" || scanSide === "both"
+        ? now
+        : previousLatest?.lastBearScan || null
   };
 
   const finalPayload = await mergeWithPreviousSideScan(currentPayload, scanSide);
 
-  if (store) await setLatestScan(finalPayload);
+  if (store) {
+    await setLatestScan(finalPayload);
+  }
 
   return finalPayload;
 }
 
+// ================= VERCEL HANDLER =================
 export default async function handler(req, res) {
   try {
     const side = normalizeScanSide(req?.query?.side);
     const notify = normalizeNotify(req?.query?.notify);
-    const store = normalizeStore(req?.query?.store, notify);
 
-    const data = await buildScanPayload({ side, notify, store });
+    // Scanner endpoint moet standaard opslaan.
+    // Anders krijgt trade-funnel weer: no_latest_scan_available.
+    const store = normalizeStore(req?.query?.store, true);
+
+    const data = await buildScanPayload({
+      side,
+      notify,
+      store
+    });
 
     return res.status(200).json(data);
   } catch (e) {
     console.error("RUNNER SCAN ERROR:", e);
-    return res.status(500).json({ ok: false, error: e.message });
+
+    return res.status(500).json({
+      ok: false,
+      error: e?.message || "runner_scan_error"
+    });
   }
 }
