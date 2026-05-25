@@ -1,75 +1,56 @@
-const el = id => document.getElementById(id);
+const API_URL = "/api/analyze";
+const API_FALLBACK_URL = "/api/analyse";
 
-window.latestAdvice = {};
+const REFRESH_MS = 30000;
+const DEFAULT_MIN_CLOSED = 10;
+const DEFAULT_SOURCE_MODE = "stored";
 
-// ================= CONFIG =================
-const REFRESH_MS = 15_000;
+let state = {
+  report: null,
+  raw: null,
+  activeTab: "ALL",
+  auto: false,
+  timer: null,
+  loading: false,
+};
 
-// ================= HELPERS =================
-function safeArray(value){
+// ================= DOM / GENERIC =================
+
+function $(id) {
+  return document.getElementById(id);
+}
+
+function firstEl(...ids) {
+  for (const id of ids) {
+    const el = $(id);
+    if (el) return el;
+  }
+
+  return null;
+}
+
+function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function safeObject(value){
+function safeObject(value) {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value
     : {};
 }
 
-function num(value, fallback = 0){
+function safeNumber(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }
 
-function countValue(value){
-  if(Array.isArray(value)) return value.length;
-  return num(value, 0);
+function text(value, fallback = "") {
+  if (value === undefined || value === null) return fallback;
+  return String(value);
 }
 
-function fmtTime(ts){
-  if(!ts) return "-";
-
-  try{
-    return new Date(ts).toLocaleTimeString("nl-NL", {
-      hour: "2-digit",
-      minute: "2-digit"
-    });
-  }catch{
-    return "-";
-  }
-}
-
-function fmtDateTime(ts){
-  if(!ts) return "-";
-
-  try{
-    return new Date(ts).toLocaleString("nl-NL");
-  }catch{
-    return "-";
-  }
-}
-
-function pct(count, total){
-  if(!total) return 0;
-  return Number(((count / total) * 100).toFixed(1));
-}
-
-function pctText(value){
-  const n = num(value, 0);
-  return `${n.toFixed(1)}%`;
-}
-
-function fixed(value, decimals = 2){
-  return num(value, 0).toFixed(decimals);
-}
-
-function signedFixed(value, decimals = 2){
-  const n = num(value, 0);
-  return `${n > 0 ? "+" : ""}${n.toFixed(decimals)}`;
-}
-
-function escapeHtml(value){
-  return String(value ?? "")
+function escapeHtml(value) {
+  return text(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -77,890 +58,1349 @@ function escapeHtml(value){
     .replaceAll("'", "&#039;");
 }
 
-function normalizeAction(action){
-  return String(action || "").toUpperCase().trim();
+function fmtNum(value, decimals = 3) {
+  const n = safeNumber(value, 0);
+
+  if (decimals === 0) return String(Math.round(n));
+  if (Number.isInteger(n)) return String(n);
+
+  return n.toFixed(decimals).replace(/\.?0+$/, "");
 }
 
-function normalizeReason(reason){
-  return String(reason || "UNKNOWN").toUpperCase().trim();
+function fmtPct(value, decimals = 1) {
+  const raw = text(value);
+
+  if (raw.includes("%")) return raw;
+
+  return `${fmtNum(value, decimals)}%`;
 }
 
-function normalizeKey(value, fallback = "UNKNOWN"){
-  const v = String(value || "").trim();
-  return v || fallback;
-}
+function signedClass(value) {
+  const n = safeNumber(value, 0);
 
-function avg(list, field){
-  const nums = safeArray(list)
-    .map(x => num(x?.[field], NaN))
-    .filter(Number.isFinite);
+  if (n > 0) return "positive";
+  if (n < 0) return "negative";
 
-  if(!nums.length) return 0;
-
-  return Number((nums.reduce((a, b) => a + b, 0) / nums.length).toFixed(2));
-}
-
-function objectCounterToRows(counter, totalFallback = 0){
-  const entries = Object.entries(safeObject(counter));
-  const total = totalFallback || entries.reduce((sum, [, count]) => sum + num(count), 0);
-
-  return entries
-    .map(([key, count]) => ({
-      key: normalizeReason(key),
-      count: num(count),
-      pct: pct(num(count), total),
-      advice: getRunnerReasonAdvice(key)
-    }))
-    .sort((a, b) => b.count - a.count);
-}
-
-function rowsFromStatsArray(rows, keyField = "key"){
-  return safeArray(rows)
-    .map(row => ({
-      key: normalizeReason(row?.[keyField] || row?.key || row?.reason || "UNKNOWN"),
-      count: num(row?.count ?? row?.total, 0),
-      pct: num(row?.pct, 0),
-      advice: getRunnerReasonAdvice(row?.[keyField] || row?.key || row?.reason)
-    }))
-    .sort((a, b) => b.count - a.count);
-}
-
-function getFirst(...values){
-  for(const value of values){
-    if(value !== undefined && value !== null) return value;
-  }
-
-  return null;
-}
-
-function valueClass(value){
-  const n = num(value, 0);
-  if(n > 0) return "good";
-  if(n < 0) return "bad";
   return "";
 }
 
-async function fetchJsonSafe(url){
-  try{
-    const res = await fetch(`${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`, {
-      cache: "no-store"
-    });
+function statusClass(status) {
+  return `status-${text(status, "EMPTY").toLowerCase()}`;
+}
 
-    const json = await res.json().catch(() => null);
+function errorToText(error) {
+  if (!error) return "Onbekende error.";
 
-    if(!res.ok || !json?.ok){
-      return {
-        ok: false,
-        error: json?.error || `http_${res.status}`
-      };
+  if (typeof error === "string") return error;
+
+  if (error instanceof Error) {
+    return error.message || String(error);
+  }
+
+  if (typeof error === "object") {
+    if (error.error?.message) return error.error.message;
+    if (error.message) return error.message;
+    if (error.error && typeof error.error === "string") return error.error;
+    if (error.reason) return error.reason;
+
+    try {
+      return JSON.stringify(error, null, 2);
+    } catch {
+      return "Niet-serialiseerbare error.";
+    }
+  }
+
+  return String(error);
+}
+
+function setHidden(el, hidden) {
+  if (!el) return;
+
+  el.hidden = Boolean(hidden);
+  el.classList.toggle("hidden", Boolean(hidden));
+}
+
+function setText(ids, value) {
+  const list = Array.isArray(ids) ? ids : [ids];
+
+  for (const id of list) {
+    const el = $(id);
+    if (el) el.textContent = value;
+  }
+}
+
+// ================= UI STATE =================
+
+function setStatus(message, isError = false) {
+  const status = firstEl("statusLine", "statusText");
+  const box = $("errorBox");
+
+  if (status) {
+    status.textContent = message || "";
+  }
+
+  if (box) {
+    setHidden(box, !isError);
+
+    if (isError) {
+      box.textContent = `Load error:\n${message}`;
+    }
+  }
+}
+
+function setBusy(isBusy) {
+  state.loading = Boolean(isBusy);
+
+  const refreshBtn = $("refreshBtn");
+  const resetBtn = $("resetBtn");
+
+  if (refreshBtn) refreshBtn.disabled = state.loading;
+  if (resetBtn) resetBtn.disabled = state.loading;
+
+  if (refreshBtn) {
+    refreshBtn.textContent = state.loading ? "Loading..." : "Refresh";
+  }
+}
+
+function getMinClosedInput() {
+  return firstEl("minClosedInput", "minClosed");
+}
+
+function getMinClosedValue() {
+  const input = getMinClosedInput();
+  const value = safeNumber(input?.value, DEFAULT_MIN_CLOSED);
+
+  return Math.max(0, Math.round(value));
+}
+
+function getSourceModeValue() {
+  const sourceSelect = firstEl("sourceSelect", "sourceMode", "dataSourceSelect");
+  const value = String(sourceSelect?.value || DEFAULT_SOURCE_MODE).toLowerCase();
+
+  if (["stored", "latest", "merged"].includes(value)) return value;
+
+  return DEFAULT_SOURCE_MODE;
+}
+
+function buildApiUrl(extra = {}, base = API_URL) {
+  const params = new URLSearchParams();
+
+  params.set("minClosed", String(getMinClosedValue()));
+  params.set("source", extra.source || getSourceModeValue());
+  params.set("includeLatest", "true");
+  params.set("debug", extra.debug === false ? "false" : "true");
+  params.set("t", String(Date.now()));
+
+  if (extra.reset) {
+    params.set("reset", "true");
+  }
+
+  return `${base}?${params.toString()}`;
+}
+
+function ensureRuntimeDefaults() {
+  const minClosedInput = getMinClosedInput();
+
+  if (minClosedInput && (minClosedInput.value === "" || minClosedInput.value === "0")) {
+    minClosedInput.value = String(DEFAULT_MIN_CLOSED);
+  }
+
+  enhanceExistingDom();
+
+  const apiLink = $("apiLink");
+  if (apiLink) {
+    apiLink.href = buildApiUrl({ debug: true });
+  }
+}
+
+// ================= API =================
+
+function normalizePayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    throw new Error("API gaf geen geldig JSON-object terug.");
+  }
+
+  if (!payload.ok) {
+    throw payload;
+  }
+
+  const report = payload.report || payload;
+
+  if (!report || typeof report !== "object") {
+    throw new Error("API response mist report-object.");
+  }
+
+  const summary = report.summary || {};
+  const families = report.families || {};
+
+  return {
+    raw: payload,
+    report: {
+      ...report,
+      summary,
+      diagnostics: report.diagnostics || {},
+      config: report.config || {},
+      families: {
+        all: safeArray(families.all || families.ranked),
+        long: safeArray(families.long),
+        short: safeArray(families.short),
+        ranked: safeArray(families.ranked || families.all),
+        best: safeArray(families.best),
+        bestBalance: safeArray(families.bestBalance),
+        bestRunnerPnl: safeArray(families.bestRunnerPnl),
+        worst: safeArray(families.worst),
+      },
+      filterValues: report.filterValues || {},
+    },
+  };
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url, {
+    method: "GET",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  const contentType = response.headers.get("content-type") || "";
+  const isJson = contentType.includes("application/json");
+
+  const payload = isJson
+    ? await response.json()
+    : { ok: false, error: await response.text() };
+
+  if (!response.ok) {
+    throw payload;
+  }
+
+  return payload;
+}
+
+async function fetchAnalyticsPayload(extra = {}) {
+  try {
+    return await fetchJson(buildApiUrl(extra, API_URL));
+  } catch (error) {
+    if (API_FALLBACK_URL && API_FALLBACK_URL !== API_URL) {
+      return await fetchJson(buildApiUrl(extra, API_FALLBACK_URL));
     }
 
-    return json;
-  }catch(err){
-    return {
-      ok: false,
-      error: err?.message || "fetch_failed"
-    };
+    throw error;
   }
 }
 
-// ================= RUNNER REASON ADVICE =================
-function getRunnerReasonAdvice(reason){
-  const key = normalizeReason(reason);
+// ================= SUMMARY =================
 
-  const map = {
-    PRICE_INVALID: "Geen geldige prijsdata. Correct geblokkeerd.",
-    ORDERBOOK_FETCH_FAILED: "Geen live orderbook. Geen runner-entry zonder execution-data.",
-    SPOOF_DETECTED: "Spoofing gedetecteerd. Direct blokkeren.",
-    SPREAD_TOO_WIDE: "Spread te breed voor runner execution.",
-    DEPTH_TOO_LOW: "Orderbook depth te dun voor runner continuation.",
-    BAD_MARKET_QUALITY: "Spread/depth slecht. Correct geblokkeerd.",
-
-    BTC_STRONG_BULL_BLOCK_SHORT: "Short tegen sterke BTC geblokkeerd.",
-    BTC_STRONG_BEAR_BLOCK_LONG: "Long tegen zwakke BTC geblokkeerd.",
-    BTC_BULLISH_WEAK_SHORT: "Weak short tegen bullish BTC geblokkeerd.",
-    BTC_BEARISH_WEAK_LONG: "Weak long tegen bearish BTC geblokkeerd.",
-    BTC_NEUTRAL_LOW_SCORE: "BTC neutraal en runner-score te laag.",
-
-    FLOW_NOT_RUNNER: "Geen runner-flow. Scanner moet betere runner-candidates sturen.",
-    FLOW_EXHAUSTION: "Exhaustion-flow. Correct geblokkeerd.",
-    NO_FLOW: "Geen directionele flow. Niet versoepelen.",
-    LOW_VOL: "Te weinig volatiliteit voor runner-profiel.",
-    RUNNER_PRESSURE_TOO_LOW: "Directionele runner-pressure is te laag.",
-    RUNNER_DECELERATING: "Runner verliest acceleratie.",
-    NO_MOMENTUM: "Momentum onvoldoende voor runner.",
-    NO_FAKE_BREAKOUT: "Geen fake-breakout of continuation-context bij non-trend.",
-
-    RSI_DATA_INVALID: "RSI MTF data ontbreekt. Geen runner-entry zonder RSI context.",
-    RSI_HTF_BLOCKED: "HTF RSI blokkeert directioneel.",
-    RSI_BLOCKED: "RSI blokkeert directioneel.",
-    RSI_LONG_TOO_HIGH: "Long te laat in RSI. Scanner timing verbeteren.",
-    RSI_SHORT_TOO_LOW_A_ONLY: "Short in oversold RSI-zone geblokkeerd.",
-    RSI_LONG_NO_EDGE: "Long mist RSI pullback/continuation edge.",
-    RSI_SHORT_NO_EDGE: "Short mist RSI pullback/continuation edge.",
-    RSI_MID_NO_EDGE: "MID RSI alleen doorlaten bij sterke trend continuation.",
-    RSI_NO_RUNNER_EDGE: "RSI geeft geen runner edge.",
-    RSI_EXHAUSTED_AGAINST_SIDE: "RSI exhaustion tegen de trade-richting.",
-
-    STRUCTURE_AGAINST: "Market structure staat tegen runner-richting.",
-    TF_TOO_WEAK: "Multi-timeframe strength te zwak.",
-    ENTRY_FILTERED_TF_WEAK: "TF strength te zwak.",
-    LOW_CONFLUENCE: "Confluence mist bevestiging. Niet versoepelen.",
-    CONFLUENCE_TOO_LOW: "Confluence mist bevestiging. Niet versoepelen.",
-    OB_AGAINST: "Orderbook staat tegen runner-richting.",
-    OB_NEUTRAL_LOW_CONF: "Neutraal orderbook alleen accepteren bij hoge confluence.",
-
-    EXTREME_FUNDING: "Funding extreem. Correct geblokkeerd.",
-    FUNDING_EXTREME: "Funding extreem. Correct geblokkeerd.",
-    BULL_CROWDED_FUNDING: "Long te crowded.",
-    BEAR_CROWDED_FUNDING: "Short te crowded.",
-    LONG_CROWDED_FUNDING: "Long te crowded.",
-    SHORT_CROWDED_FUNDING: "Short te crowded.",
-
-    LOW_RR: "Risk/reward onder runner-floor.",
-    RR_TOO_LOW: "Risk/reward onder runner-floor.",
-    LOW_FINAL_RR: "Final runner target geeft te weinig RR.",
-    FINAL_RR_TOO_LOW: "Final runner target geeft te weinig RR.",
-
-    SETUP_NOT_READY: "Setup mist runner A/B/C kwaliteit.",
-    RUNNER_SETUP_NOT_READY: "Setup mist runner A/B/C kwaliteit.",
-    NO_VALID_RUNNER_SETUP: "Geen geldige runner setup in deze scan.",
-    B_DISABLED_A_ONLY: "B setups bewust uitgeschakeld voor A-only tuning.",
-
-    ENTRY_TYPE_BLOCKED_RUNNER_B: "Runner B continuation is geblokkeerd door slechte cohort-data.",
-    BAD_COHORT_FLOW_NEUTRAL: "Flow neutraal. Geen live runner edge.",
-    BAD_COHORT_SQUEEZE_LOWER_RSI: "Squeeze in verkeerde RSI-zone. Correct geblokkeerd.",
-    BAD_COHORT_MID_BREAKOUT_OB_BULLISH: "Cohort met MID RSI + breakout + OB bullish presteerde slecht.",
-    BAD_COHORT_MID_BREAKOUT_OB_BEARISH: "Cohort met MID RSI + breakout + OB bearish presteerde slecht.",
-
-    WATCH_COHORT_MID_RUNNING_OB_NEUTRAL_CONFLUENCE: "Watch-cohort: confluence moet extreem hoog zijn.",
-    WATCH_COHORT_MID_RUNNING_OB_NEUTRAL_SNIPER: "Watch-cohort: sniper moet extreem hoog zijn.",
-    WATCH_COHORT_MID_RUNNING_OB_NEUTRAL_PRESSURE: "Watch-cohort: runner pressure moet extreem hoog zijn.",
-
-    SCANNER_FLOW_NOT_HOT_RUNNER: "Niet hot genoeg voor live runner. Wordt als shadow-learning behandeld.",
-
-    SYMBOL_COOLDOWN: "Cooldown voorkomt overtrading op dezelfde coin.",
-    PAIR_COOLDOWN: "Pair cooldown actief.",
-    COOLDOWN: "Cooldown actief.",
-    RECENT_SIGNAL_COOLDOWN: "Recent signaal cooldown actief.",
-    DUPLICATE_PROCESSING_LOCK: "Duplicate processing protection werkt.",
-    PROCESSING_LOCK_ACTIVE: "Duplicate processing protection werkt.",
-    MAX_OPEN_TRADES: "Max open runners bereikt.",
-    MAX_OPEN_RUNNERS: "Max open runners bereikt."
+function countStatuses(families) {
+  const counts = {
+    HOT: 0,
+    GOOD: 0,
+    STABLE: 0,
+    BAD: 0,
+    COLLECTING: 0,
+    EMPTY: 0,
   };
 
-  if(key.startsWith("SYMBOL_ALREADY_OPEN_")){
-    return "Er staat al een runner open op deze coin. Correct geblokkeerd.";
+  for (const family of safeArray(families)) {
+    const status = text(family.status, "EMPTY").toUpperCase();
+
+    if (counts[status] === undefined) counts[status] = 0;
+    counts[status] += 1;
   }
 
-  return map[key] || "Geen specifieke runner-actie nodig.";
+  return counts;
 }
 
-// ================= ADVICE UI =================
-window.toggleAdvice = function(adviceId){
-  const elAdvice = el(adviceId);
-  if(!elAdvice) return;
+function familyMetaText(families) {
+  const c = countStatuses(families);
 
-  const isHidden = elAdvice.style.display === "none" || !elAdvice.style.display;
-  elAdvice.style.display = isHidden ? "block" : "none";
-};
+  return `HOT ${c.HOT} | GOOD ${c.GOOD} | STABLE ${c.STABLE} | BAD ${c.BAD} | COLLECTING ${c.COLLECTING} | EMPTY ${c.EMPTY}`;
+}
 
-function adviceItemToHtml(item){
-  if(!item) return "";
+function renderSummary() {
+  const summary = state.report?.summary || {};
+  const longFamilies = safeArray(state.report?.families?.long);
+  const shortFamilies = safeArray(state.report?.families?.short);
 
-  if(typeof item === "string"){
-    return `<div>• ${escapeHtml(item)}</div>`;
+  setText(["mActions", "kpiActions"], fmtNum(summary.actions || 0, 0));
+  setText(["mTrades", "kpiTrades"], fmtNum(summary.trades || summary.observed || 0, 0));
+  setText(["mOpen", "kpiOpen"], fmtNum(summary.open || 0, 0));
+  setText(["mClosed", "kpiClosed"], fmtNum(summary.closed || 0, 0));
+  setText(["mPending", "kpiPending"], fmtNum(summary.pendingOutcome || summary.unresolved || 0, 0));
+  setText(["mWins", "kpiWins"], fmtNum(summary.wins || 0, 0));
+  setText(["mLosses", "kpiLosses"], fmtNum(summary.losses || 0, 0));
+  setText(["mBreakeven", "kpiBreakeven"], fmtNum(summary.breakeven || 0, 0));
+  setText(["mWinrate", "kpiWinrate"], summary.winrate || fmtPct(summary.winrateNum || 0));
+  setText(["mTotalR", "kpiTotalR"], fmtNum(summary.totalR || 0, 3));
+  setText(["mAvgR", "kpiAvgR"], fmtNum(summary.avgR || 0, 3));
+  setText(["mTotalPnl", "kpiPnl"], fmtPct(summary.totalPnlPct || 0, 3));
+
+  setText(["mLongFamilies", "kpiLongFamilies"], fmtNum(summary.longFamilies || longFamilies.length || 50, 0));
+  setText(["mShortFamilies", "kpiShortFamilies"], fmtNum(summary.shortFamilies || shortFamilies.length || 50, 0));
+
+  setText(["mLongMeta", "longFamiliesMeta"], familyMetaText(longFamilies));
+  setText(["mShortMeta", "shortFamiliesMeta"], familyMetaText(shortFamilies));
+}
+
+function renderSourceCards() {
+  const raw = state.raw || {};
+  const sources = raw.sources || {};
+  const latest = sources.latest || {};
+  const store = sources.store || {};
+  const selected = sources.selectedEvents ?? raw.tradesLoaded ?? 0;
+
+  setText("sourceStored", fmtNum(sources.storedEvents ?? store.count ?? 0, 0));
+  setText("sourceLatest", fmtNum(sources.latestEvents ?? 0, 0));
+  setText("sourceMerged", fmtNum(sources.mergedEvents ?? selected, 0));
+  setText("sourceLatency", `${fmtNum(raw.latencyMs ?? 0, 0)}ms`);
+
+  setText("sourceStoredSub", store.path ? `store: ${store.path}` : "store: n/a");
+  setText("sourceLatestSub", latest.ok ? "latest scan OK" : `latest scan ${latest.error || latest.reason || "missing"}`);
+  setText("sourceMergedSub", `loaded: ${fmtNum(selected, 0)}`);
+  setText("sourceLatencySub", raw.generatedAt ? new Date(raw.generatedAt).toLocaleString() : "");
+}
+
+// ================= FAMILY TABLE =================
+
+function getBaseFamilies() {
+  const families = state.report?.families || {};
+
+  if (state.activeTab === "LONG") return safeArray(families.long);
+  if (state.activeTab === "SHORT") return safeArray(families.short);
+
+  return safeArray(families.ranked || families.all);
+}
+
+function sortFamilies(rows) {
+  const statusRank = {
+    HOT: 6,
+    GOOD: 5,
+    STABLE: 4,
+    COLLECTING: 3,
+    BAD: 2,
+    EMPTY: 1,
+  };
+
+  return [...safeArray(rows)].sort((a, b) => {
+    const s = (statusRank[b.status] || 0) - (statusRank[a.status] || 0);
+    if (s !== 0) return s;
+
+    const runnerScore = safeNumber(b.runnerScore, 0) - safeNumber(a.runnerScore, 0);
+    if (runnerScore !== 0) return runnerScore;
+
+    const avgR = safeNumber(b.avgR, 0) - safeNumber(a.avgR, 0);
+    if (avgR !== 0) return avgR;
+
+    const closed = safeNumber(b.closed, 0) - safeNumber(a.closed, 0);
+    if (closed !== 0) return closed;
+
+    const observed = safeNumber(b.observed, 0) - safeNumber(a.observed, 0);
+    if (observed !== 0) return observed;
+
+    const side = text(a.side).localeCompare(text(b.side));
+    if (side !== 0) return side;
+
+    return safeNumber(a.index, 0) - safeNumber(b.index, 0);
+  });
+}
+
+function getSelectedFamilies() {
+  const sideSelect = firstEl("sideSelect", "sideFilter");
+  const statusSelect = firstEl("statusSelect", "statusFilter");
+  const searchInput = $("searchInput");
+  const hideEmptyInput = firstEl("hideEmptyInput", "hideEmpty");
+
+  let rows = getBaseFamilies();
+
+  const side = sideSelect?.value || state.activeTab || "ALL";
+  const status = statusSelect?.value || "ALL";
+  const query = String(searchInput?.value || "").toUpperCase().trim();
+  const hideEmpty = Boolean(hideEmptyInput?.checked);
+
+  if (side === "LONG") rows = rows.filter(row => row.side === "LONG");
+  if (side === "SHORT") rows = rows.filter(row => row.side === "SHORT");
+
+  if (status !== "ALL") {
+    rows = rows.filter(row => row.status === status);
   }
 
-  const message = item.message || "Onbekend runner advies";
+  if (hideEmpty) {
+    rows = rows.filter(row => row.status !== "EMPTY" && safeNumber(row.observed, 0) > 0);
+  }
 
-  let actionColor = "#a78bfa";
+  if (query) {
+    rows = rows.filter(row => {
+      const haystack = [
+        row.id,
+        row.runnerFamilyId,
+        row.side,
+        row.status,
+        row.decision,
+        row.definition,
+        row.qualityBucket,
+        row.marketBucket,
+        row.timingBucket,
+        row.winrate,
+        row.totalR,
+        row.avgR,
+        row.totalPnlPct,
+        row.avgPnlPct,
+        row.profitFactorR,
+        row.balanceScore,
+        row.runnerPnlScore,
+        row.runnerScore,
+        row.pendingOutcome,
+        row.unresolved,
+      ].join(" ").toUpperCase();
 
-  if(item.action === "STRENGER") actionColor = "var(--red)";
-  if(item.action === "SOEPELER") actionColor = "var(--green)";
+      return haystack.includes(query);
+    });
+  }
 
-  const action = item.action
-    ? `<span style="background:rgba(139,92,246,0.2); color:${actionColor}; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:900; margin-right:6px; border:1px solid ${actionColor};">${escapeHtml(item.action)}</span>`
-    : "";
-
-  const values = item.current !== undefined && item.recommended !== undefined
-    ? `<div style="font-size:12px; opacity:0.8; margin-top:2px;">${escapeHtml(item.current)} → ${escapeHtml(item.recommended)}</div>`
-    : "";
-
-  return `<div style="margin-bottom:10px;">• ${action}${escapeHtml(message)}${values}</div>`;
+  return sortFamilies(rows);
 }
 
-// ================= DATA EXTRACTION =================
-function getActions(data){
-  return safeArray(
-    getFirst(
-      data?.tradeSystemResult?.actions,
-      data?.actions,
-      data?.trades
-    )
-  );
-}
+function renderFamilies() {
+  const tbody = firstEl("familyBody", "familiesBody");
+  const count = $("familyCount");
+  const emptyState = $("emptyState");
 
-function getRunnerStats(data){
-  return safeObject(
-    getFirst(
-      data?.tradeSystemResult?.runnerStats,
-      data?.runnerStats,
-      data?.tradeSystemAnalysis?.runnerStats
-    )
-  );
-}
+  if (!tbody) return;
 
-function getOpenRunnerRows(data){
-  return safeArray(
-    getFirst(
-      data?.tradeSystemResult?.openPositions,
-      data?.tradeSystemAnalysis?.openPositions,
-      data?.openPositions
-    )
-  );
-}
+  const rows = getSelectedFamilies();
 
-function getPerformancePayload(performanceData){
-  return safeObject(performanceData?.performance || performanceData);
-}
+  if (count) {
+    count.textContent = `${rows.length} families`;
+  }
 
-function getTradeStatsPayload(statsData){
-  return safeObject(statsData || {});
-}
+  setHidden(emptyState, rows.length > 0);
 
-// ================= GLOBAL STATUS =================
-function renderGlobalAdvice(data){
-  const target = el("globalAdvice");
-  const content = el("globalAdviceContent");
-
-  if(!target || !content) return;
-
-  const global = safeArray(data?.advice?.global);
-
-  target.style.display = "block";
-
-  if(global.length){
-    content.innerHTML = global.map(g => `• ${escapeHtml(g)}`).join("<br><br>");
+  if (!rows.length) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="21" class="empty-row">Geen runner families voor deze filters.</td>
+      </tr>
+    `;
     return;
   }
 
-  const bullCount = num(data?.bullCount);
-  const bearCount = num(data?.bearCount);
-  const candidates = num(data?.candidates);
-  const tradeInput = num(data?.tradeFunnelInputCount ?? data?.tradeFunnel?.inputCount);
-  const actions = getActions(data).length;
+  tbody.innerHTML = rows.map(row => {
+    const status = text(row.status, "EMPTY");
+    const side = text(row.side);
+    const sideClass = side.toLowerCase();
+    const totalRClass = signedClass(row.totalR);
+    const avgRClass = signedClass(row.avgR);
+    const pnlClass = signedClass(row.totalPnlPct);
+    const avgPnlClass = signedClass(row.avgPnlPct);
+    const pending = safeNumber(row.pendingOutcome ?? row.unresolved, 0);
 
-  content.innerHTML = `
-    Runner funnel gevuld: Bull ${bullCount}, Bear ${bearCount}.<br>
-    Scanner candidates: ${candidates}. Runner input: ${tradeInput}. Runner actions: ${actions}.<br>
-    <span class="muted" style="font-size:11px;">
-      Runner HOT is scanner-context. Live entry komt alleen uit Runner TradeSystem.
-    </span>
+    return `
+      <tr class="${statusClass(status)}">
+        <td>
+          <span class="family-id">${escapeHtml(row.id)}</span>
+        </td>
+        <td>
+          <span class="side-pill ${sideClass}">${escapeHtml(side)}</span>
+        </td>
+        <td>${escapeHtml(row.qualityBucket || "-")}</td>
+        <td>${escapeHtml(row.marketBucket || "-")}</td>
+        <td>${escapeHtml(row.timingBucket || "-")}</td>
+        <td class="definition">${escapeHtml(row.definition)}</td>
+        <td class="num">${fmtNum(row.observed, 0)}</td>
+        <td class="num">${fmtNum(row.trades, 0)}</td>
+        <td class="num">${fmtNum(row.closed, 0)}</td>
+        <td class="num">${fmtNum(row.open, 0)}</td>
+        <td class="num pending">${fmtNum(pending, 0)}</td>
+        <td class="num">${fmtNum(row.wins, 0)}</td>
+        <td class="num">${fmtNum(row.losses, 0)}</td>
+        <td class="num">${escapeHtml(row.winrate || "0%")}</td>
+        <td class="num ${totalRClass}">${fmtNum(row.totalR, 3)}</td>
+        <td class="num ${avgRClass}">${fmtNum(row.avgR, 3)}</td>
+        <td class="num ${pnlClass}">${fmtPct(row.totalPnlPct, 3)}</td>
+        <td class="num ${avgPnlClass}">${fmtPct(row.avgPnlPct, 3)}</td>
+        <td class="num">${fmtNum(row.profitFactorR || 0, 3)}</td>
+        <td class="num">${fmtNum(row.runnerScore || 0, 3)}</td>
+        <td>
+          <span class="status-pill ${statusClass(status)}">${escapeHtml(status)}</span>
+        </td>
+      </tr>
+    `;
+  }).join("");
+}
+
+// ================= BEST PANELS =================
+
+function getAllFamilies() {
+  return safeArray(state.report?.families?.ranked || state.report?.families?.all);
+}
+
+function getWinnerFamilies() {
+  const minClosed = Math.max(1, getMinClosedValue());
+  const apiBest = safeArray(state.report?.families?.best);
+
+  const source = apiBest.length
+    ? apiBest
+    : getAllFamilies();
+
+  return source
+    .filter(row => ["HOT", "GOOD", "STABLE"].includes(text(row.status)))
+    .filter(row => safeNumber(row.closed, 0) >= minClosed)
+    .filter(row => safeNumber(row.avgR, 0) >= 0)
+    .slice(0, 6);
+}
+
+function getBalanceFamilies() {
+  const apiBest = safeArray(state.report?.families?.bestBalance);
+
+  const source = apiBest.length
+    ? apiBest
+    : [...getAllFamilies()].sort((a, b) => {
+        const scoreDiff = safeNumber(b.balanceScore, 0) - safeNumber(a.balanceScore, 0);
+        if (scoreDiff !== 0) return scoreDiff;
+
+        const avgRDiff = safeNumber(b.avgR, 0) - safeNumber(a.avgR, 0);
+        if (avgRDiff !== 0) return avgRDiff;
+
+        return safeNumber(b.closed, 0) - safeNumber(a.closed, 0);
+      });
+
+  return source
+    .filter(row => safeNumber(row.closed, 0) > 0)
+    .filter(row => safeNumber(row.avgR, 0) > 0)
+    .slice(0, 6);
+}
+
+function getRunnerPnlFamilies() {
+  const apiBest = safeArray(state.report?.families?.bestRunnerPnl);
+
+  const source = apiBest.length
+    ? apiBest
+    : [...getAllFamilies()].sort((a, b) => {
+        const scoreDiff = safeNumber(b.runnerPnlScore, 0) - safeNumber(a.runnerPnlScore, 0);
+        if (scoreDiff !== 0) return scoreDiff;
+
+        const avgRDiff = safeNumber(b.avgR, 0) - safeNumber(a.avgR, 0);
+        if (avgRDiff !== 0) return avgRDiff;
+
+        return safeNumber(b.avgPnlPct, 0) - safeNumber(a.avgPnlPct, 0);
+      });
+
+  return source
+    .filter(row => safeNumber(row.closed, 0) > 0)
+    .filter(row => safeNumber(row.avgR, 0) > 0)
+    .slice(0, 6);
+}
+
+function renderFamilyCard(row, variant = "winner") {
+  const status = text(row.status, "STABLE").toLowerCase();
+
+  return `
+    <article class="winner-card ${status} ${escapeHtml(variant)}">
+      <div class="winner-top">
+        <span class="winner-id">${escapeHtml(row.id)}</span>
+        <span class="status-pill ${statusClass(row.status)}">${escapeHtml(row.status)}</span>
+      </div>
+
+      <div class="winner-stats">
+        <div class="winner-stat">
+          <span>Closed</span>
+          <strong>${fmtNum(row.closed, 0)}</strong>
+        </div>
+        <div class="winner-stat">
+          <span>Winrate</span>
+          <strong>${escapeHtml(row.winrate || "0%")}</strong>
+        </div>
+        <div class="winner-stat">
+          <span>Avg R</span>
+          <strong class="${signedClass(row.avgR)}">${fmtNum(row.avgR, 3)}</strong>
+        </div>
+        <div class="winner-stat">
+          <span>PF</span>
+          <strong>${fmtNum(row.profitFactorR || 0, 3)}</strong>
+        </div>
+        <div class="winner-stat">
+          <span>Total R</span>
+          <strong class="${signedClass(row.totalR)}">${fmtNum(row.totalR || 0, 3)}</strong>
+        </div>
+        <div class="winner-stat">
+          <span>Avg PnL%</span>
+          <strong class="${signedClass(row.avgPnlPct)}">${fmtPct(row.avgPnlPct || 0, 3)}</strong>
+        </div>
+      </div>
+
+      <p class="winner-definition">${escapeHtml(row.definition)}</p>
+    </article>
   `;
 }
 
-// ================= RUNNER TELEMETRY =================
-function buildActionCounts(actions){
-  const out = {};
+function renderBestPanel({
+  gridId,
+  countId,
+  rows,
+  emptyText,
+  variant,
+}) {
+  const grid = $(gridId);
+  const count = $(countId);
 
-  for(const action of safeArray(actions)){
-    const key = normalizeAction(action?.action || "UNKNOWN");
-    out[key] = (out[key] || 0) + 1;
+  if (!grid) return;
+
+  if (count) {
+    count.textContent = `${rows.length} families`;
   }
 
-  return out;
+  if (!rows.length) {
+    grid.innerHTML = `
+      <div class="winner-empty">
+        ${escapeHtml(emptyText)}
+      </div>
+    `;
+    return;
+  }
+
+  grid.innerHTML = rows.map(row => renderFamilyCard(row, variant)).join("");
 }
 
-function buildWaitRows(actions, stats){
-  if(stats?.waitReasons && !Array.isArray(stats.waitReasons)){
-    return objectCounterToRows(stats.waitReasons);
-  }
-
-  if(Array.isArray(stats?.waitReasons)){
-    return rowsFromStatsArray(stats.waitReasons);
-  }
-
-  if(stats?.rejectReasonCounts){
-    return objectCounterToRows(stats.rejectReasonCounts);
-  }
-
-  const waits = safeArray(actions).filter(a => normalizeAction(a?.action) === "WAIT");
-  const counter = {};
-
-  for(const w of waits){
-    const key = normalizeReason(w?.reason);
-    counter[key] = (counter[key] || 0) + 1;
-  }
-
-  return objectCounterToRows(counter, waits.length);
-}
-
-function buildEntryTypeRows(actions, stats){
-  if(stats?.entryTypes && !Array.isArray(stats.entryTypes)){
-    return objectCounterToRows(stats.entryTypes);
-  }
-
-  if(Array.isArray(stats?.entryTypes)){
-    return rowsFromStatsArray(stats.entryTypes);
-  }
-
-  if(stats?.entryTypeCounts){
-    return objectCounterToRows(stats.entryTypeCounts);
-  }
-
-  const entries = safeArray(actions).filter(a => normalizeAction(a?.action) === "ENTRY");
-  const counter = {};
-
-  for(const entry of entries){
-    const key = normalizeReason(
-      entry?.runnerEntryType ||
-      entry?.entryType ||
-      entry?.reason ||
-      entry?.setupClass ||
-      "RUNNER_ENTRY"
-    );
-
-    counter[key] = (counter[key] || 0) + 1;
-  }
-
-  return objectCounterToRows(counter, entries.length);
-}
-
-function extractShadowStats(stats){
-  const shadowRowsRaw = stats?.shadowRows;
-  const shadowRows = safeArray(shadowRowsRaw);
-  const completed = shadowRows.filter(row => String(row?.status || "").toUpperCase() !== "OPEN");
-
-  const shadowWins = num(stats?.shadowWins, completed.filter(row => row?.win || num(row?.exitR) > 0).length);
-  const shadowLosses = num(stats?.shadowLosses, completed.filter(row => row?.loss || num(row?.exitR) < 0).length);
-
-  return {
-    featureRows: countValue(stats?.featureRows ?? stats?.featureStoreRows),
-    shadowRows: countValue(stats?.shadowRows ?? stats?.shadowOutcomeRows),
-    shadowWins,
-    shadowLosses
-  };
-}
-
-function buildRunnerRecommendations({ actions, stats, waitRows, entryRows }){
-  const actionCounts = buildActionCounts(actions);
-
-  const total = safeArray(actions).length;
-  const entries = num(actionCounts.ENTRY);
-  const waits = num(actionCounts.WAIT);
-  const holds = num(actionCounts.HOLD);
-  const partials = num(actionCounts.PARTIAL_TP) + num(actionCounts.PARTIAL);
-  const trails = num(actionCounts.TRAIL);
-  const beMoves = num(actionCounts.MOVE_BE);
-  const exits = num(actionCounts.EXIT);
-
-  const topWait = waitRows[0]?.key || null;
-
-  const winrate = num(stats?.winrate);
-  const avgR = num(stats?.avgR);
-  const avgMfeR = num(stats?.avgMfeR);
-  const avgMaeR = num(stats?.avgMaeR);
-  const shadowWins = num(stats?.shadowWins);
-  const shadowLosses = num(stats?.shadowLosses);
-
-  const moreRunners = [];
-  const higherWinrate = [];
-  const higherPnl = [];
-
-  if(total === 0){
-    moreRunners.push("Geen runner actions. Verhoog scanner-runner input: HOT/ALMOST moeten trend-flow + fresh acceleration bevatten.");
-  }
-
-  if(total > 0 && entries === 0 && waits > 0){
-    moreRunners.push(`Geen entries. Grootste runner-blokkade: ${topWait || "UNKNOWN"}. Alleen versoepelen als shadow outcomes dit positief bevestigen.`);
-  }
-
-  if(["FLOW_NOT_RUNNER", "RUNNER_PRESSURE_TOO_LOW", "NO_MOMENTUM"].includes(topWait)){
-    moreRunners.push("Meer runners moet uit scanner komen: hogere 1h acceleration, volume/mcap en directionele pressure.");
-  }
-
-  if(["SPREAD_TOO_WIDE", "DEPTH_TOO_LOW", "BAD_MARKET_QUALITY"].includes(topWait)){
-    higherWinrate.push("Execution-filter werkt. Runner entries op dunne books blijven blokkeren.");
-  }
-
-  if(["RSI_LONG_TOO_HIGH", "RSI_SHORT_TOO_LOW_A_ONLY", "RSI_NO_RUNNER_EDGE", "RSI_MID_NO_EDGE"].includes(topWait)){
-    higherWinrate.push("RSI timing is de bottleneck. Scanner moet earlier pullback/continuation sturen, niet late extension.");
-  }
-
-  if(["LOW_CONFLUENCE", "CONFLUENCE_TOO_LOW", "OB_AGAINST"].includes(topWait)){
-    higherWinrate.push("Kwaliteitsblokkade is terecht. Alleen versoepelen als shadow-wins deze reden structureel positief maken.");
-  }
-
-  if(entries > 0 && partials === 0 && holds > 0){
-    higherPnl.push("Open runners hebben nog geen partials. Monitor MFE; partial logic pas aanpassen na genoeg closed/partial sample.");
-  }
-
-  if(partials > 0 && trails === 0){
-    higherPnl.push("Partials worden genomen maar trailing triggert niet. Runner PnL zit waarschijnlijk in trail-afstand en follow-through.");
-  }
-
-  if(beMoves > 0 && exits > 0 && avgR <= 0){
-    higherPnl.push("BE wordt geraakt maar avgR blijft laag. Check of BE te vroeg staat of entries te vroeg zijn.");
-  }
-
-  if(avgMfeR > 1.5 && avgR < 0.6){
-    higherPnl.push("MFE is veel hoger dan realized R. TP/partial/trailing is te conservatief of trail knijpt te snel.");
-  }
-
-  if(avgMaeR < -1.2 && avgR < 0){
-    higherWinrate.push("MAE is diep. Entry timing verbeteren vóór targets verruimen.");
-  }
-
-  if(winrate >= 55 && avgR > 0){
-    higherPnl.push("Runner-profiel gezond. Optimaliseer nu runner exits: partial later of trail ruimer per cohort.");
-  }
-
-  if(winrate > 0 && winrate < 45){
-    higherWinrate.push("Winrate te laag. Entry-kwaliteit strenger: confluence/sniper/OB alignment omhoog.");
-  }
-
-  if(shadowWins > shadowLosses && shadowWins >= 5){
-    moreRunners.push("Shadow outcomes tonen gemiste winners. Test alleen de beste rejected reason gecontroleerd soepeler.");
-  }
-
-  if(!moreRunners.length){
-    moreRunners.push("Meer runners niet forceren. Eerst runner-flow, MFE/MAE en shadow sample opbouwen.");
-  }
-
-  if(!higherWinrate.length){
-    higherWinrate.push("Winrate-filters behouden: RSI, OB, funding, BTC gate en structure blijven leidend.");
-  }
-
-  if(!higherPnl.length){
-    higherPnl.push("PnL-advies wordt sterker zodra er genoeg partial/trail/exit runner-history is.");
-  }
-
-  return {
-    moreRunners,
-    higherWinrate,
-    higherPnl,
-    topEntryType: entryRows[0] || null,
-    topReject: waitRows[0] || null
-  };
-}
-
-function buildRunnerTelemetry(data){
-  const actions = getActions(data);
-  const stats = getRunnerStats(data);
-  const actionCounts = buildActionCounts(actions);
-  const waitRows = buildWaitRows(actions, stats);
-  const entryRows = buildEntryTypeRows(actions, stats);
-
-  const totalActions = actions.length;
-  const openRows = getOpenRunnerRows(data);
-
-  const entries = num(getFirst(stats.entries, actionCounts.ENTRY));
-  const waits = num(actionCounts.WAIT);
-  const holds = num(actionCounts.HOLD);
-  const partials = num(getFirst(stats.partials, actionCounts.PARTIAL_TP + actionCounts.PARTIAL));
-  const trails = num(getFirst(stats.trails, actionCounts.TRAIL));
-  const beMoves = num(getFirst(stats.movesToBE, actionCounts.MOVE_BE));
-  const exits = num(getFirst(stats.exits, actionCounts.EXIT));
-  const adds = num(getFirst(stats.adds, actionCounts.ADD));
-
-  const wins = num(stats.wins);
-  const losses = num(stats.losses);
-  const closed = wins + losses;
-
-  const winrate = closed > 0
-    ? pct(wins, closed)
-    : num(stats.winrate, 0);
-
-  const avgR = num(stats.avgR);
-  const totalR = num(stats.totalR);
-  const avgMfeR = num(stats.avgMfeR);
-  const avgMaeR = num(stats.avgMaeR);
-
-  const shadow = extractShadowStats(stats);
-
-  const recommendations = buildRunnerRecommendations({
-    actions,
-    stats: {
-      ...stats,
-      winrate,
-      avgR,
-      totalR,
-      avgMfeR,
-      avgMaeR,
-      shadowWins: shadow.shadowWins,
-      shadowLosses: shadow.shadowLosses
-    },
-    waitRows,
-    entryRows
+function renderWinners() {
+  renderBestPanel({
+    gridId: "winnerGrid",
+    countId: "winnerCount",
+    rows: getWinnerFamilies(),
+    variant: "winner",
+    emptyText: `Nog geen winner-family. Nodig: minimaal ${getMinClosedValue()} closed trades met echte outcome-data per family.`,
   });
 
-  return {
-    totalActions,
-    scannerCandidates: num(data?.candidates),
-    tradeFunnelInputCount: num(data?.tradeFunnelInputCount ?? data?.tradeFunnel?.inputCount),
-    entries,
-    waits,
-    holds,
-    partials,
-    trails,
-    beMoves,
-    exits,
-    adds,
-    openRunners: num(getFirst(stats.openPositions, openRows.length)),
-    wins,
-    losses,
-    winrate,
-    avgR,
-    totalR,
-    avgMfeR,
-    avgMaeR,
-    featureRows: shadow.featureRows,
-    shadowRows: shadow.shadowRows,
-    shadowWins: shadow.shadowWins,
-    shadowLosses: shadow.shadowLosses,
-    waitRows,
-    entryRows,
-    recommendations,
-    actionCounts
-  };
+  renderBestPanel({
+    gridId: "balanceGrid",
+    countId: "balanceCount",
+    rows: getBalanceFamilies(),
+    variant: "balance",
+    emptyText: "Nog geen balance-candidates. Eerst closed runner trades verzamelen.",
+  });
+
+  renderBestPanel({
+    gridId: "runnerPnlGrid",
+    countId: "runnerPnlCount",
+    rows: getRunnerPnlFamilies(),
+    variant: "runner-pnl",
+    emptyText: "Nog geen runner PnL-candidates. Eerst closed runner trades verzamelen.",
+  });
 }
 
-function renderMetric(label, value, cls = ""){
-  return `
-    <div class="metric-box">
-      <span>${escapeHtml(label)}</span>
-      <strong class="${escapeHtml(cls)}">${escapeHtml(value)}</strong>
-    </div>
-  `;
-}
+// ================= FILTERS / DEBUG =================
 
-function renderTelemetryRows(rows, emptyText){
-  if(!safeArray(rows).length){
-    return `<div class="muted" style="text-align:center; padding:10px;">${escapeHtml(emptyText)}</div>`;
+function renderFilters() {
+  const body = $("filtersBody");
+  const count = $("filterCount");
+
+  if (!body) return;
+
+  const filterValues = state.report?.filterValues || {};
+  const trackedFields = safeArray(filterValues.trackedFields);
+
+  const quality = Object.values(filterValues.qualityBuckets || {});
+  const market = Object.values(filterValues.marketBuckets || {});
+  const timing = Object.values(filterValues.timingBuckets || {});
+
+  const chips = [
+    ...trackedFields.map(field => ({ group: "FIELD", label: field })),
+    ...quality.map(bucket => ({ group: "QUALITY", label: bucket.key })),
+    ...market.map(bucket => ({ group: "MARKET", label: bucket.key })),
+    ...timing.map(bucket => ({ group: "TIMING", label: bucket.key })),
+  ].filter(chip => chip.label);
+
+  if (count) {
+    count.textContent = `${chips.length} labels`;
   }
 
-  return rows.map(row => `
-    <div class="telemetry-card">
-      <div class="telemetry-head">
-        <div class="telemetry-name">${escapeHtml(row.key)}</div>
-        <div class="telemetry-badge">${num(row.count)}x · ${num(row.pct)}%</div>
-      </div>
-      <div class="telemetry-advice">${escapeHtml(row.advice || "Geen actie nodig.")}</div>
-    </div>
+  body.innerHTML = chips.map(chip => `
+    <span class="filter-chip">
+      <b>${escapeHtml(chip.group)}</b>
+      ${escapeHtml(chip.label)}
+    </span>
   `).join("");
 }
 
-function renderRecommendationBlock(title, list){
-  const rows = safeArray(list).length
-    ? list.map(x => `• ${escapeHtml(x)}`).join("<br>")
-    : "• Geen advies beschikbaar.";
+function renderApiMeta() {
+  const meta = $("apiMeta");
+  if (!meta) return;
 
-  return `
-    <div class="runner-advice">
-      <strong>${escapeHtml(title)}</strong><br>
-      ${rows}
-    </div>
-  `;
+  const raw = state.raw || {};
+  const sources = raw.sources || {};
+
+  meta.textContent = [
+    `source ${raw.mode?.source || getSourceModeValue()}`,
+    `stored ${sources.storedEvents ?? 0}`,
+    `latest ${sources.latestEvents ?? 0}`,
+    `selected ${sources.selectedEvents ?? raw.tradesLoaded ?? 0}`,
+    `latency ${raw.latencyMs ?? 0}ms`,
+  ].join(" | ");
 }
 
-function renderRunnerTelemetry(data){
-  const box = el("runnerTelemetry");
-  if(!box) return;
+function renderDebug() {
+  const debugJson = $("debugJson");
+  if (!debugJson) return;
 
-  const ts = buildRunnerTelemetry(data);
-  const rec = ts.recommendations;
-
-  box.innerHTML = `
-    <h2 class="runner-title">🚀 Runner Telemetry Engine</h2>
-    <div class="runner-subtitle">
-      Live runner actions + open position management + shadow-learning telemetry.
-    </div>
-
-    <div class="metric-grid">
-      ${renderMetric("Scanner Candidates", ts.scannerCandidates)}
-      ${renderMetric("Runner Input", ts.tradeFunnelInputCount)}
-      ${renderMetric("Actions", ts.totalActions)}
-      ${renderMetric("Open Runners", ts.openRunners)}
-
-      ${renderMetric("Entries", ts.entries)}
-      ${renderMetric("Waits", ts.waits)}
-      ${renderMetric("Holds", ts.holds)}
-      ${renderMetric("Partials", ts.partials)}
-
-      ${renderMetric("Move BE", ts.beMoves)}
-      ${renderMetric("Trails", ts.trails)}
-      ${renderMetric("Adds", ts.adds)}
-      ${renderMetric("Exits", ts.exits)}
-
-      ${renderMetric("Wins / Losses", `${ts.wins} / ${ts.losses}`)}
-      ${renderMetric("Winrate", pctText(ts.winrate), ts.winrate >= 55 ? "good" : ts.winrate > 0 && ts.winrate < 45 ? "bad" : "")}
-      ${renderMetric("Avg R", fixed(ts.avgR, 2), valueClass(ts.avgR))}
-      ${renderMetric("Total R", fixed(ts.totalR, 2), valueClass(ts.totalR))}
-
-      ${renderMetric("Avg MFE R", fixed(ts.avgMfeR, 2))}
-      ${renderMetric("Avg MAE R", fixed(ts.avgMaeR, 2))}
-      ${renderMetric("Feature Rows", ts.featureRows)}
-      ${renderMetric("Shadow Rows", ts.shadowRows)}
-
-      ${renderMetric("Shadow Wins", ts.shadowWins)}
-      ${renderMetric("Shadow Losses", ts.shadowLosses)}
-    </div>
-
-    ${renderRecommendationBlock("📈 Meer runner entries", rec.moreRunners)}
-    ${renderRecommendationBlock("🎯 Hogere runner winrate", rec.higherWinrate)}
-    ${renderRecommendationBlock("💰 Hogere runner PnL", rec.higherPnl)}
-
-    <div class="runner-section-label">Top Runner Rejects</div>
-    <div class="telemetry-list">
-      ${renderTelemetryRows(ts.waitRows.slice(0, 10), "Geen runner blokkades deze scan.")}
-    </div>
-
-    <div class="runner-section-label">Runner Entry Types</div>
-    <div class="telemetry-list">
-      ${renderTelemetryRows(ts.entryRows.slice(0, 8), "Geen runner entries deze scan.")}
-    </div>
-  `;
+  debugJson.textContent = JSON.stringify({
+    mode: state.raw?.mode || null,
+    sources: state.raw?.sources || null,
+    summary: state.report?.summary || null,
+    diagnostics: state.report?.diagnostics || null,
+    config: state.report?.config || null,
+  }, null, 2);
 }
 
-// ================= RUNNER PERFORMANCE =================
-function renderPerformanceRows(title, rows, limit = 8){
-  const clean = safeArray(rows).slice(0, limit);
+function render() {
+  if (!state.report) return;
 
-  if(!clean.length){
-    return `
-      <div class="runner-section-label">${escapeHtml(title)}</div>
-      <div class="muted" style="padding:10px 0;">Geen data.</div>
-    `;
+  renderSummary();
+  renderSourceCards();
+  renderWinners();
+  renderFamilies();
+  renderFilters();
+  renderApiMeta();
+  renderDebug();
+
+  const apiLink = $("apiLink");
+  if (apiLink) {
+    apiLink.href = buildApiUrl({ debug: true });
+  }
+}
+
+// ================= LOAD / RESET =================
+
+async function loadAnalytics({ force = false } = {}) {
+  if (state.loading && !force) return;
+
+  setBusy(true);
+  setStatus("Laden...", false);
+
+  try {
+    const payload = await fetchAnalyticsPayload({ debug: true });
+    const normalized = normalizePayload(payload);
+
+    state.raw = normalized.raw;
+    state.report = normalized.report;
+
+    const updated = normalized.raw?.generatedAt
+      ? new Date(normalized.raw.generatedAt).toLocaleString()
+      : new Date().toLocaleString();
+
+    setStatus(`Laatste update: ${updated}`, false);
+    render();
+  } catch (error) {
+    const message = errorToText(error);
+
+    setStatus(message, true);
+    console.error("RUNNER ANALYTICS LOAD ERROR:", error);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function resetAnalytics() {
+  const ok = window.confirm("Runner analyse-store resetten? Dit wist de opgeslagen runner family-history.");
+
+  if (!ok) return;
+  if (state.loading) return;
+
+  setBusy(true);
+  setStatus("Reset bezig...", false);
+
+  try {
+    const payload = await fetchAnalyticsPayload({ reset: true, debug: true });
+
+    if (!payload.ok) {
+      throw payload;
+    }
+
+    state.raw = null;
+    state.report = null;
+
+    setBusy(false);
+    await loadAnalytics({ force: true });
+  } catch (error) {
+    const message = errorToText(error);
+
+    setStatus(message, true);
+    console.error("RUNNER ANALYTICS RESET ERROR:", error);
+  } finally {
+    setBusy(false);
+  }
+}
+
+// ================= TABS / EVENTS =================
+
+function syncTabs() {
+  document.querySelectorAll("[data-side], [data-tab]").forEach(button => {
+    const value = button.dataset.side || button.dataset.tab || "ALL";
+    button.classList.toggle("active", value === state.activeTab);
+  });
+}
+
+function setTab(tab) {
+  state.activeTab = tab || "ALL";
+
+  const sideSelect = firstEl("sideSelect", "sideFilter");
+
+  if (sideSelect) {
+    sideSelect.value = state.activeTab;
   }
 
-  return `
-    <div class="runner-section-label">${escapeHtml(title)}</div>
-    <div class="table-wrap">
-      <table class="runner-table">
-        <thead>
-          <tr>
-            <th>Key</th>
-            <th>Total</th>
-            <th>Wins</th>
-            <th>Losses</th>
-            <th>Winrate</th>
-            <th>Total PnL%</th>
-            <th>Avg PnL%</th>
-            <th>Avg RR</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${clean.map(row => `
-            <tr>
-              <td><span class="pill runner">${escapeHtml(row.key || "UNKNOWN")}</span></td>
-              <td>${num(row.total)}</td>
-              <td>${num(row.wins)}</td>
-              <td>${num(row.losses)}</td>
-              <td>${pctText(row.winrate)}</td>
-              <td class="${valueClass(row.totalPnlPct)}">${signedFixed(row.totalPnlPct, 3)}%</td>
-              <td class="${valueClass(row.avgPnlPct)}">${signedFixed(row.avgPnlPct, 3)}%</td>
-              <td>${fixed(row.avgRR, 2)}</td>
-            </tr>
-          `).join("")}
-        </tbody>
-      </table>
+  syncTabs();
+  renderFamilies();
+}
+
+function toggleAuto() {
+  state.auto = !state.auto;
+
+  const button = $("autoBtn");
+  if (button) button.textContent = `Auto: ${state.auto ? "ON" : "OFF"}`;
+
+  if (state.timer) {
+    clearInterval(state.timer);
+    state.timer = null;
+  }
+
+  if (state.auto) {
+    state.timer = setInterval(loadAnalytics, REFRESH_MS);
+  }
+}
+
+let reloadDebounce = null;
+
+function scheduleReload() {
+  if (reloadDebounce) {
+    clearTimeout(reloadDebounce);
+  }
+
+  reloadDebounce = setTimeout(() => {
+    loadAnalytics();
+  }, 350);
+}
+
+function wireEvents() {
+  $("refreshBtn")?.addEventListener("click", () => loadAnalytics());
+  $("resetBtn")?.addEventListener("click", resetAnalytics);
+  $("autoBtn")?.addEventListener("click", toggleAuto);
+
+  $("apiBtn")?.addEventListener("click", () => {
+    window.open(buildApiUrl({ debug: true }), "_blank", "noopener");
+  });
+
+  document.querySelectorAll("[data-side], [data-tab]").forEach(button => {
+    button.addEventListener("click", () => {
+      setTab(button.dataset.side || button.dataset.tab || "ALL");
+    });
+  });
+
+  const sideSelect = firstEl("sideSelect", "sideFilter");
+  const statusSelect = firstEl("statusSelect", "statusFilter");
+  const sourceSelect = firstEl("sourceSelect", "sourceMode", "dataSourceSelect");
+  const minClosedInput = getMinClosedInput();
+  const searchInput = $("searchInput");
+  const hideEmptyInput = firstEl("hideEmptyInput", "hideEmpty");
+
+  sideSelect?.addEventListener("change", () => {
+    state.activeTab = sideSelect.value || "ALL";
+    syncTabs();
+    renderFamilies();
+  });
+
+  statusSelect?.addEventListener("change", renderFamilies);
+  searchInput?.addEventListener("input", renderFamilies);
+  hideEmptyInput?.addEventListener("change", renderFamilies);
+
+  sourceSelect?.addEventListener("change", () => {
+    scheduleReload();
+  });
+
+  minClosedInput?.addEventListener("input", () => {
+    renderFamilies();
+    renderWinners();
+    scheduleReload();
+  });
+
+  minClosedInput?.addEventListener("change", () => {
+    renderFamilies();
+    renderWinners();
+    scheduleReload();
+  });
+}
+
+// ================= DOM ENHANCERS =================
+
+function createMetricCard(id, label, value = "0") {
+  const article = document.createElement("article");
+  article.className = "metric-card";
+  article.innerHTML = `
+    <span class="metric-label">${escapeHtml(label)}</span>
+    <strong id="${escapeHtml(id)}" class="metric-value">${escapeHtml(value)}</strong>
+  `;
+  return article;
+}
+
+function enhanceMetricGrid() {
+  const grid = document.querySelector(".metric-grid");
+  if (!grid) return;
+
+  if (!$("mPending")) {
+    const closedCard = $("mClosed")?.closest(".metric-card");
+    const card = createMetricCard("mPending", "Pending outcome", "0");
+
+    if (closedCard?.nextSibling) {
+      grid.insertBefore(card, closedCard.nextSibling);
+    } else {
+      grid.appendChild(card);
+    }
+  }
+
+  if (!$("mBreakeven")) {
+    const lossesCard = $("mLosses")?.closest(".metric-card");
+    const card = createMetricCard("mBreakeven", "Breakeven", "0");
+
+    if (lossesCard?.nextSibling) {
+      grid.insertBefore(card, lossesCard.nextSibling);
+    } else {
+      grid.appendChild(card);
+    }
+  }
+}
+
+function enhanceSourceCards() {
+  if ($("sourceStored")) return;
+
+  const heroInner = document.querySelector(".hero-inner") || document.querySelector(".hero");
+  if (!heroInner) return;
+
+  const grid = document.createElement("div");
+  grid.className = "hero-status-grid";
+  grid.innerHTML = `
+    <article class="status-card">
+      <span>Stored</span>
+      <strong id="sourceStored">0</strong>
+      <small id="sourceStoredSub">store: n/a</small>
+    </article>
+    <article class="status-card">
+      <span>Latest</span>
+      <strong id="sourceLatest">0</strong>
+      <small id="sourceLatestSub">latest scan n/a</small>
+    </article>
+    <article class="status-card">
+      <span>Selected</span>
+      <strong id="sourceMerged">0</strong>
+      <small id="sourceMergedSub">loaded: 0</small>
+    </article>
+    <article class="status-card">
+      <span>Latency</span>
+      <strong id="sourceLatency">0ms</strong>
+      <small id="sourceLatencySub"></small>
+    </article>
+  `;
+
+  const statusLine = firstEl("statusLine", "statusText");
+  if (statusLine?.nextSibling) {
+    heroInner.insertBefore(grid, statusLine.nextSibling);
+  } else {
+    heroInner.appendChild(grid);
+  }
+}
+
+function createBestPanel({ id, countId, title, subtitle }) {
+  const panel = document.createElement("section");
+  panel.className = "panel winner-panel";
+  panel.innerHTML = `
+    <div class="table-header">
+      <div>
+        <h2>${escapeHtml(title)}</h2>
+        <p class="panel-subtitle">${escapeHtml(subtitle)}</p>
+      </div>
+      <span id="${escapeHtml(countId)}">0 families</span>
     </div>
+    <div id="${escapeHtml(id)}" class="winner-grid"></div>
+  `;
+
+  return panel;
+}
+
+function enhanceBestPanels() {
+  const familyPanel =
+    document.querySelector(".family-panel") ||
+    firstEl("familyBody", "familiesBody")?.closest(".panel");
+
+  if (!$("winnerGrid")) {
+    const panel = createBestPanel({
+      id: "winnerGrid",
+      countId: "winnerCount",
+      title: "Winner families",
+      subtitle: "HOT/GOOD/STABLE runner families met voldoende closed trades en positieve Avg R.",
+    });
+
+    if (familyPanel?.parentNode) {
+      familyPanel.parentNode.insertBefore(panel, familyPanel);
+    } else {
+      document.querySelector("main")?.appendChild(panel);
+    }
+  }
+
+  if (!$("balanceGrid")) {
+    const panel = createBestPanel({
+      id: "balanceGrid",
+      countId: "balanceCount",
+      title: "Main balance candidates",
+      subtitle: "Beste balans tussen winrate, Avg R, PF en sample. Geschikt voor stabielere Discord-signalen.",
+    });
+
+    const insertBefore = familyPanel || document.querySelector(".filters-panel");
+    if (insertBefore?.parentNode) {
+      insertBefore.parentNode.insertBefore(panel, insertBefore);
+    } else {
+      document.querySelector("main")?.appendChild(panel);
+    }
+  }
+
+  if (!$("runnerPnlGrid")) {
+    const panel = createBestPanel({
+      id: "runnerPnlGrid",
+      countId: "runnerPnlCount",
+      title: "Runner PnL candidates",
+      subtitle: "PnL-first families. Lagere winrate mag, zolang Avg R / Avg PnL / PF sterker zijn.",
+    });
+
+    const insertBefore = familyPanel || document.querySelector(".filters-panel");
+    if (insertBefore?.parentNode) {
+      insertBefore.parentNode.insertBefore(panel, insertBefore);
+    } else {
+      document.querySelector("main")?.appendChild(panel);
+    }
+  }
+}
+
+function ensureSourceSelect() {
+  if ($("sourceSelect")) return;
+
+  const filterGrid = document.querySelector(".filter-grid");
+  if (!filterGrid) return;
+
+  const label = document.createElement("label");
+  label.className = "field";
+  label.innerHTML = `
+    <span>Data source</span>
+    <select id="sourceSelect">
+      <option value="stored" selected>STORED only</option>
+      <option value="merged">MERGED: store + latest</option>
+      <option value="latest">LATEST only</option>
+    </select>
+  `;
+
+  filterGrid.insertBefore(label, filterGrid.firstChild);
+}
+
+function enhanceFamilyTableHeader() {
+  const table =
+    firstEl("familyBody", "familiesBody")?.closest("table") ||
+    document.querySelector(".family-table");
+
+  const headerRow = table?.querySelector("thead tr");
+  if (!headerRow) return;
+
+  headerRow.innerHTML = `
+    <th>Family</th>
+    <th>Side</th>
+    <th>Quality</th>
+    <th>Market</th>
+    <th>Timing</th>
+    <th>Definition</th>
+    <th>Observed</th>
+    <th>Trades</th>
+    <th>Closed</th>
+    <th>Open</th>
+    <th>Pending</th>
+    <th>Wins</th>
+    <th>Losses</th>
+    <th>Winrate</th>
+    <th>Total R</th>
+    <th>Avg R</th>
+    <th>Total PnL%</th>
+    <th>Avg PnL%</th>
+    <th>PF</th>
+    <th>Runner score</th>
+    <th>Status</th>
   `;
 }
 
-function renderRunnerPerformance(performanceData, tradeStatsData){
-  const box = el("runnerPerformance");
-  if(!box) return;
+function enhanceDebugPanel() {
+  if ($("debugJson")) return;
 
-  const perf = getPerformancePayload(performanceData);
-  const stats = getTradeStatsPayload(tradeStatsData);
+  const main = document.querySelector("main");
+  if (!main) return;
 
-  const overall = safeObject(stats.overall);
-  const perfTotal = num(getFirst(perf.total, overall.total));
-  const wins = num(getFirst(perf.wins, overall.wins));
-  const losses = num(getFirst(perf.losses, overall.losses));
-  const flats = num(getFirst(perf.flats, overall.flats));
-  const winrate = num(getFirst(perf.winrate, overall.winrate));
-  const totalPnlPct = num(getFirst(perf.totalPnlPct, overall.totalPnlPct));
-  const avgPnlPct = num(getFirst(perf.avgPnlPct, overall.avgPnlPct));
-  const avgRR = num(getFirst(perf.avgRR, overall.avgRR));
-  const avgConfluence = num(getFirst(perf.avgConfluence, overall.avgConfluence));
+  const panel = document.createElement("section");
+  panel.className = "panel debug-panel";
+  panel.innerHTML = `
+    <details>
+      <summary>Debug payload</summary>
+      <pre id="debugJson" class="debug-json"></pre>
+    </details>
+  `;
 
-  if(!performanceData?.ok && !tradeStatsData?.ok){
-    box.innerHTML = `
-      <h2 class="runner-title">📊 Runner Performance</h2>
-      <p style="color:var(--red);">Runner performance kon niet geladen worden.</p>
-    `;
+  main.appendChild(panel);
+}
+
+function enhanceExistingDom() {
+  enhanceMetricGrid();
+  enhanceSourceCards();
+  enhanceBestPanels();
+  ensureSourceSelect();
+  enhanceFamilyTableHeader();
+  enhanceDebugPanel();
+}
+
+function ensureDom() {
+  if ($("familyBody") || $("familiesBody") || $("analyticsApp")) {
+    enhanceExistingDom();
     return;
   }
 
-  box.innerHTML = `
-    <h2 class="runner-title">📊 Runner Performance</h2>
-    <div class="runner-subtitle">
-      Gesloten trade-log statistiek uit logger/db. Dit staat los van scanner-stage analytics.
-    </div>
+  document.body.innerHTML = `
+    <main id="analyticsApp" class="page">
+      <section class="hero">
+        <div class="hero-inner">
+          <div class="hero-copy">
+            <p class="eyebrow">Runner TradeSystem Analyzer</p>
+            <h1>Runner Family Performance Matrix</h1>
+            <p class="hero-text">
+              50 LONG families + 50 SHORT families. Elke runner trade wordt op entry vastgezet in één frozen runner filter-family.
+              Winrate en PnL gebruiken uitsluitend closed trades met echte outcome-data.
+            </p>
+          </div>
 
-    <div class="metric-grid">
-      ${renderMetric("Closed Trades", perfTotal)}
-      ${renderMetric("Wins / Losses / Flat", `${wins} / ${losses} / ${flats}`)}
-      ${renderMetric("Winrate", pctText(winrate), winrate >= 55 ? "good" : winrate > 0 && winrate < 45 ? "bad" : "")}
-      ${renderMetric("Total PnL%", `${signedFixed(totalPnlPct, 3)}%`, valueClass(totalPnlPct))}
+          <div class="top-actions">
+            <button id="refreshBtn" type="button">Refresh</button>
+            <button id="autoBtn" type="button">Auto: OFF</button>
+            <button id="resetBtn" type="button" class="danger">Reset</button>
+            <button id="apiBtn" type="button">API</button>
+            <a id="apiLink" href="/api/analyze" target="_blank" rel="noopener">API JSON</a>
+          </div>
 
-      ${renderMetric("Avg PnL%", `${signedFixed(avgPnlPct, 3)}%`, valueClass(avgPnlPct))}
-      ${renderMetric("Avg RR", fixed(avgRR, 2))}
-      ${renderMetric("Avg Confluence", fixed(avgConfluence, 2))}
-      ${renderMetric("Hydrated", overall.hydrated === true || perf.hydrated === true ? "YES" : "NO")}
-    </div>
+          <div id="statusLine" class="status-line">Nog niet geladen.</div>
 
-    ${renderPerformanceRows("By Entry Type", stats.byEntryType)}
-    ${renderPerformanceRows("By Side", stats.bySide)}
-    ${renderPerformanceRows("By Flow", stats.byFlow)}
-    ${renderPerformanceRows("By OB Bias", stats.byObBias)}
+          <div class="hero-status-grid">
+            <article class="status-card">
+              <span>Stored</span>
+              <strong id="sourceStored">0</strong>
+              <small id="sourceStoredSub">store: n/a</small>
+            </article>
+            <article class="status-card">
+              <span>Latest</span>
+              <strong id="sourceLatest">0</strong>
+              <small id="sourceLatestSub">latest scan n/a</small>
+            </article>
+            <article class="status-card">
+              <span>Selected</span>
+              <strong id="sourceMerged">0</strong>
+              <small id="sourceMergedSub">loaded: 0</small>
+            </article>
+            <article class="status-card">
+              <span>Latency</span>
+              <strong id="sourceLatency">0ms</strong>
+              <small id="sourceLatencySub"></small>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="errorBox" class="error-box hidden"></section>
+
+      <section class="metric-grid" aria-label="Runner analyse samenvatting">
+        <article class="metric-card"><span class="metric-label">Actions</span><strong id="mActions" class="metric-value">0</strong></article>
+        <article class="metric-card"><span class="metric-label">Trades</span><strong id="mTrades" class="metric-value">0</strong></article>
+        <article class="metric-card"><span class="metric-label">Open</span><strong id="mOpen" class="metric-value">0</strong></article>
+        <article class="metric-card"><span class="metric-label">Closed</span><strong id="mClosed" class="metric-value">0</strong></article>
+        <article class="metric-card"><span class="metric-label">Pending outcome</span><strong id="mPending" class="metric-value">0</strong></article>
+        <article class="metric-card"><span class="metric-label">Wins</span><strong id="mWins" class="metric-value">0</strong></article>
+        <article class="metric-card"><span class="metric-label">Losses</span><strong id="mLosses" class="metric-value">0</strong></article>
+        <article class="metric-card"><span class="metric-label">Breakeven</span><strong id="mBreakeven" class="metric-value">0</strong></article>
+        <article class="metric-card"><span class="metric-label">Winrate</span><strong id="mWinrate" class="metric-value">0%</strong></article>
+        <article class="metric-card"><span class="metric-label">Total R</span><strong id="mTotalR" class="metric-value">0</strong></article>
+        <article class="metric-card"><span class="metric-label">Avg R</span><strong id="mAvgR" class="metric-value">0</strong></article>
+        <article class="metric-card"><span class="metric-label">Total PnL%</span><strong id="mTotalPnl" class="metric-value">0%</strong></article>
+        <article class="metric-card family-card">
+          <span class="metric-label">Long families</span>
+          <strong id="mLongFamilies" class="metric-value">50</strong>
+          <small id="mLongMeta" class="metric-sub">HOT 0 | GOOD 0 | STABLE 0 | BAD 0 | COLLECTING 0 | EMPTY 50</small>
+        </article>
+        <article class="metric-card family-card">
+          <span class="metric-label">Short families</span>
+          <strong id="mShortFamilies" class="metric-value">50</strong>
+          <small id="mShortMeta" class="metric-sub">HOT 0 | GOOD 0 | STABLE 0 | BAD 0 | COLLECTING 0 | EMPTY 50</small>
+        </article>
+      </section>
+
+      <section class="panel winner-panel">
+        <div class="table-header">
+          <div>
+            <h2>Winner families</h2>
+            <p class="panel-subtitle">
+              HOT/GOOD/STABLE runner families met voldoende closed trades en positieve Avg R.
+            </p>
+          </div>
+          <span id="winnerCount">0 families</span>
+        </div>
+        <div id="winnerGrid" class="winner-grid"></div>
+      </section>
+
+      <section class="panel winner-panel">
+        <div class="table-header">
+          <div>
+            <h2>Main balance candidates</h2>
+            <p class="panel-subtitle">
+              Beste balans tussen winrate, Avg R, PF en sample. Geschikt voor stabielere Discord-signalen.
+            </p>
+          </div>
+          <span id="balanceCount">0 families</span>
+        </div>
+        <div id="balanceGrid" class="winner-grid"></div>
+      </section>
+
+      <section class="panel winner-panel">
+        <div class="table-header">
+          <div>
+            <h2>Runner PnL candidates</h2>
+            <p class="panel-subtitle">
+              PnL-first families. Lagere winrate mag, zolang Avg R / Avg PnL / PF sterker zijn.
+            </p>
+          </div>
+          <span id="runnerPnlCount">0 families</span>
+        </div>
+        <div id="runnerPnlGrid" class="winner-grid"></div>
+      </section>
+
+      <section class="panel family-panel">
+        <div class="tab-row" role="tablist" aria-label="Family side tabs">
+          <button type="button" class="tab active" data-side="ALL">All families</button>
+          <button type="button" class="tab" data-side="LONG">Long families</button>
+          <button type="button" class="tab" data-side="SHORT">Short families</button>
+        </div>
+
+        <div class="filter-grid">
+          <label class="field">
+            <span>Data source</span>
+            <select id="sourceSelect">
+              <option value="stored" selected>STORED only</option>
+              <option value="merged">MERGED: store + latest</option>
+              <option value="latest">LATEST only</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Side</span>
+            <select id="sideSelect">
+              <option value="ALL">ALL</option>
+              <option value="LONG">LONG</option>
+              <option value="SHORT">SHORT</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Status</span>
+            <select id="statusSelect">
+              <option value="ALL">ALL</option>
+              <option value="HOT">HOT</option>
+              <option value="GOOD">GOOD</option>
+              <option value="STABLE">STABLE</option>
+              <option value="COLLECTING">COLLECTING</option>
+              <option value="BAD">BAD</option>
+              <option value="EMPTY">EMPTY</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Min closed</span>
+            <input id="minClosedInput" type="number" min="0" step="1" value="10" inputmode="numeric" />
+          </label>
+
+          <label class="field search-field">
+            <span>Search</span>
+            <input id="searchInput" type="search" placeholder="LONG_4, RUNNER_A, SQUEEZE, PRESSURE..." autocomplete="off" />
+          </label>
+
+          <label class="check-field">
+            <input id="hideEmptyInput" type="checkbox" />
+            <span>Hide empty</span>
+          </label>
+        </div>
+
+        <div class="table-header">
+          <h2>Runner families</h2>
+          <span id="familyCount">0 rows</span>
+        </div>
+
+        <div class="table-wrap">
+          <table class="family-table">
+            <thead>
+              <tr>
+                <th>Family</th>
+                <th>Side</th>
+                <th>Quality</th>
+                <th>Market</th>
+                <th>Timing</th>
+                <th>Definition</th>
+                <th>Observed</th>
+                <th>Trades</th>
+                <th>Closed</th>
+                <th>Open</th>
+                <th>Pending</th>
+                <th>Wins</th>
+                <th>Losses</th>
+                <th>Winrate</th>
+                <th>Total R</th>
+                <th>Avg R</th>
+                <th>Total PnL%</th>
+                <th>Avg PnL%</th>
+                <th>PF</th>
+                <th>Runner score</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="familyBody">
+              <tr>
+                <td colspan="21" class="empty-row">Nog geen data geladen.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div id="emptyState" class="empty-state hidden">
+          Geen runner families voor deze filterselectie.
+        </div>
+      </section>
+
+      <section class="panel filters-panel">
+        <div class="table-header">
+          <h2>Tracked runner filters</h2>
+          <span id="filterCount">0 labels</span>
+        </div>
+        <div id="filtersBody" class="filter-chip-grid"></div>
+      </section>
+
+      <section class="panel debug-panel">
+        <details>
+          <summary>Debug payload</summary>
+          <pre id="debugJson" class="debug-json"></pre>
+        </details>
+      </section>
+    </main>
   `;
 }
 
-// ================= FUNNEL ANALYTICS =================
-function block(title, data, side){
-  if(!data) return "";
+// ================= BOOT =================
 
-  const adviceId = `advice-${side}-${String(title || "").toLowerCase()}`;
-  const stageKey = String(title || "").toLowerCase();
-  const adviceList = window.latestAdvice?.[side]?.[stageKey] || [];
-
-  const adviceHtml = adviceList.length
-    ? adviceList.map(adviceItemToHtml).join("")
-    : "<span style='color:var(--green);'>Runner scanner-flow normaal. Geen stage-aanpassing.</span>";
-
-  const reasons = safeObject(data.reasons);
-
-  return `
-    <div class="analysis-card">
-      <div class="a-header">
-        <div class="a-title">${escapeHtml(title)}</div>
-        <div class="a-total">Total: ${num(data.total)}</div>
-      </div>
-
-      <div class="a-stats">
-        <div class="a-stat-row"><span class="a-stat-label">Good</span><span class="a-stat-val good">${escapeHtml(reasons.good || "0%")}</span></div>
-        <div class="a-stat-row"><span class="a-stat-label">Low Score</span><span class="a-stat-val">${escapeHtml(reasons.lowScore || "0%")}</span></div>
-        <div class="a-stat-row"><span class="a-stat-label">Weak Flow</span><span class="a-stat-val">${escapeHtml(reasons.weakFlow || "0%")}</span></div>
-        <div class="a-stat-row"><span class="a-stat-label">Low Volume</span><span class="a-stat-val">${escapeHtml(reasons.lowVolume || "0%")}</span></div>
-        <div class="a-stat-row"><span class="a-stat-label">Bad OB</span><span class="a-stat-val">${escapeHtml(reasons.badOB || "0%")}</span></div>
-      </div>
-
-      <div class="advice-content" id="${adviceId}">
-        <strong>Runner Stage Advies</strong>
-        ${adviceHtml}
-      </div>
-
-      <div class="advice-toggle-btn" onclick="toggleAdvice('${adviceId}')">
-        Bekijk Runner Stage Advies
-      </div>
-    </div>
-  `;
-}
-
-function renderFunnelAnalytics(data){
-  const target = el("analytics");
-  if(!target) return;
-
-  const a = data?.analytics;
-
-  if(!a){
-    target.innerHTML = "<p style='color:var(--red);'>Geen runner analytics data gevonden.</p>";
-    return;
-  }
-
-  let html = "";
-
-  for(const side of ["bull", "bear"]){
-    const color = side === "bull" ? "var(--green)" : "var(--red)";
-    const icon = side === "bull" ? "🟢" : "🔴";
-
-    html += `<h2 class="side-title" style="color:${color};">${icon} ${side.toUpperCase()} RUNNER FUNNEL</h2>`;
-
-    for(const stage of ["entry", "almost", "buildup", "radar"]){
-      if(a[side]?.[stage]){
-        html += block(stage.toUpperCase(), a[side][stage], side);
-      }
-    }
-  }
-
-  target.innerHTML = html;
-}
-
-// ================= LOAD =================
-async function load(){
-  try{
-    const [latest, performance, tradeStats] = await Promise.all([
-      fetchJsonSafe("/api/public-latest"),
-      fetchJsonSafe("/api/performance"),
-      fetchJsonSafe("/api/trade-stats")
-    ]);
-
-    if(!latest?.ok){
-      throw new Error(latest?.error || "public_latest_error");
-    }
-
-    const data = latest;
-
-    window.latestAdvice = data.advice || {};
-
-    const btcState = data?.btc?.state || "UNKNOWN";
-    const btc24 = data?.btc?.chg24 !== undefined
-      ? ` ${num(data.btc.chg24).toFixed(2)}%`
-      : "";
-
-    const regime = data?.regime || "UNKNOWN";
-    const updated = data?.updatedAt || data?.storedAt || data?.servedAt;
-
-    if(el("statusLine")){
-      el("statusLine").innerText =
-        `BTC: ${btcState}${btc24} | Regime: ${regime} | Laatste runner update: ${fmtTime(updated)} | Full: ${fmtDateTime(updated)}`;
-    }
-
-    renderGlobalAdvice(data);
-    renderRunnerTelemetry(data);
-    renderRunnerPerformance(performance, tradeStats);
-    renderFunnelAnalytics(data);
-
-  }catch(e){
-    console.error("Runner analytics load error:", e);
-
-    if(el("statusLine")){
-      el("statusLine").innerText = `Runner analytics fout: ${e?.message || "unknown_error"}`;
-    }
-
-    if(el("globalAdvice")){
-      el("globalAdvice").style.display = "block";
-    }
-
-    if(el("globalAdviceContent")){
-      el("globalAdviceContent").innerHTML =
-        `<span style="color:var(--red);">Runner latest payload kon niet geladen worden.</span>`;
-    }
-
-    if(el("runnerTelemetry")){
-      el("runnerTelemetry").innerHTML = `
-        <h2 class="runner-title">🚀 Runner Telemetry Engine</h2>
-        <p style="color:var(--red);">Runner telemetry kon niet geladen worden.</p>
-      `;
-    }
-
-    if(el("runnerPerformance")){
-      el("runnerPerformance").innerHTML = `
-        <h2 class="runner-title">📊 Runner Performance</h2>
-        <p style="color:var(--red);">Runner performance kon niet geladen worden.</p>
-      `;
-    }
-
-    if(el("analytics")){
-      el("analytics").innerHTML =
-        "<p style='color:var(--red);'>Fout bij laden van runner analytics.</p>";
-    }
-  }
-}
-
-setInterval(load, REFRESH_MS);
-load();
+document.addEventListener("DOMContentLoaded", async () => {
+  ensureDom();
+  ensureRuntimeDefaults();
+  wireEvents();
+  syncTabs();
+  await loadAnalytics();
+});
