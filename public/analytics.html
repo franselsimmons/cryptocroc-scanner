@@ -2,749 +2,254 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>Runner Family Performance Matrix</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#07101c" />
 
-  <style>
-    :root {
-      --bg: #061118;
-      --panel: #0a1320;
-      --panel2: #07101a;
-      --line: rgba(106, 160, 255, 0.22);
-      --line2: rgba(255, 255, 255, 0.08);
-      --text: #eaf2ff;
-      --muted: #93a1b5;
-      --soft: #b8c4d7;
-      --good: #74f0ae;
-      --bad: #ff718d;
-      --warn: #ffd866;
-      --blue: #76b7ff;
-      --purple: #9b6cff;
-      --shadow: 0 22px 70px rgba(0, 0, 0, 0.35);
-      --radius: 28px;
-    }
+  <title>Runner Analyse</title>
 
-    * {
-      box-sizing: border-box;
-    }
-
-    html {
-      background: var(--bg);
-      color: var(--text);
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      -webkit-text-size-adjust: 100%;
-    }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      background:
-        radial-gradient(circle at 20% 0%, rgba(113, 87, 255, 0.18), transparent 32rem),
-        radial-gradient(circle at 80% 20%, rgba(22, 202, 160, 0.14), transparent 30rem),
-        linear-gradient(180deg, #061118 0%, #081a22 45%, #061118 100%);
-    }
-
-    a {
-      color: inherit;
-      text-decoration: none;
-    }
-
-    button,
-    input,
-    select {
-      font: inherit;
-    }
-
-    .shell {
-      width: min(1220px, 100%);
-      margin: 0 auto;
-      padding: 38px 22px 80px;
-    }
-
-    .hero {
-      padding: 38px 0 28px;
-    }
-
-    .eyebrow {
-      color: var(--muted);
-      font-size: 13px;
-      letter-spacing: 0.22em;
-      font-weight: 900;
-      text-transform: uppercase;
-      margin-bottom: 12px;
-    }
-
-    h1 {
-      margin: 0;
-      font-size: clamp(42px, 8vw, 86px);
-      line-height: 0.92;
-      letter-spacing: -0.06em;
-      max-width: 970px;
-    }
-
-    .hero p {
-      margin: 28px 0 0;
-      max-width: 920px;
-      color: var(--muted);
-      font-size: clamp(18px, 3.5vw, 31px);
-      line-height: 1.45;
-    }
-
-    .nav {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin: 28px 0 18px;
-    }
-
-    .nav a,
-    .btn,
-    .input,
-    .select,
-    .check {
-      min-height: 54px;
-      border: 1px solid var(--line);
-      background: rgba(7, 16, 28, 0.72);
-      color: var(--text);
-      border-radius: 18px;
-      padding: 0 22px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.015);
-    }
-
-    .nav a.active,
-    .btn.primary {
-      background: linear-gradient(135deg, rgba(130, 87, 255, 0.95), rgba(111, 91, 255, 0.78));
-      border-color: rgba(180, 140, 255, 0.7);
-    }
-
-    .btn {
-      cursor: pointer;
-    }
-
-    .btn.danger {
-      border-color: rgba(255, 95, 130, 0.55);
-      color: #ff8fa4;
-    }
-
-    .btn:disabled {
-      opacity: 0.55;
-      cursor: wait;
-    }
-
-    .toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      margin: 22px 0 28px;
-      align-items: center;
-    }
-
-    .input,
-    .select {
-      justify-content: flex-start;
-      width: 170px;
-      color: var(--text);
-    }
-
-    .input input,
-    .select select {
-      width: 100%;
-      border: 0;
-      outline: 0;
-      background: transparent;
-      color: var(--text);
-    }
-
-    .select select option {
-      background: #0b1320;
-      color: var(--text);
-    }
-
-    .check {
-      cursor: pointer;
-      color: var(--soft);
-      user-select: none;
-    }
-
-    .check input {
-      width: 20px;
-      height: 20px;
-      accent-color: var(--blue);
-    }
-
-    .updateLine {
-      color: var(--muted);
-      font-size: 15px;
-      margin: 8px 0 28px;
-      line-height: 1.55;
-    }
-
-    .section {
-      margin-top: 34px;
-    }
-
-    .sectionHead {
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      align-items: end;
-      margin-bottom: 18px;
-    }
-
-    .sectionHead h2 {
-      margin: 0;
-      font-size: clamp(30px, 5vw, 48px);
-      letter-spacing: -0.04em;
-    }
-
-    .sectionHead p {
-      margin: 6px 0 0;
-      color: var(--muted);
-      font-size: 17px;
-      line-height: 1.45;
-    }
-
-    .countPill {
-      color: var(--muted);
-      font-size: 20px;
-      white-space: nowrap;
-    }
-
-    .grid {
-      display: grid;
-      gap: 18px;
-    }
-
-    .grid.metrics {
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-    }
-
-    .grid.two {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .card,
-    .metric,
-    .familyCard,
-    .tableWrap {
-      border: 1px solid var(--line);
-      background: rgba(7, 16, 28, 0.78);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      overflow: hidden;
-    }
-
-    .metric {
-      padding: 26px 28px;
-      min-height: 148px;
-    }
-
-    .metric .label {
-      color: var(--muted);
-      letter-spacing: 0.26em;
-      text-transform: uppercase;
-      font-size: 12px;
-      font-weight: 900;
-      margin-bottom: 18px;
-    }
-
-    .metric .value {
-      font-size: clamp(34px, 6vw, 58px);
-      letter-spacing: -0.04em;
-      font-weight: 900;
-      line-height: 1;
-    }
-
-    .metric .sub {
-      margin-top: 16px;
-      color: var(--muted);
-      font-size: 17px;
-      line-height: 1.35;
-      overflow-wrap: anywhere;
-    }
-
-    .value.good,
-    .txtGood {
-      color: var(--good);
-    }
-
-    .value.bad,
-    .txtBad {
-      color: var(--bad);
-    }
-
-    .value.warn,
-    .txtWarn {
-      color: var(--warn);
-    }
-
-    .familiesGrid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 18px;
-    }
-
-    .familyCard {
-      padding: 28px;
-      position: relative;
-    }
-
-    .familyTop {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 22px;
-    }
-
-    .familyId {
-      font-size: clamp(28px, 5vw, 44px);
-      font-weight: 950;
-      letter-spacing: -0.04em;
-      line-height: 1;
-    }
-
-    .status {
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 9px 17px;
-      font-size: 14px;
-      font-weight: 950;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      white-space: nowrap;
-    }
-
-    .status.HOT {
-      color: var(--warn);
-      border-color: rgba(255, 216, 102, 0.55);
-      background: rgba(255, 216, 102, 0.08);
-    }
-
-    .status.GOOD {
-      color: var(--good);
-      border-color: rgba(116, 240, 174, 0.45);
-      background: rgba(116, 240, 174, 0.08);
-    }
-
-    .status.STABLE {
-      color: var(--blue);
-      border-color: rgba(118, 183, 255, 0.45);
-      background: rgba(118, 183, 255, 0.08);
-    }
-
-    .status.COLLECTING {
-      color: var(--warn);
-      border-color: rgba(255, 216, 102, 0.42);
-      background: rgba(255, 216, 102, 0.07);
-    }
-
-    .status.BAD {
-      color: var(--bad);
-      border-color: rgba(255, 113, 141, 0.42);
-      background: rgba(255, 113, 141, 0.06);
-    }
-
-    .status.EMPTY {
-      color: var(--muted);
-      border-color: rgba(148, 163, 184, 0.25);
-      background: rgba(148, 163, 184, 0.05);
-    }
-
-    .miniGrid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 12px;
-      margin-bottom: 18px;
-    }
-
-    .mini {
-      border: 1px solid var(--line2);
-      background: rgba(0, 0, 0, 0.16);
-      border-radius: 18px;
-      padding: 16px;
-      min-height: 96px;
-    }
-
-    .mini .k {
-      color: var(--muted);
-      letter-spacing: 0.22em;
-      text-transform: uppercase;
-      font-size: 11px;
-      font-weight: 900;
-      margin-bottom: 10px;
-    }
-
-    .mini .v {
-      font-size: 26px;
-      font-weight: 900;
-      letter-spacing: -0.03em;
-    }
-
-    .definition {
-      color: var(--soft);
-      font-size: 15px;
-      line-height: 1.55;
-      overflow-wrap: anywhere;
-      margin: 16px 0;
-    }
-
-    .chips {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 14px;
-    }
-
-    .chip {
-      border: 1px solid var(--line2);
-      color: var(--soft);
-      background: rgba(255,255,255,0.025);
-      border-radius: 999px;
-      padding: 7px 10px;
-      font-size: 12px;
-      font-weight: 800;
-      letter-spacing: 0.03em;
-      overflow-wrap: anywhere;
-      max-width: 100%;
-    }
-
-    .tableWrap {
-      overflow-x: auto;
-      -webkit-overflow-scrolling: touch;
-    }
-
-    table {
-      width: 100%;
-      min-width: 1260px;
-      border-collapse: collapse;
-    }
-
-    th,
-    td {
-      padding: 18px 18px;
-      border-bottom: 1px solid var(--line2);
-      vertical-align: top;
-      text-align: left;
-    }
-
-    th {
-      color: var(--muted);
-      letter-spacing: 0.22em;
-      text-transform: uppercase;
-      font-size: 11px;
-      font-weight: 950;
-      background: rgba(7, 16, 28, 0.92);
-      position: sticky;
-      top: 0;
-      z-index: 2;
-    }
-
-    td {
-      color: var(--soft);
-      font-size: 15px;
-      line-height: 1.45;
-    }
-
-    td.familyCell {
-      color: var(--text);
-      font-weight: 950;
-      font-size: 18px;
-      white-space: nowrap;
-    }
-
-    td.defCell {
-      width: 420px;
-      max-width: 420px;
-      overflow-wrap: anywhere;
-      color: var(--soft);
-    }
-
-    td.num {
-      white-space: nowrap;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .sidePill {
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 7px 12px;
-      font-size: 12px;
-      font-weight: 950;
-      letter-spacing: 0.15em;
-      text-transform: uppercase;
-      display: inline-flex;
-    }
-
-    .sidePill.LONG {
-      color: var(--blue);
-    }
-
-    .sidePill.SHORT {
-      color: #ff8fa4;
-    }
-
-    .emptyBox {
-      border: 1px dashed rgba(148, 163, 184, 0.24);
-      border-radius: 22px;
-      padding: 36px 18px;
-      text-align: center;
-      color: var(--muted);
-      font-size: 20px;
-      line-height: 1.45;
-      background: rgba(0, 0, 0, 0.11);
-    }
-
-    .errorBox {
-      border: 1px solid rgba(255, 113, 141, 0.4);
-      color: #ff9aac;
-      background: rgba(255, 113, 141, 0.07);
-      border-radius: 22px;
-      padding: 18px;
-      margin: 20px 0;
-      overflow-wrap: anywhere;
-      display: none;
-    }
-
-    .smallNote {
-      color: var(--muted);
-      font-size: 14px;
-      line-height: 1.45;
-      margin-top: 10px;
-    }
-
-    @media (max-width: 920px) {
-      .shell {
-        padding: 28px 16px 68px;
-      }
-
-      .grid.metrics,
-      .grid.two,
-      .familiesGrid {
-        grid-template-columns: 1fr;
-      }
-
-      .metric {
-        min-height: 132px;
-      }
-
-      .miniGrid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-
-      .familyCard {
-        padding: 22px;
-      }
-
-      .sectionHead {
-        align-items: flex-start;
-        flex-direction: column;
-      }
-
-      .input,
-      .select {
-        width: calc(50% - 6px);
-      }
-
-      .btn,
-      .nav a,
-      .check {
-        flex: 1 1 auto;
-      }
-    }
-
-    @media (max-width: 520px) {
-      .shell {
-        padding-left: 14px;
-        padding-right: 14px;
-      }
-
-      .hero {
-        padding-top: 24px;
-      }
-
-      .nav {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-
-      .toolbar {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-
-      .btn,
-      .input,
-      .select,
-      .check {
-        width: 100%;
-        min-width: 0;
-        padding-left: 14px;
-        padding-right: 14px;
-      }
-
-      .miniGrid {
-        grid-template-columns: 1fr 1fr;
-      }
-
-      .mini {
-        min-height: 84px;
-        padding: 14px;
-      }
-
-      .mini .v {
-        font-size: 23px;
-      }
-
-      .familyTop {
-        align-items: flex-start;
-      }
-
-      .familyId {
-        font-size: 34px;
-      }
-
-      .status {
-        padding: 8px 13px;
-        font-size: 12px;
-      }
-    }
-  </style>
+  <link rel="stylesheet" href="/analytics.css" />
 </head>
 
 <body>
-  <main class="shell">
-    <header class="hero">
-      <div class="eyebrow">Tradesystem Analyzer</div>
-      <h1>Runner Family Performance Matrix</h1>
-      <p>
-        50 LONG families + 50 SHORT families. Elke runner-trade wordt op entry vastgezet in één frozen
-        filter-family. Sortering is PnL-first met sample-size en winrate als controle.
-      </p>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-inner">
+        <div class="hero-copy">
+          <p class="eyebrow">Runner TradeSystem Analyzer</p>
 
-      <nav class="nav">
-        <a href="/analytics.html?cacheBust=1">Dashboard</a>
-        <a href="/analytics.html?cacheBust=1#runner">Runner</a>
-        <a class="active" href="/analyze.html?minClosed=10&cacheBust=1">Analyse</a>
-        <a id="apiTopLink" target="_blank" rel="noopener">API</a>
-      </nav>
+          <h1>Runner Family Performance Matrix</h1>
 
-      <div class="toolbar">
-        <button class="btn primary" id="refreshBtn">Refresh</button>
-        <button class="btn" id="autoBtn">Auto: OFF</button>
-        <button class="btn danger" id="resetBtn">Reset</button>
-
-        <label class="input" title="Minimaal aantal closed trades voor trusted/winner selectie">
-          <input id="minClosedInput" type="number" min="1" max="5000" step="1" />
-        </label>
-
-        <label class="select">
-          <select id="sortSelect">
-            <option value="pnl">Sort: PnL-first</option>
-            <option value="totalR">Sort: Total R</option>
-            <option value="avgR">Sort: Avg R</option>
-            <option value="winrate">Sort: Winrate</option>
-            <option value="pf">Sort: Profit Factor</option>
-            <option value="closed">Sort: Closed</option>
-            <option value="status">Sort: Status</option>
-          </select>
-        </label>
-
-        <label class="select">
-          <select id="sideSelect">
-            <option value="ALL">Side: ALL</option>
-            <option value="LONG">Side: LONG</option>
-            <option value="SHORT">Side: SHORT</option>
-          </select>
-        </label>
-
-        <label class="select">
-          <select id="statusSelect">
-            <option value="ALL">Status: ALL</option>
-            <option value="HOT">Status: HOT</option>
-            <option value="GOOD">Status: GOOD</option>
-            <option value="STABLE">Status: STABLE</option>
-            <option value="COLLECTING">Status: COLLECTING</option>
-            <option value="BAD">Status: BAD</option>
-            <option value="EMPTY">Status: EMPTY</option>
-          </select>
-        </label>
-
-        <label class="check">
-          <input id="hideEmptyInput" type="checkbox" checked />
-          Hide empty
-        </label>
-      </div>
-
-      <div class="updateLine" id="updateLine">Laden...</div>
-      <div class="errorBox" id="errorBox"></div>
-    </header>
-
-    <section class="section">
-      <div class="grid metrics" id="topMetrics"></div>
-    </section>
-
-    <section class="section">
-      <div class="sectionHead">
-        <div>
-          <h2>Performance</h2>
-          <p>Closed trades bepalen winrate, Total R, Avg R en PnL%. Open trades blijven zichtbaar als context.</p>
+          <p class="hero-text">
+            50 LONG families + 50 SHORT families. Elke runner-trade wordt op entry vastgezet in één frozen
+            filter-family. Ranking is PnL-first: hoogste Total PnL%, daarna Total R, Avg R, PF en sample-size.
+          </p>
         </div>
-      </div>
-      <div class="grid metrics" id="performanceMetrics"></div>
-    </section>
 
-    <section class="section">
-      <div class="sectionHead">
-        <div>
-          <h2>Family summary</h2>
-          <p>Long/short verdeling per statusgroep.</p>
+        <div class="top-actions">
+          <button id="refreshBtn" type="button">Refresh</button>
+          <button id="autoBtn" type="button">Auto: OFF</button>
+          <button id="resetBtn" type="button" class="danger">Reset</button>
+          <a id="apiLink" href="/api/analyze?minClosed=10&debug=true" target="_blank" rel="noopener">API</a>
         </div>
+
+        <div class="hero-status-grid" aria-label="Analyzer status">
+          <article class="status-card">
+            <span>Store</span>
+            <strong id="sStoreCount">0</strong>
+            <small id="sStorePath">-</small>
+          </article>
+
+          <article class="status-card">
+            <span>Latest scan</span>
+            <strong id="sLatestCount">0</strong>
+            <small id="sLatestTime">-</small>
+          </article>
+
+          <article class="status-card">
+            <span>Merged records</span>
+            <strong id="sMergedCount">0</strong>
+            <small id="sGeneratedAt">-</small>
+          </article>
+
+          <article class="status-card">
+            <span>Data state</span>
+            <strong id="sDataState">INIT</strong>
+            <small id="sLatency">0 ms</small>
+          </article>
+        </div>
+
+        <div id="statusLine" class="status-line">Nog niet geladen.</div>
       </div>
-      <div class="grid two" id="familySummary"></div>
     </section>
 
-    <section class="section">
-      <div class="sectionHead">
+    <section id="errorBox" class="error-box hidden"></section>
+
+    <section class="metric-grid" aria-label="Runner analyse samenvatting">
+      <article class="metric-card">
+        <span class="metric-label">Actions</span>
+        <strong id="mActions" class="metric-value">0</strong>
+      </article>
+
+      <article class="metric-card">
+        <span class="metric-label">Trades</span>
+        <strong id="mTrades" class="metric-value">0</strong>
+      </article>
+
+      <article class="metric-card">
+        <span class="metric-label">Open</span>
+        <strong id="mOpen" class="metric-value">0</strong>
+      </article>
+
+      <article class="metric-card">
+        <span class="metric-label">Closed</span>
+        <strong id="mClosed" class="metric-value">0</strong>
+      </article>
+
+      <article class="metric-card">
+        <span class="metric-label">Pending outcome</span>
+        <strong id="mPending" class="metric-value">0</strong>
+      </article>
+
+      <article class="metric-card">
+        <span class="metric-label">Wins</span>
+        <strong id="mWins" class="metric-value">0</strong>
+      </article>
+
+      <article class="metric-card">
+        <span class="metric-label">Losses</span>
+        <strong id="mLosses" class="metric-value">0</strong>
+      </article>
+
+      <article class="metric-card">
+        <span class="metric-label">Breakeven</span>
+        <strong id="mBreakeven" class="metric-value">0</strong>
+      </article>
+
+      <article class="metric-card">
+        <span class="metric-label">Winrate</span>
+        <strong id="mWinrate" class="metric-value">0%</strong>
+      </article>
+
+      <article class="metric-card">
+        <span class="metric-label">Total R</span>
+        <strong id="mTotalR" class="metric-value">0</strong>
+      </article>
+
+      <article class="metric-card">
+        <span class="metric-label">Avg R</span>
+        <strong id="mAvgR" class="metric-value">0</strong>
+      </article>
+
+      <article class="metric-card">
+        <span class="metric-label">Total PnL%</span>
+        <strong id="mTotalPnl" class="metric-value">0%</strong>
+      </article>
+
+      <article class="metric-card family-card">
+        <span class="metric-label">Long families</span>
+        <strong id="mLongFamilies" class="metric-value">50</strong>
+        <small id="mLongMeta" class="metric-sub">HOT 0 | GOOD 0 | STABLE 0 | BAD 0 | COLLECTING 0 | EMPTY 50</small>
+      </article>
+
+      <article class="metric-card family-card">
+        <span class="metric-label">Short families</span>
+        <strong id="mShortFamilies" class="metric-value">50</strong>
+        <small id="mShortMeta" class="metric-sub">HOT 0 | GOOD 0 | STABLE 0 | BAD 0 | COLLECTING 0 | EMPTY 50</small>
+      </article>
+    </section>
+
+    <section class="panel winners-panel" aria-label="Beste runner families">
+      <div class="table-header">
+        <div>
+          <h2>Winner candidates</h2>
+          <p class="panel-subtitle">
+            PnL-first selectie: voldoende closed trades, positieve Avg R, positieve Total R en redelijke winrate.
+          </p>
+        </div>
+
+        <span id="winnerCount">0 winners</span>
+      </div>
+
+      <div id="winnerGrid" class="winner-grid">
+        <article class="winner-empty">
+          Nog geen betrouwbare runner winner-family. Eerst closed trades verzamelen.
+        </article>
+      </div>
+    </section>
+
+    <section class="panel winners-panel" aria-label="Top PnL families">
+      <div class="table-header">
         <div>
           <h2>Top PnL families</h2>
-          <p>Hoogste Total PnL%, daarna Total R, Avg R, PF en sample-size.</p>
+          <p class="panel-subtitle">
+            Hoogste Total PnL%, daarna Total R, Avg R, PF en closed sample.
+          </p>
         </div>
-        <div class="countPill" id="topPnlCount">0 families</div>
+
+        <span id="topPnlCount">0 families</span>
       </div>
-      <div class="familiesGrid" id="topPnlFamilies"></div>
+
+      <div id="topPnlGrid" class="winner-grid">
+        <article class="winner-empty">
+          Nog geen PnL families.
+        </article>
+      </div>
     </section>
 
-    <section class="section">
-      <div class="sectionHead">
-        <div>
-          <h2>Trusted families</h2>
-          <p>HOT / GOOD / STABLE families met voldoende closed trades en positieve Avg R.</p>
-        </div>
-        <div class="countPill" id="trustedCount">0 families</div>
+    <section class="panel family-panel">
+      <div class="tab-row" role="tablist" aria-label="Family side tabs">
+        <button id="tabAll" type="button" class="tab active" data-side="ALL">All families</button>
+        <button id="tabLong" type="button" class="tab" data-side="LONG">Long families</button>
+        <button id="tabShort" type="button" class="tab" data-side="SHORT">Short families</button>
       </div>
-      <div class="familiesGrid" id="trustedFamilies"></div>
-    </section>
 
-    <section class="section">
-      <div class="sectionHead">
+      <div class="filter-grid">
+        <label class="field">
+          <span>Data source</span>
+          <select id="sourceSelect">
+            <option value="RUNNER" selected>RUNNER analyze-store</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Side</span>
+          <select id="sideSelect">
+            <option value="ALL">ALL</option>
+            <option value="LONG">LONG</option>
+            <option value="SHORT">SHORT</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Status</span>
+          <select id="statusSelect">
+            <option value="ALL">ALL</option>
+            <option value="HOT">HOT</option>
+            <option value="GOOD">GOOD</option>
+            <option value="STABLE">STABLE</option>
+            <option value="COLLECTING">COLLECTING</option>
+            <option value="BAD">BAD</option>
+            <option value="EMPTY">EMPTY</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Min closed</span>
+          <input id="minClosedInput" type="number" min="0" step="1" value="10" inputmode="numeric" />
+        </label>
+
+        <label class="field search-field">
+          <span>Search</span>
+          <input id="searchInput" type="search" placeholder="LONG_48, Q5_ELITE, CLEAN, DEPTH..." autocomplete="off" />
+        </label>
+
+        <label class="check-field">
+          <input id="hideEmptyInput" type="checkbox" checked />
+          <span>Hide empty</span>
+        </label>
+      </div>
+
+      <div class="table-header">
         <div>
           <h2>Families</h2>
-          <p>Observed = alle records. Closed = alleen afgerekende trades. Winrate/PnL gebruikt uitsluitend closed.</p>
+          <p class="panel-subtitle">
+            Observed = alle records. Closed = alleen afgerekende trades. Winrate/PnL gebruikt uitsluitend closed.
+          </p>
         </div>
-        <div class="countPill" id="familyCount">0 families</div>
+
+        <span id="familyCount">0 rows</span>
       </div>
-      <div class="tableWrap">
-        <table>
+
+      <div class="table-wrap">
+        <table class="family-table">
           <thead>
             <tr>
               <th>Family</th>
               <th>Side</th>
               <th>Quality</th>
+              <th>Market</th>
+              <th>Timing</th>
+              <th>Definition</th>
               <th>Observed</th>
               <th>Trades</th>
               <th>Closed</th>
@@ -757,730 +262,48 @@
               <th>Total R</th>
               <th>Avg R</th>
               <th>Total PnL%</th>
+              <th>Avg PnL%</th>
               <th>PF</th>
               <th>Status</th>
             </tr>
           </thead>
-          <tbody id="familyTableBody"></tbody>
+
+          <tbody id="familyBody">
+            <tr>
+              <td colspan="21" class="empty-row">Nog geen data geladen.</td>
+            </tr>
+          </tbody>
         </table>
       </div>
+
+      <div id="emptyState" class="empty-state hidden">
+        Geen families voor deze filterselectie.
+      </div>
+    </section>
+
+    <section class="panel filters-panel">
+      <div class="table-header">
+        <div>
+          <h2>Tracked filters</h2>
+          <p class="panel-subtitle">
+            Dit zijn de labels waarop de runner families worden gegroepeerd.
+          </p>
+        </div>
+
+        <span id="filterCount">0 labels</span>
+      </div>
+
+      <div id="filtersBody" class="filter-chip-grid"></div>
+    </section>
+
+    <section class="panel debug-panel">
+      <details>
+        <summary>Debug payload</summary>
+        <pre id="debugJson" class="debug-json">{}</pre>
+      </details>
     </section>
   </main>
 
-  <script>
-    const API_PATH = "/api/analyze";
-    const DEFAULT_MIN_CLOSED = 10;
-    const REFRESH_MS = 30_000;
-
-    const state = {
-      data: null,
-      families: [],
-      auto: false,
-      timer: null,
-      loading: false,
-    };
-
-    const $ = id => document.getElementById(id);
-
-    const els = {
-      apiTopLink: $("apiTopLink"),
-      refreshBtn: $("refreshBtn"),
-      autoBtn: $("autoBtn"),
-      resetBtn: $("resetBtn"),
-      minClosedInput: $("minClosedInput"),
-      sortSelect: $("sortSelect"),
-      sideSelect: $("sideSelect"),
-      statusSelect: $("statusSelect"),
-      hideEmptyInput: $("hideEmptyInput"),
-      updateLine: $("updateLine"),
-      errorBox: $("errorBox"),
-      topMetrics: $("topMetrics"),
-      performanceMetrics: $("performanceMetrics"),
-      familySummary: $("familySummary"),
-      topPnlCount: $("topPnlCount"),
-      trustedCount: $("trustedCount"),
-      familyCount: $("familyCount"),
-      topPnlFamilies: $("topPnlFamilies"),
-      trustedFamilies: $("trustedFamilies"),
-      familyTableBody: $("familyTableBody"),
-    };
-
-    function safeArray(value) {
-      return Array.isArray(value) ? value : [];
-    }
-
-    function safeObject(value) {
-      return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-    }
-
-    function num(value, fallback = 0) {
-      const n = Number(value);
-      return Number.isFinite(n) ? n : fallback;
-    }
-
-    function int(value) {
-      return Math.round(num(value, 0));
-    }
-
-    function pct(value, decimals = 1) {
-      const n = num(value, 0);
-
-      if (Math.abs(n) <= 1) {
-        return `${(n * 100).toFixed(decimals)}%`;
-      }
-
-      return `${n.toFixed(decimals)}%`;
-    }
-
-    function fixed(value, decimals = 3) {
-      return num(value, 0).toFixed(decimals);
-    }
-
-    function compactNumber(value) {
-      const n = num(value, 0);
-
-      if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}m`;
-      if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-
-      return String(Math.round(n));
-    }
-
-    function fmtDate(ts) {
-      const n = num(ts, 0);
-      if (!n) return "-";
-
-      return new Date(n).toLocaleString("nl-NL", {
-        day: "2-digit",
-        month: "numeric",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      });
-    }
-
-    function statusRank(status) {
-      const s = String(status || "EMPTY").toUpperCase();
-
-      if (s === "HOT") return 6;
-      if (s === "GOOD") return 5;
-      if (s === "STABLE") return 4;
-      if (s === "COLLECTING") return 3;
-      if (s === "BAD") return 2;
-      if (s === "EMPTY") return 1;
-
-      return 0;
-    }
-
-    function normalizeSide(side) {
-      const s = String(side || "").toUpperCase();
-
-      if (s === "BULL" || s === "LONG" || s === "BUY") return "LONG";
-      if (s === "BEAR" || s === "SHORT" || s === "SELL") return "SHORT";
-
-      return s || "UNKNOWN";
-    }
-
-    function normalizeStatus(status, family, minClosed) {
-      const raw = String(status || "").toUpperCase();
-      if (raw) return raw;
-
-      const closed = num(family.closed, 0);
-      const avgR = num(family.avgR, 0);
-      const totalR = num(family.totalR, 0);
-      const wr = normalizeWinrateNumber(family);
-
-      if (closed <= 0) return "EMPTY";
-      if (closed < minClosed) return "COLLECTING";
-      if (avgR <= 0 || totalR <= 0) return "BAD";
-      if (wr >= 0.58 && avgR >= 0.25) return "HOT";
-      if (wr >= 0.52 && avgR >= 0.12) return "GOOD";
-      if (wr >= 0.45 && avgR > 0) return "STABLE";
-
-      return "BAD";
-    }
-
-    function normalizeWinrateNumber(family) {
-      if (Number.isFinite(Number(family.winrateNum))) {
-        return num(family.winrateNum, 0);
-      }
-
-      if (typeof family.winrate === "string" && family.winrate.includes("%")) {
-        return num(family.winrate.replace("%", ""), 0) / 100;
-      }
-
-      const wins = num(family.wins, 0);
-      const losses = num(family.losses, 0);
-      const denom = wins + losses;
-
-      if (denom <= 0) return 0;
-
-      return wins / denom;
-    }
-
-    function getFamilyKey(family) {
-      return `${String(family.familyId || family.id || "").toUpperCase()}_${normalizeSide(family.side)}`;
-    }
-
-    function normalizeFamily(raw) {
-      const f = safeObject(raw);
-      const labels = safeArray(f.labels);
-      const definition = String(f.definition || labels.join(" | ") || "-");
-      const familyId = String(f.familyId || f.id || f.name || "-").toUpperCase();
-      const side = normalizeSide(f.side);
-
-      const closed = num(f.closed, f.trades || 0);
-      const wins = num(f.wins, 0);
-      const losses = num(f.losses, 0);
-      const breakeven = num(f.breakeven, f.be || 0);
-      const winrateNum = normalizeWinrateNumber(f);
-
-      return {
-        ...f,
-        familyId,
-        side,
-        quality: String(f.quality || "").toUpperCase(),
-        market: String(f.market || "").toUpperCase(),
-        timing: String(f.timing || "").toUpperCase(),
-        definition,
-        labels: labels.length ? labels : definition.split("|").map(x => x.trim()).filter(Boolean),
-
-        observed: num(f.observed, f.trades || closed || 0),
-        trades: num(f.trades, f.observed || closed || 0),
-        closed,
-        open: num(f.open, 0),
-        pending: num(f.pending, f.pendingOutcome || 0),
-        wins,
-        losses,
-        breakeven,
-        winrateNum,
-        winrate: f.winrate || pct(winrateNum),
-        totalR: num(f.totalR, 0),
-        avgR: num(f.avgR, 0),
-        totalPnlPct: num(f.totalPnlPct, 0),
-        avgPnlPct: num(f.avgPnlPct, 0),
-        profitFactor: num(f.profitFactor ?? f.pf, 0),
-        pf: num(f.pf ?? f.profitFactor, 0),
-        avgMfeR: num(f.avgMfeR, 0),
-        avgMaeR: num(f.avgMaeR, 0),
-        score: num(f.score, 0),
-        examples: safeArray(f.examples),
-      };
-    }
-
-    function dedupeFamilies(list) {
-      const map = new Map();
-
-      for (const item of safeArray(list)) {
-        const family = normalizeFamily(item);
-        const key = getFamilyKey(family);
-
-        if (!family.familyId || family.familyId === "-") continue;
-
-        const prev = map.get(key);
-
-        if (!prev) {
-          map.set(key, family);
-          continue;
-        }
-
-        const prevScore = num(prev.closed, 0) + num(prev.observed, 0) * 0.001;
-        const nextScore = num(family.closed, 0) + num(family.observed, 0) * 0.001;
-
-        if (nextScore >= prevScore) map.set(key, family);
-      }
-
-      return Array.from(map.values());
-    }
-
-    function collectFamilies(data) {
-      const out = [];
-
-      out.push(...safeArray(data?.families));
-      out.push(...safeArray(data?.winnerCandidates));
-      out.push(...safeArray(data?.winnerFamilies));
-
-      const lb = safeObject(data?.leaderboards);
-      out.push(...safeArray(lb.topPnlFamilies));
-      out.push(...safeArray(lb.topTotalRFamilies));
-      out.push(...safeArray(lb.topWinrateFamilies));
-
-      const matrix = safeObject(data?.familyPerformanceMatrix);
-      out.push(...safeArray(matrix?.long?.families));
-      out.push(...safeArray(matrix?.long?.rows));
-      out.push(...safeArray(matrix?.short?.families));
-      out.push(...safeArray(matrix?.short?.rows));
-
-      return dedupeFamilies(out);
-    }
-
-    function getMinClosed() {
-      return Math.max(1, int(els.minClosedInput.value || DEFAULT_MIN_CLOSED));
-    }
-
-    function getApiUrl() {
-      const url = new URL(API_PATH, window.location.origin);
-      url.searchParams.set("minClosed", String(getMinClosed()));
-      url.searchParams.set("cacheBust", String(Date.now()));
-      return url.toString();
-    }
-
-    function getFilterFamilies() {
-      const minClosed = getMinClosed();
-      const side = els.sideSelect.value;
-      const status = els.statusSelect.value;
-      const hideEmpty = els.hideEmptyInput.checked;
-
-      let families = state.families.map(f => {
-        return {
-          ...f,
-          status: normalizeStatus(f.status, f, minClosed),
-        };
-      });
-
-      if (side !== "ALL") {
-        families = families.filter(f => f.side === side);
-      }
-
-      if (status !== "ALL") {
-        families = families.filter(f => String(f.status || "").toUpperCase() === status);
-      }
-
-      if (hideEmpty) {
-        families = families.filter(f => String(f.status || "").toUpperCase() !== "EMPTY");
-      }
-
-      return families.sort(compareFamilies);
-    }
-
-    function compareFamilies(a, b) {
-      const mode = els.sortSelect.value;
-
-      if (mode === "status") {
-        return (
-          statusRank(b.status) - statusRank(a.status) ||
-          num(b.totalPnlPct) - num(a.totalPnlPct) ||
-          num(b.totalR) - num(a.totalR) ||
-          num(b.closed) - num(a.closed)
-        );
-      }
-
-      if (mode === "totalR") {
-        return (
-          num(b.totalR) - num(a.totalR) ||
-          num(b.totalPnlPct) - num(a.totalPnlPct) ||
-          num(b.avgR) - num(a.avgR)
-        );
-      }
-
-      if (mode === "avgR") {
-        return (
-          num(b.avgR) - num(a.avgR) ||
-          num(b.closed) - num(a.closed) ||
-          num(b.totalR) - num(a.totalR)
-        );
-      }
-
-      if (mode === "winrate") {
-        return (
-          num(b.winrateNum) - num(a.winrateNum) ||
-          num(b.closed) - num(a.closed) ||
-          num(b.totalR) - num(a.totalR)
-        );
-      }
-
-      if (mode === "pf") {
-        return (
-          num(b.pf) - num(a.pf) ||
-          num(b.totalR) - num(a.totalR) ||
-          num(b.closed) - num(a.closed)
-        );
-      }
-
-      if (mode === "closed") {
-        return (
-          num(b.closed) - num(a.closed) ||
-          num(b.totalPnlPct) - num(a.totalPnlPct) ||
-          num(b.totalR) - num(a.totalR)
-        );
-      }
-
-      return (
-        statusRank(b.status) - statusRank(a.status) ||
-        num(b.totalPnlPct) - num(a.totalPnlPct) ||
-        num(b.totalR) - num(a.totalR) ||
-        num(b.avgR) - num(a.avgR) ||
-        num(b.pf) - num(a.pf) ||
-        num(b.closed) - num(a.closed)
-      );
-    }
-
-    function trustedFamilies(families) {
-      const minClosed = getMinClosed();
-
-      return families
-        .filter(f => {
-          const status = String(f.status || "").toUpperCase();
-          if (!["HOT", "GOOD", "STABLE"].includes(status)) return false;
-          if (num(f.closed, 0) < minClosed) return false;
-          if (num(f.avgR, 0) <= 0) return false;
-          if (num(f.totalR, 0) <= 0) return false;
-          return true;
-        })
-        .sort((a, b) => {
-          return (
-            num(b.totalPnlPct) - num(a.totalPnlPct) ||
-            num(b.totalR) - num(a.totalR) ||
-            num(b.avgR) - num(a.avgR) ||
-            num(b.closed) - num(a.closed)
-          );
-        });
-    }
-
-    function metric(label, value, sub = "", cls = "") {
-      return `
-        <div class="metric">
-          <div class="label">${escapeHtml(label)}</div>
-          <div class="value ${cls}">${escapeHtml(String(value))}</div>
-          ${sub ? `<div class="sub">${escapeHtml(String(sub))}</div>` : ""}
-        </div>
-      `;
-    }
-
-    function renderMetrics(data) {
-      const stats = safeObject(data?.stats);
-      const store = safeObject(data?.store);
-      const latest = safeObject(data?.latest);
-      const merged = safeObject(data?.merged);
-      const source = safeObject(data?.source);
-
-      els.topMetrics.innerHTML = [
-        metric("Store", compactNumber(store.count || store.trades || 0), source.storeSource || source.mode || "-"),
-        metric("Latest scan", compactNumber(latest.count || 0), latest.note || "latest scan OK"),
-        metric("Merged records", compactNumber(merged.count || 0), merged.source || `loaded: ${compactNumber(merged.count || 0)}`),
-        metric("Data state", data?.dataState || "UNKNOWN", `${num(data?.latencyMs, 0)} ms`),
-      ].join("");
-
-      const totalPnl = num(stats.totalPnlPct, 0);
-      const avgR = num(stats.avgR, 0);
-      const totalR = num(stats.totalR, 0);
-
-      els.performanceMetrics.innerHTML = [
-        metric("Actions", compactNumber(stats.actions || 0)),
-        metric("Trades", compactNumber(stats.trades || 0)),
-        metric("Open", compactNumber(stats.open || 0)),
-        metric("Closed", compactNumber(stats.closed || 0)),
-        metric("Pending outcome", compactNumber(stats.pendingOutcome || 0)),
-        metric("Wins", compactNumber(stats.wins || 0), "", "good"),
-        metric("Losses", compactNumber(stats.losses || 0), "", "bad"),
-        metric("Breakeven", compactNumber(stats.breakeven || 0)),
-        metric("Winrate", stats.winrate || pct(stats.winrateNum || 0)),
-        metric("Total R", fixed(totalR, 3), "", totalR >= 0 ? "good" : "bad"),
-        metric("Avg R", fixed(avgR, 3), "", avgR >= 0 ? "good" : "bad"),
-        metric("Total PnL%", `${fixed(totalPnl, 3)}%`, "", totalPnl >= 0 ? "good" : "bad"),
-      ].join("");
-
-      const longText = stats?.longFamilies?.text || "-";
-      const shortText = stats?.shortFamilies?.text || "-";
-
-      els.familySummary.innerHTML = [
-        metric("Long families", compactNumber(stats?.longFamilies?.total || stats?.longFamilies?.count || 50), longText),
-        metric("Short families", compactNumber(stats?.shortFamilies?.total || stats?.shortFamilies?.count || 50), shortText),
-      ].join("");
-    }
-
-    function familyCard(family) {
-      const status = String(family.status || "EMPTY").toUpperCase();
-      const side = normalizeSide(family.side);
-      const labels = safeArray(family.labels).slice(0, 18);
-
-      return `
-        <article class="familyCard">
-          <div class="familyTop">
-            <div>
-              <div class="familyId">${escapeHtml(family.familyId)}</div>
-              <div class="smallNote">${escapeHtml(side)} · ${escapeHtml(family.quality || "-")} · ${escapeHtml(family.market || "-")} · ${escapeHtml(family.timing || "-")}</div>
-            </div>
-            <div class="status ${escapeAttr(status)}">${escapeHtml(status)}</div>
-          </div>
-
-          <div class="miniGrid">
-            <div class="mini">
-              <div class="k">Closed</div>
-              <div class="v">${compactNumber(family.closed)}</div>
-            </div>
-            <div class="mini">
-              <div class="k">Winrate</div>
-              <div class="v">${pct(family.winrateNum)}</div>
-            </div>
-            <div class="mini">
-              <div class="k">Total R</div>
-              <div class="v ${num(family.totalR) >= 0 ? "txtGood" : "txtBad"}">${fixed(family.totalR, 3)}</div>
-            </div>
-            <div class="mini">
-              <div class="k">PnL%</div>
-              <div class="v ${num(family.totalPnlPct) >= 0 ? "txtGood" : "txtBad"}">${fixed(family.totalPnlPct, 3)}%</div>
-            </div>
-          </div>
-
-          <div class="miniGrid">
-            <div class="mini">
-              <div class="k">Avg R</div>
-              <div class="v ${num(family.avgR) >= 0 ? "txtGood" : "txtBad"}">${fixed(family.avgR, 3)}</div>
-            </div>
-            <div class="mini">
-              <div class="k">PF</div>
-              <div class="v">${fixed(family.pf || family.profitFactor, 3)}</div>
-            </div>
-            <div class="mini">
-              <div class="k">Wins</div>
-              <div class="v txtGood">${compactNumber(family.wins)}</div>
-            </div>
-            <div class="mini">
-              <div class="k">Losses</div>
-              <div class="v txtBad">${compactNumber(family.losses)}</div>
-            </div>
-          </div>
-
-          <div class="definition">${escapeHtml(family.definition)}</div>
-
-          <div class="chips">
-            ${labels.map(label => `<span class="chip">${escapeHtml(label)}</span>`).join("")}
-          </div>
-        </article>
-      `;
-    }
-
-    function renderFamilyCards(target, families, emptyText) {
-      if (!families.length) {
-        target.innerHTML = `<div class="emptyBox">${escapeHtml(emptyText)}</div>`;
-        return;
-      }
-
-      target.innerHTML = families.map(familyCard).join("");
-    }
-
-    function renderTable(families) {
-      els.familyCount.textContent = `${families.length} families`;
-
-      if (!families.length) {
-        els.familyTableBody.innerHTML = `
-          <tr>
-            <td colspan="17">
-              <div class="emptyBox">Geen families gevonden met de huidige filters.</div>
-            </td>
-          </tr>
-        `;
-        return;
-      }
-
-      els.familyTableBody.innerHTML = families.map(f => {
-        const status = String(f.status || "EMPTY").toUpperCase();
-        const side = normalizeSide(f.side);
-
-        return `
-          <tr>
-            <td class="familyCell">${escapeHtml(f.familyId)}</td>
-            <td><span class="sidePill ${escapeAttr(side)}">${escapeHtml(side)}</span></td>
-            <td class="defCell">${escapeHtml(f.definition)}</td>
-            <td class="num">${compactNumber(f.observed)}</td>
-            <td class="num">${compactNumber(f.trades)}</td>
-            <td class="num">${compactNumber(f.closed)}</td>
-            <td class="num">${compactNumber(f.open)}</td>
-            <td class="num">${compactNumber(f.pending)}</td>
-            <td class="num txtGood">${compactNumber(f.wins)}</td>
-            <td class="num txtBad">${compactNumber(f.losses)}</td>
-            <td class="num">${compactNumber(f.breakeven)}</td>
-            <td class="num">${pct(f.winrateNum)}</td>
-            <td class="num ${num(f.totalR) >= 0 ? "txtGood" : "txtBad"}">${fixed(f.totalR, 3)}</td>
-            <td class="num ${num(f.avgR) >= 0 ? "txtGood" : "txtBad"}">${fixed(f.avgR, 3)}</td>
-            <td class="num ${num(f.totalPnlPct) >= 0 ? "txtGood" : "txtBad"}">${fixed(f.totalPnlPct, 3)}%</td>
-            <td class="num">${fixed(f.pf || f.profitFactor, 3)}</td>
-            <td><span class="status ${escapeAttr(status)}">${escapeHtml(status)}</span></td>
-          </tr>
-        `;
-      }).join("");
-    }
-
-    function render() {
-      const data = state.data || {};
-      const families = getFilterFamilies();
-      const pnlLeaders = families
-        .filter(f => String(f.status).toUpperCase() !== "EMPTY")
-        .slice()
-        .sort((a, b) => {
-          return (
-            num(b.totalPnlPct) - num(a.totalPnlPct) ||
-            num(b.totalR) - num(a.totalR) ||
-            num(b.avgR) - num(a.avgR) ||
-            num(b.closed) - num(a.closed)
-          );
-        })
-        .slice(0, 8);
-
-      const trusted = trustedFamilies(families).slice(0, 8);
-
-      renderMetrics(data);
-
-      els.topPnlCount.textContent = `${pnlLeaders.length} families`;
-      els.trustedCount.textContent = `${trusted.length} families`;
-
-      renderFamilyCards(
-        els.topPnlFamilies,
-        pnlLeaders,
-        "Nog geen PnL families met data. Laat de runner-store eerst closed trades verzamelen."
-      );
-
-      renderFamilyCards(
-        els.trustedFamilies,
-        trusted,
-        "Nog geen trusted HOT/GOOD/STABLE family met voldoende closed trades en positieve Avg R."
-      );
-
-      renderTable(families);
-    }
-
-    async function refresh() {
-      if (state.loading) return;
-
-      state.loading = true;
-      els.refreshBtn.disabled = true;
-      els.refreshBtn.textContent = "Loading...";
-      els.errorBox.style.display = "none";
-      els.errorBox.textContent = "";
-
-      const started = performance.now();
-
-      try {
-        const url = getApiUrl();
-        els.apiTopLink.href = url;
-
-        const res = await fetch(url, {
-          method: "GET",
-          headers: {
-            "Accept": "application/json",
-            "Cache-Control": "no-store",
-          },
-          cache: "no-store",
-        });
-
-        const text = await res.text();
-        let data = null;
-
-        try {
-          data = JSON.parse(text);
-        } catch {
-          throw new Error(`API gaf geen JSON terug: ${text.slice(0, 220)}`);
-        }
-
-        if (!res.ok || data?.ok === false) {
-          throw new Error(data?.error || `analyze_http_${res.status}`);
-        }
-
-        state.data = data;
-        state.families = collectFamilies(data);
-
-        const loadedMs = Math.round(performance.now() - started);
-        const stats = safeObject(data.stats);
-        const store = safeObject(data.store);
-        const merged = safeObject(data.merged);
-
-        els.updateLine.textContent =
-          `Laatste update: ${fmtDate(data.servedAt)} | data ${data.dataState || "UNKNOWN"} | ` +
-          `stored ${compactNumber(store.count || 0)} | merged ${compactNumber(merged.count || 0)} | ` +
-          `closed ${compactNumber(stats.closed || 0)} | loaded in ${loadedMs}ms`;
-
-        render();
-      } catch (error) {
-        els.errorBox.style.display = "block";
-        els.errorBox.textContent = error?.message || "analyze_load_failed";
-      } finally {
-        state.loading = false;
-        els.refreshBtn.disabled = false;
-        els.refreshBtn.textContent = "Refresh";
-      }
-    }
-
-    async function resetStore() {
-      const ok = window.confirm("Runner analyze-store resetten?");
-      if (!ok) return;
-
-      els.resetBtn.disabled = true;
-      els.resetBtn.textContent = "Resetting...";
-
-      try {
-        const url = new URL(API_PATH, window.location.origin);
-        url.searchParams.set("action", "reset");
-        url.searchParams.set("cacheBust", String(Date.now()));
-
-        await fetch(url.toString(), {
-          method: "POST",
-          headers: {
-            "Accept": "application/json",
-            "Cache-Control": "no-store",
-          },
-          cache: "no-store",
-        });
-
-        await refresh();
-      } catch (error) {
-        els.errorBox.style.display = "block";
-        els.errorBox.textContent = error?.message || "reset_failed";
-      } finally {
-        els.resetBtn.disabled = false;
-        els.resetBtn.textContent = "Reset";
-      }
-    }
-
-    function setAuto(next) {
-      state.auto = Boolean(next);
-      els.autoBtn.textContent = state.auto ? "Auto: ON" : "Auto: OFF";
-
-      if (state.timer) {
-        clearInterval(state.timer);
-        state.timer = null;
-      }
-
-      if (state.auto) {
-        state.timer = setInterval(refresh, REFRESH_MS);
-      }
-    }
-
-    function escapeHtml(value) {
-      return String(value ?? "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
-    }
-
-    function escapeAttr(value) {
-      return String(value ?? "")
-        .replace(/[^a-zA-Z0-9_-]/g, "");
-    }
-
-    function init() {
-      const params = new URLSearchParams(window.location.search);
-      const minClosed = int(params.get("minClosed") || DEFAULT_MIN_CLOSED);
-
-      els.minClosedInput.value = String(minClosed || DEFAULT_MIN_CLOSED);
-      els.apiTopLink.href = getApiUrl();
-
-      els.refreshBtn.addEventListener("click", refresh);
-      els.autoBtn.addEventListener("click", () => setAuto(!state.auto));
-      els.resetBtn.addEventListener("click", resetStore);
-
-      els.minClosedInput.addEventListener("change", refresh);
-      els.sortSelect.addEventListener("change", render);
-      els.sideSelect.addEventListener("change", render);
-      els.statusSelect.addEventListener("change", render);
-      els.hideEmptyInput.addEventListener("change", render);
-
-      refresh();
-    }
-
-    init();
-  </script>
+  <script type="module" src="/analyze.js"></script>
 </body>
 </html>
