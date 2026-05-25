@@ -17,8 +17,16 @@ const RUNNER_FLOWS = new Set([
   "BUILDING",
 ]);
 
+// ================= GENERIC HELPERS =================
+
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function safeObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
 }
 
 function safeNumber(value, fallback = 0) {
@@ -29,6 +37,7 @@ function safeNumber(value, fallback = 0) {
 function getRequestUrl(req) {
   const host = req?.headers?.host || "localhost";
   const proto = req?.headers?.["x-forwarded-proto"] || "https";
+
   return new URL(req?.url || "/", `${proto}://${host}`);
 }
 
@@ -40,25 +49,61 @@ function getQueryParam(req, key, fallback = "") {
   }
 }
 
+function getBodyValue(req, key, fallback = "") {
+  const body = req?.body;
+
+  if (!body || typeof body !== "object") return fallback;
+
+  const value = body[key];
+
+  if (value === undefined || value === null) return fallback;
+
+  return value;
+}
+
+function normalizeAction(req) {
+  return String(
+    getQueryParam(req, "action", "") ||
+      getBodyValue(req, "action", "") ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeBoolean(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+
+  const v = String(value).trim().toLowerCase();
+
+  if (["true", "1", "yes", "y", "on"].includes(v)) return true;
+  if (["false", "0", "no", "n", "off"].includes(v)) return false;
+
+  return fallback;
+}
+
 function normalizeNotify(value) {
-  const v = String(value || "").toLowerCase();
-  return v === "true" || v === "1" || v === "yes";
+  return normalizeBoolean(value, false);
 }
 
 function normalizeStore(value, fallback = true) {
-  if (value === undefined || value === null) return fallback;
-
-  const v = String(value || "").toLowerCase();
-
-  if (v === "false" || v === "0" || v === "no") return false;
-  if (v === "true" || v === "1" || v === "yes") return true;
-
-  return fallback;
+  return normalizeBoolean(value, fallback);
 }
 
 function incrementCounter(map, key) {
   const k = String(key || "UNKNOWN").toUpperCase();
   map[k] = safeNumber(map[k], 0) + 1;
+}
+
+function normalizeCounterMap(map) {
+  const out = {};
+
+  for (const [key, value] of Object.entries(map || {})) {
+    const n = Math.round(Number(value || 0));
+    if (n > 0) out[String(key)] = n;
+  }
+
+  return out;
 }
 
 function stageRank(stage) {
@@ -82,29 +127,144 @@ function flowRank(flow) {
   return 0;
 }
 
-function normalizeCounterMap(map) {
-  const out = {};
+function normalizeSide(value) {
+  const s = String(value || "").toLowerCase().trim();
 
-  for (const [key, value] of Object.entries(map || {})) {
-    const n = Math.round(Number(value || 0));
-    if (n > 0) out[String(key)] = n;
-  }
+  if (s === "bull" || s === "long" || s === "buy") return "bull";
+  if (s === "bear" || s === "short" || s === "sell") return "bear";
 
-  return out;
+  return "";
 }
+
+function normalizeSymbol(value) {
+  return String(value || "")
+    .toUpperCase()
+    .trim()
+    .replace(/_UMCBL$/, "")
+    .replace(/_DMCBL$/, "")
+    .replace(/_CMCBL$/, "")
+    .replace(/-UMCBL$/, "")
+    .replace(/-DMCBL$/, "")
+    .replace(/-CMCBL$/, "")
+    .replace(/USDT$/, "")
+    .replace(/USDC$/, "");
+}
+
+// ================= FUNNEL HELPERS =================
+
+function emptySide() {
+  return {
+    entry: [],
+    almost: [],
+    buildup: [],
+    radar: [],
+  };
+}
+
+function emptyFunnel() {
+  return {
+    bull: emptySide(),
+    bear: emptySide(),
+  };
+}
+
+function normalizeFunnel(funnel) {
+  return {
+    bull: {
+      entry: safeArray(funnel?.bull?.entry),
+      almost: safeArray(funnel?.bull?.almost),
+      buildup: safeArray(funnel?.bull?.buildup),
+      radar: safeArray(funnel?.bull?.radar),
+    },
+    bear: {
+      entry: safeArray(funnel?.bear?.entry),
+      almost: safeArray(funnel?.bear?.almost),
+      buildup: safeArray(funnel?.bear?.buildup),
+      radar: safeArray(funnel?.bear?.radar),
+    },
+  };
+}
+
+function countStage(funnel, side, stage) {
+  const f = normalizeFunnel(funnel);
+  return safeArray(f?.[side]?.[stage]).length;
+}
+
+function countSide(funnel, side) {
+  const f = normalizeFunnel(funnel);
+
+  return ["entry", "almost", "buildup", "radar"].reduce((sum, stage) => {
+    return sum + safeArray(f?.[side]?.[stage]).length;
+  }, 0);
+}
+
+function countFunnel(funnel) {
+  return countSide(funnel, "bull") + countSide(funnel, "bear");
+}
+
+function compactCoin(coin) {
+  if (!coin || typeof coin !== "object") return coin;
+
+  return {
+    symbol: normalizeSymbol(coin.symbol),
+    side: normalizeSide(coin.side) || coin.side,
+    stage: String(coin.stage || "").toLowerCase(),
+    flow: String(coin.flow || coin.scannerFlow || "NEUTRAL").toUpperCase(),
+    scannerFlow: String(coin.scannerFlow || coin.flow || "NEUTRAL").toUpperCase(),
+
+    price: safeNumber(coin.price, 0),
+    moveScore: safeNumber(coin.moveScore ?? coin.score, 0),
+    score: safeNumber(coin.score ?? coin.moveScore, 0),
+
+    change1h: safeNumber(coin.change1h, 0),
+    change24: safeNumber(coin.change24, 0),
+    vm: safeNumber(coin.vm, 0),
+    freshness: safeNumber(coin.freshness, 0),
+
+    tfScore: safeNumber(coin.tfScore, 0),
+    tfStrength: safeNumber(coin.tfStrength, Math.abs(safeNumber(coin.tfScore, 0))),
+
+    runnerPressure: safeNumber(coin.runnerPressure, 0),
+    runnerAcceleration: safeNumber(coin.runnerAcceleration, 0),
+
+    updatedAt: coin.updatedAt || null,
+    ts: coin.ts || null,
+  };
+}
+
+function compactFunnel(funnel) {
+  const f = normalizeFunnel(funnel);
+
+  return {
+    bull: {
+      entry: safeArray(f.bull.entry).map(compactCoin),
+      almost: safeArray(f.bull.almost).map(compactCoin),
+      buildup: safeArray(f.bull.buildup).map(compactCoin),
+      radar: safeArray(f.bull.radar).map(compactCoin),
+    },
+    bear: {
+      entry: safeArray(f.bear.entry).map(compactCoin),
+      almost: safeArray(f.bear.almost).map(compactCoin),
+      buildup: safeArray(f.bear.buildup).map(compactCoin),
+      radar: safeArray(f.bear.radar).map(compactCoin),
+    },
+  };
+}
+
+// ================= RUNNER GATE =================
 
 function getRunnerPressure(coin) {
   if (Number.isFinite(Number(coin?.runnerPressure))) {
     return Number(coin.runnerPressure);
   }
 
-  const side = String(coin?.side || "").toLowerCase();
+  const side = normalizeSide(coin?.side);
   const dir = side === "bear" ? -1 : 1;
 
   const ch24 = Number(coin?.change24 || 0) * dir;
   const ch1 = Number(coin?.change1h || 0) * dir;
 
-  return (ch1 * 0.78) + (ch24 * 0.22);
+  return ch1 * 0.78 + ch24 * 0.22;
 }
 
 function getRunnerAcceleration(coin) {
@@ -112,7 +272,7 @@ function getRunnerAcceleration(coin) {
     return Number(coin.runnerAcceleration);
   }
 
-  const side = String(coin?.side || "").toLowerCase();
+  const side = normalizeSide(coin?.side);
   const dir = side === "bear" ? -1 : 1;
 
   const ch24 = Number(coin?.change24 || 0) * dir;
@@ -123,11 +283,11 @@ function getRunnerAcceleration(coin) {
 }
 
 function candidateQualityScore(c) {
-  const score = safeNumber(c.moveScore, 0);
+  const score = safeNumber(c.moveScore ?? c.score, 0);
   const vm = safeNumber(c.vm, 0);
   const tfStrength = safeNumber(c.tfStrength, Math.abs(safeNumber(c.tfScore, 0)));
   const stage = String(c.stage || "").toLowerCase();
-  const flow = String(c.flow || "NEUTRAL").toUpperCase();
+  const flow = String(c.flow || c.scannerFlow || "NEUTRAL").toUpperCase();
   const freshness = safeNumber(c.freshness, 0);
   const pressure = safeNumber(c.runnerPressure, getRunnerPressure(c));
   const acceleration = safeNumber(c.runnerAcceleration, getRunnerAcceleration(c));
@@ -145,16 +305,16 @@ function candidateQualityScore(c) {
 }
 
 function passesTradeFunnelGate(coin) {
-  const symbol = String(coin.symbol || "").toUpperCase().trim();
-  const side = String(coin.side || "").toLowerCase().trim();
-  const stage = String(coin.stage || "").toLowerCase();
-  const flow = String(coin.flow || coin.scannerFlow || "NEUTRAL").toUpperCase();
+  const symbol = normalizeSymbol(coin?.symbol);
+  const side = normalizeSide(coin?.side);
+  const stage = String(coin?.stage || "").toLowerCase();
+  const flow = String(coin?.flow || coin?.scannerFlow || "NEUTRAL").toUpperCase();
 
-  const score = safeNumber(coin.moveScore ?? coin.score, 0);
-  const vm = safeNumber(coin.vm, 0);
-  const tfScore = safeNumber(coin.tfScore, 0);
-  const tfStrength = safeNumber(coin.tfStrength, Math.abs(tfScore));
-  const freshness = safeNumber(coin.freshness, 0);
+  const score = safeNumber(coin?.moveScore ?? coin?.score, 0);
+  const vm = safeNumber(coin?.vm, 0);
+  const tfScore = safeNumber(coin?.tfScore, 0);
+  const tfStrength = safeNumber(coin?.tfStrength, Math.abs(tfScore));
+  const freshness = safeNumber(coin?.freshness, 0);
   const runnerPressure = getRunnerPressure(coin);
   const runnerAcceleration = getRunnerAcceleration(coin);
 
@@ -164,7 +324,7 @@ function passesTradeFunnelGate(coin) {
     return { ok: false, reason: "BAD_SIDE" };
   }
 
-  if (Boolean(coin.uiOnly)) {
+  if (Boolean(coin?.uiOnly)) {
     return { ok: false, reason: "UI_ONLY" };
   }
 
@@ -248,8 +408,8 @@ function getTradeFunnelCandidates(latest) {
       continue;
     }
 
-    const symbol = String(coin.symbol || "").toUpperCase().trim();
-    const side = String(coin.side || "").toLowerCase().trim();
+    const symbol = normalizeSymbol(coin.symbol);
+    const side = normalizeSide(coin.side);
     const stage = String(coin.stage || "radar").toLowerCase();
     const flow = String(coin.flow || coin.scannerFlow || "NEUTRAL").toUpperCase();
 
@@ -333,7 +493,7 @@ function getTradeFunnelCandidates(latest) {
       "RUNNER TRADE FUNNEL symbols:",
       result
         .slice(0, MAX_SYMBOL_LOGS)
-        .map(c => `${c.symbol}_${c.side}_${c.stage}_${c.flow}_${Math.round(c.moveScore)}`)
+        .map(c => `${c.symbol}_${c.side}_${c.stage}_${c.flow}_${Math.round(c.moveScore || 0)}`)
         .join(", ")
     );
   }
@@ -344,6 +504,8 @@ function getTradeFunnelCandidates(latest) {
     rawCount: buckets.length,
   };
 }
+
+// ================= COMPACT PAYLOAD =================
 
 function compactTradeRow(row) {
   if (!row || typeof row !== "object") return row;
@@ -418,6 +580,8 @@ function compactTradeRow(row) {
 }
 
 function compactOpenPosition(pos) {
+  if (!pos || typeof pos !== "object") return pos;
+
   return {
     symbol: pos.symbol,
     side: pos.side,
@@ -457,7 +621,7 @@ function compactTradeSystemResult(result) {
     };
   }
 
-  const stats = result.runnerStats || {};
+  const stats = safeObject(result.runnerStats);
 
   return {
     profile: result.profile || SYSTEM_PROFILE,
@@ -525,9 +689,89 @@ function trimDashboardRows(stats) {
   };
 }
 
+function buildTradeFunnelPayload({
+  latest,
+  selection,
+  result = null,
+  mode = "read_only",
+  busy = false,
+  error = null,
+  now = Date.now(),
+}) {
+  const funnel = compactFunnel(latest?.funnel || emptyFunnel());
+  const compactResult = compactTradeSystemResult(result || latest?.tradeSystemResult);
+  const trades = safeArray(
+    result?.actions?.length ? result.actions : latest?.trades
+  )
+    .slice(-MAX_STORED_ACTIONS)
+    .map(compactTradeRow);
+
+  return {
+    ok: true,
+    profile: SYSTEM_PROFILE,
+    scannerProfile: latest?.scannerProfile || SYSTEM_PROFILE,
+
+    source: mode === "run" ? "trade_funnel_run" : "trade_funnel_snapshot",
+    tradeFunnelMode: mode,
+    tradeFunnelBusy: Boolean(busy),
+    tradeFunnelError: error,
+
+    scanReady: Boolean(latest?.scanReady),
+    message: latest?.message || null,
+
+    funnel,
+    funnelCount: countFunnel(funnel),
+    bullCount: countSide(funnel, "bull"),
+    bearCount: countSide(funnel, "bear"),
+
+    btc: latest?.btc || {
+      state: "UNKNOWN",
+      chg24: 0,
+      chg1h: 0,
+      pressure: 0,
+    },
+
+    regime: latest?.regime || "UNKNOWN",
+    market: latest?.market || null,
+    analytics: latest?.analytics || {},
+    advice: latest?.advice || {},
+
+    candidates: safeNumber(latest?.candidates, 0),
+    candidatesBull: safeNumber(latest?.candidatesBull, 0),
+    candidatesBear: safeNumber(latest?.candidatesBear, 0),
+
+    trades,
+    tradeSystemResult: compactResult,
+
+    tradeFunnelProfile: SYSTEM_PROFILE,
+    tradeFunnelInputCount: safeArray(selection?.candidates).length,
+    tradeFunnelRawCount: safeNumber(selection?.rawCount, 0),
+    tradeFunnelRejectCounts: normalizeCounterMap(selection?.rejectCounts),
+    tradeFunnelInputSymbols: safeArray(selection?.candidates)
+      .slice(0, MAX_SYMBOL_LOGS)
+      .map(c => `${c.symbol}_${c.side}_${c.stage}_${c.flow}_${Math.round(c.moveScore || 0)}`),
+
+    dashboardStats: trimDashboardRows(latest?.dashboardStats),
+
+    scannerUpdatedAt: latest?.scannerUpdatedAt || null,
+    tradeFunnelUpdatedAt: mode === "run" ? now : latest?.tradeFunnelUpdatedAt || null,
+    updatedAt: mode === "run" ? now : latest?.updatedAt || now,
+
+    servedAt: now,
+  };
+}
+
+function isLockBusyError(error) {
+  return String(error?.message || error || "").includes("RUNNER_TRADE_SYSTEM_LOCK_BUSY");
+}
+
+// ================= CORE =================
+
 export async function runTradeFunnel(options = {}) {
   const notify = options.notify !== false;
   const store = options.store !== false;
+  const mode = options.mode || "read_only";
+  const now = Date.now();
 
   const latest = await getLatestScan();
 
@@ -536,52 +780,62 @@ export async function runTradeFunnel(options = {}) {
   }
 
   const selection = getTradeFunnelCandidates(latest);
-  const candidates = selection.candidates;
-  const now = Date.now();
 
-  const rawResult = candidates.length
-    ? await processTrades(candidates, {
-        notify,
-        log: true,
-        profile: SYSTEM_PROFILE,
-        runner: true,
-        btc: latest.btc,
-        regime: latest.regime,
-        market: latest.market,
-      })
-    : {
-        ok: true,
-        actions: [],
-        candidatesCount: 0,
-        profile: SYSTEM_PROFILE,
-        reason: "no_runner_candidates",
-      };
+  if (mode !== "run") {
+    return buildTradeFunnelPayload({
+      latest,
+      selection,
+      mode: "read_only",
+      now,
+    });
+  }
+
+  const candidates = selection.candidates;
+
+  let rawResult = null;
+
+  try {
+    rawResult = candidates.length
+      ? await processTrades(candidates, {
+          notify,
+          log: true,
+          profile: SYSTEM_PROFILE,
+          runner: true,
+          btc: latest.btc,
+          regime: latest.regime,
+          market: latest.market,
+        })
+      : {
+          ok: true,
+          actions: [],
+          candidatesCount: 0,
+          profile: SYSTEM_PROFILE,
+          reason: "no_runner_candidates",
+        };
+  } catch (error) {
+    if (isLockBusyError(error)) {
+      return buildTradeFunnelPayload({
+        latest,
+        selection,
+        mode: "read_only",
+        busy: true,
+        error: "RUNNER_TRADE_SYSTEM_LOCK_BUSY",
+        now,
+      });
+    }
+
+    throw error;
+  }
 
   const result = compactTradeSystemResult(rawResult);
 
-  const trades = safeArray(result.actions);
-
-  const updated = {
-    ...latest,
-    ok: true,
-    scannerProfile: latest?.scannerProfile || SYSTEM_PROFILE,
-
-    trades,
-    tradeSystemResult: result,
-
-    tradeFunnelProfile: SYSTEM_PROFILE,
-    tradeFunnelInputCount: candidates.length,
-    tradeFunnelRawCount: selection.rawCount,
-    tradeFunnelRejectCounts: selection.rejectCounts,
-    tradeFunnelInputSymbols: candidates
-      .slice(0, MAX_SYMBOL_LOGS)
-      .map(c => `${c.symbol}_${c.side}_${c.stage}_${c.flow}_${Math.round(c.moveScore || 0)}`),
-
-    dashboardStats: trimDashboardRows(latest?.dashboardStats),
-
-    tradeFunnelUpdatedAt: now,
-    updatedAt: now,
-  };
+  const updated = buildTradeFunnelPayload({
+    latest,
+    selection,
+    result,
+    mode: "run",
+    now,
+  });
 
   if (store) {
     await setLatestScan(updated);
@@ -590,26 +844,35 @@ export async function runTradeFunnel(options = {}) {
   return updated;
 }
 
+// ================= HANDLER =================
+
 export default async function handler(req, res) {
   try {
     res.setHeader("Cache-Control", "no-store, max-age=0");
 
+    const action = normalizeAction(req);
     const notify = normalizeNotify(getQueryParam(req, "notify", ""));
     const store = normalizeStore(getQueryParam(req, "store", undefined), true);
+
+    const shouldRun =
+      action === "run" ||
+      action === "execute" ||
+      normalizeBoolean(getQueryParam(req, "run", ""), false);
 
     const data = await runTradeFunnel({
       notify,
       store,
+      mode: shouldRun ? "run" : "read_only",
     });
 
     return res.status(200).json(data);
-  } catch (e) {
-    console.error("RUNNER TRADE-FUNNEL ERROR:", e);
+  } catch (error) {
+    console.error("RUNNER TRADE-FUNNEL ERROR:", error);
 
     return res.status(500).json({
       ok: false,
       profile: SYSTEM_PROFILE,
-      error: e?.message || "trade_funnel_failed",
+      error: error?.message || "trade_funnel_failed",
       servedAt: Date.now(),
     });
   }
