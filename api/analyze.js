@@ -1,11 +1,9 @@
-import * as analyzeStore from "../lib/analyze/runnerAnalyzeStore.js";
-import * as familyEngine from "../lib/analyze/runnerFamilyEngine.js";
+import { getLatestScan } from "../lib/scanStore.js";
+
+const SYSTEM_PROFILE = "RUNNER";
 
 const DEFAULT_MIN_CLOSED = 10;
-const MAX_DEBUG_EVENTS = 50;
-const SYSTEM_PROFILE = "RUNNER";
-const SYSTEM_MODE = "MOMENTUM_RUNNER";
-const STRATEGY_FAMILY = "BREAKOUT_CONTINUATION_SQUEEZE";
+const MAX_LATEST_EVENTS = 1000;
 
 // ================= GENERIC HELPERS =================
 
@@ -13,9 +11,34 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function safeObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
+}
+
 function safeNumber(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeText(value) {
+  return String(value || "").toUpperCase().trim();
+}
+
+function getRequestUrl(req) {
+  const host = req?.headers?.host || "localhost";
+  const proto = req?.headers?.["x-forwarded-proto"] || "https";
+
+  return new URL(req?.url || "/", `${proto}://${host}`);
+}
+
+function getQueryParam(req, key, fallback = "") {
+  try {
+    return getRequestUrl(req).searchParams.get(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function normalizeBoolean(value, fallback = false) {
@@ -29,544 +52,409 @@ function normalizeBoolean(value, fallback = false) {
   return fallback;
 }
 
-function normalizeText(value) {
-  return String(value || "").toUpperCase().trim();
+function round(value, decimals = 3) {
+  const n = safeNumber(value, 0);
+  const p = 10 ** decimals;
+  return Math.round(n * p) / p;
 }
 
-function normalizeSide(value) {
-  const s = String(value || "").toLowerCase().trim();
+// ================= DYNAMIC IMPORTS =================
 
-  if (["long", "bull", "buy"].includes(s)) return "LONG";
-  if (["short", "bear", "sell"].includes(s)) return "SHORT";
+async function importRunnerAnalyzeStore() {
+  try {
+    return await import("../lib/runnerAnalyzeStore.js");
+  } catch {}
 
-  return "";
+  try {
+    return await import("../lib/analyzeStore.js");
+  } catch {}
+
+  return null;
 }
 
-function normalizeTs(value, fallback = Date.now()) {
-  if (value instanceof Date) return value.getTime();
+async function importRunnerAnalyzeReport() {
+  try {
+    return await import("../lib/runnerAnalyzeReport.js");
+  } catch {}
 
-  const n = Number(value);
-  if (Number.isFinite(n) && n > 0) return n;
+  try {
+    return await import("../lib/runnerAnalyze.js");
+  } catch {}
 
-  const parsed = Date.parse(String(value || ""));
-  if (Number.isFinite(parsed)) return parsed;
+  try {
+    return await import("../lib/analyzeFamilies.js");
+  } catch {}
 
-  return fallback;
+  try {
+    return await import("../lib/familyAnalyze.js");
+  } catch {}
+
+  try {
+    return await import("../lib/analyzeReport.js");
+  } catch {}
+
+  return null;
 }
 
-function serializeError(error, debug = false) {
-  const payload = {
-    message: error?.message || String(error || "unknown_error"),
-    name: error?.name || "Error",
-  };
-
-  if (debug && error?.stack) {
-    payload.stack = error.stack;
-  }
-
-  return payload;
+function getReportBuilder(mod) {
+  return (
+    mod?.buildRunnerAnalyzeReport ||
+    mod?.buildAnalyzeReport ||
+    mod?.buildFamilyReport ||
+    mod?.buildReport ||
+    mod?.analyzeEvents ||
+    mod?.createAnalyzeReport ||
+    null
+  );
 }
 
 // ================= EVENT HELPERS =================
 
-function getTradeId(event) {
-  const id =
-    event?.tradeId ||
-    event?.positionTradeId ||
-    event?.positionId ||
-    event?.orderId ||
-    event?.clientOrderId ||
-    event?.analyzeEventId ||
-    event?.analyzeEventKey ||
-    event?.eventId ||
-    event?.id;
-
-  return id ? String(id) : "";
-}
-
-function getEventTs(event, fallback = Date.now()) {
-  return normalizeTs(
-    event?.analyzeUpdatedAt ??
-      event?.closedAt ??
-      event?.exitedAt ??
-      event?.exitAt ??
-      event?.exitTs ??
-      event?.updatedAt ??
-      event?.openedAt ??
-      event?.createdAt ??
-      event?.entryTs ??
-      event?.analyzeTs ??
-      event?.timestamp ??
-      event?.ts,
-    fallback
-  );
-}
-
-function isIgnoredAction(event) {
-  const action = normalizeText(event?.action || event?.status || event?.reason);
-  const kind = normalizeText(event?.analyzeKind || event?.type);
-
-  if (kind === "TRADE_RECORD") return false;
-  if (kind === "TRADE") return false;
-  if (kind === "UNMATCHED_EXIT") return false;
-
+function hasNumericOutcome(row) {
   return (
-    action === "WAIT" ||
-    action === "HOLD" ||
-    action === "RUNNING" ||
-    action === "NO_TRADE" ||
-    action === "SKIP"
+    Number.isFinite(Number(row?.realizedR)) ||
+    Number.isFinite(Number(row?.pnlR)) ||
+    Number.isFinite(Number(row?.exitR)) ||
+    Number.isFinite(Number(row?.resultR)) ||
+    Number.isFinite(Number(row?.outcomeR)) ||
+    Number.isFinite(Number(row?.rMultiple)) ||
+    Number.isFinite(Number(row?.pnlPct))
   );
 }
 
-function isRunnerProfile(event) {
-  const profile = normalizeText(
-    event?.profile ||
-      event?.runnerProfile ||
-      event?.filterSnapshot?.profile ||
-      event?.filterSnapshot?.runnerProfile ||
-      ""
-  );
+function isAnalyzeCandidate(row) {
+  if (!row || typeof row !== "object") return false;
 
-  return !profile || profile === SYSTEM_PROFILE;
+  const action = normalizeText(row.action || row.analyzeLifecycle || row.type || row.status);
+
+  if (action === "ENTRY") return true;
+  if (action === "EXIT") return true;
+
+  if (row.closed === true && hasNumericOutcome(row)) return true;
+  if (row.isClosed === true && hasNumericOutcome(row)) return true;
+
+  return false;
 }
 
-function isTradeLikeRecord(event) {
-  if (!event || typeof event !== "object") return false;
-  if (!isRunnerProfile(event)) return false;
-  if (isIgnoredAction(event)) return false;
+function eventKey(row) {
+  const tradeId =
+    row?.tradeId ||
+    row?.positionTradeId ||
+    row?.positionId ||
+    row?.orderId ||
+    row?.clientOrderId ||
+    "";
 
-  const kind = normalizeText(event.analyzeKind || event.type);
-  const action = normalizeText(event.action || event.status || event.reason || event.event);
+  const symbol = normalizeText(row?.symbol);
+  const side = normalizeText(row?.side || row?.direction || row?.tradeSide);
+  const action = normalizeText(row?.action || row?.analyzeLifecycle || row?.type || row?.status);
 
-  if (kind === "TRADE_RECORD" || kind === "TRADE") return true;
-  if (kind === "UNMATCHED_EXIT") return true;
+  const ts =
+    row?.closedAt ||
+    row?.exitedAt ||
+    row?.exitAt ||
+    row?.exitTs ||
+    row?.openedAt ||
+    row?.entryTs ||
+    row?.analyzeTs ||
+    row?.ts ||
+    row?.createdAt ||
+    row?.updatedAt ||
+    "";
 
-  if (action.includes("ENTRY")) return true;
-  if (action.includes("EXIT")) return true;
-  if (action.includes("TP")) return true;
-  if (action.includes("SL")) return true;
-  if (action.includes("RUNNER_A")) return true;
-  if (action.includes("RUNNER_B")) return true;
-  if (action.includes("RUNNER_C")) return true;
+  const r =
+    row?.realizedR ??
+    row?.pnlR ??
+    row?.exitR ??
+    row?.resultR ??
+    row?.outcomeR ??
+    row?.rMultiple ??
+    "";
 
-  if (event.closed === true || event.isClosed === true) return true;
+  const entry = row?.entry ?? row?.entryPrice ?? "";
+  const exit = row?.exit ?? row?.exitPrice ?? "";
 
-  return Boolean(
-    event.tradeId ||
-      event.positionId ||
-      event.orderId ||
-      event.entry !== undefined ||
-      event.entryPrice !== undefined ||
-      event.openPrice !== undefined ||
-      event.exitPrice !== undefined ||
-      event.exit !== undefined ||
-      event.pnlR !== undefined ||
-      event.realizedR !== undefined ||
-      event.pnlPct !== undefined
-  );
+  return [
+    tradeId || `${symbol}_${side}`,
+    action,
+    ts,
+    entry,
+    exit,
+    r,
+  ].join("|");
 }
 
-function compactLatestEvent(event) {
-  const side = normalizeSide(event.side || event.direction || event.tradeSide);
-  const tradeId = getTradeId(event);
+function dedupeEvents(rows) {
+  const seen = new Set();
+  const out = [];
 
-  return {
-    ...event,
-    profile: SYSTEM_PROFILE,
-    runnerProfile: event.runnerProfile || SYSTEM_PROFILE,
-    tradeId: tradeId || undefined,
-    side: side || event.side,
-    analyzeSource: event.analyzeSource || "runner_latest_debug",
-    analyzeTs: getEventTs(event),
-  };
-}
+  for (const row of safeArray(rows)) {
+    if (!row || typeof row !== "object") continue;
 
-function eventKey(event, fallbackIndex = 0) {
-  const tradeId = getTradeId(event);
+    const key = eventKey(row);
+    if (seen.has(key)) continue;
 
-  if (tradeId) return tradeId;
+    seen.add(key);
+    out.push(row);
+  }
 
-  const kind = normalizeText(event?.analyzeKind || event?.type);
-  const symbol = String(event?.symbol || "").toUpperCase().trim();
-  const side = normalizeSide(event?.side || event?.direction || event?.tradeSide);
-  const ts = getEventTs(event, fallbackIndex);
-
-  return [kind || "EVENT", symbol, side, ts, fallbackIndex].join("|");
-}
-
-function dedupeEvents(events) {
-  const map = new Map();
-
-  safeArray(events).forEach((event, index) => {
-    if (!isTradeLikeRecord(event)) return;
-
-    const key = eventKey(event, index);
-    const previous = map.get(key);
-
-    if (!previous) {
-      map.set(key, {
-        ...event,
-        analyzeEventKey: event.analyzeEventKey || key,
-      });
-      return;
-    }
-
-    const prevTs = getEventTs(previous, 0);
-    const nextTs = getEventTs(event, 0);
-
-    if (nextTs >= prevTs) {
-      map.set(key, {
-        ...previous,
-        ...event,
-        analyzeEventKey: previous.analyzeEventKey || event.analyzeEventKey || key,
-      });
-    }
-  });
-
-  return Array.from(map.values()).sort((a, b) => getEventTs(a, 0) - getEventTs(b, 0));
+  return out;
 }
 
 function collectLatestEvents(latest) {
-  if (!latest?.ok) return [];
+  const result = safeObject(latest?.tradeSystemResult);
+  const stats = safeObject(result?.runnerStats);
 
-  const raw = [
-    ...safeArray(latest.trades),
-    ...safeArray(latest.runnerTrades),
-    ...safeArray(latest.tradeSystemResult?.actions),
-    ...safeArray(latest.runnerTradeSystemResult?.actions),
-    ...safeArray(latest.actions),
-  ];
-
-  return dedupeEvents(raw.map(compactLatestEvent));
+  return [
+    ...safeArray(latest?.trades),
+    ...safeArray(result?.actions),
+    ...safeArray(stats?.closedTrades),
+    ...safeArray(stats?.featureRows),
+    ...safeArray(stats?.shadowRows),
+  ]
+    .filter(isAnalyzeCandidate)
+    .slice(-MAX_LATEST_EVENTS);
 }
 
-// ================= STORE LOADERS =================
-
 async function loadStoredEvents() {
-  const loadStore =
-    analyzeStore.loadRunnerAnalyzeStore ||
-    analyzeStore.loadAnalyzeStore ||
-    analyzeStore.default?.loadRunnerAnalyzeStore ||
-    analyzeStore.default?.loadAnalyzeStore;
+  const storeMod = await importRunnerAnalyzeStore();
 
-  const loadEvents =
-    analyzeStore.loadRunnerAnalyzeEvents ||
-    analyzeStore.readRunnerAnalyzeEvents ||
-    analyzeStore.getRunnerAnalyzeEvents ||
-    analyzeStore.loadAnalyzeEvents ||
-    analyzeStore.readAnalyzeEvents ||
-    analyzeStore.getAnalyzeEvents ||
-    analyzeStore.default?.loadRunnerAnalyzeEvents ||
-    analyzeStore.default?.readRunnerAnalyzeEvents ||
-    analyzeStore.default?.getRunnerAnalyzeEvents ||
-    analyzeStore.default?.loadAnalyzeEvents ||
-    analyzeStore.default?.readAnalyzeEvents ||
-    analyzeStore.default?.getAnalyzeEvents;
+  const loader =
+    storeMod?.loadRunnerAnalyzeEvents ||
+    storeMod?.readRunnerAnalyzeEvents ||
+    storeMod?.getRunnerAnalyzeEvents ||
+    storeMod?.loadAnalyzeEvents ||
+    storeMod?.readAnalyzeEvents ||
+    storeMod?.getAnalyzeEvents ||
+    null;
 
-  if (typeof loadStore === "function") {
-    const store = await loadStore({ force: true });
-    const events = safeArray(store?.events);
-
+  if (!loader) {
     return {
-      store: {
-        ok: Boolean(store?.ok),
-        profile: store?.profile || SYSTEM_PROFILE,
-        source: store?.source || "runner_analyze_store",
-        path: store?.path || null,
-        redisKey: store?.redisKey || null,
-        count: safeNumber(store?.count, events.length),
-        trades: safeNumber(store?.trades, events.length),
-        open: safeNumber(store?.open, 0),
-        closed: safeNumber(store?.closed, 0),
-        unmatchedExits: safeNumber(store?.unmatchedExits, 0),
-        maxStoredEvents: store?.maxStoredEvents || null,
-        redisEnabled: Boolean(store?.redisEnabled),
-        fileEnabled: store?.fileEnabled !== false,
-        loadedAt: store?.loadedAt || null,
-        lastPersistAt: store?.lastPersistAt || null,
-        error: store?.error || null,
-      },
-      events,
-    };
-  }
-
-  if (typeof loadEvents === "function") {
-    const events = await loadEvents({ force: true });
-
-    return {
-      store: {
-        ok: true,
-        profile: SYSTEM_PROFILE,
-        source: "events_loader",
-        path: null,
-        redisKey: null,
-        count: safeArray(events).length,
-        trades: safeArray(events).length,
-        open: 0,
-        closed: 0,
-        unmatchedExits: 0,
-        maxStoredEvents: null,
-        redisEnabled: false,
-        fileEnabled: false,
-        loadedAt: null,
-        lastPersistAt: null,
-        error: null,
-      },
-      events: safeArray(events),
-    };
-  }
-
-  return {
-    store: {
       ok: false,
+      source: "runner_analyze_store",
+      error: "runner_analyze_store_loader_missing",
+      events: [],
+    };
+  }
+
+  try {
+    const events = await loader({ force: true });
+
+    return {
+      ok: true,
+      source: "runner_analyze_store",
+      error: null,
+      events: safeArray(events).filter(isAnalyzeCandidate),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      source: "runner_analyze_store",
+      error: error?.message || "runner_analyze_store_load_failed",
+      events: [],
+    };
+  }
+}
+
+function buildFallbackReport(events, minClosed) {
+  return {
+    ok: false,
+    profile: SYSTEM_PROFILE,
+    generatedAt: new Date().toISOString(),
+    error: "runner_analyze_report_builder_missing",
+    message:
+      "Plaats buildRunnerAnalyzeReport in ../lib/runnerAnalyzeReport.js of update de importlijst in api/runner-analyze.js.",
+    config: {
       profile: SYSTEM_PROFILE,
-      source: null,
-      path: null,
-      redisKey: null,
-      count: 0,
-      trades: 0,
+      minClosed,
+      totalFamilyCount: 100,
+    },
+    summary: {
+      profile: SYSTEM_PROFILE,
+      actions: events.length,
+      trades: events.length,
+      observed: events.length,
       open: 0,
       closed: 0,
-      unmatchedExits: 0,
-      maxStoredEvents: null,
-      redisEnabled: false,
-      fileEnabled: false,
-      loadedAt: null,
-      lastPersistAt: null,
-      error: "NO_RUNNER_ANALYZE_STORE_LOADER_FOUND",
+      pendingOutcome: 0,
+      wins: 0,
+      losses: 0,
+      breakeven: 0,
+      winrateNum: 0,
+      winrate: "0%",
+      totalR: 0,
+      avgR: 0,
+      totalPnlPct: 0,
+      avgPnlPct: 0,
+      longFamilies: 50,
+      shortFamilies: 50,
+      hotFamilies: 0,
+      goodFamilies: 0,
+      stableFamilies: 0,
+      badFamilies: 0,
+      collectingFamilies: 0,
+      emptyFamilies: 100,
     },
-    events: [],
+    families: {
+      all: [],
+      long: [],
+      short: [],
+      ranked: [],
+      best: [],
+      bestBalance: [],
+      bestRunnerPnl: [],
+      worst: [],
+    },
+    selection: {
+      ready: false,
+      minClosed,
+      allowedFamilyIds: [],
+      allowedRunnerFamilyIds: [],
+      blockedFamilyIds: [],
+    },
   };
 }
 
-async function clearStoredEvents() {
-  const clearFn =
-    analyzeStore.clearRunnerAnalyzeEvents ||
-    analyzeStore.resetRunnerAnalyzeEvents ||
-    analyzeStore.clearAnalyzeEvents ||
-    analyzeStore.resetAnalyzeEvents ||
-    analyzeStore.default?.clearRunnerAnalyzeEvents ||
-    analyzeStore.default?.resetRunnerAnalyzeEvents ||
-    analyzeStore.default?.clearAnalyzeEvents ||
-    analyzeStore.default?.resetAnalyzeEvents;
+function enrichReport(report, meta) {
+  const families = safeObject(report?.families);
 
-  if (typeof clearFn !== "function") {
-    return {
-      ok: false,
-      error: "NO_CLEAR_RUNNER_ANALYZE_EVENTS_EXPORT_FOUND",
-    };
-  }
-
-  return clearFn();
-}
-
-// ================= REPORT BUILDER =================
-
-function buildReport(events, options) {
-  const buildFn =
-    familyEngine.buildRunnerAnalyzeReport ||
-    familyEngine.buildAnalyzeReport ||
-    familyEngine.buildFamilyReport ||
-    familyEngine.buildReport ||
-    familyEngine.analyzeEvents ||
-    familyEngine.createAnalyzeReport ||
-    familyEngine.default?.buildRunnerAnalyzeReport ||
-    familyEngine.default?.buildAnalyzeReport ||
-    familyEngine.default?.buildFamilyReport ||
-    familyEngine.default?.buildReport ||
-    familyEngine.default?.analyzeEvents ||
-    familyEngine.default?.createAnalyzeReport;
-
-  if (typeof buildFn !== "function") {
-    throw new Error("NO_RUNNER_ANALYZE_REPORT_BUILDER_FOUND");
-  }
-
-  return buildFn(events, options);
-}
-
-// ================= DEBUG =================
-
-function compactSourcePreview(events) {
-  return safeArray(events)
-    .slice(-MAX_DEBUG_EVENTS)
-    .map(event => ({
-      tradeId: getTradeId(event) || null,
-      profile: event.profile || event.runnerProfile || null,
-      analyzeKind: event.analyzeKind || event.type || null,
-      source: event.analyzeSource || null,
-      symbol: event.symbol || null,
-      side: normalizeSide(event.side || event.direction || event.tradeSide) || null,
-      familyId:
-        event.familyId ||
-        event.runnerFamilyId ||
-        event.analyzeFamilyId ||
-        event.filterSnapshot?.familyId ||
-        event.filterSnapshot?.runnerFamilyId ||
-        null,
-      closed: Boolean(event.closed),
-      realizedR: event.realizedR ?? event.pnlR ?? event.resultR ?? null,
-      pnlPct: event.pnlPct ?? event.realizedPnlPct ?? null,
-      exitReason: event.exitReason || null,
-      ts: getEventTs(event, null),
-    }));
-}
-
-function countKinds(events) {
-  const counts = {};
-
-  for (const event of safeArray(events)) {
-    const kind = normalizeText(event?.analyzeKind || event?.type || "UNKNOWN");
-    counts[kind] = safeNumber(counts[kind], 0) + 1;
-  }
-
-  return counts;
-}
-
-function selectEvents({ storedEvents, latestEvents, sourceMode }) {
-  if (sourceMode === "latest") {
-    return {
-      selectedEvents: latestEvents,
-      selectedSource: "latest",
-    };
-  }
-
-  if (sourceMode === "merged") {
-    return {
-      selectedEvents: dedupeEvents([...storedEvents, ...latestEvents]),
-      selectedSource: "merged",
-    };
-  }
+  const longFamilies = safeArray(families.long);
+  const shortFamilies = safeArray(families.short);
+  const allFamilies = safeArray(families.all || families.ranked);
 
   return {
-    selectedEvents: storedEvents,
-    selectedSource: "stored",
+    ...report,
+    ok: report?.ok !== false,
+    profile: report?.profile || SYSTEM_PROFILE,
+
+    source: "runner_analyze",
+    dataSources: meta.dataSources,
+
+    familyMatrix: {
+      longCount: longFamilies.length || 50,
+      shortCount: shortFamilies.length || 50,
+      totalCount: allFamilies.length || longFamilies.length + shortFamilies.length || 100,
+    },
+
+    diagnostics: {
+      ...safeObject(report?.diagnostics),
+      endpointEvents: meta.endpointEvents,
+      storedEvents: meta.storedEvents,
+      latestEvents: meta.latestEvents,
+      dedupedEvents: meta.dedupedEvents,
+      minClosed: meta.minClosed,
+    },
+
+    summary: {
+      ...safeObject(report?.summary),
+      profile: SYSTEM_PROFILE,
+      longFamilies: longFamilies.length || safeNumber(report?.summary?.longFamilies, 50),
+      shortFamilies: shortFamilies.length || safeNumber(report?.summary?.shortFamilies, 50),
+    },
+
+    servedAt: Date.now(),
   };
 }
 
 // ================= HANDLER =================
 
 export default async function handler(req, res) {
-  const startedAt = Date.now();
-
-  res.setHeader("Cache-Control", "no-store, max-age=0");
-
-  const debug = normalizeBoolean(req?.query?.debug, false);
-  const reset = normalizeBoolean(req?.query?.reset, false);
-
-  const minClosed = safeNumber(req?.query?.minClosed, DEFAULT_MIN_CLOSED);
-
-  const sourceMode = String(req?.query?.source || "stored").toLowerCase().trim();
-  const normalizedSourceMode = ["stored", "latest", "merged"].includes(sourceMode)
-    ? sourceMode
-    : "stored";
-
   try {
-    if (reset) {
-      const clearResult = await clearStoredEvents();
+    res.setHeader("Cache-Control", "no-store, max-age=0");
 
-      return res.status(clearResult?.ok ? 200 : 500).json({
-        ok: Boolean(clearResult?.ok),
-        profile: SYSTEM_PROFILE,
-        reset: true,
-        clearResult,
-        generatedAt: new Date().toISOString(),
-        latencyMs: Date.now() - startedAt,
-      });
-    }
+    const minClosed = Math.max(
+      1,
+      Math.round(
+        safeNumber(
+          getQueryParam(req, "minClosed", DEFAULT_MIN_CLOSED),
+          DEFAULT_MIN_CLOSED
+        )
+      )
+    );
 
-    const { store, events: storedEventsRaw } = await loadStoredEvents();
+    const includeLatest = normalizeBoolean(
+      getQueryParam(req, "includeLatest", "true"),
+      true
+    );
 
-    const storedEvents = dedupeEvents(storedEventsRaw);
+    const includeStore = normalizeBoolean(
+      getQueryParam(req, "includeStore", "true"),
+      true
+    );
 
-    // Runner latest is optioneel. Als je later een runner latest-store toevoegt,
-    // kun je hier collectLatestEvents(latest) vullen. Nu is stored de waarheid.
-    const latest = {
-      ok: true,
-      skipped: true,
-      reason: "runner_latest_not_configured",
-      updatedAt: null,
-      tradeFunnelUpdatedAt: null,
-      error: null,
-    };
+    const [latest, storedResult, reportMod] = await Promise.all([
+      includeLatest ? getLatestScan().catch(() => null) : Promise.resolve(null),
+      includeStore ? loadStoredEvents() : Promise.resolve({
+        ok: true,
+        source: "runner_analyze_store",
+        error: null,
+        events: [],
+      }),
+      importRunnerAnalyzeReport(),
+    ]);
 
-    const latestEvents = [];
-    const { selectedEvents, selectedSource } = selectEvents({
-      storedEvents,
-      latestEvents,
-      sourceMode: normalizedSourceMode,
-    });
+    const storedEvents = safeArray(storedResult?.events);
+    const latestEvents = includeLatest ? collectLatestEvents(latest) : [];
 
-    const report = buildReport(selectedEvents, {
+    const events = dedupeEvents([
+      ...storedEvents,
+      ...latestEvents,
+    ]);
+
+    const buildReport = getReportBuilder(reportMod);
+
+    const rawReport = buildReport
+      ? buildReport(events, { minClosed })
+      : buildFallbackReport(events, minClosed);
+
+    const report = enrichReport(rawReport, {
       minClosed,
-      familyCountLong: 50,
-      familyCountShort: 50,
-      objective: "RUNNER_TOTAL_PNL_FIRST",
+      endpointEvents: events.length,
+      storedEvents: storedEvents.length,
+      latestEvents: latestEvents.length,
+      dedupedEvents: events.length,
+      dataSources: {
+        store: {
+          ok: Boolean(storedResult?.ok),
+          error: storedResult?.error || null,
+          count: storedEvents.length,
+        },
+        latest: {
+          ok: Boolean(latest?.ok),
+          count: latestEvents.length,
+          updatedAt: latest?.updatedAt || null,
+          tradeFunnelUpdatedAt: latest?.tradeFunnelUpdatedAt || null,
+        },
+        reportBuilder: {
+          ok: Boolean(buildReport),
+        },
+      },
     });
 
-    const response = {
-      ok: true,
-      profile: SYSTEM_PROFILE,
-      system: SYSTEM_PROFILE,
-      mode: SYSTEM_MODE,
-      strategyFamily: STRATEGY_FAMILY,
-
-      generatedAt: new Date().toISOString(),
-      latencyMs: Date.now() - startedAt,
-
-      modules: {
-        scanner: "RUNNER_SCANNER",
-        tradeFunnel: "RUNNER_TRADE_FUNNEL",
-        tradeSystem: "RUNNER_TRADE_SYSTEM",
-        analyzer: "RUNNER_ANALYZER",
-        performance: "RUNNER_PERFORMANCE",
-        executionStyle: STRATEGY_FAMILY,
-      },
-
-      modeInfo: {
-        source: selectedSource,
-        minClosed,
-        objective: "Runner analyse kiest PnL-first families. Winrate is niet dominant.",
-        note:
-          selectedSource === "stored"
-            ? "Runner analyse gebruikt opgeslagen runner analyse-records."
-            : "Runner analyse gebruikt geselecteerde debug/latest/merged data.",
-      },
-
-      sources: {
-        selectedEvents: selectedEvents.length,
-        storedEvents: storedEvents.length,
-        latestEvents: latestEvents.length,
-        mergedEvents: selectedSource === "merged" ? selectedEvents.length : 0,
-        storedKinds: countKinds(storedEvents),
-        latestKinds: countKinds(latestEvents),
-        selectedKinds: countKinds(selectedEvents),
-        store,
-        latest,
-      },
-
-      tradesLoaded: selectedEvents.length,
-      report,
-    };
-
-    if (debug) {
-      response.debug = {
-        storedPreview: compactSourcePreview(storedEvents),
-        latestPreview: compactSourcePreview(latestEvents),
-        selectedPreview: compactSourcePreview(selectedEvents),
-      };
-    }
-
-    return res.status(200).json(response);
+    return res.status(200).json(report);
   } catch (error) {
-    console.error("RUNNER ANALYZE API ERROR:", error);
+    console.error("RUNNER ANALYZE ERROR:", error);
 
     return res.status(500).json({
       ok: false,
       profile: SYSTEM_PROFILE,
-      generatedAt: new Date().toISOString(),
-      latencyMs: Date.now() - startedAt,
-      error: serializeError(error, debug),
+      error: error?.message || "runner_analyze_failed",
+      families: {
+        all: [],
+        long: [],
+        short: [],
+        ranked: [],
+        best: [],
+        bestBalance: [],
+        bestRunnerPnl: [],
+        worst: [],
+      },
+      summary: {
+        profile: SYSTEM_PROFILE,
+        longFamilies: 50,
+        shortFamilies: 50,
+      },
+      servedAt: Date.now(),
     });
   }
 }
