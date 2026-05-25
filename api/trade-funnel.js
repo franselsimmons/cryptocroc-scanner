@@ -106,6 +106,16 @@ function normalizeCounterMap(map) {
   return out;
 }
 
+function mergeCounterMaps(a, b) {
+  const out = normalizeCounterMap(a);
+
+  for (const [key, value] of Object.entries(normalizeCounterMap(b))) {
+    out[key] = safeNumber(out[key], 0) + safeNumber(value, 0);
+  }
+
+  return out;
+}
+
 function stageRank(stage) {
   const s = String(stage || "").toLowerCase();
 
@@ -616,7 +626,6 @@ function compactTradeSystemResult(result) {
       profile: SYSTEM_PROFILE,
       ok: true,
       actions: [],
-      openPositions: [],
       candidatesCount: 0,
       reason: "no_runner_candidates",
     };
@@ -690,22 +699,188 @@ function trimDashboardRows(stats) {
   };
 }
 
-function inferScanReady({ latest, funnel, trades, mode }) {
-  const hasRealData =
-    countFunnel(funnel) > 0 ||
-    trades.length > 0 ||
-    safeNumber(latest?.scannerUpdatedAt, 0) > 0 ||
-    safeNumber(latest?.tradeFunnelUpdatedAt, 0) > 0 ||
-    safeNumber(latest?.updatedAt, 0) > 0 ||
-    mode === "run";
+function emptyDashboardStats(now = Date.now()) {
+  return {
+    startedAt: now,
+    lastResetAt: now,
+    lastScanAt: 0,
 
-  return Boolean(latest?.scanReady || hasRealData);
+    totalScans: 0,
+    totalEntries: 0,
+    totalRejected: 0,
+    totalOtherTrades: 0,
+    totalFunnelCoins: 0,
+    totalCandidates: 0,
+
+    lastEntries: 0,
+    lastRejected: 0,
+    lastOtherTrades: 0,
+    lastFunnelCoins: 0,
+    lastCandidates: 0,
+
+    rejectReasonCounts: {},
+    actionCounts: {},
+
+    entryRows: [],
+    rejectedRows: [],
+    tradeRows: [],
+  };
+}
+
+function buildActionCounts(trades) {
+  const out = {};
+
+  for (const trade of safeArray(trades)) {
+    incrementCounter(out, trade?.action || "UNKNOWN");
+  }
+
+  return out;
+}
+
+function updateDashboardStats(latest, trades, selection, now) {
+  const base = {
+    ...emptyDashboardStats(now),
+    ...safeObject(latest?.dashboardStats),
+  };
+
+  const compactTrades = safeArray(trades).map(compactTradeRow);
+
+  const entries = compactTrades.filter(row => {
+    return String(row?.action || "").toUpperCase() === "ENTRY";
+  });
+
+  const rejected = compactTrades.filter(row => {
+    return String(row?.action || "").toUpperCase() === "WAIT";
+  });
+
+  const otherTrades = compactTrades.filter(row => {
+    const action = String(row?.action || "").toUpperCase();
+    return action !== "ENTRY" && action !== "WAIT";
+  });
+
+  const funnelCoins = countFunnel(latest?.funnel);
+  const candidates = safeArray(selection?.candidates).length;
+
+  return trimDashboardRows({
+    ...base,
+
+    startedAt: safeNumber(base.startedAt, now),
+    lastResetAt: safeNumber(base.lastResetAt, base.startedAt || now),
+    lastScanAt: now,
+
+    totalScans: safeNumber(base.totalScans, 0) + 1,
+    totalEntries: safeNumber(base.totalEntries, 0) + entries.length,
+    totalRejected: safeNumber(base.totalRejected, 0) + rejected.length,
+    totalOtherTrades: safeNumber(base.totalOtherTrades, 0) + otherTrades.length,
+    totalFunnelCoins: safeNumber(base.totalFunnelCoins, 0) + funnelCoins,
+    totalCandidates: safeNumber(base.totalCandidates, 0) + candidates,
+
+    lastEntries: entries.length,
+    lastRejected: rejected.length,
+    lastOtherTrades: otherTrades.length,
+    lastFunnelCoins: funnelCoins,
+    lastCandidates: candidates,
+
+    rejectReasonCounts: mergeCounterMaps(base.rejectReasonCounts, selection?.rejectCounts),
+    actionCounts: mergeCounterMaps(base.actionCounts, buildActionCounts(compactTrades)),
+
+    entryRows: [
+      ...safeArray(base.entryRows),
+      ...entries,
+    ].slice(-MAX_STORED_ENTRY_ROWS),
+
+    rejectedRows: [
+      ...safeArray(base.rejectedRows),
+      ...rejected,
+    ].slice(-MAX_STORED_REJECT_ROWS),
+
+    tradeRows: [
+      ...safeArray(base.tradeRows),
+      ...compactTrades,
+    ].slice(-MAX_STORED_TRADE_ROWS),
+  });
+}
+
+function compactRunnerAnalyzeAppendResult(result) {
+  if (!result || typeof result !== "object") return null;
+
+  return {
+    ok: result.ok !== false,
+    profile: result.profile || SYSTEM_PROFILE,
+    added: safeNumber(result.added ?? result.accepted, 0),
+    accepted: safeNumber(result.accepted ?? result.added, 0),
+    ignored: safeNumber(result.ignored, 0),
+    entries: safeNumber(result.entries, 0),
+    closedEntryUpdates: safeNumber(result.closedEntryUpdates, 0),
+    syntheticClosedEntries: safeNumber(result.syntheticClosedEntries, 0),
+    matchedExits: safeNumber(result.matchedExits, 0),
+    unmatchedExits: safeNumber(result.unmatchedExits, 0),
+    count: safeNumber(result.count ?? result.totalRecords, 0),
+    open: safeNumber(result.open, 0),
+    closed: safeNumber(result.closed, 0),
+    redisKey: result.redisKey || null,
+    path: result.path || null,
+  };
+}
+
+async function appendRunnerAnalyzeSafe(rawResult, latest, selection) {
+  const actions = safeArray(rawResult?.actions);
+
+  if (!actions.length) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "no_actions",
+      accepted: 0,
+    };
+  }
+
+  try {
+    const mod = await import("../lib/runnerAnalyzeStore.js");
+    const append =
+      mod?.appendRunnerAnalyzeEvents ||
+      mod?.appendAnalyzeEvents ||
+      null;
+
+    if (!append) {
+      return {
+        ok: false,
+        skipped: true,
+        error: "append_runner_analyze_events_missing",
+      };
+    }
+
+    const result = await append(actions, {
+      source: "trade_funnel",
+      profile: SYSTEM_PROFILE,
+      runnerProfile: SYSTEM_PROFILE,
+
+      btc: latest?.btc,
+      regime: latest?.regime,
+      market: latest?.market,
+
+      tradeFunnelUpdatedAt: Date.now(),
+      latestUpdatedAt: latest?.updatedAt || null,
+
+      candidates: safeArray(selection?.candidates).length,
+      rawCount: safeNumber(selection?.rawCount, 0),
+    });
+
+    return compactRunnerAnalyzeAppendResult(result);
+  } catch (error) {
+    return {
+      ok: false,
+      skipped: false,
+      error: error?.message || "runner_analyze_append_failed",
+    };
+  }
 }
 
 function buildTradeFunnelPayload({
   latest,
   selection,
   result = null,
+  runnerAnalyzeAppend = null,
   mode = "read_only",
   busy = false,
   error = null,
@@ -720,13 +895,6 @@ function buildTradeFunnelPayload({
     .slice(-MAX_STORED_ACTIONS)
     .map(compactTradeRow);
 
-  const scanReady = inferScanReady({
-    latest,
-    funnel,
-    trades,
-    mode,
-  });
-
   return {
     ok: true,
     profile: SYSTEM_PROFILE,
@@ -737,7 +905,7 @@ function buildTradeFunnelPayload({
     tradeFunnelBusy: Boolean(busy),
     tradeFunnelError: error,
 
-    scanReady,
+    scanReady: Boolean(latest?.scanReady),
     message: latest?.message || null,
 
     funnel,
@@ -763,6 +931,10 @@ function buildTradeFunnelPayload({
 
     trades,
     tradeSystemResult: compactResult,
+
+    runnerAnalyzeAppend,
+
+    runnerAnalyzeEndpoint: "/api/runner-analyze",
 
     tradeFunnelProfile: SYSTEM_PROFILE,
     tradeFunnelInputCount: safeArray(selection?.candidates).length,
@@ -829,7 +1001,6 @@ export async function runTradeFunnel(options = {}) {
       : {
           ok: true,
           actions: [],
-          openPositions: [],
           candidatesCount: 0,
           profile: SYSTEM_PROFILE,
           reason: "no_runner_candidates",
@@ -849,12 +1020,25 @@ export async function runTradeFunnel(options = {}) {
     throw error;
   }
 
+  const runnerAnalyzeAppend = await appendRunnerAnalyzeSafe(
+    rawResult,
+    latest,
+    selection
+  );
+
   const result = compactTradeSystemResult(rawResult);
+  const trades = safeArray(result.actions);
+
+  const latestForPayload = {
+    ...latest,
+    dashboardStats: updateDashboardStats(latest, trades, selection, now),
+  };
 
   const updated = buildTradeFunnelPayload({
-    latest,
+    latest: latestForPayload,
     selection,
     result,
+    runnerAnalyzeAppend,
     mode: "run",
     now,
   });
@@ -894,7 +1078,6 @@ export default async function handler(req, res) {
     return res.status(500).json({
       ok: false,
       profile: SYSTEM_PROFILE,
-      scanReady: false,
       error: error?.message || "trade_funnel_failed",
       servedAt: Date.now(),
     });
