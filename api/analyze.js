@@ -11,128 +11,45 @@ const STRATEGY = "50_LONG_FAMILIES_PLUS_50_SHORT_FAMILIES";
 
 const STORE_KEY = "runner:analyze:store:v1:events";
 const LEGACY_STORE_KEY = "runner:analyze:store:v1";
-const STORE_PATH = process.env.RUNNER_ANALYZE_STORE_PATH || path.join(os.tmpdir(), "runner-analyze-events.json");
+const STORE_PATH =
+  process.env.RUNNER_ANALYZE_STORE_PATH ||
+  path.join(os.tmpdir(), "runner-analyze-events.json");
 
 const MAX_STORED_EVENTS = 50000;
 const MAX_EXAMPLES_PER_FAMILY = 8;
+
 const DEFAULT_MIN_CLOSED = 10;
 const DEFAULT_BREAKEVEN_R_EPS = 0.05;
 const DEFAULT_MIN_WINRATE = 0.35;
 
 const QUALITY_BUCKETS = [
-  {
-    index: 1,
-    key: "Q1_WEAK",
-    conf: "CONF_0_50",
-    sniper: "SNIPER_0_50",
-    rr: "RR_LT_1p00",
-    score: "SCORE_0_50",
-  },
-  {
-    index: 2,
-    key: "Q2_LOW",
-    conf: "CONF_50_65",
-    sniper: "SNIPER_50_65",
-    rr: "RR_1p00_1p20",
-    score: "SCORE_50_65",
-  },
-  {
-    index: 3,
-    key: "Q3_BASE",
-    conf: "CONF_65_75",
-    sniper: "SNIPER_65_75",
-    rr: "RR_1p20_1p50",
-    score: "SCORE_65_75",
-  },
-  {
-    index: 4,
-    key: "Q4_STRONG",
-    conf: "CONF_75_85",
-    sniper: "SNIPER_75_85",
-    rr: "RR_1p50_2p00",
-    score: "SCORE_75_85",
-  },
-  {
-    index: 5,
-    key: "Q5_ELITE",
-    conf: "CONF_85_100",
-    sniper: "SNIPER_85_100",
-    rr: "RR_2p00_PLUS",
-    score: "SCORE_85_100",
-  },
+  { index: 1, key: "Q1_WEAK", conf: "CONF_0_50", sniper: "SNIPER_0_50", rr: "RR_LT_1p00", score: "SCORE_0_50" },
+  { index: 2, key: "Q2_LOW", conf: "CONF_50_65", sniper: "SNIPER_50_65", rr: "RR_1p00_1p20", score: "SCORE_50_65" },
+  { index: 3, key: "Q3_BASE", conf: "CONF_65_75", sniper: "SNIPER_65_75", rr: "RR_1p20_1p50", score: "SCORE_65_75" },
+  { index: 4, key: "Q4_STRONG", conf: "CONF_75_85", sniper: "SNIPER_75_85", rr: "RR_1p50_2p00", score: "SCORE_75_85" },
+  { index: 5, key: "Q5_ELITE", conf: "CONF_85_100", sniper: "SNIPER_85_100", rr: "RR_2p00_PLUS", score: "SCORE_85_100" },
 ];
 
 const MARKET_BUCKETS = [
-  {
-    index: 1,
-    key: "M1_DIRTY",
-    ob: "OB_REL_AGAINST",
-    spread: "SPREAD_GT_25BPS",
-    depth: "DEPTH_LT_10K",
-    btc: "BTC_REL_COUNTER",
-    funding: "FUNDING_CROWDED",
-  },
-  {
-    index: 2,
-    key: "M2_WEAK",
-    ob: "OB_REL_AGAINST_OR_NEUTRAL",
-    spread: "SPREAD_16_25BPS",
-    depth: "DEPTH_10K_50K",
-    btc: "BTC_REL_COUNTER",
-    funding: "FUNDING_EDGE_WEAK",
-  },
-  {
-    index: 3,
-    key: "M3_NORMAL",
-    ob: "OB_REL_NEUTRAL",
-    spread: "SPREAD_8_16BPS",
-    depth: "DEPTH_50K_100K",
-    btc: "BTC_REL_NEUTRAL",
-    funding: "FUNDING_NEUTRAL",
-  },
-  {
-    index: 4,
-    key: "M4_CLEAN",
-    ob: "OB_REL_WITH_OR_NEUTRAL",
-    spread: "SPREAD_5_12BPS",
-    depth: "DEPTH_100K_250K",
-    btc: "BTC_REL_WITH_OR_NEUTRAL",
-    funding: "FUNDING_OK",
-  },
-  {
-    index: 5,
-    key: "M5_PREMIUM",
-    ob: "OB_REL_WITH",
-    spread: "SPREAD_LT_8BPS",
-    depth: "DEPTH_GT_250K",
-    btc: "BTC_REL_WITH",
-    funding: "FUNDING_OPTIMAL",
-  },
+  { index: 1, key: "M1_DIRTY", ob: "OB_REL_AGAINST", spread: "SPREAD_GT_25BPS", depth: "DEPTH_LT_10K", btc: "BTC_REL_COUNTER", funding: "FUNDING_CROWDED" },
+  { index: 2, key: "M2_WEAK", ob: "OB_REL_AGAINST_OR_NEUTRAL", spread: "SPREAD_16_25BPS", depth: "DEPTH_10K_50K", btc: "BTC_REL_COUNTER", funding: "FUNDING_EDGE_WEAK" },
+  { index: 3, key: "M3_NORMAL", ob: "OB_REL_NEUTRAL", spread: "SPREAD_8_16BPS", depth: "DEPTH_50K_100K", btc: "BTC_REL_NEUTRAL", funding: "FUNDING_NEUTRAL" },
+  { index: 4, key: "M4_CLEAN", ob: "OB_REL_WITH_OR_NEUTRAL", spread: "SPREAD_5_12BPS", depth: "DEPTH_100K_250K", btc: "BTC_REL_WITH_OR_NEUTRAL", funding: "FUNDING_OK" },
+  { index: 5, key: "M5_PREMIUM", ob: "OB_REL_WITH", spread: "SPREAD_LT_8BPS", depth: "DEPTH_GT_250K", btc: "BTC_REL_WITH", funding: "FUNDING_OPTIMAL" },
 ];
 
 const TIMING_BUCKETS = [
-  {
-    index: 1,
-    key: "T1_EARLY_OR_NOISY",
-  },
-  {
-    index: 2,
-    key: "T2_TIMED",
-  },
+  { index: 1, key: "T1_EARLY_OR_NOISY" },
+  { index: 2, key: "T2_TIMED" },
 ];
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function safeObject(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-}
-
 function safeNumber(value, fallback = 0) {
   if (typeof value === "string") {
-    const cleaned = value.replace("%", "").replace(",", ".").trim();
-    const n = Number(cleaned);
+    const n = Number(value.replace("%", "").replace(",", ".").trim());
     return Number.isFinite(n) ? n : fallback;
   }
 
@@ -141,9 +58,8 @@ function safeNumber(value, fallback = 0) {
 }
 
 function round(value, decimals = 3) {
-  const n = safeNumber(value, 0);
   const p = 10 ** decimals;
-  return Math.round(n * p) / p;
+  return Math.round(safeNumber(value, 0) * p) / p;
 }
 
 function clamp(value, min, max) {
@@ -202,14 +118,9 @@ function normalizeAction(value) {
   return String(value || "").trim().toUpperCase();
 }
 
-function normalizeStatus(value) {
-  return String(value || "EMPTY").trim().toUpperCase();
-}
-
 function parseJsonLoose(value, fallback = null) {
   if (value === undefined || value === null) return fallback;
   if (typeof value === "object") return value;
-
   if (typeof value !== "string") return fallback;
 
   try {
@@ -223,38 +134,41 @@ function extractEventsFromContainer(value) {
   const parsed = parseJsonLoose(value, value);
 
   if (Array.isArray(parsed)) return parsed;
-
   if (!parsed || typeof parsed !== "object") return [];
 
-  const candidates = [
-    parsed.events,
-    parsed.records,
-    parsed.rows,
-    parsed.trades,
-    parsed.actions,
-    parsed.data,
-    parsed.items,
-  ];
-
-  for (const candidate of candidates) {
-    if (Array.isArray(candidate)) return candidate;
+  for (const key of ["events", "records", "rows", "trades", "actions", "data", "items"]) {
+    if (Array.isArray(parsed[key])) return parsed[key];
   }
 
   return [];
 }
 
-function parseEventItem(item) {
-  const parsed = parseJsonLoose(item, item);
-
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-
-  return parsed;
-}
-
 function normalizeEventArray(value) {
   return extractEventsFromContainer(value)
-    .map(parseEventItem)
-    .filter(Boolean);
+    .map(item => parseJsonLoose(item, item))
+    .filter(item => item && typeof item === "object" && !Array.isArray(item));
+}
+
+function eventKey(event) {
+  const symbol = normalizeSymbol(event?.symbol);
+  const side = normalizeSide(event?.side);
+  const action = normalizeAction(event?.action);
+
+  return [
+    event?.tradeId || event?.id || "",
+    event?.runId || "",
+    symbol,
+    side,
+    action,
+    event?.entryType || event?.runnerEntryType || "",
+    event?.setupClass || "",
+    event?.entry ?? "",
+    event?.exit ?? event?.exitPrice ?? "",
+    event?.exitReason || event?.reason || "",
+    event?.resultR ?? event?.realizedR ?? event?.exitR ?? event?.pnlR ?? "",
+    event?.pnlPct ?? "",
+    event?.ts || event?.closedAt || event?.createdAt || event?.updatedAt || "",
+  ].join("|");
 }
 
 function uniqueEvents(events) {
@@ -262,21 +176,7 @@ function uniqueEvents(events) {
   const seen = new Set();
 
   for (const event of safeArray(events)) {
-    const key = [
-      event.tradeId,
-      event.id,
-      event.runId,
-      normalizeSymbol(event.symbol),
-      normalizeSide(event.side),
-      normalizeAction(event.action),
-      event.entry,
-      event.exit,
-      event.exitPrice,
-      event.ts,
-      event.closedAt,
-      event.createdAt,
-    ].join("|");
-
+    const key = eventKey(event);
     if (seen.has(key)) continue;
 
     seen.add(key);
@@ -307,35 +207,39 @@ function getRedisConfig() {
   };
 }
 
-async function redisCommand(command, ...args) {
+async function redisPost(command) {
   const cfg = getRedisConfig();
   if (!cfg) return null;
 
-  const encoded = args.map(arg => encodeURIComponent(String(arg))).join("/");
-  const url = `${cfg.url}/${command}/${encoded}`;
-
-  const response = await fetch(url, {
-    method: "GET",
+  const response = await fetch(cfg.url, {
+    method: "POST",
     headers: {
       Authorization: `Bearer ${cfg.token}`,
+      "Content-Type": "application/json",
       Accept: "application/json",
     },
+    body: JSON.stringify(command),
   });
 
   if (!response.ok) {
-    throw new Error(`redis_${command}_failed_${response.status}`);
+    throw new Error(`redis_command_failed_${response.status}`);
   }
 
   return response.json();
 }
 
 async function redisGet(key) {
-  const payload = await redisCommand("get", key);
+  const payload = await redisPost(["GET", key]);
+  return payload?.result ?? null;
+}
+
+async function redisSet(key, value) {
+  const payload = await redisPost(["SET", key, value]);
   return payload?.result ?? null;
 }
 
 async function redisDel(key) {
-  const payload = await redisCommand("del", key);
+  const payload = await redisPost(["DEL", key]);
   return payload?.result ?? null;
 }
 
@@ -346,6 +250,11 @@ async function loadJsonFile(filePath) {
   } catch {
     return null;
   }
+}
+
+async function writeJsonFile(filePath, payload) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, JSON.stringify(payload), "utf8");
 }
 
 async function deleteFileIfExists(filePath) {
@@ -359,7 +268,6 @@ async function deleteFileIfExists(filePath) {
 async function loadRunnerAnalyzeStore() {
   const redisEnabled = Boolean(getRedisConfig());
   const fileEnabled = true;
-
   const loadedAt = Date.now();
 
   const redisEvents = [];
@@ -392,6 +300,39 @@ async function loadRunnerAnalyzeStore() {
     loadedAt,
     lastPersistAt: safeNumber(filePayload?.lastPersistAt, 0),
     events,
+  };
+}
+
+async function persistRunnerAnalyzeStore(events) {
+  const payload = {
+    ok: true,
+    version: 1,
+    profile: SYSTEM_PROFILE,
+    lastPersistAt: Date.now(),
+    maxStoredEvents: MAX_STORED_EVENTS,
+    events: uniqueEvents(events).slice(-MAX_STORED_EVENTS),
+  };
+
+  const redisEnabled = Boolean(getRedisConfig());
+  let redisError = null;
+
+  if (redisEnabled) {
+    try {
+      await redisSet(STORE_KEY, JSON.stringify(payload));
+    } catch (error) {
+      redisError = error?.message || String(error);
+    }
+  }
+
+  await writeJsonFile(STORE_PATH, payload);
+
+  return {
+    ok: true,
+    count: payload.events.length,
+    redisEnabled,
+    redisError,
+    filePath: STORE_PATH,
+    persistedAt: payload.lastPersistAt,
   };
 }
 
@@ -439,6 +380,11 @@ async function loadLatestEvents({ includeLatest = true } = {}) {
 
     const events = uniqueEvents([
       ...safeArray(latest?.tradeSystemResult?.actions),
+      ...safeArray(latest?.tradeSystemResult?.openPositions).map(row => ({
+        ...row,
+        action: row?.action || "HOLD",
+        closed: false,
+      })),
       ...safeArray(latest?.trades),
       ...safeArray(latest?.dashboardStats?.tradeRows),
       ...safeArray(latest?.dashboardStats?.entryRows),
@@ -504,13 +450,8 @@ function getQualityIndex(row) {
 }
 
 function getSpreadBps(row) {
-  if (Number.isFinite(Number(row?.spreadBps))) {
-    return Number(row.spreadBps);
-  }
-
-  if (Number.isFinite(Number(row?.spreadPct))) {
-    return Number(row.spreadPct) * 10000;
-  }
+  if (Number.isFinite(Number(row?.spreadBps))) return Number(row.spreadBps);
+  if (Number.isFinite(Number(row?.spreadPct))) return Number(row.spreadPct) * 10000;
 
   return 999;
 }
@@ -546,9 +487,7 @@ function getObIndex(row, side) {
     (side === "LONG" && ob === "BULLISH") ||
     (side === "SHORT" && ob === "BEARISH");
 
-  if (withSide) return 5;
-
-  return 1;
+  return withSide ? 5 : 1;
 }
 
 function getBtcIndex(row, side) {
@@ -598,14 +537,7 @@ function getMarketIndex(row, side) {
 function isRunnerTrendFlow(flow) {
   const f = String(flow || "").toUpperCase();
 
-  return [
-    "SQUEEZE",
-    "RUNNING",
-    "BREAKOUT",
-    "BUILDING",
-    "TREND",
-    "TRENDING",
-  ].includes(f);
+  return ["SQUEEZE", "RUNNING", "BREAKOUT", "BUILDING", "TREND", "TRENDING"].includes(f);
 }
 
 function isStageEntryOrAlmost(stage, action) {
@@ -636,7 +568,6 @@ function isTfAligned(row, side) {
   const tfStrength = safeNumber(row?.tfStrength, Math.abs(tfScore));
 
   if (tfStrength >= 3) return true;
-
   if (side === "LONG" && tfScore > 0) return true;
   if (side === "SHORT" && tfScore < 0) return true;
 
@@ -683,13 +614,7 @@ function getFamilyId(row) {
 
 function buildTimingLabels(side, timingIndex) {
   if (timingIndex === 1) {
-    return [
-      "STAGE_ANY",
-      "FLOW_ANY",
-      "RSI_ANY",
-      "TF_ANY",
-      "PULLBACK_NOT_REQUIRED",
-    ];
+    return ["STAGE_ANY", "FLOW_ANY", "RSI_ANY", "TF_ANY", "PULLBACK_NOT_REQUIRED"];
   }
 
   return [
@@ -794,11 +719,8 @@ function buildFamilies() {
         for (const t of TIMING_BUCKETS) {
           const family = buildFamily(side, q.index, m.index, t.index);
 
-          if (side === "LONG") {
-            long.push(family);
-          } else {
-            short.push(family);
-          }
+          if (side === "LONG") long.push(family);
+          else short.push(family);
         }
       }
     }
@@ -807,12 +729,7 @@ function buildFamilies() {
   const all = [...long, ...short];
   const byId = new Map(all.map(family => [family.id, family]));
 
-  return {
-    all,
-    long,
-    short,
-    byId,
-  };
+  return { all, long, short, byId };
 }
 
 function isPerformanceEvent(row) {
@@ -824,63 +741,20 @@ function isPerformanceEvent(row) {
 
   if (row?.closed === true) return true;
 
-  if ([
-    "ENTRY",
-    "HOLD",
-    "PARTIAL_TP",
-    "MOVE_BE",
-    "TRAIL",
-    "ADD",
-    "EXIT",
-    "TP",
-    "SL",
-  ].includes(action)) {
+  if (["ENTRY", "HOLD", "PARTIAL_TP", "MOVE_BE", "TRAIL", "ADD", "EXIT", "TP", "SL"].includes(action)) {
     return true;
   }
 
-  if (row?.exitReason || row?.resultR !== undefined || row?.realizedR !== undefined || row?.exitR !== undefined) {
+  if (
+    row?.exitReason ||
+    row?.resultR !== undefined ||
+    row?.realizedR !== undefined ||
+    row?.exitR !== undefined
+  ) {
     return true;
   }
 
   return false;
-}
-
-function getResultR(row, closed) {
-  const direct = [
-    row?.resultR,
-    row?.realizedR,
-    row?.exitR,
-    row?.pnlR,
-    row?.r,
-  ];
-
-  for (const value of direct) {
-    const n = safeNumber(value, Number.NaN);
-    if (Number.isFinite(n)) return n;
-  }
-
-  if (closed) {
-    const currentR = safeNumber(row?.currentR, Number.NaN);
-    if (Number.isFinite(currentR)) return currentR;
-  }
-
-  return 0;
-}
-
-function getPnlPct(row) {
-  const direct = [
-    row?.pnlPct,
-    row?.totalPnlPct,
-    row?.profitPct,
-    row?.pnlPercent,
-  ];
-
-  for (const value of direct) {
-    const n = safeNumber(value, Number.NaN);
-    if (Number.isFinite(n)) return n;
-  }
-
-  return 0;
 }
 
 function isClosedEvent(row) {
@@ -899,6 +773,29 @@ function isOpenEvent(row) {
   if (isClosedEvent(row)) return false;
 
   return ["ENTRY", "HOLD", "PARTIAL_TP", "MOVE_BE", "TRAIL", "ADD"].includes(action);
+}
+
+function getResultR(row, closed) {
+  for (const value of [row?.resultR, row?.realizedR, row?.exitR, row?.pnlR, row?.r]) {
+    const n = safeNumber(value, Number.NaN);
+    if (Number.isFinite(n)) return n;
+  }
+
+  if (closed) {
+    const currentR = safeNumber(row?.currentR, Number.NaN);
+    if (Number.isFinite(currentR)) return currentR;
+  }
+
+  return 0;
+}
+
+function getPnlPct(row) {
+  for (const value of [row?.pnlPct, row?.totalPnlPct, row?.profitPct, row?.pnlPercent]) {
+    const n = safeNumber(value, Number.NaN);
+    if (Number.isFinite(n)) return n;
+  }
+
+  return 0;
 }
 
 function compactExample(row, normalized) {
@@ -928,8 +825,6 @@ function normalizePerformanceEvent(row) {
   const open = isOpenEvent(row);
   const resultR = getResultR(row, closed);
   const pnlPct = getPnlPct(row);
-  const mfeR = safeNumber(row?.mfeR, 0);
-  const maeR = safeNumber(row?.maeR, 0);
 
   const tradeId =
     row?.tradeId ||
@@ -947,8 +842,8 @@ function normalizePerformanceEvent(row) {
     pending: !closed && !open,
     resultR,
     pnlPct,
-    mfeR,
-    maeR,
+    mfeR: safeNumber(row?.mfeR, 0),
+    maeR: safeNumber(row?.maeR, 0),
   };
 }
 
@@ -956,9 +851,7 @@ function classifyFamilyStatus(family, config) {
   if (family.observed <= 0) return "EMPTY";
   if (family.closed < config.minClosed) return "COLLECTING";
 
-  if (family.totalR <= 0 || family.avgR <= 0 || family.totalPnlPct <= 0) {
-    return "BAD";
-  }
+  if (family.totalR <= 0 || family.avgR <= 0 || family.totalPnlPct <= 0) return "BAD";
 
   if (
     family.closed >= Math.max(config.minClosed * 4, 40) &&
@@ -972,17 +865,13 @@ function classifyFamilyStatus(family, config) {
 
   if (
     family.winrateNum >= config.minWinrate &&
-    family.avgR >= 0.10 &&
+    family.avgR >= 0.1 &&
     family.pf >= 1.15
   ) {
     return "GOOD";
   }
 
-  if (
-    family.winrateNum >= 0.25 &&
-    family.avgR > 0 &&
-    family.totalR > 0
-  ) {
+  if (family.winrateNum >= 0.25 && family.avgR > 0 && family.totalR > 0) {
     return "STABLE";
   }
 
@@ -1005,11 +894,12 @@ function finalizeFamily(family, config) {
   family.grossWinR = round(family.grossWinR, 3);
   family.grossLossR = round(family.grossLossR, 3);
 
-  family.profitFactor = family.grossLossR > 0
-    ? round(family.grossWinR / family.grossLossR, 3)
-    : family.grossWinR > 0
-      ? round(family.grossWinR, 3)
-      : 0;
+  family.profitFactor =
+    family.grossLossR > 0
+      ? round(family.grossWinR / family.grossLossR, 3)
+      : family.grossWinR > 0
+        ? round(family.grossWinR, 3)
+        : 0;
 
   family.pf = family.profitFactor;
   family.profitFactorR = family.profitFactor;
@@ -1061,7 +951,7 @@ function rankFamilyTable(a, b) {
     EMPTY: 1,
   };
 
-  const status = (statusRank[normalizeStatus(b.status)] || 0) - (statusRank[normalizeStatus(a.status)] || 0);
+  const status = (statusRank[b.status] || 0) - (statusRank[a.status] || 0);
   if (status !== 0) return status;
 
   return rankPnlFirst(a, b);
@@ -1080,7 +970,7 @@ function summarizeStatuses(rows) {
   };
 
   for (const row of safeArray(rows)) {
-    const status = normalizeStatus(row.status);
+    const status = String(row.status || "EMPTY").toUpperCase();
     if (out[status] === undefined) out[status] = 0;
     out[status] += 1;
   }
@@ -1111,18 +1001,9 @@ function buildFilterValues() {
       "funding",
       "tfScore",
     ],
-    qualityBuckets: QUALITY_BUCKETS.reduce((acc, bucket) => {
-      acc[bucket.key] = bucket;
-      return acc;
-    }, {}),
-    marketBuckets: MARKET_BUCKETS.reduce((acc, bucket) => {
-      acc[bucket.key] = bucket;
-      return acc;
-    }, {}),
-    timingBuckets: TIMING_BUCKETS.reduce((acc, bucket) => {
-      acc[bucket.key] = bucket;
-      return acc;
-    }, {}),
+    qualityBuckets: Object.fromEntries(QUALITY_BUCKETS.map(b => [b.key, b])),
+    marketBuckets: Object.fromEntries(MARKET_BUCKETS.map(b => [b.key, b])),
+    timingBuckets: Object.fromEntries(TIMING_BUCKETS.map(b => [b.key, b])),
   };
 }
 
@@ -1183,6 +1064,7 @@ function buildReport(events, config) {
   const shortSummary = summarizeStatuses(short);
 
   const ranked = [...all].sort(rankFamilyTable);
+
   const topPnlFamilies = all
     .filter(row => row.closed > 0)
     .sort(rankPnlFirst)
@@ -1218,12 +1100,6 @@ function buildReport(events, config) {
   const winnerFamilies = winnerCandidates
     .filter(row => ["HOT", "GOOD", "STABLE"].includes(row.status))
     .slice(0, 8);
-
-  const bestLongByPnl = long.filter(row => row.closed > 0).sort(rankPnlFirst)[0] || null;
-  const bestShortByPnl = short.filter(row => row.closed > 0).sort(rankPnlFirst)[0] || null;
-  const topPnlFamily = topPnlFamilies[0] || null;
-  const topTotalRFamily = topTotalRFamilies[0] || null;
-  const topWinrateFamily = topWinrateFamilies[0] || null;
 
   const summary = {
     actions: normalizedEvents.length,
@@ -1270,21 +1146,15 @@ function buildReport(events, config) {
     },
     filterValues: buildFilterValues(),
     familyPerformanceMatrix: {
-      long: {
-        total: long.length,
-        summary: longSummary,
-      },
-      short: {
-        total: short.length,
-        summary: shortSummary,
-      },
+      long: { total: long.length, summary: longSummary },
+      short: { total: short.length, summary: shortSummary },
     },
     best: {
-      bestLongByPnl,
-      bestShortByPnl,
-      topPnlFamily,
-      topTotalRFamily,
-      topWinrateFamily,
+      bestLongByPnl: long.filter(row => row.closed > 0).sort(rankPnlFirst)[0] || null,
+      bestShortByPnl: short.filter(row => row.closed > 0).sort(rankPnlFirst)[0] || null,
+      topPnlFamily: topPnlFamilies[0] || null,
+      topTotalRFamily: topTotalRFamilies[0] || null,
+      topWinrateFamily: topWinrateFamilies[0] || null,
     },
     winnerCandidates,
     winnerCandidateSummary: {
@@ -1314,6 +1184,7 @@ export default async function handler(req, res) {
 
     const reset = normalizeBoolean(getQueryParam(req, "reset", ""), false);
     const includeLatest = normalizeBoolean(getQueryParam(req, "includeLatest", "true"), true);
+    const persistLatest = normalizeBoolean(getQueryParam(req, "persistLatest", "true"), true);
 
     const config = {
       minClosed: Math.max(0, Math.round(safeNumber(getQueryParam(req, "minClosed", DEFAULT_MIN_CLOSED), DEFAULT_MIN_CLOSED))),
@@ -1328,12 +1199,30 @@ export default async function handler(req, res) {
       await resetRunnerAnalyzeStore();
     }
 
-    const store = await loadRunnerAnalyzeStore();
+    const storeBefore = await loadRunnerAnalyzeStore();
     const latest = await loadLatestEvents({ includeLatest });
 
-    const storeEvents = safeArray(store.events);
+    const storeEventsBefore = safeArray(storeBefore.events);
     const latestEvents = safeArray(latest.events);
-    const mergedEvents = uniqueEvents([...storeEvents, ...latestEvents]);
+
+    const mergedForStorage =
+      includeLatest && persistLatest
+        ? uniqueEvents([...storeEventsBefore, ...latestEvents]).slice(-MAX_STORED_EVENTS)
+        : storeEventsBefore;
+
+    const persistResult =
+      includeLatest && persistLatest && latestEvents.length
+        ? await persistRunnerAnalyzeStore(mergedForStorage)
+        : {
+            ok: true,
+            count: storeEventsBefore.length,
+            skipped: true,
+          };
+
+    const storeEvents = mergedForStorage;
+    const mergedEvents = includeLatest
+      ? uniqueEvents([...storeEvents, ...latestEvents])
+      : storeEvents;
 
     const report = buildReport(mergedEvents, config);
     const latencyMs = Date.now() - startedAt;
@@ -1356,15 +1245,19 @@ export default async function handler(req, res) {
         storedEvents: storeEvents.length,
         latestEvents: latestEvents.length,
         mergedEvents: mergedEvents.length,
+        persistLatest,
+        persistResult,
         store: {
           ok: true,
           count: storeEvents.length,
-          path: store.path,
-          redisEnabled: store.redisEnabled,
-          fileEnabled: store.fileEnabled,
-          redisError: store.redisError,
-          loadedAt: store.loadedAt,
-          lastPersistAt: store.lastPersistAt,
+          beforeCount: storeEventsBefore.length,
+          addedApprox: Math.max(0, storeEvents.length - storeEventsBefore.length),
+          path: storeBefore.path,
+          redisEnabled: storeBefore.redisEnabled,
+          fileEnabled: storeBefore.fileEnabled,
+          redisError: storeBefore.redisError || persistResult.redisError || null,
+          loadedAt: storeBefore.loadedAt,
+          lastPersistAt: persistResult.persistedAt || storeBefore.lastPersistAt,
           maxStoredEvents: MAX_STORED_EVENTS,
         },
         latest: {
@@ -1377,21 +1270,21 @@ export default async function handler(req, res) {
 
       report,
 
-      // Legacy-compatible fields for older frontend variants.
       source: {
-        mode: store.mode,
-        storeSource: store.storeSource,
-        redisKey: store.redisKey,
-        legacyRedisKey: store.legacyRedisKey,
-        path: store.path,
-        redisEnabled: store.redisEnabled,
-        fileEnabled: store.fileEnabled,
-        loadedAt: store.loadedAt,
-        lastPersistAt: store.lastPersistAt,
+        mode: storeBefore.mode,
+        storeSource: storeBefore.storeSource,
+        redisKey: storeBefore.redisKey,
+        legacyRedisKey: storeBefore.legacyRedisKey,
+        path: storeBefore.path,
+        redisEnabled: storeBefore.redisEnabled,
+        fileEnabled: storeBefore.fileEnabled,
+        loadedAt: storeBefore.loadedAt,
+        lastPersistAt: persistResult.persistedAt || storeBefore.lastPersistAt,
       },
       store: {
         ok: true,
         count: storeEvents.length,
+        beforeCount: storeEventsBefore.length,
         trades: report.summary.trades,
         open: report.summary.open,
         closed: report.summary.closed,
