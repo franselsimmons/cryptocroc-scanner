@@ -2,1027 +2,472 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>RUNNER ANALYTICS DESK</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Runner Family Performance Matrix</title>
 
   <style>
     :root {
-      --bg: #070a12;
-      --panel: #101522;
-      --panel2: #151c2c;
-      --text: #e7edf7;
-      --muted: #8d99ae;
-      --line: rgba(255,255,255,0.09);
-      --good: #38d996;
-      --bad: #ff5f6d;
-      --warn: #ffcc66;
-      --blue: #7aa2ff;
+      --bg: #061118;
+      --panel: #0a1320;
+      --panel2: #07101a;
+      --line: rgba(106, 160, 255, 0.22);
+      --line2: rgba(255, 255, 255, 0.08);
+      --text: #eaf2ff;
+      --muted: #93a1b5;
+      --soft: #b8c4d7;
+      --good: #74f0ae;
+      --bad: #ff718d;
+      --warn: #ffd866;
+      --blue: #76b7ff;
+      --purple: #9b6cff;
+      --shadow: 0 22px 70px rgba(0, 0, 0, 0.35);
+      --radius: 28px;
     }
 
     * {
       box-sizing: border-box;
     }
 
-    body {
-      margin: 0;
+    html {
       background: var(--bg);
       color: var(--text);
-      font-family: Arial, Helvetica, sans-serif;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-text-size-adjust: 100%;
     }
 
-    header {
-      padding: 22px 24px;
-      border-bottom: 1px solid var(--line);
-      background: linear-gradient(180deg, #0d1320 0%, #070a12 100%);
-    }
-
-    h1, h2, h3 {
+    body {
       margin: 0;
-      font-weight: 800;
-      letter-spacing: 0.02em;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 20% 0%, rgba(113, 87, 255, 0.18), transparent 32rem),
+        radial-gradient(circle at 80% 20%, rgba(22, 202, 160, 0.14), transparent 30rem),
+        linear-gradient(180deg, #061118 0%, #081a22 45%, #061118 100%);
     }
 
-    h1 {
-      font-size: 22px;
+    a {
+      color: inherit;
+      text-decoration: none;
     }
 
-    h2 {
-      font-size: 17px;
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    .shell {
+      width: min(1220px, 100%);
+      margin: 0 auto;
+      padding: 38px 22px 80px;
+    }
+
+    .hero {
+      padding: 38px 0 28px;
+    }
+
+    .eyebrow {
+      color: var(--muted);
+      font-size: 13px;
+      letter-spacing: 0.22em;
+      font-weight: 900;
+      text-transform: uppercase;
       margin-bottom: 12px;
     }
 
-    h3 {
-      font-size: 14px;
-      margin-bottom: 10px;
-      color: var(--muted);
+    h1 {
+      margin: 0;
+      font-size: clamp(42px, 8vw, 86px);
+      line-height: 0.92;
+      letter-spacing: -0.06em;
+      max-width: 970px;
     }
 
-    .topbar {
+    .hero p {
+      margin: 28px 0 0;
+      max-width: 920px;
+      color: var(--muted);
+      font-size: clamp(18px, 3.5vw, 31px);
+      line-height: 1.45;
+    }
+
+    .nav {
       display: flex;
       gap: 12px;
       flex-wrap: wrap;
-      align-items: center;
-      margin-top: 14px;
+      margin: 28px 0 18px;
     }
 
-    a, button {
+    .nav a,
+    .btn,
+    .input,
+    .select,
+    .check {
+      min-height: 54px;
       border: 1px solid var(--line);
-      background: var(--panel2);
+      background: rgba(7, 16, 28, 0.72);
       color: var(--text);
-      padding: 9px 12px;
-      border-radius: 10px;
-      text-decoration: none;
+      border-radius: 18px;
+      padding: 0 22px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.015);
+    }
+
+    .nav a.active,
+    .btn.primary {
+      background: linear-gradient(135deg, rgba(130, 87, 255, 0.95), rgba(111, 91, 255, 0.78));
+      border-color: rgba(180, 140, 255, 0.7);
+    }
+
+    .btn {
       cursor: pointer;
-      font-size: 13px;
     }
 
-    button:hover, a:hover {
-      border-color: var(--blue);
+    .btn.danger {
+      border-color: rgba(255, 95, 130, 0.55);
+      color: #ff8fa4;
     }
 
-    button:disabled {
+    .btn:disabled {
       opacity: 0.55;
-      cursor: not-allowed;
+      cursor: wait;
     }
 
-    main {
-      padding: 20px 24px 50px;
-      max-width: 1500px;
-      margin: 0 auto;
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin: 22px 0 28px;
+      align-items: center;
     }
 
-    .status-line {
-      margin: 14px 0 20px;
+    .input,
+    .select {
+      justify-content: flex-start;
+      width: 170px;
+      color: var(--text);
+    }
+
+    .input input,
+    .select select {
+      width: 100%;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--text);
+    }
+
+    .select select option {
+      background: #0b1320;
+      color: var(--text);
+    }
+
+    .check {
+      cursor: pointer;
+      color: var(--soft);
+      user-select: none;
+    }
+
+    .check input {
+      width: 20px;
+      height: 20px;
+      accent-color: var(--blue);
+    }
+
+    .updateLine {
       color: var(--muted);
-      font-size: 13px;
+      font-size: 15px;
+      margin: 8px 0 28px;
+      line-height: 1.55;
+    }
+
+    .section {
+      margin-top: 34px;
+    }
+
+    .sectionHead {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: end;
+      margin-bottom: 18px;
+    }
+
+    .sectionHead h2 {
+      margin: 0;
+      font-size: clamp(30px, 5vw, 48px);
+      letter-spacing: -0.04em;
+    }
+
+    .sectionHead p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.45;
+    }
+
+    .countPill {
+      color: var(--muted);
+      font-size: 20px;
+      white-space: nowrap;
     }
 
     .grid {
       display: grid;
-      grid-template-columns: repeat(6, minmax(150px, 1fr));
-      gap: 12px;
-      margin-bottom: 20px;
+      gap: 18px;
     }
 
-    .card {
-      background: var(--panel);
+    .grid.metrics {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .card,
+    .metric,
+    .familyCard,
+    .tableWrap {
       border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 14px;
-      min-height: 82px;
+      background: rgba(7, 16, 28, 0.78);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
     }
 
-    .label {
+    .metric {
+      padding: 26px 28px;
+      min-height: 148px;
+    }
+
+    .metric .label {
       color: var(--muted);
-      font-size: 12px;
+      letter-spacing: 0.26em;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
-      margin-bottom: 8px;
-    }
-
-    .value {
-      font-size: 24px;
-      font-weight: 800;
-    }
-
-    .sub {
-      color: var(--muted);
       font-size: 12px;
-      margin-top: 4px;
-    }
-
-    .ok {
-      color: var(--good);
-    }
-
-    .bad {
-      color: var(--bad);
-    }
-
-    .warn {
-      color: var(--warn);
-    }
-
-    section {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 16px;
+      font-weight: 900;
       margin-bottom: 18px;
     }
 
-    .split {
+    .metric .value {
+      font-size: clamp(34px, 6vw, 58px);
+      letter-spacing: -0.04em;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .metric .sub {
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .value.good,
+    .txtGood {
+      color: var(--good);
+    }
+
+    .value.bad,
+    .txtBad {
+      color: var(--bad);
+    }
+
+    .value.warn,
+    .txtWarn {
+      color: var(--warn);
+    }
+
+    .familiesGrid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 18px;
+    }
+
+    .familyCard {
+      padding: 28px;
+      position: relative;
+    }
+
+    .familyTop {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+    }
+
+    .familyId {
+      font-size: clamp(28px, 5vw, 44px);
+      font-weight: 950;
+      letter-spacing: -0.04em;
+      line-height: 1;
+    }
+
+    .status {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 9px 17px;
+      font-size: 14px;
+      font-weight: 950;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .status.HOT {
+      color: var(--warn);
+      border-color: rgba(255, 216, 102, 0.55);
+      background: rgba(255, 216, 102, 0.08);
+    }
+
+    .status.GOOD {
+      color: var(--good);
+      border-color: rgba(116, 240, 174, 0.45);
+      background: rgba(116, 240, 174, 0.08);
+    }
+
+    .status.STABLE {
+      color: var(--blue);
+      border-color: rgba(118, 183, 255, 0.45);
+      background: rgba(118, 183, 255, 0.08);
+    }
+
+    .status.COLLECTING {
+      color: var(--warn);
+      border-color: rgba(255, 216, 102, 0.42);
+      background: rgba(255, 216, 102, 0.07);
+    }
+
+    .status.BAD {
+      color: var(--bad);
+      border-color: rgba(255, 113, 141, 0.42);
+      background: rgba(255, 113, 141, 0.06);
+    }
+
+    .status.EMPTY {
+      color: var(--muted);
+      border-color: rgba(148, 163, 184, 0.25);
+      background: rgba(148, 163, 184, 0.05);
+    }
+
+    .miniGrid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .mini {
+      border: 1px solid var(--line2);
+      background: rgba(0, 0, 0, 0.16);
+      border-radius: 18px;
+      padding: 16px;
+      min-height: 96px;
+    }
+
+    .mini .k {
+      color: var(--muted);
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      font-size: 11px;
+      font-weight: 900;
+      margin-bottom: 10px;
+    }
+
+    .mini .v {
+      font-size: 26px;
+      font-weight: 900;
+      letter-spacing: -0.03em;
+    }
+
+    .definition {
+      color: var(--soft);
+      font-size: 15px;
+      line-height: 1.55;
+      overflow-wrap: anywhere;
+      margin: 16px 0;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .chip {
+      border: 1px solid var(--line2);
+      color: var(--soft);
+      background: rgba(255,255,255,0.025);
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      overflow-wrap: anywhere;
+      max-width: 100%;
+    }
+
+    .tableWrap {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
     }
 
     table {
       width: 100%;
+      min-width: 1260px;
       border-collapse: collapse;
-      font-size: 12px;
     }
 
-    th, td {
-      border-bottom: 1px solid var(--line);
-      padding: 9px 8px;
-      text-align: left;
+    th,
+    td {
+      padding: 18px 18px;
+      border-bottom: 1px solid var(--line2);
       vertical-align: top;
-      white-space: nowrap;
+      text-align: left;
     }
 
     th {
       color: var(--muted);
-      font-weight: 700;
+      letter-spacing: 0.22em;
       text-transform: uppercase;
       font-size: 11px;
-      letter-spacing: 0.04em;
+      font-weight: 950;
+      background: rgba(7, 16, 28, 0.92);
+      position: sticky;
+      top: 0;
+      z-index: 2;
     }
 
-    tr:hover td {
-      background: rgba(255,255,255,0.025);
+    td {
+      color: var(--soft);
+      font-size: 15px;
+      line-height: 1.45;
     }
 
-    .table-wrap {
-      overflow-x: auto;
-    }
-
-    .pill {
-      display: inline-block;
-      padding: 3px 7px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: rgba(255,255,255,0.04);
-      font-size: 11px;
+    td.familyCell {
       color: var(--text);
+      font-weight: 950;
+      font-size: 18px;
+      white-space: nowrap;
     }
 
-    .pill.good {
-      border-color: rgba(56,217,150,0.35);
-      background: rgba(56,217,150,0.09);
+    td.defCell {
+      width: 420px;
+      max-width: 420px;
+      overflow-wrap: anywhere;
+      color: var(--soft);
     }
 
-    .pill.bad {
-      border-color: rgba(255,95,109,0.35);
-      background: rgba(255,95,109,0.09);
+    td.num {
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
     }
 
-    .pill.warn {
-      border-color: rgba(255,204,102,0.35);
-      background: rgba(255,204,102,0.09);
-    }
-
-    .mono {
-      font-family: Consolas, Monaco, monospace;
-    }
-
-    .empty {
-      color: var(--muted);
-      padding: 12px 0;
-    }
-
-    .error-box {
-      display: none;
-      border: 1px solid rgba(255,95,109,0.35);
-      background: rgba(255,95,109,0.08);
-      color: #ffd7dc;
-      padding: 12px;
-      border-radius: 12px;
-      margin-bottom: 16px;
-      font-size: 13px;
-      white-space: pre-wrap;
-    }
-
-    @media (max-width: 1100px) {
-      .grid {
-        grid-template-columns: repeat(3, minmax(150px, 1fr));
-      }
-
-      .split {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    @media (max-width: 650px) {
-      main {
-        padding: 16px;
-      }
-
-      .grid {
-        grid-template-columns: repeat(2, minmax(120px, 1fr));
-      }
-
-      .value {
-        font-size: 20px;
-      }
-    }
-  </style>
-</head>
-
-<body>
-  <header>
-    <h1>RUNNER ANALYTICS DESK</h1>
-
-    <div class="topbar">
-      <a href="/">Home</a>
-      <a href="/bull.html">Bull</a>
-      <a href="/bear.html">Bear</a>
-      <a href="/runner.html">Runner</a>
-      <a href="/analytics.html">Analyse</a>
-
-      <button id="refreshBtn" type="button">Refresh</button>
-      <button id="runBtn" type="button">Run trade-funnel</button>
-    </div>
-
-    <div id="statusLine" class="status-line">Initialiseren...</div>
-  </header>
-
-  <main>
-    <div id="errorBox" class="error-box"></div>
-
-    <div class="grid">
-      <div class="card">
-        <div class="label">Data state</div>
-        <div id="scanReadyValue" class="value warn">INIT</div>
-        <div id="sourceValue" class="sub">source: -</div>
-      </div>
-
-      <div class="card">
-        <div class="label">Funnel</div>
-        <div id="funnelValue" class="value">0</div>
-        <div id="funnelSub" class="sub">bull 0 / bear 0</div>
-      </div>
-
-      <div class="card">
-        <div class="label">Trades</div>
-        <div id="tradesValue" class="value">0</div>
-        <div id="tradesSub" class="sub">entries 0 / waits 0</div>
-      </div>
-
-      <div class="card">
-        <div class="label">Candidates</div>
-        <div id="candidatesValue" class="value">0</div>
-        <div id="candidatesSub" class="sub">trade-funnel input 0</div>
-      </div>
-
-      <div class="card">
-        <div class="label">Open positions</div>
-        <div id="openPositionsValue" class="value">0</div>
-        <div id="openPositionsSub" class="sub">runtime memory</div>
-      </div>
-
-      <div class="card">
-        <div class="label">Updated</div>
-        <div id="updatedValue" class="value">-</div>
-        <div id="latencyValue" class="sub">latency -</div>
-      </div>
-    </div>
-
-    <section>
-      <h2>Runner Telemetry Engine</h2>
-      <div class="table-wrap">
-        <table>
-          <tbody id="telemetryBody">
-            <tr>
-              <td class="empty">Runner telemetry laden...</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section>
-      <h2>Runner Performance</h2>
-      <div class="table-wrap">
-        <table>
-          <tbody id="performanceBody">
-            <tr>
-              <td class="empty">Runner performance laden...</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section>
-      <h2>Funnel Buckets</h2>
-      <div class="split">
-        <div>
-          <h3>Bull</h3>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Stage</th>
-                  <th>Count</th>
-                  <th>Top symbols</th>
-                </tr>
-              </thead>
-              <tbody id="bullBucketsBody"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <div>
-          <h3>Bear</h3>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Stage</th>
-                  <th>Count</th>
-                  <th>Top symbols</th>
-                </tr>
-              </thead>
-              <tbody id="bearBucketsBody"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <h2>Trade Actions</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Side</th>
-              <th>Action</th>
-              <th>Reason</th>
-              <th>Flow</th>
-              <th>Score</th>
-              <th>Conf</th>
-              <th>Sniper</th>
-              <th>RSI</th>
-              <th>OB</th>
-              <th>RR</th>
-              <th>R</th>
-              <th>PnL%</th>
-            </tr>
-          </thead>
-          <tbody id="actionsBody">
-            <tr>
-              <td colspan="13" class="empty">Scanner funnel analytics ophalen...</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section>
-      <h2>Open Positions</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Side</th>
-              <th>Setup</th>
-              <th>Entry</th>
-              <th>SL</th>
-              <th>TP</th>
-              <th>Current R</th>
-              <th>MFE R</th>
-              <th>MAE R</th>
-              <th>Partial</th>
-              <th>BE</th>
-              <th>Trail</th>
-            </tr>
-          </thead>
-          <tbody id="openPositionsBody"></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section>
-      <h2>Reject / Wait Reasons</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Reason</th>
-              <th>Count</th>
-            </tr>
-          </thead>
-          <tbody id="reasonsBody"></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section>
-      <h2>Trade Funnel Input Symbols</h2>
-      <div id="symbolsBox" class="mono empty">-</div>
-    </section>
-  </main>
-
-  <script>
-    const ENDPOINTS = {
-      latest: "/api/public-latest",
-      tradeFunnelRead: "/api/trade-funnel?store=false",
-      tradeFunnelRun: "/api/trade-funnel?action=run&store=true&notify=false",
-    };
-
-    const FETCH_TIMEOUT_MS = 15000;
-    const RUN_TIMEOUT_MS = 65000;
-
-    const STAGES = ["entry", "almost", "buildup", "radar"];
-
-    let lastPayload = null;
-    let loading = false;
-
-    function byId(id) {
-      return document.getElementById(id);
-    }
-
-    function safeArray(value) {
-      return Array.isArray(value) ? value : [];
-    }
-
-    function safeNumber(value, fallback = 0) {
-      const n = Number(value);
-      return Number.isFinite(n) ? n : fallback;
-    }
-
-    function esc(value) {
-      return String(value ?? "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
-    }
-
-    function fmtNumber(value, decimals = 2) {
-      const n = Number(value);
-      if (!Number.isFinite(n)) return "-";
-      return n.toFixed(decimals);
-    }
-
-    function fmtMaybe(value, decimals = 2) {
-      if (value === undefined || value === null || value === "") return "-";
-      return fmtNumber(value, decimals);
-    }
-
-    function fmtPct(value) {
-      if (value === undefined || value === null || value === "") return "-";
-      const n = Number(value);
-      if (!Number.isFinite(n)) return String(value);
-      return `${n.toFixed(2)}%`;
-    }
-
-    function fmtTime(ts) {
-      const n = Number(ts);
-      if (!Number.isFinite(n) || n <= 0) return "-";
-
-      try {
-        return new Date(n).toLocaleString("nl-NL");
-      } catch {
-        return "-";
-      }
-    }
-
-    function getFunnel(data) {
-      return {
-        bull: {
-          entry: safeArray(data?.funnel?.bull?.entry),
-          almost: safeArray(data?.funnel?.bull?.almost),
-          buildup: safeArray(data?.funnel?.bull?.buildup),
-          radar: safeArray(data?.funnel?.bull?.radar),
-        },
-        bear: {
-          entry: safeArray(data?.funnel?.bear?.entry),
-          almost: safeArray(data?.funnel?.bear?.almost),
-          buildup: safeArray(data?.funnel?.bear?.buildup),
-          radar: safeArray(data?.funnel?.bear?.radar),
-        },
-      };
-    }
-
-    function countSide(funnel, side) {
-      return STAGES.reduce((sum, stage) => {
-        return sum + safeArray(funnel?.[side]?.[stage]).length;
-      }, 0);
-    }
-
-    function countFunnel(funnel) {
-      return countSide(funnel, "bull") + countSide(funnel, "bear");
-    }
-
-    function getActions(data) {
-      const direct = safeArray(data?.trades);
-      const resultActions = safeArray(data?.tradeSystemResult?.actions);
-
-      return resultActions.length ? resultActions : direct;
-    }
-
-    function getOpenPositions(data) {
-      return safeArray(data?.tradeSystemResult?.openPositions);
-    }
-
-    function hasRealData(data) {
-      const funnel = getFunnel(data);
-      const actions = getActions(data);
-
-      return (
-        countFunnel(funnel) > 0 ||
-        actions.length > 0 ||
-        safeNumber(data?.scannerUpdatedAt, 0) > 0 ||
-        safeNumber(data?.tradeFunnelUpdatedAt, 0) > 0 ||
-        safeNumber(data?.updatedAt, 0) > 0
-      );
-    }
-
-    function mergePayload(latest, funnel) {
-      if (!latest && !funnel) return null;
-      if (!funnel?.ok) return latest;
-      if (!latest?.ok) return funnel;
-
-      const latestFunnel = getFunnel(latest);
-      const tradeFunnel = getFunnel(funnel);
-
-      const mergedFunnel = countFunnel(tradeFunnel) > 0 ? tradeFunnel : latestFunnel;
-
-      const latestActions = getActions(latest);
-      const funnelActions = getActions(funnel);
-
-      return {
-        ...latest,
-        ...funnel,
-
-        source: `${latest?.source || "latest"} + ${funnel?.source || "trade_funnel"}`,
-
-        funnel: mergedFunnel,
-        funnelCount: countFunnel(mergedFunnel),
-        bullCount: countSide(mergedFunnel, "bull"),
-        bearCount: countSide(mergedFunnel, "bear"),
-
-        trades: funnelActions.length ? funnelActions : latestActions,
-
-        tradeSystemResult:
-          funnel?.tradeSystemResult ||
-          latest?.tradeSystemResult ||
-          null,
-
-        dashboardStats:
-          funnel?.dashboardStats ||
-          latest?.dashboardStats ||
-          null,
-
-        scanReady:
-          Boolean(latest?.scanReady || funnel?.scanReady) ||
-          hasRealData(latest) ||
-          hasRealData(funnel),
-      };
-    }
-
-    async function fetchJson(url, timeoutMs = FETCH_TIMEOUT_MS) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-      try {
-        const res = await fetch(url, {
-          method: "GET",
-          cache: "no-store",
-          signal: controller.signal,
-          headers: {
-            "Accept": "application/json",
-          },
-        });
-
-        const text = await res.text();
-
-        let json = null;
-
-        try {
-          json = text ? JSON.parse(text) : null;
-        } catch {
-          throw new Error(`JSON parse failed for ${url}: ${text.slice(0, 300)}`);
-        }
-
-        if (!res.ok) {
-          throw new Error(json?.error || `HTTP ${res.status} for ${url}`);
-        }
-
-        return json;
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-
-    function setLoadingState(isLoading, text = "") {
-      loading = isLoading;
-      byId("refreshBtn").disabled = isLoading;
-      byId("runBtn").disabled = isLoading;
-
-      if (text) {
-        byId("statusLine").textContent = text;
-      }
-    }
-
-    function showError(message) {
-      const box = byId("errorBox");
-
-      if (!message) {
-        box.style.display = "none";
-        box.textContent = "";
-        return;
-      }
-
-      box.style.display = "block";
-      box.textContent = message;
-    }
-
-    function pill(value) {
-      const v = String(value || "-").toUpperCase();
-
-      let cls = "";
-
-      if (["ENTRY", "EXIT", "TP", "WIN", "RUNNING", "READY"].includes(v)) cls = "good";
-      if (["WAIT", "SL", "LOSS", "ERROR", "FAILED", "BUSY"].includes(v)) cls = "bad";
-      if (["HOLD", "PARTIAL_TP", "MOVE_BE", "TRAIL", "INIT"].includes(v)) cls = "warn";
-
-      return `<span class="pill ${cls}">${esc(value || "-")}</span>`;
-    }
-
-    function renderStatus(data) {
-      const funnel = getFunnel(data);
-      const actions = getActions(data);
-      const openPositions = getOpenPositions(data);
-
-      const entries = actions.filter(row => String(row?.action || "").toUpperCase() === "ENTRY").length;
-      const waits = actions.filter(row => String(row?.action || "").toUpperCase() === "WAIT").length;
-
-      const ready = Boolean(data?.scanReady) || hasRealData(data);
-
-      byId("scanReadyValue").textContent = ready ? "READY" : "NO DATA";
-      byId("scanReadyValue").className = `value ${ready ? "ok" : "bad"}`;
-
-      byId("sourceValue").textContent = `source: ${data?.source || "-"}`;
-
-      byId("funnelValue").textContent = String(countFunnel(funnel));
-      byId("funnelSub").textContent = `bull ${countSide(funnel, "bull")} / bear ${countSide(funnel, "bear")}`;
-
-      byId("tradesValue").textContent = String(actions.length);
-      byId("tradesSub").textContent = `entries ${entries} / waits ${waits}`;
-
-      byId("candidatesValue").textContent = String(
-        safeNumber(data?.candidates, 0) ||
-        safeNumber(data?.tradeSystemResult?.candidatesCount, 0)
-      );
-
-      byId("candidatesSub").textContent =
-        `trade-funnel input ${safeNumber(data?.tradeFunnelInputCount, 0)}`;
-
-      byId("openPositionsValue").textContent = String(openPositions.length);
-      byId("openPositionsSub").textContent =
-        `runnerStats ${safeNumber(data?.tradeSystemResult?.runnerStats?.openPositions, openPositions.length)}`;
-
-      const updatedAt =
-        data?.tradeFunnelUpdatedAt ||
-        data?.scannerUpdatedAt ||
-        data?.updatedAt ||
-        data?.servedAt ||
-        0;
-
-      byId("updatedValue").textContent = fmtTime(updatedAt);
-
-      const latency = updatedAt ? Date.now() - Number(updatedAt) : 0;
-      byId("latencyValue").textContent = latency > 0
-        ? `age ${Math.round(latency / 1000)}s`
-        : "latency -";
-
-      const busy = Boolean(data?.tradeFunnelBusy);
-      const err = data?.tradeFunnelError || null;
-
-      byId("statusLine").textContent = busy
-        ? `Trade-funnel busy: ${err || "lock active"}`
-        : `Laatste update: ${fmtTime(updatedAt)} | actions ${actions.length} | funnel ${countFunnel(funnel)}`;
-    }
-
-    function renderTelemetry(data) {
-      const stats = data?.tradeSystemResult?.runnerStats || {};
-      const result = data?.tradeSystemResult || {};
-
-      const rows = [
-        ["Profile", data?.profile || data?.scannerProfile || "RUNNER"],
-        ["Scan ready", Boolean(data?.scanReady) || hasRealData(data) ? "true" : "false"],
-        ["Trade-funnel mode", data?.tradeFunnelMode || "-"],
-        ["Trade-funnel busy", data?.tradeFunnelBusy ? "true" : "false"],
-        ["Trade-funnel error", data?.tradeFunnelError || "-"],
-        ["Run ID", result?.runId || "-"],
-        ["Strategy", result?.strategyVersion || stats?.strategyVersion || "-"],
-        ["Runs", stats?.runs ?? "-"],
-        ["Entries", stats?.entries ?? "-"],
-        ["Exits", stats?.exits ?? "-"],
-        ["Open positions", stats?.openPositions ?? "-"],
-        ["Durable saved", fmtTime(stats?.durableSavedAt)],
-      ];
-
-      byId("telemetryBody").innerHTML = rows.map(([k, v]) => `
-        <tr>
-          <th>${esc(k)}</th>
-          <td>${esc(v)}</td>
-        </tr>
-      `).join("");
-    }
-
-    function renderPerformance(data) {
-      const stats = data?.tradeSystemResult?.runnerStats || {};
-
-      const rows = [
-        ["Wins", stats?.wins ?? 0],
-        ["Losses", stats?.losses ?? 0],
-        ["Winrate", fmtPct(stats?.winrate ?? 0)],
-        ["Total R", fmtMaybe(stats?.totalR, 3)],
-        ["Avg R", fmtMaybe(stats?.avgR, 3)],
-        ["Total PnL%", fmtMaybe(stats?.totalPnlPct, 3)],
-        ["Avg PnL%", fmtMaybe(stats?.avgPnlPct, 3)],
-      ];
-
-      byId("performanceBody").innerHTML = rows.map(([k, v]) => `
-        <tr>
-          <th>${esc(k)}</th>
-          <td>${esc(v)}</td>
-        </tr>
-      `).join("");
-    }
-
-    function renderBuckets(data) {
-      const funnel = getFunnel(data);
-
-      function rowsFor(side) {
-        return STAGES.map(stage => {
-          const arr = safeArray(funnel?.[side]?.[stage]);
-          const symbols = arr
-            .slice(0, 12)
-            .map(c => `${c.symbol || "-"}:${Math.round(safeNumber(c.moveScore ?? c.score, 0))}`)
-            .join(", ");
-
-          return `
-            <tr>
-              <td>${pill(stage)}</td>
-              <td>${arr.length}</td>
-              <td class="mono">${esc(symbols || "-")}</td>
-            </tr>
-          `;
-        }).join("");
-      }
-
-      byId("bullBucketsBody").innerHTML = rowsFor("bull");
-      byId("bearBucketsBody").innerHTML = rowsFor("bear");
-    }
-
-    function renderActions(data) {
-      const actions = getActions(data).slice(-250).reverse();
-
-      if (!actions.length) {
-        byId("actionsBody").innerHTML = `
-          <tr>
-            <td colspan="13" class="empty">Geen trade actions gevonden.</td>
-          </tr>
-        `;
-        return;
-      }
-
-      byId("actionsBody").innerHTML = actions.map(row => `
-        <tr>
-          <td class="mono">${esc(row.symbol || "-")}</td>
-          <td>${esc(row.side || "-")}</td>
-          <td>${pill(row.action || "-")}</td>
-          <td class="mono">${esc(row.reason || row.exitReason || "-")}</td>
-          <td>${esc(row.flow || row.scannerFlow || "-")}</td>
-          <td>${fmtMaybe(row.score ?? row.moveScore, 0)}</td>
-          <td>${fmtMaybe(row.confluence, 0)}</td>
-          <td>${fmtMaybe(row.sniperScore, 0)}</td>
-          <td>${esc(row.rsiZone || "-")}</td>
-          <td>${esc(row.obBias || "-")}</td>
-          <td>${esc(row.rr ?? row.plannedRR ?? "-")}</td>
-          <td>${fmtMaybe(row.exitR ?? row.realizedR ?? row.pnlR, 3)}</td>
-          <td>${fmtMaybe(row.pnlPct, 3)}</td>
-        </tr>
-      `).join("");
-    }
-
-    function renderOpenPositions(data) {
-      const rows = getOpenPositions(data);
-
-      if (!rows.length) {
-        byId("openPositionsBody").innerHTML = `
-          <tr>
-            <td colspan="12" class="empty">Geen open positions.</td>
-          </tr>
-        `;
-        return;
-      }
-
-      byId("openPositionsBody").innerHTML = rows.map(pos => `
-        <tr>
-          <td class="mono">${esc(pos.symbol || "-")}</td>
-          <td>${esc(pos.side || "-")}</td>
-          <td>${esc(pos.setupClass || pos.entryType || "-")}</td>
-          <td>${fmtMaybe(pos.entry, 8)}</td>
-          <td>${fmtMaybe(pos.sl, 8)}</td>
-          <td>${fmtMaybe(pos.tp, 8)}</td>
-          <td>${fmtMaybe(pos.currentR, 3)}</td>
-          <td>${fmtMaybe(pos.mfeR, 3)}</td>
-          <td>${fmtMaybe(pos.maeR, 3)}</td>
-          <td>${pos.partialTaken ? "yes" : "no"}</td>
-          <td>${pos.breakEvenMoved ? "yes" : "no"}</td>
-          <td>${pos.trailingActive ? "yes" : "no"}</td>
-        </tr>
-      `).join("");
-    }
-
-    function renderReasons(data) {
-      const reasons = {
-        ...(data?.tradeFunnelRejectCounts || {}),
-        ...(data?.tradeSystemResult?.runnerStats?.waitReasons || {}),
-      };
-
-      const rows = Object.entries(reasons)
-        .map(([reason, count]) => ({ reason, count: safeNumber(count, 0) }))
-        .filter(row => row.count > 0)
-        .sort((a, b) => b.count - a.count);
-
-      if (!rows.length) {
-        byId("reasonsBody").innerHTML = `
-          <tr>
-            <td colspan="2" class="empty">Geen reject/wait reasons.</td>
-          </tr>
-        `;
-        return;
-      }
-
-      byId("reasonsBody").innerHTML = rows.map(row => `
-        <tr>
-          <td class="mono">${esc(row.reason)}</td>
-          <td>${row.count}</td>
-        </tr>
-      `).join("");
-    }
-
-    function renderSymbols(data) {
-      const symbols = safeArray(data?.tradeFunnelInputSymbols);
-
-      byId("symbolsBox").textContent = symbols.length
-        ? symbols.join(", ")
-        : "-";
-    }
-
-    function render(data) {
-      if (!data) {
-        showError("Geen payload ontvangen.");
-        return;
-      }
-
-      lastPayload = data;
-
-      renderStatus(data);
-      renderTelemetry(data);
-      renderPerformance(data);
-      renderBuckets(data);
-      renderActions(data);
-      renderOpenPositions(data);
-      renderReasons(data);
-      renderSymbols(data);
-    }
-
-    async function loadDashboard() {
-      if (loading) return;
-
-      setLoadingState(true, "Data ophalen...");
-      showError("");
-
-      const started = Date.now();
-
-      try {
-        const [latestResult, funnelResult] = await Promise.allSettled([
-          fetchJson(`${ENDPOINTS.latest}?_=${Date.now()}`, FETCH_TIMEOUT_MS),
-          fetchJson(`${ENDPOINTS.tradeFunnelRead}&_=${Date.now()}`, FETCH_TIMEOUT_MS),
-        ]);
-
-        const errors = [];
-
-        if (latestResult.status === "rejected") {
-          errors.push(`public-latest: ${latestResult.reason?.message || latestResult.reason}`);
-        }
-
-        if (funnelResult.status === "rejected") {
-          errors.push(`trade-funnel read: ${funnelResult.reason?.message || funnelResult.reason}`);
-        }
-
-        const latest = latestResult.status === "fulfilled" ? latestResult.value : null;
-        const funnel = funnelResult.status === "fulfilled" ? funnelResult.value : null;
-
-        const merged = mergePayload(latest, funnel);
-
-        if (!merged) {
-          throw new Error(errors.join("\n") || "Geen bruikbare API payload.");
-        }
-
-        render(merged);
-
-        if (errors.length) {
-          showError(errors.join("\n"));
-        }
-
-        byId("statusLine").textContent += ` | loaded in ${Date.now() - started}ms`;
-      } catch (error) {
-        showError(error?.message || String(error));
-        render(lastPayload || {
-          ok: false,
-          scanReady: false,
-          source: "frontend_error",
-          funnel: {
-            bull: { entry: [], almost: [], buildup: [], radar: [] },
-            bear: { entry: [], almost: [], buildup: [], radar: [] },
-          },
-          trades: [],
-          tradeSystemResult: {
-            actions: [],
-            openPositions: [],
-            runnerStats: {},
-          },
-        });
-      } finally {
-        setLoadingState(false);
-      }
-    }
-
-    async function runTradeFunnel() {
-      if (loading) return;
-
-      setLoadingState(true, "Trade-funnel run gestart...");
-      showError("");
-
-      const started = Date.now();
-
-      try {
-        const data = await fetchJson(`${ENDPOINTS.tradeFunnelRun}&_=${Date.now()}`, RUN_TIMEOUT_MS);
-        render(data);
-
-        const status = data?.tradeFunnelBusy
-          ? "Trade-funnel lock busy; snapshot getoond."
-          : `Trade-funnel run klaar in ${Date.now() - started}ms`;
-
-        byId("statusLine").textContent = status;
-      } catch (error) {
-        showError(error?.message || String(error));
-      } finally {
-        setLoadingState(false);
-      }
-    }
-
-    byId("refreshBtn").addEventListener("click", loadDashboard);
-    byId("runBtn").addEventListener("click", runTradeFunnel);
-
-    loadDashboard();
-
-    setInterval(() => {
-      if (!loading) loadDashboard();
-    }, 30000);
-  </script>
-</body>
-</html>
+    .sidePill {
+      border:
