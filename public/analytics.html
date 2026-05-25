@@ -7,23 +7,21 @@
 
   <title>Runner Analyse</title>
 
-  <link rel="stylesheet" href="/analytics.css" />
+  <link rel="stylesheet" href="/analyze.css?v=4" />
 </head>
 
 <body>
   <main class="page">
     <section class="hero">
       <div class="hero-inner">
-        <div class="hero-copy">
-          <p class="eyebrow">Runner TradeSystem Analyzer</p>
+        <p class="eyebrow">Runner TradeSystem Analyzer</p>
 
-          <h1>Runner Family Performance Matrix</h1>
+        <h1>Runner Family Performance Matrix</h1>
 
-          <p class="hero-text">
-            50 LONG families + 50 SHORT families. Elke runner-trade wordt op entry vastgezet in één frozen
-            filter-family. Ranking is PnL-first: hoogste Total PnL%, daarna Total R, Avg R, PF en sample-size.
-          </p>
-        </div>
+        <p class="hero-text">
+          50 LONG families + 50 SHORT families. Elke runner-trade wordt op entry vastgezet in één frozen
+          filter-family. Ranking is PnL-first: hoogste Total PnL%, daarna Total R, Avg R, PF en sample-size.
+        </p>
 
         <div class="top-actions">
           <button id="refreshBtn" type="button">Refresh</button>
@@ -32,7 +30,7 @@
           <a id="apiLink" href="/api/analyze?minClosed=10&debug=true" target="_blank" rel="noopener">API</a>
         </div>
 
-        <div class="hero-status-grid" aria-label="Analyzer status">
+        <div class="hero-status-grid">
           <article class="status-card">
             <span>Store</span>
             <strong id="sStoreCount">0</strong>
@@ -40,13 +38,13 @@
           </article>
 
           <article class="status-card">
-            <span>Latest scan</span>
+            <span>Latest</span>
             <strong id="sLatestCount">0</strong>
             <small id="sLatestTime">-</small>
           </article>
 
           <article class="status-card">
-            <span>Merged records</span>
+            <span>Merged</span>
             <strong id="sMergedCount">0</strong>
             <small id="sGeneratedAt">-</small>
           </article>
@@ -64,81 +62,34 @@
 
     <section id="errorBox" class="error-box hidden"></section>
 
-    <section class="metric-grid" aria-label="Runner analyse samenvatting">
-      <article class="metric-card">
-        <span class="metric-label">Actions</span>
-        <strong id="mActions" class="metric-value">0</strong>
-      </article>
+    <section class="metric-grid">
+      <article class="metric-card"><span>Actions</span><strong id="mActions">0</strong></article>
+      <article class="metric-card"><span>Trades</span><strong id="mTrades">0</strong></article>
+      <article class="metric-card"><span>Open</span><strong id="mOpen">0</strong></article>
+      <article class="metric-card"><span>Closed</span><strong id="mClosed">0</strong></article>
+      <article class="metric-card"><span>Pending outcome</span><strong id="mPending">0</strong></article>
+      <article class="metric-card"><span>Wins</span><strong id="mWins">0</strong></article>
+      <article class="metric-card"><span>Losses</span><strong id="mLosses">0</strong></article>
+      <article class="metric-card"><span>Breakeven</span><strong id="mBreakeven">0</strong></article>
+      <article class="metric-card"><span>Winrate</span><strong id="mWinrate">0%</strong></article>
+      <article class="metric-card"><span>Total R</span><strong id="mTotalR">0</strong></article>
+      <article class="metric-card"><span>Avg R</span><strong id="mAvgR">0</strong></article>
+      <article class="metric-card"><span>Total PnL%</span><strong id="mTotalPnl">0%</strong></article>
 
-      <article class="metric-card">
-        <span class="metric-label">Trades</span>
-        <strong id="mTrades" class="metric-value">0</strong>
-      </article>
-
-      <article class="metric-card">
-        <span class="metric-label">Open</span>
-        <strong id="mOpen" class="metric-value">0</strong>
-      </article>
-
-      <article class="metric-card">
-        <span class="metric-label">Closed</span>
-        <strong id="mClosed" class="metric-value">0</strong>
-      </article>
-
-      <article class="metric-card">
-        <span class="metric-label">Pending outcome</span>
-        <strong id="mPending" class="metric-value">0</strong>
-      </article>
-
-      <article class="metric-card">
-        <span class="metric-label">Wins</span>
-        <strong id="mWins" class="metric-value">0</strong>
-      </article>
-
-      <article class="metric-card">
-        <span class="metric-label">Losses</span>
-        <strong id="mLosses" class="metric-value">0</strong>
-      </article>
-
-      <article class="metric-card">
-        <span class="metric-label">Breakeven</span>
-        <strong id="mBreakeven" class="metric-value">0</strong>
-      </article>
-
-      <article class="metric-card">
-        <span class="metric-label">Winrate</span>
-        <strong id="mWinrate" class="metric-value">0%</strong>
-      </article>
-
-      <article class="metric-card">
-        <span class="metric-label">Total R</span>
-        <strong id="mTotalR" class="metric-value">0</strong>
-      </article>
-
-      <article class="metric-card">
-        <span class="metric-label">Avg R</span>
-        <strong id="mAvgR" class="metric-value">0</strong>
-      </article>
-
-      <article class="metric-card">
-        <span class="metric-label">Total PnL%</span>
-        <strong id="mTotalPnl" class="metric-value">0%</strong>
+      <article class="metric-card family-card">
+        <span>Long families</span>
+        <strong id="mLongFamilies">50</strong>
+        <small id="mLongMeta">HOT 0 | GOOD 0 | STABLE 0 | BAD 0 | COLLECTING 0 | EMPTY 50</small>
       </article>
 
       <article class="metric-card family-card">
-        <span class="metric-label">Long families</span>
-        <strong id="mLongFamilies" class="metric-value">50</strong>
-        <small id="mLongMeta" class="metric-sub">HOT 0 | GOOD 0 | STABLE 0 | BAD 0 | COLLECTING 0 | EMPTY 50</small>
-      </article>
-
-      <article class="metric-card family-card">
-        <span class="metric-label">Short families</span>
-        <strong id="mShortFamilies" class="metric-value">50</strong>
-        <small id="mShortMeta" class="metric-sub">HOT 0 | GOOD 0 | STABLE 0 | BAD 0 | COLLECTING 0 | EMPTY 50</small>
+        <span>Short families</span>
+        <strong id="mShortFamilies">50</strong>
+        <small id="mShortMeta">HOT 0 | GOOD 0 | STABLE 0 | BAD 0 | COLLECTING 0 | EMPTY 50</small>
       </article>
     </section>
 
-    <section class="panel winners-panel" aria-label="Beste runner families">
+    <section class="panel">
       <div class="table-header">
         <div>
           <h2>Winner candidates</h2>
@@ -146,18 +97,15 @@
             PnL-first selectie: voldoende closed trades, positieve Avg R, positieve Total R en redelijke winrate.
           </p>
         </div>
-
         <span id="winnerCount">0 winners</span>
       </div>
 
       <div id="winnerGrid" class="winner-grid">
-        <article class="winner-empty">
-          Nog geen betrouwbare runner winner-family. Eerst closed trades verzamelen.
-        </article>
+        <article class="winner-empty">Nog geen data geladen.</article>
       </div>
     </section>
 
-    <section class="panel winners-panel" aria-label="Top PnL families">
+    <section class="panel">
       <div class="table-header">
         <div>
           <h2>Top PnL families</h2>
@@ -165,32 +113,22 @@
             Hoogste Total PnL%, daarna Total R, Avg R, PF en closed sample.
           </p>
         </div>
-
         <span id="topPnlCount">0 families</span>
       </div>
 
       <div id="topPnlGrid" class="winner-grid">
-        <article class="winner-empty">
-          Nog geen PnL families.
-        </article>
+        <article class="winner-empty">Nog geen data geladen.</article>
       </div>
     </section>
 
     <section class="panel family-panel">
-      <div class="tab-row" role="tablist" aria-label="Family side tabs">
-        <button id="tabAll" type="button" class="tab active" data-side="ALL">All families</button>
-        <button id="tabLong" type="button" class="tab" data-side="LONG">Long families</button>
-        <button id="tabShort" type="button" class="tab" data-side="SHORT">Short families</button>
+      <div class="tab-row">
+        <button type="button" class="tab active" data-side="ALL">All families</button>
+        <button type="button" class="tab" data-side="LONG">Long families</button>
+        <button type="button" class="tab" data-side="SHORT">Short families</button>
       </div>
 
       <div class="filter-grid">
-        <label class="field">
-          <span>Data source</span>
-          <select id="sourceSelect">
-            <option value="RUNNER" selected>RUNNER analyze-store</option>
-          </select>
-        </label>
-
         <label class="field">
           <span>Side</span>
           <select id="sideSelect">
@@ -236,7 +174,6 @@
             Observed = alle records. Closed = alleen afgerekende trades. Winrate/PnL gebruikt uitsluitend closed.
           </p>
         </div>
-
         <span id="familyCount">0 rows</span>
       </div>
 
@@ -281,15 +218,12 @@
       </div>
     </section>
 
-    <section class="panel filters-panel">
+    <section class="panel">
       <div class="table-header">
         <div>
           <h2>Tracked filters</h2>
-          <p class="panel-subtitle">
-            Dit zijn de labels waarop de runner families worden gegroepeerd.
-          </p>
+          <p class="panel-subtitle">Labels waarop de runner families worden gegroepeerd.</p>
         </div>
-
         <span id="filterCount">0 labels</span>
       </div>
 
@@ -304,6 +238,6 @@
     </section>
   </main>
 
-  <script type="module" src="/analyze.js"></script>
+  <script type="module" src="/analyze.js?v=4"></script>
 </body>
 </html>
