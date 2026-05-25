@@ -28,9 +28,13 @@ import { buildTimeframeContext } from "../lib/timeframe.js";
 
 const STAGES = ["entry", "almost", "buildup", "radar"];
 const SIDES = ["bull", "bear"];
+
 const SCANNER_PROFILE = "RUNNER";
+const SCANNER_VERSION = "RUNNER_SCANNER_V2_EXTREME_LOOSE_ANALYSIS";
 
 // ================= RUNNER SCANNER CONFIG =================
+// Doel: maximaal analyse-universum bouwen.
+// Live-selectie/filtering hoort in tradesystem/optimizer, niet hier.
 function getRunnerScannerConfig(regime, market) {
   const trend = String(
     market?.trend ||
@@ -43,65 +47,78 @@ function getRunnerScannerConfig(regime, market) {
 
   const cfg = {
     profile: SCANNER_PROFILE,
+    scannerVersion: SCANNER_VERSION,
 
-    vmMin: 0.016,
-    hardChange24: 0.45,
-    hardChange1h: 0.18,
+    // Extreem laag: scanner moet niet bottlenecken.
+    vmMin: 0.003,
+    hardChange24: 0.05,
+    hardChange1h: 0.02,
 
-    minDirectionalPressure: 0.18,
-    minRunnerScore: 30,
-    minEntryScore: 76,
+    // Mag licht negatief zijn zodat vroege flips/mean-reversion runners ook zichtbaar worden.
+    minDirectionalPressure: -0.12,
 
-    targetMinimum: 16,
-    fallbackMax: 36,
+    // Lage floors: tradesystem krijgt meer rows.
+    minRunnerScore: 6,
+    minEntryScore: 28,
 
-    scoreBoost: 0,
-    allowNeutralDirection: false,
+    // Grote output-set.
+    targetMinimum: 80,
+    fallbackMax: 180,
 
-    maxCh1Chaos: 8.5,
-    maxCh24Exhaustion: 34,
-    exhaustionPenaltyEnabled: true
+    // Boost bewust hoog: scanner is discovery-layer.
+    scoreBoost: 16,
+
+    // Geen directional hard-block in scanner.
+    allowNeutralDirection: true,
+
+    // Exhaustion niet blokkeren in scanner; tradesystem/optimizer beslist later.
+    maxCh1Chaos: 99,
+    maxCh24Exhaustion: 999,
+    exhaustionPenaltyEnabled: false
   };
 
   if (r === "LOW_VOL") {
-    cfg.vmMin = 0.010;
-    cfg.hardChange24 = 0.25;
-    cfg.hardChange1h = 0.10;
-    cfg.minDirectionalPressure = 0.10;
-    cfg.minRunnerScore = 24;
-    cfg.minEntryScore = 70;
-    cfg.targetMinimum = 22;
-    cfg.fallbackMax = 52;
-    cfg.scoreBoost = 5;
+    cfg.vmMin = 0.0015;
+    cfg.hardChange24 = 0.025;
+    cfg.hardChange1h = 0.01;
+    cfg.minDirectionalPressure = -0.16;
+    cfg.minRunnerScore = 4;
+    cfg.minEntryScore = 24;
+    cfg.targetMinimum = 100;
+    cfg.fallbackMax = 220;
+    cfg.scoreBoost = 20;
   }
 
   if (r === "HIGH_VOL") {
-    cfg.vmMin = 0.022;
-    cfg.hardChange24 = 0.80;
-    cfg.hardChange1h = 0.30;
-    cfg.minDirectionalPressure = 0.28;
-    cfg.minRunnerScore = 36;
-    cfg.minEntryScore = 80;
-    cfg.targetMinimum = 12;
-    cfg.fallbackMax = 28;
-    cfg.scoreBoost = 2;
-    cfg.maxCh1Chaos = 10;
+    cfg.vmMin = 0.004;
+    cfg.hardChange24 = 0.08;
+    cfg.hardChange1h = 0.025;
+    cfg.minDirectionalPressure = -0.08;
+    cfg.minRunnerScore = 8;
+    cfg.minEntryScore = 30;
+    cfg.targetMinimum = 90;
+    cfg.fallbackMax = 200;
+    cfg.scoreBoost = 18;
   }
 
   if (trend === "BULLISH" || trend === "BEARISH") {
-    cfg.targetMinimum += 4;
-    cfg.fallbackMax += 8;
+    cfg.targetMinimum += 20;
+    cfg.fallbackMax += 40;
+    cfg.minRunnerScore = Math.max(2, cfg.minRunnerScore - 2);
+    cfg.minEntryScore = Math.max(20, cfg.minEntryScore - 4);
   }
 
   if (trend === "TRENDING") {
-    cfg.targetMinimum += 6;
-    cfg.fallbackMax += 10;
-    cfg.minRunnerScore = Math.max(20, cfg.minRunnerScore - 2);
+    cfg.targetMinimum += 28;
+    cfg.fallbackMax += 56;
+    cfg.minRunnerScore = Math.max(2, cfg.minRunnerScore - 3);
+    cfg.minEntryScore = Math.max(18, cfg.minEntryScore - 5);
   }
 
   if (trend === "CHOPPY") {
-    cfg.minEntryScore += 3;
-    cfg.minRunnerScore += 2;
+    // Niet meer strakker maken. Juist meer data verzamelen.
+    cfg.targetMinimum += 10;
+    cfg.fallbackMax += 30;
   }
 
   return cfg;
@@ -255,18 +272,18 @@ function getDirectionalValues(c, side) {
 function displayDirectionAllowed(c, side, adaptive = {}) {
   const v = getDirectionalValues(c, side);
 
-  if (
-    v.pressure >= Number(adaptive.minDirectionalPressure || 0.18) &&
-    v.ch1 > 0
-  ) {
-    return true;
-  }
+  const minPressure = Number(adaptive.minDirectionalPressure ?? -0.12);
+  const vmMin = Number(adaptive.vmMin || 0.003);
+  const hardChange1h = Number(adaptive.hardChange1h || 0.02);
+  const hardChange24 = Number(adaptive.hardChange24 || 0.05);
 
-  return Boolean(
-    adaptive.allowNeutralDirection &&
-    v.vm > Number(adaptive.vmMin || 0.016) * 2.8 &&
-    v.ch1 > Number(adaptive.hardChange1h || 0.18) * 0.75
-  );
+  if (v.pressure >= minPressure) return true;
+  if (v.ch1 >= hardChange1h * 0.25) return true;
+  if (v.ch24 >= hardChange24 * 0.25) return true;
+  if (v.vm >= vmMin * 1.15 && v.absCh1 >= hardChange1h * 0.50) return true;
+  if (v.vm >= vmMin * 1.50 && v.absCh24 >= hardChange24 * 0.50) return true;
+
+  return Boolean(adaptive.allowNeutralDirection && v.vm >= vmMin);
 }
 
 function detectRunnerFlow(c, side, adaptive = {}) {
@@ -275,11 +292,21 @@ function detectRunnerFlow(c, side, adaptive = {}) {
 
   const ch1 = Math.max(0, v.ch1);
   const ch24 = Math.max(0, v.ch24);
+  const vm = Number(v.vm || 0);
+  const vmMin = Number(adaptive.vmMin || 0.003);
 
-  if (ch1 > (boost > 0 ? 2.0 : 2.5) && v.vm > 0.12) return "SQUEEZE";
-  if (ch1 > (boost > 0 ? 1.0 : 1.25) && ch24 > 2.2) return "RUNNING";
-  if (ch1 > (boost > 0 ? 0.45 : 0.60) || ch24 > 2.8) return "BREAKOUT";
-  if (ch1 > (boost > 0 ? 0.18 : 0.25) || ch24 > 0.80) return "BUILDING";
+  if (ch1 > (boost > 0 ? 1.35 : 1.75) && vm > 0.055) return "SQUEEZE";
+  if (ch1 > (boost > 0 ? 0.42 : 0.60) && ch24 > 0.55) return "RUNNING";
+  if (ch1 > (boost > 0 ? 0.12 : 0.20) || ch24 > 0.35) return "BREAKOUT";
+  if (ch1 > -0.06 || ch24 > 0.12 || vm >= vmMin * 1.40) return "BUILDING";
+
+  if (
+    adaptive.allowNeutralDirection &&
+    vm >= vmMin &&
+    (v.absCh1 > 0 || v.absCh24 > 0)
+  ) {
+    return "BUILDING";
+  }
 
   return "NEUTRAL";
 }
@@ -290,13 +317,14 @@ function calculateRunnerFreshness(c, side) {
   const ch24 = Math.max(0, v.ch24);
   const ch1 = Math.max(0, v.ch1);
 
-  let freshness = 0;
+  let freshness = 4;
 
   if (ch1 > 2.5) freshness += 22;
   else if (ch1 > 1.5) freshness += 18;
   else if (ch1 > 0.9) freshness += 14;
-  else if (ch1 > 0.45) freshness += 9;
-  else if (ch1 > 0.20) freshness += 5;
+  else if (ch1 > 0.45) freshness += 10;
+  else if (ch1 > 0.20) freshness += 7;
+  else if (ch1 > 0.05) freshness += 4;
 
   if (ch24 > 0) {
     const ratio = ch1 / Math.max(ch24, 0.01);
@@ -304,16 +332,17 @@ function calculateRunnerFreshness(c, side) {
     if (ratio > 0.55) freshness += 10;
     else if (ratio > 0.35) freshness += 7;
     else if (ratio > 0.18) freshness += 4;
-    else if (ratio > 0.08) freshness += 1;
+    else if (ratio > 0.05) freshness += 2;
   }
 
   if (v.acceleration > 1.2) freshness += 8;
   else if (v.acceleration > 0.6) freshness += 5;
-  else if (v.acceleration > 0.25) freshness += 3;
+  else if (v.acceleration > 0.15) freshness += 3;
+  else if (v.acceleration > -0.20) freshness += 1;
 
-  if (ch24 > 14 && ch1 < 0.35) freshness -= 10;
-  if (ch24 > 22 && ch1 < 0.65) freshness -= 12;
-  if (v.ch1 < 0) freshness -= 18;
+  // Penalties bewust zacht. Scanner moet niet snoeien.
+  if (ch24 > 30 && ch1 < 0.15) freshness -= 4;
+  if (v.ch1 < -0.40) freshness -= 6;
 
   return clamp(freshness, 0, 40);
 }
@@ -328,11 +357,10 @@ function calculateExhaustionPenalty(c, side, adaptive = {}) {
 
   let penalty = 0;
 
-  if (ch24 > Number(adaptive.maxCh24Exhaustion || 34)) penalty += 10;
-  if (ch24 > 18 && ch1 < 0.45) penalty += 12;
-  if (ch24 > 26 && ch1 < 0.85) penalty += 10;
-  if (ch1 > Number(adaptive.maxCh1Chaos || 8.5)) penalty += 8;
-  if (v.acceleration < -0.25) penalty += 12;
+  if (ch24 > Number(adaptive.maxCh24Exhaustion || 999)) penalty += 4;
+  if (ch24 > 40 && ch1 < 0.20) penalty += 5;
+  if (ch1 > Number(adaptive.maxCh1Chaos || 99)) penalty += 4;
+  if (v.acceleration < -1.25) penalty += 5;
 
   return penalty;
 }
@@ -344,41 +372,48 @@ function calculateRunnerScore(c, regime, side, adaptive = {}) {
   const ch1 = Math.max(0, v.ch1);
   const freshness = calculateRunnerFreshness(c, side);
 
-  let score = 0;
+  // Base score bewust > 0 zodat discovery niet stilvalt.
+  let score = 18;
 
   if (ch1 > 4.0) score += 34;
   else if (ch1 > 2.2) score += 30;
   else if (ch1 > 1.2) score += 24;
-  else if (ch1 > 0.65) score += 17;
-  else if (ch1 > 0.35) score += 10;
-  else if (ch1 > 0.18) score += 5;
+  else if (ch1 > 0.65) score += 18;
+  else if (ch1 > 0.35) score += 13;
+  else if (ch1 > 0.15) score += 8;
+  else if (ch1 > 0.03) score += 4;
 
   if (ch24 > 18) score += 18;
   else if (ch24 > 10) score += 16;
   else if (ch24 > 5) score += 12;
   else if (ch24 > 2.2) score += 8;
-  else if (ch24 > 0.8) score += 4;
+  else if (ch24 > 0.50) score += 5;
+  else if (ch24 > 0.10) score += 2;
 
   if (v.vm > 0.45) score += 20;
   else if (v.vm > 0.25) score += 16;
   else if (v.vm > 0.12) score += 11;
-  else if (v.vm > 0.06) score += 7;
-  else if (v.vm > 0.025) score += 3;
+  else if (v.vm > 0.06) score += 8;
+  else if (v.vm > 0.02) score += 5;
+  else if (v.vm > 0.005) score += 2;
 
   if (v.acceleration > 2.0) score += 14;
   else if (v.acceleration > 1.0) score += 11;
   else if (v.acceleration > 0.45) score += 7;
-  else if (v.acceleration > 0.15) score += 3;
+  else if (v.acceleration > 0.10) score += 4;
+  else if (v.acceleration > -0.25) score += 1;
 
   score += freshness;
 
-  if (v.pressure < Number(adaptive.minDirectionalPressure || 0.18)) score -= 18;
-  if (v.ch1 <= 0) score -= 35;
-  if (v.ch24 < -1.5) score -= 8;
+  const minPressure = Number(adaptive.minDirectionalPressure ?? -0.12);
+
+  if (v.pressure < minPressure - 0.25) score -= 4;
+  if (v.ch1 <= -0.35) score -= 8;
+  if (v.ch24 < -3.0) score -= 4;
 
   score -= calculateExhaustionPenalty(c, side, adaptive);
 
-  if (String(regime).toUpperCase() === "LOW_VOL") score -= 2;
+  if (String(regime).toUpperCase() === "LOW_VOL") score += 2;
   if (String(regime).toUpperCase() === "HIGH_VOL") score += 4;
 
   score += Number(adaptive.scoreBoost || 0);
@@ -387,31 +422,30 @@ function calculateRunnerScore(c, regime, side, adaptive = {}) {
 }
 
 function fallbackStage(score, flow, freshness = 0, adaptive = {}) {
-  const minEntry = Number(adaptive.minEntryScore || 76);
+  const minEntry = Number(adaptive.minEntryScore || 28);
+  const f = String(flow || "NEUTRAL").toUpperCase();
 
   if (
-    (flow === "SQUEEZE" || flow === "RUNNING") &&
+    ["SQUEEZE", "RUNNING", "BREAKOUT"].includes(f) &&
     score >= minEntry &&
-    freshness >= 12
+    freshness >= 4
   ) {
     return "entry";
   }
 
   if (
-    (flow === "SQUEEZE" || flow === "RUNNING" || flow === "BREAKOUT") &&
-    score >= 64
+    ["SQUEEZE", "RUNNING", "BREAKOUT", "BUILDING"].includes(f) &&
+    score >= 18
   ) {
     return "almost";
   }
 
   if (
-    (flow === "RUNNING" || flow === "BREAKOUT" || flow === "BUILDING") &&
-    score >= 44
+    ["RUNNING", "BREAKOUT", "BUILDING"].includes(f) &&
+    score >= 8
   ) {
     return "buildup";
   }
-
-  if (score >= 26 || freshness >= 6) return "radar";
 
   return "radar";
 }
@@ -433,9 +467,9 @@ function classifyRunnerEntryType(coin) {
   const freshness = Number(coin.freshness || 0);
   const score = Number(coin.moveScore || 0);
 
-  if (flow === "SQUEEZE" && score >= 82) return "RUNNER_C_SQUEEZE";
-  if (flow === "RUNNING" && acceleration > 0.6) return "RUNNER_A_BREAKOUT";
-  if (freshness >= 16 && acceleration > 0.2) return "RUNNER_B_CONTINUATION";
+  if (flow === "SQUEEZE" && score >= 62) return "RUNNER_C_SQUEEZE";
+  if (["RUNNING", "BREAKOUT"].includes(flow) && acceleration > -0.10) return "RUNNER_A_BREAKOUT";
+  if (freshness >= 8 && acceleration > -0.35) return "RUNNER_B_CONTINUATION";
 
   return "RUNNER_RADAR";
 }
@@ -447,24 +481,34 @@ function getRunnerFilterStage(coin, adaptive = {}) {
   const acceleration = Number(coin.runnerAcceleration || 0);
   const flow = String(coin.flow || "NEUTRAL").toUpperCase();
 
-  if (score < Number(adaptive.minRunnerScore || 30)) return null;
-  if (pressure < Number(adaptive.minDirectionalPressure || 0.18)) return null;
-  if (flow === "NEUTRAL") return null;
+  const minRunnerScore = Number(adaptive.minRunnerScore || 6);
+  const minEntryScore = Number(adaptive.minEntryScore || 28);
+  const minPressure = Number(adaptive.minDirectionalPressure ?? -0.12);
+
+  if (score < minRunnerScore) return null;
+  if (pressure < minPressure - 0.35 && score < minEntryScore) return null;
+  if (flow === "NEUTRAL" && score < 14) return null;
 
   if (
-    score >= Number(adaptive.minEntryScore || 76) &&
-    freshness >= 12 &&
-    acceleration > 0 &&
-    ["SQUEEZE", "RUNNING", "BREAKOUT"].includes(flow)
+    score >= minEntryScore &&
+    freshness >= 4 &&
+    acceleration > -0.45 &&
+    ["SQUEEZE", "RUNNING", "BREAKOUT", "BUILDING"].includes(flow)
   ) {
     return "entry";
   }
 
-  if (score >= 62 && ["SQUEEZE", "RUNNING", "BREAKOUT"].includes(flow)) {
+  if (
+    score >= 18 &&
+    ["SQUEEZE", "RUNNING", "BREAKOUT", "BUILDING"].includes(flow)
+  ) {
     return "almost";
   }
 
-  if (score >= 42 && ["RUNNING", "BREAKOUT", "BUILDING"].includes(flow)) {
+  if (
+    score >= 8 &&
+    ["RUNNING", "BREAKOUT", "BUILDING", "NEUTRAL"].includes(flow)
+  ) {
     return "buildup";
   }
 
@@ -616,11 +660,18 @@ function enrichRunnerCoin(base, contractMeta, regime, side, adaptive) {
 
     side,
     flow,
+    scannerFlow: flow,
     freshness,
+
+    // Belangrijk: moveScore blijft scanner-score voor funnel/tradesystem.
     moveScore: score,
+    rawRunnerScore: score,
+
     edge,
 
     runnerProfile: SCANNER_PROFILE,
+    scannerVersion: SCANNER_VERSION,
+
     runnerPressure: directional.pressure,
     runnerAcceleration: directional.acceleration,
     runnerAbsChange1h: directional.absCh1,
@@ -676,8 +727,24 @@ function countSide(funnel, side) {
   return total;
 }
 
+function countSideTradeSystemCandidates(funnel, side) {
+  if (!funnel?.[side]) return 0;
+
+  return (
+    safeArray(funnel[side].entry).length +
+    safeArray(funnel[side].almost).length
+  );
+}
+
 function countFunnel(funnel) {
   return countSide(funnel, "bull") + countSide(funnel, "bear");
+}
+
+function countTradeSystemCandidates(funnel) {
+  return (
+    countSideTradeSystemCandidates(funnel, "bull") +
+    countSideTradeSystemCandidates(funnel, "bear")
+  );
 }
 
 function hasSymbolInSide(funnel, side, symbol) {
@@ -696,6 +763,9 @@ function sortFunnel(funnel) {
   for (const side of SIDES) {
     for (const stageKey of STAGES) {
       funnel[side][stageKey].sort((a, b) => {
+        const stagePriority = Number(b.stage === "entry") - Number(a.stage === "entry");
+        if (stagePriority !== 0) return stagePriority;
+
         const scoreDiff = Number(b.moveScore || 0) - Number(a.moveScore || 0);
         if (scoreDiff !== 0) return scoreDiff;
 
@@ -705,19 +775,21 @@ function sortFunnel(funnel) {
   }
 }
 
-// ================= UI FALLBACK FILL =================
+// ================= DISCOVERY FALLBACK FILL =================
+// Naam behouden zodat imports/calls stabiel blijven.
+// Verschil: fallback is niet langer uiOnly, dus tradesystem krijgt hem ook.
 function fillUiFallback({
   rawCoins,
   regime,
   funnel,
   side,
   tradableSymbolMap,
-  max = 30,
+  max = 180,
   adaptive = {}
 }) {
-  const targetMinimum = adaptive.targetMinimum || 16;
+  const targetMinimum = adaptive.targetMinimum || 80;
 
-  if (countSide(funnel, side) >= targetMinimum) return;
+  if (countSideTradeSystemCandidates(funnel, side) >= targetMinimum) return;
 
   const list = [];
 
@@ -730,47 +802,54 @@ function fillUiFallback({
 
     if (!contractMeta) continue;
     if (hasSymbolInSide(funnel, side, base.symbol)) continue;
-    if (base.vm < Number(adaptive.vmMin || 0.016)) continue;
+
+    const vmFloor = Number(adaptive.vmMin || 0.003) * 0.35;
+
+    if (base.vm < vmFloor) continue;
     if (!displayDirectionAllowed(base, side, adaptive)) continue;
 
     const coin = enrichRunnerCoin(base, contractMeta, regime, side, adaptive);
 
-    if (!["SQUEEZE", "RUNNING", "BREAKOUT", "BUILDING"].includes(coin.flow)) {
+    if (!["SQUEEZE", "RUNNING", "BREAKOUT", "BUILDING", "NEUTRAL"].includes(coin.flow)) {
       continue;
     }
 
-    if (coin.moveScore < Number(adaptive.minRunnerScore || 30) - 6) {
+    if (coin.moveScore < Number(adaptive.minRunnerScore || 6)) {
       continue;
     }
 
     list.push({
       ...coin,
       stage: fallbackStage(coin.moveScore, coin.flow, coin.freshness, adaptive),
-      stageSource: "runner_ui_fallback",
-      uiOnly: true,
-      scannerQuality: "RUNNER_FALLBACK"
+      stageSource: "runner_discovery_fallback",
+      uiOnly: false,
+      scannerQuality: "RUNNER_DISCOVERY_FALLBACK",
+      scannerFlow: coin.flow
     });
   }
 
-  list.sort((a, b) => Number(b.moveScore || 0) - Number(a.moveScore || 0));
+  list.sort((a, b) => {
+    const scoreDiff = Number(b.moveScore || 0) - Number(a.moveScore || 0);
+    if (scoreDiff !== 0) return scoreDiff;
+
+    return Number(b.freshness || 0) - Number(a.freshness || 0);
+  });
 
   let added = 0;
 
   for (const coin of list) {
     if (added >= max) break;
-    if (countSide(funnel, side) >= targetMinimum) break;
+    if (countSideTradeSystemCandidates(funnel, side) >= targetMinimum) break;
 
-    let stage = safeStage(coin.stage);
-
-    // UI fallback mag nooit echte entry maken.
-    if (stage === "entry") stage = "almost";
+    const stage = safeStage(coin.stage);
 
     funnel[side][stage].push({
       ...coin,
       stage,
-      stageSource: "runner_ui_fallback",
-      uiOnly: true,
-      scannerQuality: "RUNNER_FALLBACK"
+      stageSource: "runner_discovery_fallback",
+      uiOnly: false,
+      scannerQuality: "RUNNER_DISCOVERY_FALLBACK",
+      scannerFlow: coin.flow
     });
 
     added++;
@@ -824,11 +903,16 @@ async function mergeWithPreviousSideScan(currentPayload, scanSide) {
     ...currentPayload,
 
     scannerProfile: SCANNER_PROFILE,
+    scannerVersion: SCANNER_VERSION,
 
     funnel: mergedFunnel,
     funnelCount: countFunnel(mergedFunnel),
     bullCount: countSide(mergedFunnel, "bull"),
     bearCount: countSide(mergedFunnel, "bear"),
+
+    tradeSystemCandidateCount: countTradeSystemCandidates(mergedFunnel),
+    tradeSystemCandidateBull: countSideTradeSystemCandidates(mergedFunnel, "bull"),
+    tradeSystemCandidateBear: countSideTradeSystemCandidates(mergedFunnel, "bear"),
 
     analytics: mergedAnalytics,
     advice: mergedAdvice,
@@ -880,6 +964,7 @@ async function handleBitgetUniverseUnavailable(scanSide) {
       bitgetUniverseReady: false,
 
       scannerProfile: SCANNER_PROFILE,
+      scannerVersion: SCANNER_VERSION,
       scanRequestedSide: scanSide,
 
       servedAt: Date.now()
@@ -917,14 +1002,20 @@ function buildBtcState(rawCoins) {
 
 function shouldSkipBaseCoin(base, adaptive = {}) {
   if (!base.symbol || base.price <= 0) return true;
-  if (base.vm < Number(adaptive.vmMin || 0.016)) return true;
 
+  const vm = Number(base.vm || 0);
   const absChange24 = Math.abs(Number(base.change24 || 0));
   const absChange1h = Math.abs(Number(base.change1h || 0));
 
+  const vmFloor = Number(adaptive.vmMin || 0.003) * 0.35;
+  const min24 = Number(adaptive.hardChange24 || 0.05) * 0.35;
+  const min1h = Number(adaptive.hardChange1h || 0.02) * 0.35;
+
+  // Alleen echt dode coins skippen.
   return (
-    absChange24 < Number(adaptive.hardChange24 || 0.45) &&
-    absChange1h < Number(adaptive.hardChange1h || 0.18)
+    vm < vmFloor &&
+    absChange24 < min24 &&
+    absChange1h < min1h
   );
 }
 
@@ -945,7 +1036,9 @@ export async function buildScanPayload(options = {}) {
     throw new Error("coingecko_scan_failed");
   }
 
-  const normalizedCoins = rawCoins.map(normalize).filter(c => c.symbol && c.price > 0);
+  const normalizedCoins = rawCoins
+    .map(normalize)
+    .filter(c => c.symbol && c.price > 0);
 
   let futures = new Map();
 
@@ -968,7 +1061,6 @@ export async function buildScanPayload(options = {}) {
 
   // Belangrijk: classifyMarket moet genormaliseerde coins krijgen.
   const market = classifyMarket(normalizedCoins);
-
   const adaptive = getRunnerScannerConfig(regime, market);
 
   const funnel = emptyFunnel();
@@ -1003,9 +1095,10 @@ export async function buildScanPayload(options = {}) {
       const newStage = safeStage(mergeStage(prev.stage, realFilterStage));
 
       coin.stage = newStage;
-      coin.stageSource = "runner_filter";
+      coin.stageSource = "runner_filter_loose";
       coin.uiOnly = false;
-      coin.scannerQuality = "RUNNER_FILTER";
+      coin.scannerQuality = "RUNNER_FILTER_LOOSE";
+      coin.scannerFlow = coin.flow;
       coin.entryType = classifyRunnerEntryType(coin);
 
       funnel[direction][newStage].push(coin);
@@ -1022,6 +1115,8 @@ export async function buildScanPayload(options = {}) {
         prevStage: prev.stage || "radar",
         entryType: coin.entryType,
         score: coin.moveScore,
+        flow: coin.flow,
+        scannerFlow: coin.scannerFlow,
         updatedAt: Date.now()
       };
     }
@@ -1063,10 +1158,15 @@ export async function buildScanPayload(options = {}) {
   const advice = generateAdvice(analytics);
   const now = Date.now();
 
+  const tradeSystemCandidateBull = countSideTradeSystemCandidates(funnel, "bull");
+  const tradeSystemCandidateBear = countSideTradeSystemCandidates(funnel, "bear");
+  const tradeSystemCandidateCount = tradeSystemCandidateBull + tradeSystemCandidateBear;
+
   const currentPayload = {
     ok: true,
 
     scannerProfile: SCANNER_PROFILE,
+    scannerVersion: SCANNER_VERSION,
 
     scanSide,
     scanMode: scanSide,
@@ -1085,6 +1185,16 @@ export async function buildScanPayload(options = {}) {
     bullCount: countSide(funnel, "bull"),
     bearCount: countSide(funnel, "bear"),
 
+    // Entry-only legacy count.
+    candidates: candidatesBull + candidatesBear,
+    candidatesBull,
+    candidatesBear,
+
+    // Nieuwe nuttige count: dit is wat tradesystem kan analyseren als hij entry+almost pakt.
+    tradeSystemCandidateCount,
+    tradeSystemCandidateBull,
+    tradeSystemCandidateBear,
+
     trades: safeArray(previousLatest?.trades),
 
     dashboardStats: normalizeDashboardStats(previousLatest?.dashboardStats, now),
@@ -1094,10 +1204,7 @@ export async function buildScanPayload(options = {}) {
     advice,
 
     total: rawCoins.length,
-
-    candidates: candidatesBull + candidatesBear,
-    candidatesBull,
-    candidatesBear,
+    normalizedTotal: normalizedCoins.length,
 
     bitgetSymbols: validSymbols.size,
     bitgetUniverseReady: true,
@@ -1148,7 +1255,9 @@ export default async function handler(req, res) {
 
     return res.status(500).json({
       ok: false,
-      error: e?.message || "runner_scan_error"
+      error: e?.message || "runner_scan_error",
+      scannerProfile: SCANNER_PROFILE,
+      scannerVersion: SCANNER_VERSION
     });
   }
 }
