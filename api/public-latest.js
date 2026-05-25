@@ -3,6 +3,36 @@ import { getLatestScan, setLatestScan } from "../lib/scanStore.js";
 const SYSTEM_PROFILE = "RUNNER";
 const STAGES = ["entry", "almost", "buildup", "radar"];
 
+// ================= REQUEST QUERY HELPERS =================
+// Belangrijk:
+// - Geen req.query gebruiken.
+// - Vercel triggert via req.query intern url.parse() => DEP0169 warning.
+// - Deze helpers gebruiken WHATWG URL API.
+
+function getRequestUrl(req) {
+  const proto =
+    req?.headers?.["x-forwarded-proto"] ||
+    "https";
+
+  const host =
+    req?.headers?.["x-forwarded-host"] ||
+    req?.headers?.host ||
+    "localhost";
+
+  return new URL(req?.url || "/", `${proto}://${host}`);
+}
+
+function getQueryParams(req) {
+  return getRequestUrl(req).searchParams;
+}
+
+function queryString(params, key, fallback = "") {
+  const value = params.get(key);
+  return value === null || value === undefined || value === "" ? fallback : value;
+}
+
+// ================= GENERIC HELPERS =================
+
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -119,11 +149,18 @@ function normalizeDashboardStats(stats, fallbackPayload = null) {
   const now = Date.now();
 
   const trades = safeArray(fallbackPayload?.trades);
-  const entries = trades.filter(t => String(t?.action || "").toUpperCase() === "ENTRY");
-  const waits = trades.filter(t => String(t?.action || "").toUpperCase() === "WAIT");
+
+  const entries = trades.filter(t => {
+    return String(t?.action || "").toUpperCase() === "ENTRY";
+  });
+
+  const waits = trades.filter(t => {
+    return String(t?.action || "").toUpperCase() === "WAIT";
+  });
+
   const otherTrades = trades.filter(t => {
-    const a = String(t?.action || "").toUpperCase();
-    return a !== "WAIT" && a !== "ENTRY";
+    const action = String(t?.action || "").toUpperCase();
+    return action !== "WAIT" && action !== "ENTRY";
   });
 
   const base = stats
@@ -220,6 +257,7 @@ function safePayload(payload, source) {
 
   const normalizedPayload = {
     ...(payload || {}),
+
     ok: payload?.ok !== false,
     source,
     scannerProfile: payload?.scannerProfile || SYSTEM_PROFILE,
@@ -291,11 +329,18 @@ async function resetStoredStats() {
 }
 
 // ================= HANDLER =================
+
 export default async function handler(req, res) {
   try {
     res.setHeader("Cache-Control", "no-store, max-age=0");
 
-    const action = String(req?.query?.action || req?.body?.action || "")
+    const params = getQueryParams(req);
+
+    const action = String(
+      queryString(params, "action", "") ||
+        req?.body?.action ||
+        ""
+    )
       .trim()
       .toLowerCase();
 
@@ -313,24 +358,30 @@ export default async function handler(req, res) {
     }
 
     return res.status(200).json(
-      safePayload({
-        ok: true,
-        scanReady: false,
-        scannerProfile: SYSTEM_PROFILE,
-        message: "Runner fallback live mode",
-        funnel: latest?.funnel || emptyFunnel(),
-        trades: latest?.trades || [],
-        btc: latest?.btc || {
-          state: "UNKNOWN",
-          chg24: 0,
-          chg1h: 0,
-          pressure: 0
+      safePayload(
+        {
+          ok: true,
+          scanReady: false,
+          scannerProfile: SYSTEM_PROFILE,
+          message: "Runner fallback live mode",
+
+          funnel: latest?.funnel || emptyFunnel(),
+          trades: latest?.trades || [],
+
+          btc: latest?.btc || {
+            state: "UNKNOWN",
+            chg24: 0,
+            chg1h: 0,
+            pressure: 0
+          },
+
+          regime: latest?.regime || "UNKNOWN",
+          market: latest?.market || null,
+          dashboardStats: latest?.dashboardStats || emptyDashboardStats(Date.now()),
+          updatedAt: Date.now()
         },
-        regime: latest?.regime || "UNKNOWN",
-        market: latest?.market || null,
-        dashboardStats: latest?.dashboardStats || emptyDashboardStats(Date.now()),
-        updatedAt: Date.now()
-      }, "fallback_runner_live")
+        "fallback_runner_live"
+      )
     );
   } catch (err) {
     console.error("PUBLIC-LATEST RUNNER ERROR:", err);
