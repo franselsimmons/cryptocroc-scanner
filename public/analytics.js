@@ -1,6 +1,8 @@
 const API_URL = "/api/analyze";
 const REFRESH_MS = 30000;
 const DEFAULT_MIN_CLOSED = 10;
+const MAX_WINNER_CARDS = 8;
+const MAX_TOP_PNL_CARDS = 10;
 
 let state = {
   raw: null,
@@ -11,37 +13,6 @@ let state = {
   loading: false,
 };
 
-const QUALITY_BUCKETS = [
-  ["Q1_WEAK", 1, ["CONF_0_50", "SNIPER_0_50", "RR_LT_1p00", "SCORE_0_50"]],
-  ["Q2_LOW", 2, ["CONF_50_65", "SNIPER_50_65", "RR_1p00_1p20", "SCORE_50_65"]],
-  ["Q3_BASE", 3, ["CONF_65_75", "SNIPER_65_75", "RR_1p20_1p50", "SCORE_65_75"]],
-  ["Q4_STRONG", 4, ["CONF_75_85", "SNIPER_75_85", "RR_1p50_2p00", "SCORE_75_85"]],
-  ["Q5_ELITE", 5, ["CONF_85_100", "SNIPER_85_100", "RR_2p00_PLUS", "SCORE_85_100"]],
-].map(([key, index, labels]) => ({ key, index, labels }));
-
-const MARKET_BUCKETS = [
-  ["M1_DIRTY", 1, ["OB_REL_AGAINST", "SPREAD_GT_25BPS", "DEPTH_LT_10K", "BTC_REL_COUNTER", "FUNDING_CROWDED"]],
-  ["M2_WEAK", 2, ["OB_REL_AGAINST_OR_NEUTRAL", "SPREAD_16_25BPS", "DEPTH_10K_50K", "BTC_REL_COUNTER", "FUNDING_EDGE_WEAK"]],
-  ["M3_NORMAL", 3, ["OB_REL_NEUTRAL", "SPREAD_8_16BPS", "DEPTH_50K_100K", "BTC_REL_NEUTRAL", "FUNDING_NEUTRAL"]],
-  ["M4_CLEAN", 4, ["OB_REL_WITH_OR_NEUTRAL", "SPREAD_5_12BPS", "DEPTH_100K_250K", "BTC_REL_WITH_OR_NEUTRAL", "FUNDING_OK"]],
-  ["M5_PREMIUM", 5, ["OB_REL_WITH", "SPREAD_LT_8BPS", "DEPTH_GT_250K", "BTC_REL_WITH", "FUNDING_OPTIMAL"]],
-].map(([key, index, labels]) => ({ key, index, labels }));
-
-const TIMING_BUCKETS = [
-  {
-    key: "T1_EARLY_OR_NOISY",
-    index: 1,
-    long: ["STAGE_ANY", "FLOW_ANY", "RSI_ANY", "TF_ANY", "PULLBACK_NOT_REQUIRED"],
-    short: ["STAGE_ANY", "FLOW_ANY", "RSI_ANY", "TF_ANY", "PULLBACK_NOT_REQUIRED"],
-  },
-  {
-    key: "T2_TIMED",
-    index: 2,
-    long: ["STAGE_ENTRY_OR_ALMOST", "FLOW_TREND_OR_BUILDING", "RSI_LOWER_OR_MID", "TF_ALIGNED", "PULLBACK_OR_CONFIRMATION_OK"],
-    short: ["STAGE_ENTRY_OR_ALMOST", "FLOW_TREND_OR_BUILDING", "RSI_UPPER_OR_MID", "TF_ALIGNED", "PULLBACK_OR_CONFIRMATION_OK"],
-  },
-];
-
 function $(id) {
   return document.getElementById(id);
 }
@@ -51,7 +22,9 @@ function safeArray(value) {
 }
 
 function safeObject(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
 }
 
 function safeNumber(value, fallback = 0) {
@@ -103,25 +76,64 @@ function statusClass(status) {
   return `status-${text(status, "EMPTY").toLowerCase()}`;
 }
 
-function setText(id, value) {
-  const el = $(id);
-  if (el) el.textContent = value;
+function sideClass(side) {
+  return text(side, "").toLowerCase();
 }
 
 function setHidden(el, hidden) {
   if (!el) return;
+
   el.hidden = Boolean(hidden);
   el.classList.toggle("hidden", Boolean(hidden));
 }
 
+function setText(ids, value) {
+  const list = Array.isArray(ids) ? ids : [ids];
+
+  for (const id of list) {
+    const el = $(id);
+    if (el) el.textContent = value;
+  }
+}
+
+function errorToText(error) {
+  if (!error) return "Onbekende error.";
+
+  if (typeof error === "string") return error;
+
+  if (error instanceof Error) {
+    return error.message || String(error);
+  }
+
+  if (typeof error === "object") {
+    if (error.error?.message) return error.error.message;
+    if (error.message) return error.message;
+    if (typeof error.error === "string") return error.error;
+    if (error.reason) return error.reason;
+
+    try {
+      return JSON.stringify(error, null, 2);
+    } catch {
+      return "Niet-serialiseerbare error.";
+    }
+  }
+
+  return String(error);
+}
+
 function setStatus(message, isError = false) {
-  setText("statusLine", message);
-
+  const status = $("statusLine");
   const box = $("errorBox");
-  if (!box) return;
 
-  setHidden(box, !isError);
-  if (isError) box.textContent = `Load error:\n${message}`;
+  if (status) status.textContent = message || "";
+
+  if (box) {
+    setHidden(box, !isError);
+
+    if (isError) {
+      box.textContent = `Load error:\n${message}`;
+    }
+  }
 }
 
 function setBusy(isBusy) {
@@ -135,660 +147,870 @@ function setBusy(isBusy) {
     refreshBtn.textContent = state.loading ? "Loading..." : "Refresh";
   }
 
-  if (resetBtn) resetBtn.disabled = state.loading;
+  if (resetBtn) {
+    resetBtn.disabled = state.loading;
+  }
 }
 
 function getMinClosedValue() {
   const input = $("minClosedInput");
-  const n = safeNumber(input?.value, DEFAULT_MIN_CLOSED);
-  return Math.max(0, Math.round(n));
+  const value = safeNumber(input?.value, DEFAULT_MIN_CLOSED);
+
+  return Math.max(0, Math.round(value));
 }
 
 function buildApiUrl(extra = {}) {
   const params = new URLSearchParams();
 
   params.set("minClosed", String(getMinClosedValue()));
-  params.set("debug", "true");
+  params.set("debug", extra.debug === false ? "false" : "true");
   params.set("cacheBust", String(Date.now()));
 
   if (extra.reset) {
     params.set("reset", "true");
-    params.set("action", "reset");
   }
 
   return `${API_URL}?${params.toString()}`;
 }
 
+async function fetchJson(url) {
+  const response = await fetch(url, {
+    method: "GET",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  const contentType = response.headers.get("content-type") || "";
+  const isJson = contentType.includes("application/json");
+
+  const payload = isJson
+    ? await response.json()
+    : { ok: false, error: await response.text() };
+
+  if (!response.ok) {
+    throw payload;
+  }
+
+  return payload;
+}
+
+function extractLabel(labels, prefix) {
+  return safeArray(labels).find(label => text(label).startsWith(prefix)) || "";
+}
+
 function normalizeSide(value) {
-  const side = text(value).toUpperCase();
+  const s = text(value).toUpperCase();
 
-  if (side === "BULL" || side === "LONG" || side === "BUY") return "LONG";
-  if (side === "BEAR" || side === "SHORT" || side === "SELL") return "SHORT";
+  if (s === "BULL" || s === "LONG" || s === "BUY") return "LONG";
+  if (s === "BEAR" || s === "SHORT" || s === "SELL") return "SHORT";
 
-  return side || "UNKNOWN";
+  return s || "UNKNOWN";
 }
 
-function normalizeFamilyId(row) {
-  return text(row.id || row.familyId || row.name).toUpperCase().trim();
-}
+function normalizeStatus(value, closed = 0, avgR = 0, totalR = 0, winrateNum = 0) {
+  const raw = text(value).toUpperCase();
 
-function getFamilyIndex(qualityIndex, marketIndex, timingIndex) {
-  return ((qualityIndex - 1) * 10) + ((marketIndex - 1) * 2) + timingIndex;
-}
-
-function buildDefinition(side, quality, market, timing) {
-  const timingLabels = side === "SHORT" ? timing.short : timing.long;
-
-  return [
-    quality.key,
-    market.key,
-    timing.key,
-    ...quality.labels,
-    timingLabels[0],
-    timingLabels[1],
-    timingLabels[2],
-    market.labels[0],
-    market.labels[1],
-    market.labels[2],
-    market.labels[3],
-    market.labels[4],
-    timingLabels[3],
-    timingLabels[4],
-  ].join(" | ");
-}
-
-function buildLabels(side, quality, market, timing) {
-  return buildDefinition(side, quality, market, timing)
-    .split("|")
-    .map(v => v.trim())
-    .filter(Boolean);
-}
-
-function makeEmptyFamily(side, quality, market, timing) {
-  const index = getFamilyIndex(quality.index, market.index, timing.index);
-  const id = `${side}_${index}`;
-
-  return {
-    id,
-    familyId: id,
-    index,
-    side,
-    quality: quality.key,
-    market: market.key,
-    timing: timing.key,
-    qualityIndex: quality.index,
-    marketIndex: market.index,
-    timingIndex: timing.index,
-    definition: buildDefinition(side, quality, market, timing),
-    labels: buildLabels(side, quality, market, timing),
-    observed: 0,
-    trades: 0,
-    closed: 0,
-    open: 0,
-    pending: 0,
-    pendingOutcome: 0,
-    wins: 0,
-    losses: 0,
-    breakeven: 0,
-    winrate: "0%",
-    winrateNum: 0,
-    totalR: 0,
-    avgR: 0,
-    totalPnlPct: 0,
-    avgPnlPct: 0,
-    grossWinR: 0,
-    grossLossR: 0,
-    profitFactor: 0,
-    pf: 0,
-    status: "EMPTY",
-    score: 0,
-    examples: [],
-  };
-}
-
-function buildCanonicalFamilies() {
-  const rows = [];
-
-  for (const side of ["LONG", "SHORT"]) {
-    for (const quality of QUALITY_BUCKETS) {
-      for (const market of MARKET_BUCKETS) {
-        for (const timing of TIMING_BUCKETS) {
-          rows.push(makeEmptyFamily(side, quality, market, timing));
-        }
-      }
-    }
+  if (["HOT", "GOOD", "STABLE", "BAD", "COLLECTING", "EMPTY"].includes(raw)) {
+    return raw;
   }
 
-  return rows;
-}
-
-function normalizeWinrate(row) {
-  if (Number.isFinite(Number(row.winrateNum))) {
-    return safeNumber(row.winrateNum, 0);
-  }
-
-  const wr = text(row.winrate);
-
-  if (wr.includes("%")) {
-    return safeNumber(wr.replace("%", ""), 0) / 100;
-  }
-
-  const wins = safeNumber(row.wins, 0);
-  const losses = safeNumber(row.losses, 0);
-
-  if (wins + losses <= 0) return 0;
-
-  return wins / (wins + losses);
-}
-
-function runnerStatus(row) {
-  const minClosed = Math.max(1, getMinClosedValue());
-  const observed = safeNumber(row.observed, 0);
-  const closed = safeNumber(row.closed, 0);
-  const avgR = safeNumber(row.avgR, 0);
-  const totalR = safeNumber(row.totalR, 0);
-  const pnl = safeNumber(row.totalPnlPct, 0);
-  const wr = normalizeWinrate(row);
-  const pf = safeNumber(row.pf || row.profitFactor, 0);
-
-  if (observed <= 0) return "EMPTY";
-  if (closed < minClosed) return "COLLECTING";
-  if (pnl <= 0 || totalR <= 0 || avgR <= 0) return "BAD";
-
-  if (wr >= 0.55 && avgR >= 0.25 && pf >= 1.6) return "HOT";
-  if (wr >= 0.42 && avgR >= 0.10 && pf >= 1.2) return "GOOD";
-  if (wr >= 0.30 && avgR > 0 && totalR > 0) return "STABLE";
+  if (closed <= 0) return "EMPTY";
+  if (closed < getMinClosedValue()) return "COLLECTING";
+  if (avgR <= 0 || totalR <= 0) return "BAD";
+  if (winrateNum >= 0.58 && avgR >= 0.25) return "HOT";
+  if (winrateNum >= 0.52 && avgR >= 0.12) return "GOOD";
+  if (avgR > 0 && totalR > 0) return "STABLE";
 
   return "BAD";
 }
 
-function normalizeFamily(raw) {
-  const row = safeObject(raw);
-  const id = normalizeFamilyId(row);
-  const side = normalizeSide(row.side);
+function familyIndexFromId(id) {
+  const match = text(id).match(/_(\d+)$/);
+  return match ? safeNumber(match[1], 0) : 0;
+}
 
-  const closed = safeNumber(row.closed, safeNumber(row.trades, 0));
-  const open = safeNumber(row.open, 0);
-  const pending = safeNumber(row.pending ?? row.pendingOutcome ?? row.unresolved, 0);
-  const winrateNum = normalizeWinrate(row);
-  const labels = safeArray(row.labels);
+function normalizeFamily(row, fallbackIndex = 0) {
+  const source = safeObject(row);
+  const id = text(
+    source.id ||
+      source.familyId ||
+      source.family ||
+      source.name ||
+      `FAMILY_${fallbackIndex + 1}`
+  );
 
-  const normalized = {
-    ...row,
+  const labels = safeArray(source.labels);
+  const definition = text(
+    source.definition ||
+      source.description ||
+      source.rule ||
+      labels.join(" | ")
+  );
+
+  const side = normalizeSide(source.side || id.split("_")[0]);
+  const closed = safeNumber(source.closed, 0);
+  const wins = safeNumber(source.wins, 0);
+  const losses = safeNumber(source.losses, 0);
+  const breakeven = safeNumber(source.breakeven, 0);
+  const trades = safeNumber(source.trades, safeNumber(source.observed, closed));
+  const observed = safeNumber(source.observed, trades);
+  const open = safeNumber(source.open, 0);
+  const pending = safeNumber(source.pending ?? source.pendingOutcome ?? source.unresolved, Math.max(0, trades - closed));
+  const totalR = safeNumber(source.totalR ?? source.pnlR, 0);
+  const avgR = safeNumber(source.avgR, closed > 0 ? totalR / closed : 0);
+  const totalPnlPct = safeNumber(source.totalPnlPct ?? source.pnlPct, 0);
+  const avgPnlPct = safeNumber(source.avgPnlPct, closed > 0 ? totalPnlPct / closed : 0);
+  const pf = safeNumber(source.pf ?? source.profitFactor ?? source.profitFactorR, 0);
+
+  const winrateNum = source.winrateNum !== undefined
+    ? safeNumber(source.winrateNum, 0)
+    : closed > 0
+      ? wins / closed
+      : 0;
+
+  const winrate = source.winrate || fmtPct(winrateNum * 100, 1);
+  const status = normalizeStatus(source.status, closed, avgR, totalR, winrateNum);
+
+  const quality = text(
+    source.quality ||
+      source.qualityBucket ||
+      extractLabel(labels, "Q") ||
+      definition.split("|")[0] ||
+      ""
+  ).trim();
+
+  const market = text(
+    source.market ||
+      source.marketBucket ||
+      extractLabel(labels, "M") ||
+      ""
+  ).trim();
+
+  const timing = text(
+    source.timing ||
+      source.timingBucket ||
+      extractLabel(labels, "T") ||
+      ""
+  ).trim();
+
+  return {
+    ...source,
+
     id,
     familyId: id,
+    index: safeNumber(source.index, familyIndexFromId(id)),
     side,
 
-    quality: text(row.quality || row.qualityBucket, "").toUpperCase(),
-    market: text(row.market || row.marketBucket, "").toUpperCase(),
-    timing: text(row.timing || row.timingBucket, "").toUpperCase(),
+    quality,
+    market,
+    timing,
+    definition,
+    labels,
 
-    qualityIndex: safeNumber(row.qualityIndex, 0),
-    marketIndex: safeNumber(row.marketIndex, 0),
-    timingIndex: safeNumber(row.timingIndex, 0),
-
-    definition: text(row.definition || labels.join(" | "), "-"),
-    labels: labels.length ? labels : text(row.definition).split("|").map(v => v.trim()).filter(Boolean),
-
-    observed: safeNumber(row.observed, safeNumber(row.trades, closed + open + pending)),
-    trades: safeNumber(row.trades, closed + open + pending),
+    observed,
+    trades,
     closed,
     open,
     pending,
     pendingOutcome: pending,
 
-    wins: safeNumber(row.wins, 0),
-    losses: safeNumber(row.losses, 0),
-    breakeven: safeNumber(row.breakeven ?? row.be, 0),
+    wins,
+    losses,
+    breakeven,
 
+    winrate,
     winrateNum,
-    winrate: row.winrate || fmtPct(winrateNum * 100, 1),
 
-    totalR: safeNumber(row.totalR, 0),
-    avgR: safeNumber(row.avgR, 0),
-    totalPnlPct: safeNumber(row.totalPnlPct, 0),
-    avgPnlPct: safeNumber(row.avgPnlPct, 0),
+    totalR,
+    avgR,
+    totalPnlPct,
+    avgPnlPct,
 
-    grossWinR: safeNumber(row.grossWinR, 0),
-    grossLossR: safeNumber(row.grossLossR, 0),
-    profitFactor: safeNumber(row.profitFactor ?? row.profitFactorR ?? row.pf, 0),
-    pf: safeNumber(row.pf ?? row.profitFactor ?? row.profitFactorR, 0),
+    pf,
+    profitFactor: pf,
+    profitFactorR: pf,
 
-    score: safeNumber(row.score, 0),
-    examples: safeArray(row.examples),
+    status,
+    score: safeNumber(source.score, 0),
+
+    examples: safeArray(source.examples),
   };
-
-  normalized.status = runnerStatus(normalized);
-
-  return normalized;
 }
 
-function familyKey(row) {
-  return `${normalizeSide(row.side)}_${normalizeFamilyId(row)}`;
-}
-
-function collectApiFamilies(payload) {
-  const rows = [];
-
-  rows.push(...safeArray(payload.families));
-  rows.push(...safeArray(payload.winnerCandidates));
-  rows.push(...safeArray(payload.winnerFamilies));
-
-  const best = safeObject(payload.best);
-  rows.push(best.bestLongByPnl);
-  rows.push(best.bestShortByPnl);
-  rows.push(best.topPnlFamily);
-  rows.push(best.topTotalRFamily);
-  rows.push(best.topWinrateFamily);
-
-  const lb = safeObject(payload.leaderboards);
-  rows.push(...safeArray(lb.topPnlFamilies));
-  rows.push(...safeArray(lb.topTotalRFamilies));
-  rows.push(...safeArray(lb.topWinrateFamilies));
-
-  const matrix = safeObject(payload.familyPerformanceMatrix);
-  rows.push(...safeArray(matrix?.long?.families));
-  rows.push(...safeArray(matrix?.long?.rows));
-  rows.push(...safeArray(matrix?.short?.families));
-  rows.push(...safeArray(matrix?.short?.rows));
-
-  return rows.filter(Boolean);
-}
-
-function mergeFamily(base, incoming) {
-  const row = normalizeFamily(incoming);
-
-  return normalizeFamily({
-    ...base,
-    ...row,
-    id: row.id || base.id,
-    familyId: row.familyId || base.familyId,
-    side: row.side || base.side,
-    definition: row.definition && row.definition !== "-" ? row.definition : base.definition,
-    labels: safeArray(row.labels).length ? row.labels : base.labels,
-    quality: row.quality || base.quality,
-    market: row.market || base.market,
-    timing: row.timing || base.timing,
-    qualityIndex: row.qualityIndex || base.qualityIndex,
-    marketIndex: row.marketIndex || base.marketIndex,
-    timingIndex: row.timingIndex || base.timingIndex,
-  });
-}
-
-function buildFamilies(payload) {
+function dedupeFamilies(rows) {
   const map = new Map();
 
-  for (const family of buildCanonicalFamilies()) {
-    map.set(familyKey(family), family);
-  }
-
-  for (const rawFamily of collectApiFamilies(payload)) {
-    const row = normalizeFamily(rawFamily);
-    if (!row.id) continue;
-
-    const key = familyKey(row);
-    const base = map.get(key) || row;
-
-    map.set(key, mergeFamily(base, row));
-  }
-
-  return Array.from(map.values()).map(normalizeFamily);
-}
-
-function pnlSort(a, b) {
-  const rank = { HOT: 6, GOOD: 5, STABLE: 4, COLLECTING: 3, BAD: 2, EMPTY: 1 };
-
-  const statusDiff = (rank[b.status] || 0) - (rank[a.status] || 0);
-  if (statusDiff !== 0) return statusDiff;
-
-  const pnl = safeNumber(b.totalPnlPct, 0) - safeNumber(a.totalPnlPct, 0);
-  if (pnl !== 0) return pnl;
-
-  const totalR = safeNumber(b.totalR, 0) - safeNumber(a.totalR, 0);
-  if (totalR !== 0) return totalR;
-
-  const avgR = safeNumber(b.avgR, 0) - safeNumber(a.avgR, 0);
-  if (avgR !== 0) return avgR;
-
-  const pf = safeNumber(b.pf || b.profitFactor, 0) - safeNumber(a.pf || a.profitFactor, 0);
-  if (pf !== 0) return pf;
-
-  const closed = safeNumber(b.closed, 0) - safeNumber(a.closed, 0);
-  if (closed !== 0) return closed;
-
-  return text(a.id).localeCompare(text(b.id));
-}
-
-function countStatuses(rows) {
-  const out = { HOT: 0, GOOD: 0, STABLE: 0, BAD: 0, COLLECTING: 0, EMPTY: 0 };
-
   for (const row of safeArray(rows)) {
-    const s = text(row.status, "EMPTY").toUpperCase();
-    out[s] = safeNumber(out[s], 0) + 1;
+    const normalized = normalizeFamily(row, map.size);
+    const key = `${normalized.side}_${normalized.id}`;
+
+    const prev = map.get(key);
+
+    if (!prev) {
+      map.set(key, normalized);
+      continue;
+    }
+
+    const nextScore =
+      safeNumber(normalized.observed, 0) +
+      safeNumber(normalized.closed, 0) * 10 +
+      Math.max(safeNumber(normalized.totalPnlPct, 0), 0);
+
+    const prevScore =
+      safeNumber(prev.observed, 0) +
+      safeNumber(prev.closed, 0) * 10 +
+      Math.max(safeNumber(prev.totalPnlPct, 0), 0);
+
+    if (nextScore > prevScore) {
+      map.set(key, normalized);
+    }
+  }
+
+  return Array.from(map.values());
+}
+
+function collectFamiliesFromContainer(value, out = []) {
+  if (!value) return out;
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (item && typeof item === "object") out.push(item);
+    }
+
+    return out;
+  }
+
+  if (typeof value !== "object") return out;
+
+  if (value.familyId || value.id || value.definition || value.labels) {
+    out.push(value);
+    return out;
+  }
+
+  for (const child of Object.values(value)) {
+    if (Array.isArray(child)) {
+      collectFamiliesFromContainer(child, out);
+    }
   }
 
   return out;
 }
 
-function statusMeta(rows) {
-  const c = countStatuses(rows);
-  return `HOT ${c.HOT} | GOOD ${c.GOOD} | STABLE ${c.STABLE} | BAD ${c.BAD} | COLLECTING ${c.COLLECTING} | EMPTY ${c.EMPTY}`;
+function getRawFamilies(payload) {
+  const rows = [];
+
+  collectFamiliesFromContainer(payload?.families, rows);
+  collectFamiliesFromContainer(payload?.familyRows, rows);
+  collectFamiliesFromContainer(payload?.matrixRows, rows);
+  collectFamiliesFromContainer(payload?.rankedFamilies, rows);
+  collectFamiliesFromContainer(payload?.familyPerformanceMatrix?.families, rows);
+  collectFamiliesFromContainer(payload?.familyPerformanceMatrix?.all, rows);
+  collectFamiliesFromContainer(payload?.familyPerformanceMatrix?.long?.families, rows);
+  collectFamiliesFromContainer(payload?.familyPerformanceMatrix?.short?.families, rows);
+
+  if (!rows.length) {
+    collectFamiliesFromContainer(payload?.leaderboards?.topPnlFamilies, rows);
+    collectFamiliesFromContainer(payload?.leaderboards?.topTotalRFamilies, rows);
+    collectFamiliesFromContainer(payload?.leaderboards?.topWinrateFamilies, rows);
+    collectFamiliesFromContainer(payload?.winnerCandidates, rows);
+    collectFamiliesFromContainer(payload?.winnerFamilies, rows);
+
+    const best = safeObject(payload?.best);
+    collectFamiliesFromContainer(best.bestLongByPnl, rows);
+    collectFamiliesFromContainer(best.bestShortByPnl, rows);
+    collectFamiliesFromContainer(best.topPnlFamily, rows);
+    collectFamiliesFromContainer(best.topTotalRFamily, rows);
+    collectFamiliesFromContainer(best.topWinrateFamily, rows);
+  }
+
+  return dedupeFamilies(rows);
+}
+
+function sortFamiliesPnlFirst(rows) {
+  return [...safeArray(rows)].sort((a, b) => {
+    const pnl = safeNumber(b.totalPnlPct, 0) - safeNumber(a.totalPnlPct, 0);
+    if (pnl !== 0) return pnl;
+
+    const totalR = safeNumber(b.totalR, 0) - safeNumber(a.totalR, 0);
+    if (totalR !== 0) return totalR;
+
+    const avgR = safeNumber(b.avgR, 0) - safeNumber(a.avgR, 0);
+    if (avgR !== 0) return avgR;
+
+    const pf = safeNumber(b.pf ?? b.profitFactor, 0) - safeNumber(a.pf ?? a.profitFactor, 0);
+    if (pf !== 0) return pf;
+
+    const closed = safeNumber(b.closed, 0) - safeNumber(a.closed, 0);
+    if (closed !== 0) return closed;
+
+    const observed = safeNumber(b.observed, 0) - safeNumber(a.observed, 0);
+    if (observed !== 0) return observed;
+
+    const side = text(a.side).localeCompare(text(b.side));
+    if (side !== 0) return side;
+
+    return safeNumber(a.index, 0) - safeNumber(b.index, 0);
+  });
+}
+
+function statusSummaryText(families) {
+  const counts = {
+    HOT: 0,
+    GOOD: 0,
+    STABLE: 0,
+    BAD: 0,
+    COLLECTING: 0,
+    EMPTY: 0,
+  };
+
+  for (const family of safeArray(families)) {
+    const status = text(family.status, "EMPTY").toUpperCase();
+
+    if (counts[status] === undefined) counts[status] = 0;
+    counts[status] += 1;
+  }
+
+  return `HOT ${counts.HOT} | GOOD ${counts.GOOD} | STABLE ${counts.STABLE} | BAD ${counts.BAD} | COLLECTING ${counts.COLLECTING} | EMPTY ${counts.EMPTY}`;
+}
+
+function normalizeRunnerPayload(payload) {
+  const rawFamilies = getRawFamilies(payload);
+  const allFamilies = sortFamiliesPnlFirst(rawFamilies);
+  const longFamilies = sortFamiliesPnlFirst(allFamilies.filter(row => row.side === "LONG"));
+  const shortFamilies = sortFamiliesPnlFirst(allFamilies.filter(row => row.side === "SHORT"));
+
+  const stats = safeObject(payload.stats);
+  const store = safeObject(payload.store);
+  const latest = safeObject(payload.latest);
+  const merged = safeObject(payload.merged);
+  const source = safeObject(payload.source);
+
+  const summary = {
+    actions: safeNumber(stats.actions, safeNumber(store.count, 0)),
+    trades: safeNumber(stats.trades, safeNumber(store.trades, 0)),
+    open: safeNumber(stats.open, safeNumber(store.open, 0)),
+    closed: safeNumber(stats.closed, safeNumber(store.closed, 0)),
+    pendingOutcome: safeNumber(stats.pendingOutcome, 0),
+    wins: safeNumber(stats.wins, 0),
+    losses: safeNumber(stats.losses, 0),
+    breakeven: safeNumber(stats.breakeven, 0),
+    winrateNum: safeNumber(stats.winrateNum, 0),
+    winrate: stats.winrate || fmtPct(safeNumber(stats.winrateNum, 0) * 100, 1),
+    totalR: safeNumber(stats.totalR, 0),
+    avgR: safeNumber(stats.avgR, 0),
+    totalPnlPct: safeNumber(stats.totalPnlPct, 0),
+    avgPnlPct: safeNumber(stats.avgPnlPct, 0),
+
+    longFamilies: safeNumber(stats.longFamilies?.count ?? stats.longFamilies?.total, longFamilies.length || 50),
+    shortFamilies: safeNumber(stats.shortFamilies?.count ?? stats.shortFamilies?.total, shortFamilies.length || 50),
+    longFamiliesMeta: stats.longFamilies?.text || statusSummaryText(longFamilies),
+    shortFamiliesMeta: stats.shortFamilies?.text || statusSummaryText(shortFamilies),
+  };
+
+  const apiWinnerCandidates = safeArray(payload.winnerCandidates).map(normalizeFamily);
+  const apiWinnerFamilies = safeArray(payload.winnerFamilies).map(normalizeFamily);
+  const apiTopPnlFamilies = safeArray(payload.leaderboards?.topPnlFamilies).map(normalizeFamily);
+  const apiTopTotalRFamilies = safeArray(payload.leaderboards?.topTotalRFamilies).map(normalizeFamily);
+  const apiTopWinrateFamilies = safeArray(payload.leaderboards?.topWinrateFamilies).map(normalizeFamily);
+
+  const best = safeObject(payload.best);
+  const bestRows = [
+    best.bestLongByPnl,
+    best.bestShortByPnl,
+    best.topPnlFamily,
+    best.topTotalRFamily,
+    best.topWinrateFamily,
+  ].filter(Boolean).map(normalizeFamily);
+
+  const topPnlFamilies = sortFamiliesPnlFirst(
+    apiTopPnlFamilies.length ? apiTopPnlFamilies : [...allFamilies, ...bestRows]
+  );
+
+  const winnerCandidates = sortFamiliesPnlFirst(
+    apiWinnerCandidates.length
+      ? apiWinnerCandidates
+      : topPnlFamilies.filter(row => {
+          return (
+            safeNumber(row.closed, 0) >= getMinClosedValue() &&
+            safeNumber(row.avgR, 0) > 0 &&
+            safeNumber(row.totalR, 0) > 0 &&
+            safeNumber(row.winrateNum, 0) >= 0.30
+          );
+        })
+  );
+
+  return {
+    raw: payload,
+    report: {
+      endpoint: payload.endpoint || "/api/analyze",
+      objective: payload.objective || "RUNNER_PNL_FIRST",
+      strategy: payload.strategy || "50_LONG_FAMILIES_PLUS_50_SHORT_FAMILIES",
+      dataState: payload.dataState || "INIT",
+      latencyMs: safeNumber(payload.latencyMs, 0),
+      servedAt: payload.servedAt || Date.now(),
+
+      config: payload.config || {
+        minClosed: getMinClosedValue(),
+        familyCountPerSide: 50,
+        totalFamilyCount: 100,
+      },
+
+      sources: {
+        store,
+        latest,
+        merged,
+        source,
+        storedEvents: safeNumber(store.count, 0),
+        latestEvents: safeNumber(latest.count, 0),
+        mergedEvents: safeNumber(merged.count, allFamilies.length),
+      },
+
+      summary,
+
+      families: {
+        all: allFamilies,
+        ranked: allFamilies,
+        long: longFamilies,
+        short: shortFamilies,
+        best: apiWinnerFamilies,
+        winnerCandidates,
+        topPnlFamilies,
+        topTotalRFamilies: sortFamiliesPnlFirst(apiTopTotalRFamilies),
+        topWinrateFamilies: sortFamiliesPnlFirst(apiTopWinrateFamilies),
+      },
+
+      filterValues: buildFilterValues(allFamilies),
+    },
+  };
+}
+
+function normalizeReportPayload(payload) {
+  const report = payload.report || payload;
+  const families = safeObject(report.families);
+
+  const all = dedupeFamilies(
+    safeArray(families.all || families.ranked || families.rows || report.familyRows)
+  );
+
+  const ranked = sortFamiliesPnlFirst(all);
+  const long = sortFamiliesPnlFirst(safeArray(families.long).length ? families.long.map(normalizeFamily) : ranked.filter(row => row.side === "LONG"));
+  const short = sortFamiliesPnlFirst(safeArray(families.short).length ? families.short.map(normalizeFamily) : ranked.filter(row => row.side === "SHORT"));
+
+  return {
+    raw: payload,
+    report: {
+      ...report,
+      summary: report.summary || {},
+      diagnostics: report.diagnostics || {},
+      config: report.config || {},
+      sources: payload.sources || report.sources || {},
+      families: {
+        all: ranked,
+        ranked,
+        long,
+        short,
+        best: safeArray(families.best).map(normalizeFamily),
+        winnerCandidates: safeArray(families.winnerCandidates).map(normalizeFamily),
+        topPnlFamilies: safeArray(families.topPnlFamilies).map(normalizeFamily),
+        topTotalRFamilies: safeArray(families.topTotalRFamilies).map(normalizeFamily),
+        topWinrateFamilies: safeArray(families.topWinrateFamilies).map(normalizeFamily),
+      },
+      filterValues: report.filterValues || buildFilterValues(ranked),
+    },
+  };
 }
 
 function normalizePayload(payload) {
   if (!payload || typeof payload !== "object") {
-    throw new Error("Geen geldig JSON-object.");
+    throw new Error("API gaf geen geldig JSON-object terug.");
   }
 
   if (!payload.ok) {
     throw payload;
   }
 
-  const families = buildFamilies(payload).sort(pnlSort);
-  const longFamilies = families.filter(row => row.side === "LONG").sort(pnlSort);
-  const shortFamilies = families.filter(row => row.side === "SHORT").sort(pnlSort);
-  const stats = safeObject(payload.stats);
+  if (payload.report) {
+    return normalizeReportPayload(payload);
+  }
+
+  return normalizeRunnerPayload(payload);
+}
+
+function buildFilterValues(families) {
+  const trackedFields = new Set();
+  const qualityBuckets = new Map();
+  const marketBuckets = new Map();
+  const timingBuckets = new Map();
+
+  for (const family of safeArray(families)) {
+    for (const label of safeArray(family.labels)) {
+      trackedFields.add(label);
+    }
+
+    if (family.quality) qualityBuckets.set(family.quality, { key: family.quality });
+    if (family.market) marketBuckets.set(family.market, { key: family.market });
+    if (family.timing) timingBuckets.set(family.timing, { key: family.timing });
+  }
 
   return {
-    raw: payload,
-    report: {
-      dataState: payload.dataState || "UNKNOWN",
-      latencyMs: safeNumber(payload.latencyMs, 0),
-      generatedAt: payload.servedAt || Date.now(),
-      summary: {
-        actions: safeNumber(stats.actions, 0),
-        trades: safeNumber(stats.trades, 0),
-        open: safeNumber(stats.open, 0),
-        closed: safeNumber(stats.closed, 0),
-        pendingOutcome: safeNumber(stats.pendingOutcome, 0),
-        wins: safeNumber(stats.wins, 0),
-        losses: safeNumber(stats.losses, 0),
-        breakeven: safeNumber(stats.breakeven, 0),
-        winrate: stats.winrate || "0%",
-        winrateNum: safeNumber(stats.winrateNum, 0),
-        totalR: safeNumber(stats.totalR, 0),
-        avgR: safeNumber(stats.avgR, 0),
-        totalPnlPct: safeNumber(stats.totalPnlPct, 0),
-        avgPnlPct: safeNumber(stats.avgPnlPct, 0),
-      },
-      sources: {
-        store: payload.source || {},
-        latest: payload.latest || {},
-        storedEvents: safeNumber(payload?.store?.count, 0),
-        latestEvents: safeNumber(payload?.latest?.count, 0),
-        mergedEvents: safeNumber(payload?.merged?.count, 0),
-      },
-      families: {
-        all: families,
-        ranked: families,
-        long: longFamilies,
-        short: shortFamilies,
-      },
-    },
+    trackedFields: Array.from(trackedFields).sort(),
+    qualityBuckets: Object.fromEntries(qualityBuckets),
+    marketBuckets: Object.fromEntries(marketBuckets),
+    timingBuckets: Object.fromEntries(timingBuckets),
   };
 }
 
-async function fetchJson(url) {
-  const res = await fetch(url, {
-    method: "GET",
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  });
-
-  const contentType = res.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json")
-    ? await res.json()
-    : { ok: false, error: await res.text() };
-
-  if (!res.ok) throw payload;
-
-  return payload;
-}
-
 function renderSummary() {
-  const s = state.report?.summary || {};
-  const longRows = safeArray(state.report?.families?.long);
-  const shortRows = safeArray(state.report?.families?.short);
+  const summary = safeObject(state.report?.summary);
+  const longFamilies = safeArray(state.report?.families?.long);
+  const shortFamilies = safeArray(state.report?.families?.short);
 
-  setText("mActions", fmtNum(s.actions, 0));
-  setText("mTrades", fmtNum(s.trades, 0));
-  setText("mOpen", fmtNum(s.open, 0));
-  setText("mClosed", fmtNum(s.closed, 0));
-  setText("mPending", fmtNum(s.pendingOutcome, 0));
-  setText("mWins", fmtNum(s.wins, 0));
-  setText("mLosses", fmtNum(s.losses, 0));
-  setText("mBreakeven", fmtNum(s.breakeven, 0));
-  setText("mWinrate", s.winrate || "0%");
-  setText("mTotalR", fmtNum(s.totalR, 3));
-  setText("mAvgR", fmtNum(s.avgR, 3));
-  setText("mTotalPnl", fmtPct(s.totalPnlPct, 3));
+  setText("mActions", fmtNum(summary.actions, 0));
+  setText("mTrades", fmtNum(summary.trades, 0));
+  setText("mOpen", fmtNum(summary.open, 0));
+  setText("mClosed", fmtNum(summary.closed, 0));
+  setText("mPending", fmtNum(summary.pendingOutcome, 0));
+  setText("mWins", fmtNum(summary.wins, 0));
+  setText("mLosses", fmtNum(summary.losses, 0));
+  setText("mBreakeven", fmtNum(summary.breakeven, 0));
+  setText("mWinrate", summary.winrate || fmtPct(summary.winrateNum * 100, 1));
+  setText("mTotalR", fmtNum(summary.totalR, 3));
+  setText("mAvgR", fmtNum(summary.avgR, 3));
+  setText("mTotalPnl", fmtPct(summary.totalPnlPct, 3));
 
-  setText("mLongFamilies", fmtNum(longRows.length || 50, 0));
-  setText("mShortFamilies", fmtNum(shortRows.length || 50, 0));
-  setText("mLongMeta", statusMeta(longRows));
-  setText("mShortMeta", statusMeta(shortRows));
+  setText("mLongFamilies", fmtNum(summary.longFamilies || longFamilies.length || 50, 0));
+  setText("mShortFamilies", fmtNum(summary.shortFamilies || shortFamilies.length || 50, 0));
+
+  setText("mLongMeta", summary.longFamiliesMeta || statusSummaryText(longFamilies));
+  setText("mShortMeta", summary.shortFamiliesMeta || statusSummaryText(shortFamilies));
 }
 
 function renderSourceCards() {
-  const raw = state.raw || {};
-  const src = state.report?.sources || {};
+  const sources = safeObject(state.report?.sources);
+  const store = safeObject(sources.store);
+  const latest = safeObject(sources.latest);
+  const merged = safeObject(sources.merged);
 
-  setText("sStoreCount", fmtNum(src.storedEvents, 0));
-  setText("sLatestCount", fmtNum(src.latestEvents, 0));
-  setText("sMergedCount", fmtNum(src.mergedEvents, 0));
-  setText("sDataState", state.report?.dataState || "UNKNOWN");
+  setText("sourceStored", fmtNum(sources.storedEvents ?? store.count ?? 0, 0));
+  setText("sourceLatest", fmtNum(sources.latestEvents ?? latest.count ?? 0, 0));
+  setText("sourceMerged", fmtNum(sources.mergedEvents ?? merged.count ?? 0, 0));
+  setText("sourceLatency", `${fmtNum(state.report?.latencyMs ?? state.raw?.latencyMs ?? 0, 0)}ms`);
 
-  setText("sStorePath", src.store?.path ? `store: ${src.store.path}` : `store: ${src.store?.storeSource || "n/a"}`);
-  setText("sLatestTime", src.latest?.note || "latest scan OK");
-  setText("sGeneratedAt", raw.servedAt ? new Date(raw.servedAt).toLocaleString() : "-");
-  setText("sLatency", `${fmtNum(raw.latencyMs, 0)}ms`);
+  setText("sourceStoredSub", store.path ? `store: ${store.path}` : `store: ${store.storeSource || "n/a"}`);
+  setText("sourceLatestSub", latest.note || (latest.ok ? "latest scan OK" : "latest scan n/a"));
+  setText("sourceMergedSub", merged.source ? `source: ${merged.source}` : `loaded: ${fmtNum(merged.count ?? 0, 0)}`);
+  setText("sourceLatencySub", state.report?.servedAt ? new Date(state.report.servedAt).toLocaleString() : "-");
 }
 
 function getBaseFamilies() {
-  const families = state.report?.families || {};
+  const families = safeObject(state.report?.families);
 
   if (state.activeTab === "LONG") return safeArray(families.long);
   if (state.activeTab === "SHORT") return safeArray(families.short);
 
-  return safeArray(families.ranked);
+  return safeArray(families.ranked || families.all);
 }
 
 function getSelectedFamilies() {
-  const side = $("sideSelect")?.value || "ALL";
-  const status = $("statusSelect")?.value || "ALL";
-  const query = text($("searchInput")?.value).toUpperCase().trim();
-  const hideEmpty = Boolean($("hideEmptyInput")?.checked);
+  const sideSelect = $("sideSelect");
+  const statusSelect = $("statusSelect");
+  const searchInput = $("searchInput");
+  const hideEmptyInput = $("hideEmptyInput");
 
   let rows = getBaseFamilies();
+
+  const side = sideSelect?.value || state.activeTab || "ALL";
+  const status = statusSelect?.value || "ALL";
+  const query = text(searchInput?.value).toUpperCase().trim();
+  const hideEmpty = Boolean(hideEmptyInput?.checked);
 
   if (side === "LONG") rows = rows.filter(row => row.side === "LONG");
   if (side === "SHORT") rows = rows.filter(row => row.side === "SHORT");
 
-  if (status !== "ALL") rows = rows.filter(row => row.status === status);
-  if (hideEmpty) rows = rows.filter(row => row.status !== "EMPTY" && safeNumber(row.observed, 0) > 0);
+  if (status !== "ALL") {
+    rows = rows.filter(row => row.status === status);
+  }
+
+  if (hideEmpty) {
+    rows = rows.filter(row => row.status !== "EMPTY" && safeNumber(row.observed, 0) > 0);
+  }
 
   if (query) {
     rows = rows.filter(row => {
       const haystack = [
         row.id,
+        row.familyId,
         row.side,
         row.status,
         row.quality,
         row.market,
         row.timing,
         row.definition,
-        ...safeArray(row.labels),
+        safeArray(row.labels).join(" "),
+        row.winrate,
+        row.totalR,
+        row.avgR,
+        row.totalPnlPct,
       ].join(" ").toUpperCase();
 
       return haystack.includes(query);
     });
   }
 
-  return [...rows].sort(pnlSort);
+  return sortFamiliesPnlFirst(rows);
 }
 
 function renderFamilies() {
   const tbody = $("familyBody");
-  const empty = $("emptyState");
+  const count = $("familyCount");
+  const emptyState = $("emptyState");
+
   if (!tbody) return;
 
   const rows = getSelectedFamilies();
 
-  setText("familyCount", `${rows.length} rows`);
-  setHidden(empty, rows.length > 0);
+  if (count) {
+    count.textContent = `${rows.length} families`;
+  }
+
+  setHidden(emptyState, rows.length > 0);
 
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="21" class="empty-row">Geen families voor deze filterselectie.</td></tr>`;
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="20" class="empty-row">Geen families voor deze filters.</td>
+      </tr>
+    `;
     return;
   }
 
   tbody.innerHTML = rows.map(row => {
+    const status = text(row.status, "EMPTY");
+    const side = text(row.side);
+    const pending = safeNumber(row.pendingOutcome ?? row.pending, 0);
+    const pf = safeNumber(row.pf ?? row.profitFactor, 0);
+
     return `
-      <tr class="${statusClass(row.status)}">
+      <tr class="${statusClass(status)}">
         <td><span class="family-id">${escapeHtml(row.id)}</span></td>
-        <td><span class="side-pill ${text(row.side).toLowerCase()}">${escapeHtml(row.side)}</span></td>
-        <td>${escapeHtml(row.quality || "-")}</td>
-        <td>${escapeHtml(row.market || "-")}</td>
-        <td>${escapeHtml(row.timing || "-")}</td>
+        <td><span class="side-pill ${sideClass(side)}">${escapeHtml(side)}</span></td>
+        <td>${escapeHtml(row.quality)}</td>
+        <td>${escapeHtml(row.market)}</td>
+        <td>${escapeHtml(row.timing)}</td>
         <td class="definition">${escapeHtml(row.definition)}</td>
         <td class="num">${fmtNum(row.observed, 0)}</td>
         <td class="num">${fmtNum(row.trades, 0)}</td>
         <td class="num">${fmtNum(row.closed, 0)}</td>
         <td class="num">${fmtNum(row.open, 0)}</td>
-        <td class="num pending">${fmtNum(row.pendingOutcome, 0)}</td>
+        <td class="num pending">${fmtNum(pending, 0)}</td>
         <td class="num">${fmtNum(row.wins, 0)}</td>
         <td class="num">${fmtNum(row.losses, 0)}</td>
-        <td class="num">${fmtNum(row.breakeven, 0)}</td>
-        <td class="num">${escapeHtml(row.winrate)}</td>
+        <td class="num">${escapeHtml(row.winrate || "0%")}</td>
         <td class="num ${signedClass(row.totalR)}">${fmtNum(row.totalR, 3)}</td>
         <td class="num ${signedClass(row.avgR)}">${fmtNum(row.avgR, 3)}</td>
         <td class="num ${signedClass(row.totalPnlPct)}">${fmtPct(row.totalPnlPct, 3)}</td>
         <td class="num ${signedClass(row.avgPnlPct)}">${fmtPct(row.avgPnlPct, 3)}</td>
-        <td class="num">${fmtNum(row.pf || row.profitFactor, 3)}</td>
-        <td><span class="status-pill ${statusClass(row.status)}">${escapeHtml(row.status)}</span></td>
+        <td class="num">${fmtNum(pf, 3)}</td>
+        <td><span class="status-pill ${statusClass(status)}">${escapeHtml(status)}</span></td>
       </tr>
     `;
   }).join("");
 }
 
-function getWinnerRows() {
+function getWinnerCandidates() {
+  const families = safeObject(state.report?.families);
+  const api = safeArray(families.winnerCandidates);
+
+  if (api.length) {
+    return sortFamiliesPnlFirst(api).slice(0, MAX_WINNER_CARDS);
+  }
+
   const minClosed = Math.max(1, getMinClosedValue());
 
-  return safeArray(state.report?.families?.ranked)
+  return sortFamiliesPnlFirst(safeArray(families.ranked || families.all))
     .filter(row => safeNumber(row.closed, 0) >= minClosed)
-    .filter(row => ["HOT", "GOOD", "STABLE"].includes(row.status))
-    .filter(row => safeNumber(row.totalPnlPct, 0) > 0)
-    .sort((a, b) => {
-      const pnl = safeNumber(b.totalPnlPct, 0) - safeNumber(a.totalPnlPct, 0);
-      if (pnl !== 0) return pnl;
-
-      const r = safeNumber(b.totalR, 0) - safeNumber(a.totalR, 0);
-      if (r !== 0) return r;
-
-      return safeNumber(b.closed, 0) - safeNumber(a.closed, 0);
-    })
-    .slice(0, 8);
+    .filter(row => safeNumber(row.avgR, 0) > 0)
+    .filter(row => safeNumber(row.totalR, 0) > 0)
+    .filter(row => safeNumber(row.winrateNum, 0) >= 0.30)
+    .slice(0, MAX_WINNER_CARDS);
 }
 
-function getTopPnlRows() {
-  return safeArray(state.report?.families?.ranked)
-    .filter(row => row.status !== "EMPTY")
+function getTopPnlFamilies() {
+  const families = safeObject(state.report?.families);
+  const api = safeArray(families.topPnlFamilies);
+
+  if (api.length) {
+    return sortFamiliesPnlFirst(api).slice(0, MAX_TOP_PNL_CARDS);
+  }
+
+  return sortFamiliesPnlFirst(safeArray(families.ranked || families.all))
     .filter(row => safeNumber(row.observed, 0) > 0)
-    .sort((a, b) => {
-      const pnl = safeNumber(b.totalPnlPct, 0) - safeNumber(a.totalPnlPct, 0);
-      if (pnl !== 0) return pnl;
-
-      return safeNumber(b.totalR, 0) - safeNumber(a.totalR, 0);
-    })
-    .slice(0, 8);
+    .slice(0, MAX_TOP_PNL_CARDS);
 }
 
-function renderCardGrid(id, rows, emptyText) {
-  const grid = $(id);
+function renderFamilyCards(targetId, countId, rows, emptyText) {
+  const grid = $(targetId);
+  const count = $(countId);
+
   if (!grid) return;
 
+  if (count) {
+    count.textContent = `${rows.length} families`;
+  }
+
   if (!rows.length) {
-    grid.innerHTML = `<article class="winner-empty">${escapeHtml(emptyText)}</article>`;
+    grid.innerHTML = `
+      <article class="winner-empty">
+        ${escapeHtml(emptyText)}
+      </article>
+    `;
     return;
   }
 
-  grid.innerHTML = rows.map(row => `
-    <article class="winner-card ${text(row.status).toLowerCase()}">
-      <div class="winner-top">
-        <span class="winner-id">${escapeHtml(row.id)}</span>
-        <span class="status-pill ${statusClass(row.status)}">${escapeHtml(row.status)}</span>
-      </div>
+  grid.innerHTML = rows.map(row => {
+    const status = text(row.status, "STABLE").toLowerCase();
+    const pf = safeNumber(row.pf ?? row.profitFactor, 0);
 
-      <div class="winner-stats">
-        <div class="winner-stat"><span>Closed</span><strong>${fmtNum(row.closed, 0)}</strong></div>
-        <div class="winner-stat"><span>Winrate</span><strong>${escapeHtml(row.winrate)}</strong></div>
-        <div class="winner-stat"><span>Total R</span><strong class="${signedClass(row.totalR)}">${fmtNum(row.totalR, 3)}</strong></div>
-        <div class="winner-stat"><span>Avg R</span><strong class="${signedClass(row.avgR)}">${fmtNum(row.avgR, 3)}</strong></div>
-        <div class="winner-stat"><span>PnL%</span><strong class="${signedClass(row.totalPnlPct)}">${fmtPct(row.totalPnlPct, 3)}</strong></div>
-        <div class="winner-stat"><span>PF</span><strong>${fmtNum(row.pf || row.profitFactor, 3)}</strong></div>
-      </div>
+    return `
+      <article class="winner-card ${status}">
+        <div class="winner-top">
+          <span class="winner-id">${escapeHtml(row.id)}</span>
+          <span class="status-pill ${statusClass(row.status)}">${escapeHtml(row.status)}</span>
+        </div>
 
-      <p class="winner-definition">${escapeHtml(row.definition)}</p>
-    </article>
-  `).join("");
+        <div class="winner-stats">
+          <div class="winner-stat">
+            <span>Closed</span>
+            <strong>${fmtNum(row.closed, 0)}</strong>
+          </div>
+
+          <div class="winner-stat">
+            <span>Winrate</span>
+            <strong>${escapeHtml(row.winrate || "0%")}</strong>
+          </div>
+
+          <div class="winner-stat">
+            <span>Total PnL%</span>
+            <strong class="${signedClass(row.totalPnlPct)}">${fmtPct(row.totalPnlPct, 3)}</strong>
+          </div>
+
+          <div class="winner-stat">
+            <span>Total R</span>
+            <strong class="${signedClass(row.totalR)}">${fmtNum(row.totalR, 3)}</strong>
+          </div>
+
+          <div class="winner-stat">
+            <span>Avg R</span>
+            <strong class="${signedClass(row.avgR)}">${fmtNum(row.avgR, 3)}</strong>
+          </div>
+
+          <div class="winner-stat">
+            <span>PF</span>
+            <strong>${fmtNum(pf, 3)}</strong>
+          </div>
+        </div>
+
+        <p class="winner-definition">${escapeHtml(row.definition)}</p>
+      </article>
+    `;
+  }).join("");
 }
 
 function renderWinners() {
-  const winners = getWinnerRows();
-  const topPnl = getTopPnlRows();
+  const winners = getWinnerCandidates();
+  renderFamilyCards(
+    "winnerGrid",
+    "winnerCount",
+    winners,
+    `Nog geen betrouwbare runner winner-family. Nodig: minimaal ${getMinClosedValue()} closed trades met positieve Avg R en positieve Total R.`
+  );
+}
 
-  setText("winnerCount", `${winners.length} winners`);
-  setText("topPnlCount", `${topPnl.length} families`);
-
-  renderCardGrid("winnerGrid", winners, `Nog geen PnL-winner. Nodig: min ${getMinClosedValue()} closed, positieve PnL/AvgR/TotalR.`);
-  renderCardGrid("topPnlGrid", topPnl, "Nog geen PnL families.");
+function renderTopPnl() {
+  const rows = getTopPnlFamilies();
+  renderFamilyCards(
+    "topPnlGrid",
+    "topPnlCount",
+    rows,
+    "Nog geen PnL families."
+  );
 }
 
 function renderFilters() {
   const body = $("filtersBody");
+  const count = $("filterCount");
+
   if (!body) return;
 
-  const chips = [
-    "quality", "market", "timing", "confluence", "sniperScore", "rr", "score", "stage", "flow",
-    "rsiZone", "obBias", "spread", "depth", "btcRel", "funding", "tfAlignment", "pullbackConfirmation",
-    ...QUALITY_BUCKETS.map(x => x.key),
-    ...MARKET_BUCKETS.map(x => x.key),
-    ...TIMING_BUCKETS.map(x => x.key),
-  ];
+  const filterValues = safeObject(state.report?.filterValues);
+  const trackedFields = safeArray(filterValues.trackedFields);
 
-  setText("filterCount", `${chips.length} labels`);
+  const quality = Object.values(safeObject(filterValues.qualityBuckets));
+  const market = Object.values(safeObject(filterValues.marketBuckets));
+  const timing = Object.values(safeObject(filterValues.timingBuckets));
+
+  const chips = [
+    ...trackedFields.map(field => ({ group: "LABEL", label: field })),
+    ...quality.map(bucket => ({ group: "QUALITY", label: bucket.key })),
+    ...market.map(bucket => ({ group: "MARKET", label: bucket.key })),
+    ...timing.map(bucket => ({ group: "TIMING", label: bucket.key })),
+  ].filter(chip => chip.label);
+
+  if (count) {
+    count.textContent = `${chips.length} labels`;
+  }
+
+  if (!chips.length) {
+    body.innerHTML = `<span class="filter-chip"><b>EMPTY</b> Geen labels geladen</span>`;
+    return;
+  }
 
   body.innerHTML = chips.map(chip => `
-    <span class="filter-chip"><b>LABEL</b>${escapeHtml(chip)}</span>
+    <span class="filter-chip">
+      <b>${escapeHtml(chip.group)}</b>
+      ${escapeHtml(chip.label)}
+    </span>
   `).join("");
 }
 
 function renderDebug() {
-  const el = $("debugJson");
-  if (!el) return;
+  const debugJson = $("debugJson");
+  if (!debugJson) return;
 
-  el.textContent = JSON.stringify({
-    endpoint: state.raw?.endpoint,
-    objective: state.raw?.objective,
-    strategy: state.raw?.strategy,
-    dataState: state.raw?.dataState,
-    source: state.raw?.source,
-    store: state.raw?.store,
-    latest: state.raw?.latest,
-    merged: state.raw?.merged,
-    stats: state.raw?.stats,
+  debugJson.textContent = JSON.stringify({
+    endpoint: state.report?.endpoint || state.raw?.endpoint || API_URL,
+    objective: state.report?.objective || state.raw?.objective || null,
+    strategy: state.report?.strategy || state.raw?.strategy || null,
+    dataState: state.report?.dataState || state.raw?.dataState || null,
+    sources: state.report?.sources || null,
+    summary: state.report?.summary || null,
+    config: state.report?.config || null,
+    familyCounts: {
+      all: safeArray(state.report?.families?.all).length,
+      long: safeArray(state.report?.families?.long).length,
+      short: safeArray(state.report?.families?.short).length,
+      winnerCandidates: safeArray(state.report?.families?.winnerCandidates).length,
+      topPnlFamilies: safeArray(state.report?.families?.topPnlFamilies).length,
+    },
   }, null, 2);
 }
 
 function renderApiLink() {
-  const link = $("apiLink");
-  if (link) link.href = buildApiUrl();
+  const apiLink = $("apiLink");
+  if (!apiLink) return;
+
+  apiLink.href = buildApiUrl({ debug: true });
 }
 
 function render() {
+  if (!state.report) return;
+
   renderSummary();
   renderSourceCards();
   renderWinners();
+  renderTopPnl();
   renderFamilies();
   renderFilters();
   renderDebug();
@@ -802,59 +1024,81 @@ async function loadAnalytics({ force = false } = {}) {
   setStatus("Laden...", false);
 
   try {
-    const payload = await fetchJson(buildApiUrl());
+    const payload = await fetchJson(buildApiUrl({ debug: true }));
     const normalized = normalizePayload(payload);
 
     state.raw = normalized.raw;
     state.report = normalized.report;
 
-    const s = state.report.summary;
-    const updated = new Date(state.report.generatedAt).toLocaleString();
+    const updated = state.report.servedAt
+      ? new Date(state.report.servedAt).toLocaleString()
+      : new Date().toLocaleString();
+
+    const summary = safeObject(state.report.summary);
+    const families = safeObject(state.report.families);
 
     setStatus(
-      `Laatste update: ${updated} | actions ${fmtNum(s.actions, 0)} | closed ${fmtNum(s.closed, 0)} | pnl ${fmtPct(s.totalPnlPct, 3)}`,
+      `Laatste update: ${updated} | data ${state.report.dataState || "READY"} | actions ${fmtNum(summary.actions, 0)} | closed ${fmtNum(summary.closed, 0)} | families ${safeArray(families.ranked || families.all).length} | loaded in ${fmtNum(state.report.latencyMs || 0, 0)}ms`,
       false
     );
 
     render();
   } catch (error) {
-    console.error("RUNNER ANALYZE LOAD ERROR:", error);
-    setStatus(error?.message || error?.error || JSON.stringify(error), true);
+    const message = errorToText(error);
+
+    setStatus(message, true);
+    console.error("RUNNER ANALYTICS LOAD ERROR:", error);
   } finally {
     setBusy(false);
   }
 }
 
 async function resetAnalytics() {
-  const ok = window.confirm("Runner analyse-store resetten?");
+  const ok = window.confirm("Runner analyse-store resetten? Dit wist de opgeslagen family-history.");
+
   if (!ok) return;
+  if (state.loading) return;
 
   setBusy(true);
   setStatus("Reset bezig...", false);
 
   try {
-    await fetchJson(buildApiUrl({ reset: true }));
+    const payload = await fetchJson(buildApiUrl({ reset: true, debug: true }));
+
+    if (!payload.ok) {
+      throw payload;
+    }
+
+    state.raw = null;
+    state.report = null;
+
+    setBusy(false);
     await loadAnalytics({ force: true });
   } catch (error) {
-    console.error("RUNNER ANALYZE RESET ERROR:", error);
-    setStatus(error?.message || error?.error || JSON.stringify(error), true);
+    const message = errorToText(error);
+
+    setStatus(message, true);
+    console.error("RUNNER ANALYTICS RESET ERROR:", error);
   } finally {
     setBusy(false);
   }
 }
 
 function syncTabs() {
-  document.querySelectorAll("[data-side]").forEach(btn => {
-    const side = btn.dataset.side || "ALL";
-    btn.classList.toggle("active", side === state.activeTab);
+  document.querySelectorAll("[data-side]").forEach(button => {
+    const value = button.dataset.side || "ALL";
+    button.classList.toggle("active", value === state.activeTab);
   });
 }
 
-function setTab(side) {
-  state.activeTab = side || "ALL";
+function setTab(tab) {
+  state.activeTab = tab || "ALL";
 
-  const select = $("sideSelect");
-  if (select) select.value = state.activeTab;
+  const sideSelect = $("sideSelect");
+
+  if (sideSelect) {
+    sideSelect.value = state.activeTab;
+  }
 
   syncTabs();
   renderFamilies();
@@ -863,31 +1107,40 @@ function setTab(side) {
 function toggleAuto() {
   state.auto = !state.auto;
 
-  const btn = $("autoBtn");
-  if (btn) btn.textContent = `Auto: ${state.auto ? "ON" : "OFF"}`;
+  const button = $("autoBtn");
+  if (button) button.textContent = `Auto: ${state.auto ? "ON" : "OFF"}`;
 
-  if (state.timer) clearInterval(state.timer);
-  state.timer = null;
+  if (state.timer) {
+    clearInterval(state.timer);
+    state.timer = null;
+  }
 
   if (state.auto) {
-    state.timer = setInterval(loadAnalytics, REFRESH_MS);
+    state.timer = setInterval(() => loadAnalytics(), REFRESH_MS);
   }
 }
 
-let reloadTimer = null;
+let reloadDebounce = null;
 
 function scheduleReload() {
-  if (reloadTimer) clearTimeout(reloadTimer);
-  reloadTimer = setTimeout(() => loadAnalytics(), 350);
+  if (reloadDebounce) {
+    clearTimeout(reloadDebounce);
+  }
+
+  reloadDebounce = setTimeout(() => {
+    loadAnalytics();
+  }, 350);
 }
 
 function wireEvents() {
-  $("refreshBtn")?.addEventListener("click", () => loadAnalytics());
+  $("refreshBtn")?.addEventListener("click", () => loadAnalytics({ force: true }));
   $("resetBtn")?.addEventListener("click", resetAnalytics);
   $("autoBtn")?.addEventListener("click", toggleAuto);
 
-  document.querySelectorAll("[data-side]").forEach(btn => {
-    btn.addEventListener("click", () => setTab(btn.dataset.side || "ALL"));
+  document.querySelectorAll("[data-side]").forEach(button => {
+    button.addEventListener("click", () => {
+      setTab(button.dataset.side || "ALL");
+    });
   });
 
   $("sideSelect")?.addEventListener("change", event => {
@@ -901,26 +1154,33 @@ function wireEvents() {
   $("hideEmptyInput")?.addEventListener("change", renderFamilies);
 
   $("minClosedInput")?.addEventListener("input", () => {
-    renderFamilies();
     renderWinners();
+    renderTopPnl();
+    renderFamilies();
+    scheduleReload();
+  });
+
+  $("minClosedInput")?.addEventListener("change", () => {
+    renderWinners();
+    renderTopPnl();
+    renderFamilies();
     scheduleReload();
   });
 }
 
-function initParams() {
-  const params = new URLSearchParams(window.location.search);
-  const minClosed = params.get("minClosed");
-  const input = $("minClosedInput");
+function ensureDefaults() {
+  const minClosedInput = $("minClosedInput");
 
-  if (input && minClosed) {
-    input.value = String(Math.max(0, Math.round(safeNumber(minClosed, DEFAULT_MIN_CLOSED))));
+  if (minClosedInput && (minClosedInput.value === "" || minClosedInput.value === "0")) {
+    minClosedInput.value = String(DEFAULT_MIN_CLOSED);
   }
+
+  renderApiLink();
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  initParams();
+  ensureDefaults();
   wireEvents();
   syncTabs();
-  renderApiLink();
-  await loadAnalytics();
+  await loadAnalytics({ force: true });
 });
