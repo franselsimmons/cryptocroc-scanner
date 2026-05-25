@@ -1,26 +1,39 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
+// ================= api/analyze.js =================
+// RUNNER / TRADESYSTEM ANALYZER
+// Loose analyzer: leest tradeSystem durable runtime direct.
+// Geen harde entry-gates in analyze. Analyze groepeert alleen en rekent outcomes af.
+
 import { getLatestScan } from "../lib/scanStore.js";
 
 const SYSTEM_PROFILE = "RUNNER";
-
 const ENDPOINT = "/api/analyze";
-const OBJECTIVE = "RUNNER_PNL_FIRST";
-const STRATEGY = "50_LONG_FAMILIES_PLUS_50_SHORT_FAMILIES";
 
-const STORE_KEY = "runner:analyze:store:v1:events";
-const LEGACY_STORE_KEY = "runner:analyze:store:v1";
-const STORE_PATH =
-  process.env.RUNNER_ANALYZE_STORE_PATH ||
-  path.join(os.tmpdir(), "runner-analyze-events.json");
+const STRATEGY_VERSION =
+  process.env.RUNNER_STRATEGY_VERSION ||
+  process.env.TRADE_SYSTEM_STRATEGY_VERSION ||
+  process.env.STRATEGY_VERSION ||
+  "TS_V12_5_FIX";
 
-const MAX_STORED_EVENTS = 50000;
-const MAX_EXAMPLES_PER_FAMILY = 8;
+const OBJECTIVE = "PNL_FIRST_FROZEN_FAMILY_ANALYZE";
+const STRATEGY = "50_LONG_FAMILIES_PLUS_50_SHORT_FAMILIES_LOOSE_DISCOVERY";
 
+const RUNTIME_STORE_KEY = `${STRATEGY_VERSION}:runtime:legacy`;
+const RUNTIME_CORE_KEY = `${STRATEGY_VERSION}:runtime:core`;
+const RUNTIME_RECENT_KEY = `${STRATEGY_VERSION}:runtime:recent_entries`;
+
+const RUNTIME_CLOSED_META_KEY = `${STRATEGY_VERSION}:runtime:closed_trades:meta`;
+const RUNTIME_CLOSED_CHUNK_PREFIX = `${STRATEGY_VERSION}:runtime:closed_trades:chunk:`;
+
+const RUNTIME_FEATURE_META_KEY = `${STRATEGY_VERSION}:runtime:feature_store:meta`;
+const RUNTIME_FEATURE_CHUNK_PREFIX = `${STRATEGY_VERSION}:runtime:feature_store:chunk:`;
+
+const RUNTIME_SHADOW_META_KEY = `${STRATEGY_VERSION}:runtime:shadow_outcomes:meta`;
+const RUNTIME_SHADOW_CHUNK_PREFIX = `${STRATEGY_VERSION}:runtime:shadow_outcomes:chunk:`;
+
+const MAX_EXAMPLES_PER_FAMILY = 10;
 const DEFAULT_MIN_CLOSED = 10;
-const DEFAULT_BREAKEVEN_R_EPS = 0.05;
 const DEFAULT_MIN_WINRATE = 0.35;
+const DEFAULT_BREAKEVEN_R_EPS = 0.05;
 
 const QUALITY_BUCKETS = [
   { index: 1, key: "Q1_WEAK", conf: "CONF_0_50", sniper: "SNIPER_0_50", rr: "RR_LT_1p00", score: "SCORE_0_50" },
@@ -47,9 +60,14 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function safeObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
 function safeNumber(value, fallback = 0) {
   if (typeof value === "string") {
-    const n = Number(value.replace("%", "").replace(",", ".").trim());
+    const cleaned = value.replace("%", "").replace(",", ".").trim();
+    const n = Number(cleaned);
     return Number.isFinite(n) ? n : fallback;
   }
 
@@ -57,13 +75,48 @@ function safeNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function readNumber(row, keys, fallback = null) {
+  for (const key of keys) {
+    if (row?.[key] === undefined || row?.[key] === null || row?.[key] === "") continue;
+
+    const n = safeNumber(row[key], Number.NaN);
+    if (Number.isFinite(n)) return n;
+  }
+
+  return fallback;
+}
+
 function round(value, decimals = 3) {
+  const n = safeNumber(value, 0);
   const p = 10 ** decimals;
-  return Math.round(safeNumber(value, 0) * p) / p;
+  return Math.round(n * p) / p;
 }
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function parseJsonLoose(value, fallback = null) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === "object") return value;
+  if (typeof value !== "string") return fallback;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeBoolean(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+
+  const v = String(value).trim().toLowerCase();
+
+  if (["1", "true", "yes", "y", "on"].includes(v)) return true;
+  if (["0", "false", "no", "n", "off"].includes(v)) return false;
+
+  return fallback;
 }
 
 function getRequestUrl(req) {
@@ -80,22 +133,11 @@ function getQueryParam(req, key, fallback = "") {
   }
 }
 
-function normalizeBoolean(value, fallback = false) {
-  if (value === undefined || value === null || value === "") return fallback;
-
-  const v = String(value).trim().toLowerCase();
-
-  if (["true", "1", "yes", "y", "on"].includes(v)) return true;
-  if (["false", "0", "no", "n", "off"].includes(v)) return false;
-
-  return fallback;
-}
-
 function normalizeSide(value) {
   const s = String(value || "").trim().toUpperCase();
 
-  if (["BULL", "LONG", "BUY"].includes(s)) return "LONG";
-  if (["BEAR", "SHORT", "SELL"].includes(s)) return "SHORT";
+  if (["LONG", "BULL", "BUY"].includes(s)) return "LONG";
+  if (["SHORT", "BEAR", "SELL"].includes(s)) return "SHORT";
 
   return "";
 }
@@ -114,254 +156,253 @@ function normalizeSymbol(value) {
     .replace(/USDC$/, "");
 }
 
-function normalizeAction(value) {
-  return String(value || "").trim().toUpperCase();
+function normalizeAction(value, fallback = "OBSERVE") {
+  const a = String(value || "").trim().toUpperCase();
+  return a || fallback;
 }
 
-function parseJsonLoose(value, fallback = null) {
-  if (value === undefined || value === null) return fallback;
-  if (typeof value === "object") return value;
-  if (typeof value !== "string") return fallback;
+function normalizeSpread(spreadPct) {
+  let spread = safeNumber(spreadPct, 0);
 
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
+  if (!Number.isFinite(spread) || spread < 0) return 0;
+  if (spread > 0.05) spread = spread / 100;
+
+  return spread;
 }
 
-function extractEventsFromContainer(value) {
-  const parsed = parseJsonLoose(value, value);
-
-  if (Array.isArray(parsed)) return parsed;
-  if (!parsed || typeof parsed !== "object") return [];
-
-  for (const key of ["events", "records", "rows", "trades", "actions", "data", "items"]) {
-    if (Array.isArray(parsed[key])) return parsed[key];
-  }
-
-  return [];
+function pctText(value) {
+  return `${round(safeNumber(value, 0) * 100, 1)}%`;
 }
 
-function normalizeEventArray(value) {
-  return extractEventsFromContainer(value)
-    .map(item => parseJsonLoose(item, item))
-    .filter(item => item && typeof item === "object" && !Array.isArray(item));
-}
-
-function eventKey(event) {
-  const symbol = normalizeSymbol(event?.symbol);
-  const side = normalizeSide(event?.side);
-  const action = normalizeAction(event?.action);
-
-  return [
-    event?.tradeId || event?.id || "",
-    event?.runId || "",
-    symbol,
-    side,
-    action,
-    event?.entryType || event?.runnerEntryType || "",
-    event?.setupClass || "",
-    event?.entry ?? "",
-    event?.exit ?? event?.exitPrice ?? "",
-    event?.exitReason || event?.reason || "",
-    event?.resultR ?? event?.realizedR ?? event?.exitR ?? event?.pnlR ?? "",
-    event?.pnlPct ?? "",
-    event?.ts || event?.closedAt || event?.createdAt || event?.updatedAt || "",
-  ].join("|");
-}
-
-function uniqueEvents(events) {
-  const out = [];
-  const seen = new Set();
-
-  for (const event of safeArray(events)) {
-    const key = eventKey(event);
-    if (seen.has(key)) continue;
-
-    seen.add(key);
-    out.push(event);
-  }
-
-  return out;
-}
-
-function getRedisConfig() {
-  const url =
+function getRedisUrl() {
+  return (
     process.env.KV_REST_API_URL ||
     process.env.UPSTASH_REDIS_REST_URL ||
     process.env.REDIS_REST_API_URL ||
-    "";
+    ""
+  ).replace(/\/+$/, "");
+}
 
-  const token =
+function getRedisToken() {
+  return (
     process.env.KV_REST_API_TOKEN ||
     process.env.UPSTASH_REDIS_REST_TOKEN ||
     process.env.REDIS_REST_API_TOKEN ||
-    "";
-
-  if (!url || !token) return null;
-
-  return {
-    url: url.replace(/\/+$/, ""),
-    token,
-  };
+    ""
+  );
 }
 
-async function redisPost(command) {
-  const cfg = getRedisConfig();
-  if (!cfg) return null;
+function hasRedis() {
+  return Boolean(getRedisUrl() && getRedisToken());
+}
 
-  const response = await fetch(cfg.url, {
+async function redisCommand(command) {
+  const url = getRedisUrl();
+  const token = getRedisToken();
+
+  if (!url || !token) {
+    throw new Error("redis_env_missing");
+  }
+
+  const response = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${cfg.token}`,
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
       Accept: "application/json",
     },
     body: JSON.stringify(command),
   });
 
-  if (!response.ok) {
-    throw new Error(`redis_command_failed_${response.status}`);
+  const text = await response.text();
+  const json = parseJsonLoose(text, null);
+
+  if (!response.ok || json?.error) {
+    throw new Error(json?.error || text?.slice(0, 500) || `redis_error_${response.status}`);
   }
 
-  return response.json();
+  return json?.result ?? null;
 }
 
-async function redisGet(key) {
-  const payload = await redisPost(["GET", key]);
-  return payload?.result ?? null;
+async function redisGetJson(key) {
+  const raw = await redisCommand(["GET", key]);
+  return parseJsonLoose(raw, raw);
 }
 
-async function redisSet(key, value) {
-  const payload = await redisPost(["SET", key, value]);
-  return payload?.result ?? null;
-}
+async function readJsonArrayChunks(metaKey, chunkPrefix) {
+  const meta = await redisGetJson(metaKey).catch(() => null);
 
-async function redisDel(key) {
-  const payload = await redisPost(["DEL", key]);
-  return payload?.result ?? null;
-}
+  if (!meta || typeof meta !== "object") return [];
 
-async function loadJsonFile(filePath) {
-  try {
-    const raw = await fs.readFile(filePath, "utf8");
-    return parseJsonLoose(raw, null);
-  } catch {
-    return null;
+  if (meta.strategyVersion && meta.strategyVersion !== STRATEGY_VERSION) {
+    return [];
   }
-}
 
-async function writeJsonFile(filePath, payload) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(payload), "utf8");
-}
+  const chunkCount = Math.max(0, Math.round(safeNumber(meta.chunks, 0)));
+  if (!chunkCount) return [];
 
-async function deleteFileIfExists(filePath) {
-  try {
-    await fs.unlink(filePath);
-  } catch {
-    // ignore
+  const reads = [];
+
+  for (let i = 0; i < chunkCount; i++) {
+    reads.push(
+      redisGetJson(`${chunkPrefix}${i}`).catch(() => [])
+    );
   }
+
+  const chunks = await Promise.all(reads);
+
+  return chunks
+    .filter(Array.isArray)
+    .flat()
+    .filter(row => row && typeof row === "object");
 }
 
-async function loadRunnerAnalyzeStore() {
-  const redisEnabled = Boolean(getRedisConfig());
-  const fileEnabled = true;
+function memoryPairsToRows(memoryPairs) {
+  return safeArray(memoryPairs)
+    .map(pair => {
+      if (!Array.isArray(pair)) return null;
+
+      const key = pair[0];
+      const pos = pair[1];
+
+      if (!pos || typeof pos !== "object") return null;
+
+      return {
+        ...pos,
+        memoryKey: key,
+        source: "MEMORY_OPEN",
+        action: "HOLD",
+        closed: false,
+      };
+    })
+    .filter(Boolean);
+}
+
+async function loadDurableTradeSystemRuntime() {
+  const redisEnabled = hasRedis();
+
+  if (!redisEnabled) {
+    return {
+      ok: false,
+      redisEnabled,
+      error: "redis_env_missing",
+      core: null,
+      recentEntries: [],
+      closedTrades: [],
+      featureStore: [],
+      shadowOutcomes: [],
+      memoryOpen: [],
+      loadedAt: Date.now(),
+    };
+  }
+
   const loadedAt = Date.now();
 
-  const redisEvents = [];
-  let redisError = null;
+  try {
+    const core = await redisGetJson(RUNTIME_CORE_KEY).catch(() => null);
 
-  if (redisEnabled) {
-    try {
-      redisEvents.push(...normalizeEventArray(await redisGet(STORE_KEY)));
-      redisEvents.push(...normalizeEventArray(await redisGet(LEGACY_STORE_KEY)));
-    } catch (error) {
-      redisError = error?.message || String(error);
+    if (core?.strategyVersion === STRATEGY_VERSION) {
+      const [
+        recentEntries,
+        closedTrades,
+        featureStore,
+        shadowOutcomes,
+      ] = await Promise.all([
+        redisGetJson(RUNTIME_RECENT_KEY).then(v => Array.isArray(v) ? v : []).catch(() => []),
+        readJsonArrayChunks(RUNTIME_CLOSED_META_KEY, RUNTIME_CLOSED_CHUNK_PREFIX),
+        readJsonArrayChunks(RUNTIME_FEATURE_META_KEY, RUNTIME_FEATURE_CHUNK_PREFIX),
+        readJsonArrayChunks(RUNTIME_SHADOW_META_KEY, RUNTIME_SHADOW_CHUNK_PREFIX),
+      ]);
+
+      return {
+        ok: true,
+        mode: "TRADE_SYSTEM_DURABLE_SPLIT",
+        redisEnabled,
+        strategyVersion: STRATEGY_VERSION,
+        core,
+        recentEntries,
+        closedTrades,
+        featureStore,
+        shadowOutcomes,
+        memoryOpen: memoryPairsToRows(core?.memory),
+        loadedAt,
+        keys: {
+          core: RUNTIME_CORE_KEY,
+          recent: RUNTIME_RECENT_KEY,
+          closedMeta: RUNTIME_CLOSED_META_KEY,
+          featureMeta: RUNTIME_FEATURE_META_KEY,
+          shadowMeta: RUNTIME_SHADOW_META_KEY,
+        },
+      };
     }
-  }
 
-  const filePayload = await loadJsonFile(STORE_PATH);
-  const fileEvents = normalizeEventArray(filePayload);
+    const legacy = await redisGetJson(RUNTIME_STORE_KEY).catch(() => null);
 
-  const events = uniqueEvents([...redisEvents, ...fileEvents]).slice(-MAX_STORED_EVENTS);
+    if (legacy?.strategyVersion === STRATEGY_VERSION) {
+      const audit = safeObject(legacy.audit);
 
-  return {
-    ok: true,
-    mode: "RUNNER_ANALYZE_STORE",
-    storeSource: "runner_analyze_store",
-    redisKey: STORE_KEY,
-    legacyRedisKey: LEGACY_STORE_KEY,
-    path: STORE_PATH,
-    redisEnabled,
-    fileEnabled,
-    redisError,
-    loadedAt,
-    lastPersistAt: safeNumber(filePayload?.lastPersistAt, 0),
-    events,
-  };
-}
-
-async function persistRunnerAnalyzeStore(events) {
-  const payload = {
-    ok: true,
-    version: 1,
-    profile: SYSTEM_PROFILE,
-    lastPersistAt: Date.now(),
-    maxStoredEvents: MAX_STORED_EVENTS,
-    events: uniqueEvents(events).slice(-MAX_STORED_EVENTS),
-  };
-
-  const redisEnabled = Boolean(getRedisConfig());
-  let redisError = null;
-
-  if (redisEnabled) {
-    try {
-      await redisSet(STORE_KEY, JSON.stringify(payload));
-    } catch (error) {
-      redisError = error?.message || String(error);
+      return {
+        ok: true,
+        mode: "TRADE_SYSTEM_DURABLE_LEGACY",
+        redisEnabled,
+        strategyVersion: STRATEGY_VERSION,
+        core: legacy,
+        recentEntries: safeArray(audit.recentEntries),
+        closedTrades: safeArray(audit.closedTrades),
+        featureStore: safeArray(audit.featureStore),
+        shadowOutcomes: safeArray(audit.shadowOutcomes),
+        memoryOpen: memoryPairsToRows(legacy.memory),
+        loadedAt,
+        keys: {
+          legacy: RUNTIME_STORE_KEY,
+        },
+      };
     }
+
+    return {
+      ok: true,
+      mode: "TRADE_SYSTEM_DURABLE_EMPTY_OR_VERSION_MISMATCH",
+      redisEnabled,
+      strategyVersion: STRATEGY_VERSION,
+      core,
+      recentEntries: [],
+      closedTrades: [],
+      featureStore: [],
+      shadowOutcomes: [],
+      memoryOpen: [],
+      loadedAt,
+      keys: {
+        core: RUNTIME_CORE_KEY,
+        legacy: RUNTIME_STORE_KEY,
+      },
+      warning: core?.strategyVersion
+        ? `runtime_version_mismatch:${core.strategyVersion}`
+        : "runtime_empty",
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      mode: "TRADE_SYSTEM_DURABLE_ERROR",
+      redisEnabled,
+      strategyVersion: STRATEGY_VERSION,
+      error: error?.message || String(error),
+      core: null,
+      recentEntries: [],
+      closedTrades: [],
+      featureStore: [],
+      shadowOutcomes: [],
+      memoryOpen: [],
+      loadedAt,
+    };
   }
-
-  await writeJsonFile(STORE_PATH, payload);
-
-  return {
-    ok: true,
-    count: payload.events.length,
-    redisEnabled,
-    redisError,
-    filePath: STORE_PATH,
-    persistedAt: payload.lastPersistAt,
-  };
 }
 
-async function resetRunnerAnalyzeStore() {
-  const redisEnabled = Boolean(getRedisConfig());
-
-  if (redisEnabled) {
-    await Promise.allSettled([
-      redisDel(STORE_KEY),
-      redisDel(LEGACY_STORE_KEY),
-    ]);
-  }
-
-  await deleteFileIfExists(STORE_PATH);
-
-  return {
-    ok: true,
-    resetAt: Date.now(),
-    redisEnabled,
-    filePath: STORE_PATH,
-  };
-}
-
-async function loadLatestEvents({ includeLatest = true } = {}) {
+async function loadLatestTradeSystemRows({ includeLatest }) {
   if (!includeLatest) {
     return {
       ok: true,
       count: 0,
-      events: [],
+      rows: [],
       note: "includeLatest=false",
     };
   }
@@ -373,41 +414,240 @@ async function loadLatestEvents({ includeLatest = true } = {}) {
       return {
         ok: false,
         count: 0,
-        events: [],
-        error: "latest_scan_not_ok",
+        rows: [],
+        note: "latest_scan_not_ok",
       };
     }
 
-    const events = uniqueEvents([
-      ...safeArray(latest?.tradeSystemResult?.actions),
-      ...safeArray(latest?.tradeSystemResult?.openPositions).map(row => ({
+    const tradeSystemResult = safeObject(latest.tradeSystemResult);
+    const analysis = safeObject(tradeSystemResult.analysis);
+
+    const rows = [
+      ...safeArray(tradeSystemResult.actions).map(row => ({
         ...row,
+        source: "LATEST_ACTION",
+      })),
+      ...safeArray(tradeSystemResult.openPositions).map(row => ({
+        ...row,
+        source: "LATEST_OPEN_POSITION",
         action: row?.action || "HOLD",
         closed: false,
       })),
-      ...safeArray(latest?.trades),
-      ...safeArray(latest?.dashboardStats?.tradeRows),
-      ...safeArray(latest?.dashboardStats?.entryRows),
-    ]);
+      ...safeArray(analysis.openPositions).map(row => ({
+        ...row,
+        source: "LATEST_ANALYSIS_OPEN_POSITION",
+        action: row?.action || "HOLD",
+        closed: false,
+      })),
+    ];
 
     return {
       ok: true,
-      count: events.length,
-      updatedAt: latest?.updatedAt || latest?.tradeFunnelUpdatedAt || latest?.scannerUpdatedAt || 0,
-      events,
+      count: rows.length,
+      rows,
+      updatedAt: latest.updatedAt || latest.tradeFunnelUpdatedAt || latest.scannerUpdatedAt || 0,
       note: "latest scan OK",
     };
   } catch (error) {
     return {
       ok: false,
       count: 0,
-      events: [],
-      error: error?.message || String(error),
+      rows: [],
+      note: error?.message || String(error),
     };
   }
 }
 
-function bucketScore01To5(value) {
+function getRowKey(row) {
+  const symbol = normalizeSymbol(row?.symbol);
+  const side = normalizeSide(row?.side);
+  const action = normalizeAction(row?.action, "OBSERVE");
+
+  return [
+    row?.tradeId || row?.id || "",
+    row?.runId || "",
+    row?.source || "",
+    symbol,
+    side,
+    action,
+    row?.entryReason || row?.reason || row?.entryType || "",
+    row?.entry ?? "",
+    row?.exit ?? row?.exitPrice ?? "",
+    row?.exitR ?? row?.resultR ?? row?.realizedR ?? row?.pnlR ?? "",
+    row?.pnlPct ?? "",
+    row?.createdAt || row?.closedAt || row?.exitedAt || row?.completedAt || row?.ts || "",
+  ].join("|");
+}
+
+function uniqueRows(rows) {
+  const seen = new Set();
+  const out = [];
+
+  for (const row of safeArray(rows)) {
+    if (!row || typeof row !== "object") continue;
+
+    const key = getRowKey(row);
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    out.push(row);
+  }
+
+  return out;
+}
+
+function isCompletedShadow(row) {
+  const status = String(row?.status || "").toUpperCase();
+
+  if (!status || status === "OPEN") return false;
+
+  return (
+    Number.isFinite(Number(row?.exitR)) ||
+    Number.isFinite(Number(row?.pnlPct)) ||
+    Boolean(row?.win) ||
+    Boolean(row?.loss)
+  );
+}
+
+function isClosedAction(row) {
+  const action = normalizeAction(row?.action, "");
+  const status = String(row?.status || "").toUpperCase();
+
+  if (row?.closed === true || row?.isClosed === true) return true;
+  if (["EXIT", "TP", "SL"].includes(action)) return true;
+  if (["HIT_TP", "HIT_SL", "HORIZON_DONE", "DONE", "CLOSED"].includes(status)) return true;
+  if (row?.exitReason && String(row.exitReason).toUpperCase() !== "RUNNING") return true;
+  if (row?.closedAt || row?.exitedAt || row?.completedAt) return true;
+
+  return false;
+}
+
+function isOpenAction(row) {
+  if (isClosedAction(row)) return false;
+
+  const action = normalizeAction(row?.action, "");
+  const status = String(row?.status || "").toUpperCase();
+
+  if (status === "OPEN") return true;
+  if (row?.closed === false) return true;
+  if (["ENTRY", "HOLD", "PARTIAL_TP", "MOVE_BE", "TRAIL", "ADD"].includes(action)) return true;
+  if (row?.source === "MEMORY_OPEN") return true;
+
+  return false;
+}
+
+function getResultR(row) {
+  return readNumber(row, [
+    "exitR",
+    "resultR",
+    "realizedR",
+    "pnlR",
+    "outcomeR",
+    "rMultiple",
+    "r",
+  ], 0);
+}
+
+function getPnlPct(row) {
+  return readNumber(row, [
+    "pnlPct",
+    "totalPnlPct",
+    "profitPct",
+    "pnlPercent",
+    "triggerPnlPct",
+  ], 0);
+}
+
+function getPlannedRR(row) {
+  return readNumber(row, [
+    "plannedRR",
+    "finalRr",
+    "effectiveRR",
+    "rr",
+    "baseRR",
+    "targetR",
+    "riskReward",
+    "rMultiple",
+  ], 0);
+}
+
+function normalizeAnalysisRow(rawRow, sourceType, config) {
+  const row = safeObject(rawRow);
+  const side = normalizeSide(row.side);
+  const symbol = normalizeSymbol(row.symbol);
+
+  if (!symbol || !side) return null;
+
+  const action = normalizeAction(row.action, "OBSERVE");
+  const source = String(row.source || sourceType || "UNKNOWN").toUpperCase();
+
+  const shadowCompleted = source.includes("SHADOW") && isCompletedShadow(row);
+  const realClosed = sourceType === "REAL_CLOSED";
+  const latestClosed = sourceType === "LATEST" && isClosedAction(row) && !source.includes("SHADOW");
+
+  const closedRaw = realClosed || shadowCompleted || latestClosed || isClosedAction(row);
+  const openRaw = isOpenAction(row);
+
+  const useForStats =
+    realClosed ||
+    latestClosed ||
+    (config.includeShadow && shadowCompleted);
+
+  const isTradeLike =
+    realClosed ||
+    latestClosed ||
+    sourceType === "RECENT_ENTRY" ||
+    sourceType === "MEMORY_OPEN" ||
+    ["ENTRY", "HOLD", "EXIT", "TP", "SL", "PARTIAL_TP", "MOVE_BE", "TRAIL"].includes(action);
+
+  const observationOnly =
+    !isTradeLike ||
+    sourceType === "FEATURE_STORE" ||
+    source.includes("SCAN_OBSERVATION");
+
+  const resultR = getResultR(row);
+  const pnlPct = getPnlPct(row);
+
+  return {
+    ...row,
+
+    source,
+    sourceType,
+
+    symbol,
+    side,
+    action,
+
+    closedRaw,
+    openRaw,
+    useForStats,
+
+    closed: Boolean(useForStats && closedRaw),
+    open: Boolean(!useForStats && openRaw) || Boolean(openRaw && !closedRaw),
+
+    shadowCompleted,
+    realClosed,
+    latestClosed,
+    observationOnly,
+    isTradeLike,
+
+    tradeId:
+      row.tradeId ||
+      row.id ||
+      `${STRATEGY_VERSION}_${symbol}_${side}_${row.createdAt || row.ts || row.closedAt || row.exitedAt || ""}`,
+
+    resultR: safeNumber(resultR, 0),
+    pnlPct: safeNumber(pnlPct, 0),
+    plannedRR: getPlannedRR(row),
+
+    mfeR: safeNumber(row.mfeR, 0),
+    maeR: safeNumber(row.maeR, 0),
+
+    ts: safeNumber(row.ts || row.createdAt || row.closedAt || row.exitedAt || row.completedAt, 0),
+  };
+}
+
+function bucketScoreToIndex(value) {
   const n = safeNumber(value, 0);
 
   if (n >= 85) return 5;
@@ -418,7 +658,7 @@ function bucketScore01To5(value) {
   return 1;
 }
 
-function bucketRr(value) {
+function bucketRrToIndex(value) {
   const n = safeNumber(value, 0);
 
   if (n >= 2) return 5;
@@ -429,37 +669,64 @@ function bucketRr(value) {
   return 1;
 }
 
-function getPlannedR(row) {
-  return safeNumber(
-    row?.plannedRR ??
-      row?.targetR ??
-      row?.rr ??
-      row?.riskReward ??
-      row?.rMultiple,
-    0
-  );
+function setupFallbackQualityIndex(row) {
+  const setup = String(row?.setupClass || row?.oldSetupClass || "").toUpperCase();
+
+  if (setup === "GOD") return 5;
+  if (setup === "A" || setup === "A_SHORT_EXCEPTION") return 4;
+  if (setup === "B" || setup === "B_TREND_PROBE") return 3;
+
+  return 1;
 }
 
 function getQualityIndex(row) {
-  const confluence = bucketScore01To5(row?.confluence);
-  const sniper = bucketScore01To5(row?.sniperScore);
-  const rr = bucketRr(getPlannedR(row));
-  const score = bucketScore01To5(row?.score ?? row?.moveScore);
+  const parts = [];
 
-  return clamp(Math.min(confluence, sniper, rr, score), 1, 5);
+  const confluence = readNumber(row, ["confluence", "effectiveConfluence", "rawConfluence"], null);
+  const sniper = readNumber(row, ["sniperScore", "rawSniperScore"], null);
+  const score = readNumber(row, ["score", "moveScore"], null);
+  const rr = getPlannedRR(row);
+
+  if (confluence !== null) parts.push(bucketScoreToIndex(confluence));
+  if (sniper !== null) parts.push(bucketScoreToIndex(sniper));
+  if (score !== null) parts.push(bucketScoreToIndex(score));
+  if (rr !== null && Number.isFinite(Number(rr))) parts.push(bucketRrToIndex(rr));
+
+  if (!parts.length) return setupFallbackQualityIndex(row);
+
+  const avg = parts.reduce((sum, n) => sum + n, 0) / parts.length;
+
+  return clamp(Math.round(avg), 1, 5);
 }
 
-function getSpreadBps(row) {
-  if (Number.isFinite(Number(row?.spreadBps))) return Number(row.spreadBps);
-  if (Number.isFinite(Number(row?.spreadPct))) return Number(row.spreadPct) * 10000;
+function getObIndex(row, side) {
+  const ob = String(row?.obBias || row?.orderbookBias || row?.obSideRelation || "").toUpperCase();
 
-  return 999;
+  if (!ob || ob === "UNKNOWN" || ob === "NEUTRAL") return 3;
+
+  if (ob === "WITH") return 5;
+  if (ob === "AGAINST") return 1;
+
+  const withSide =
+    (side === "LONG" && ob === "BULLISH") ||
+    (side === "SHORT" && ob === "BEARISH");
+
+  return withSide ? 5 : 1;
 }
 
 function getSpreadIndex(row) {
-  const bps = getSpreadBps(row);
+  const spread = readNumber(row, ["spreadPct"], null);
+  const spreadBps = readNumber(row, ["spreadBps"], null);
 
-  if (bps <= 5) return 5;
+  const bps = spreadBps !== null
+    ? spreadBps
+    : spread !== null
+      ? normalizeSpread(spread) * 10000
+      : null;
+
+  if (bps === null) return null;
+
+  if (bps < 8) return 5;
   if (bps <= 12) return 4;
   if (bps <= 16) return 3;
   if (bps <= 25) return 2;
@@ -468,7 +735,9 @@ function getSpreadIndex(row) {
 }
 
 function getDepthIndex(row) {
-  const depth = safeNumber(row?.depthMinUsd1p ?? row?.depthUsd ?? row?.depth, 0);
+  const depth = readNumber(row, ["depthMinUsd1p", "depthUsd", "depth"], null);
+
+  if (depth === null || depth <= 0) return null;
 
   if (depth >= 250000) return 5;
   if (depth >= 100000) return 4;
@@ -478,18 +747,6 @@ function getDepthIndex(row) {
   return 1;
 }
 
-function getObIndex(row, side) {
-  const ob = String(row?.obBias || row?.orderbookBias || "NEUTRAL").toUpperCase();
-
-  if (ob === "NEUTRAL") return 3;
-
-  const withSide =
-    (side === "LONG" && ob === "BULLISH") ||
-    (side === "SHORT" && ob === "BEARISH");
-
-  return withSide ? 5 : 1;
-}
-
 function getBtcIndex(row, side) {
   const rel = String(row?.btcRel || row?.btcRelation || "").toUpperCase();
 
@@ -497,9 +754,9 @@ function getBtcIndex(row, side) {
   if (["COUNTER", "AGAINST"].includes(rel)) return 1;
   if (["NEUTRAL", "FLAT"].includes(rel)) return 3;
 
-  const state = String(row?.btcState || row?.btc?.state || "NEUTRAL").toUpperCase();
+  const state = String(row?.btcState || row?.btc || "").toUpperCase();
 
-  if (state === "NEUTRAL" || state === "UNKNOWN") return 3;
+  if (!state || state === "UNKNOWN" || state === "NEUTRAL") return 3;
 
   const withSide =
     (side === "LONG" && state.includes("BULL")) ||
@@ -509,7 +766,9 @@ function getBtcIndex(row, side) {
 }
 
 function getFundingIndex(row, side) {
-  const funding = safeNumber(row?.fundingRate ?? row?.funding, 0);
+  const funding = readNumber(row, ["funding", "fundingRate"], null);
+  if (funding === null) return null;
+
   const directional = side === "SHORT" ? -funding : funding;
 
   if (directional <= -0.00035) return 5;
@@ -527,81 +786,117 @@ function getMarketIndex(row, side) {
     getDepthIndex(row),
     getBtcIndex(row, side),
     getFundingIndex(row, side),
-  ];
+  ].filter(n => Number.isFinite(Number(n)));
+
+  if (!parts.length) return 3;
 
   const avg = parts.reduce((sum, n) => sum + n, 0) / parts.length;
 
   return clamp(Math.round(avg), 1, 5);
 }
 
-function isRunnerTrendFlow(flow) {
-  const f = String(flow || "").toUpperCase();
-
-  return ["SQUEEZE", "RUNNING", "BREAKOUT", "BUILDING", "TREND", "TRENDING"].includes(f);
-}
-
-function isStageEntryOrAlmost(stage, action) {
-  const s = String(stage || "").toLowerCase();
-
-  if (s === "entry" || s === "almost") return true;
-
-  return ["ENTRY", "HOLD", "PARTIAL_TP", "MOVE_BE", "TRAIL", "EXIT"].includes(action);
-}
-
-function isRsiTimed(row, side) {
+function rsiTimingOk(row, side) {
   const zone = String(row?.rsiZone || "").toUpperCase();
-  const rsi = safeNumber(row?.rsi, 50);
+  const rsi = readNumber(row, ["rsi"], null);
 
   if (side === "LONG") {
-    if (zone.includes("LOWER") || zone === "MID") return true;
-    return rsi <= 65;
+    if (zone === "MID" || zone.startsWith("LOWER")) return true;
+    if (rsi !== null && rsi <= 65) return true;
+    return false;
   }
 
-  if (zone.includes("UPPER") || zone === "MID") return true;
-  return rsi >= 35;
+  if (zone === "MID" || zone.startsWith("UPPER")) return true;
+  if (rsi !== null && rsi >= 35) return true;
+
+  return false;
 }
 
-function isTfAligned(row, side) {
+function flowTimingOk(row) {
+  const flow = String(row?.flow || row?.scannerFlow || "").toUpperCase();
+
+  return ["TREND", "BUILDING", "BUILDUP", "BREAKOUT", "RUNNING", "SQUEEZE"].includes(flow);
+}
+
+function stageTimingOk(row) {
+  const stage = String(row?.stage || row?.scannerStage || "").toLowerCase();
+  const action = normalizeAction(row?.action, "");
+
+  if (["entry", "almost", "open_position"].includes(stage)) return true;
+  if (["ENTRY", "HOLD", "EXIT", "PARTIAL_TP", "MOVE_BE", "TRAIL"].includes(action)) return true;
+
+  return false;
+}
+
+function tfTimingOk(row, side) {
+  if (row?.tfAligned === true) return true;
   if (row?.tfAligned === false) return false;
 
-  const tfScore = safeNumber(row?.tfScore, 0);
-  const tfStrength = safeNumber(row?.tfStrength, Math.abs(tfScore));
+  const alignment = String(row?.tfAlignment || "").toUpperCase();
+  if (alignment.includes("ALIGNED")) return true;
 
-  if (tfStrength >= 3) return true;
+  const tfStrength = readNumber(row, ["tfStrength"], null);
+  if (tfStrength !== null && tfStrength >= 1) return true;
+
+  const tfScore = readNumber(row, ["tfScore"], null);
+  if (tfScore === null) return false;
+
   if (side === "LONG" && tfScore > 0) return true;
   if (side === "SHORT" && tfScore < 0) return true;
 
   return false;
 }
 
-function hasPullbackOrConfirmation(row) {
-  if (row?.pullbackOk === false) return false;
-  if (row?.confirmationOk === false) return false;
-
-  return true;
+function structureTimingOk(row) {
+  return Boolean(
+    row?.pullbackConfirmed ||
+    row?.sweepConfirmed ||
+    row?.retestConfirmed ||
+    row?.fakeBreakout ||
+    row?.fakeBreakoutConfirmed ||
+    row?.confirmationOk ||
+    row?.nearTpSeen ||
+    row?.reachedHalfR
+  );
 }
 
 function getTimingIndex(row, side) {
-  const action = normalizeAction(row?.action);
-  const stage = String(row?.stage || row?.scannerStage || "").toLowerCase();
-  const flow = String(row?.flow || row?.scannerFlow || "NEUTRAL").toUpperCase();
+  const score =
+    Number(stageTimingOk(row)) +
+    Number(flowTimingOk(row)) +
+    Number(rsiTimingOk(row, side)) +
+    Number(tfTimingOk(row, side)) +
+    Number(structureTimingOk(row));
 
-  const timed =
-    isStageEntryOrAlmost(stage, action) &&
-    isRunnerTrendFlow(flow) &&
-    isRsiTimed(row, side) &&
-    isTfAligned(row, side) &&
-    hasPullbackOrConfirmation(row);
-
-  return timed ? 2 : 1;
+  return score >= 3 ? 2 : 1;
 }
 
 function familyIndex({ qualityIndex, marketIndex, timingIndex }) {
   return ((qualityIndex - 1) * 10) + ((marketIndex - 1) * 2) + timingIndex;
 }
 
+function normalizeExplicitFamilyId(value) {
+  const raw = String(value || "").trim().toUpperCase();
+  const match = raw.match(/^(LONG|SHORT)_(\d{1,2})$/);
+
+  if (!match) return null;
+
+  const index = Number(match[2]);
+  if (index < 1 || index > 50) return null;
+
+  return `${match[1]}_${index}`;
+}
+
 function getFamilyId(row) {
-  const side = normalizeSide(row?.side);
+  const explicit = normalizeExplicitFamilyId(
+    row.runnerFamilyId ||
+    row.familyId ||
+    row.frozenFamilyId ||
+    row.filterFamily
+  );
+
+  if (explicit) return explicit;
+
+  const side = normalizeSide(row.side);
   if (!side) return null;
 
   const qualityIndex = getQualityIndex(row);
@@ -630,7 +925,7 @@ function buildDefinition({ side, qualityIndex, marketIndex, timingIndex }) {
   const q = QUALITY_BUCKETS[qualityIndex - 1];
   const m = MARKET_BUCKETS[marketIndex - 1];
   const t = TIMING_BUCKETS[timingIndex - 1];
-  const timingLabels = buildTimingLabels(side, timingIndex);
+  const timing = buildTimingLabels(side, timingIndex);
 
   return [
     q.key,
@@ -640,16 +935,16 @@ function buildDefinition({ side, qualityIndex, marketIndex, timingIndex }) {
     q.sniper,
     q.rr,
     q.score,
-    timingLabels[0],
-    timingLabels[1],
-    timingLabels[2],
+    timing[0],
+    timing[1],
+    timing[2],
     m.ob,
     m.spread,
     m.depth,
     m.btc,
     m.funding,
-    timingLabels[3],
-    timingLabels[4],
+    timing[3],
+    timing[4],
   ];
 }
 
@@ -663,21 +958,29 @@ function buildFamily(side, qualityIndex, marketIndex, timingIndex) {
     familyId: id,
     index,
     side,
+
     quality: QUALITY_BUCKETS[qualityIndex - 1].key,
     qualityBucket: QUALITY_BUCKETS[qualityIndex - 1].key,
     qualityIndex,
+
     market: MARKET_BUCKETS[marketIndex - 1].key,
     marketBucket: MARKET_BUCKETS[marketIndex - 1].key,
     marketIndex,
+
     timing: TIMING_BUCKETS[timingIndex - 1].key,
     timingBucket: TIMING_BUCKETS[timingIndex - 1].key,
     timingIndex,
+
     definition: labels.join(" | "),
     labels,
 
     observed: 0,
+    observations: 0,
+
     trades: 0,
     closed: 0,
+    realClosed: 0,
+    shadowClosed: 0,
     open: 0,
     pending: 0,
     pendingOutcome: 0,
@@ -686,16 +989,18 @@ function buildFamily(side, qualityIndex, marketIndex, timingIndex) {
     losses: 0,
     breakeven: 0,
 
-    winrate: "0%",
     winrateNum: 0,
+    winrate: "0%",
 
     totalR: 0,
     avgR: 0,
+
     totalPnlPct: 0,
     avgPnlPct: 0,
 
     grossWinR: 0,
     grossLossR: 0,
+
     profitFactor: 0,
     profitFactorR: 0,
     pf: 0,
@@ -705,11 +1010,12 @@ function buildFamily(side, qualityIndex, marketIndex, timingIndex) {
 
     status: "EMPTY",
     score: 0,
+
     examples: [],
   };
 }
 
-function buildFamilies() {
+function buildFamilySet() {
   const long = [];
   const short = [];
 
@@ -727,123 +1033,38 @@ function buildFamilies() {
   }
 
   const all = [...long, ...short];
-  const byId = new Map(all.map(family => [family.id, family]));
+  const byId = new Map(all.map(row => [row.id, row]));
 
-  return { all, long, short, byId };
-}
-
-function isPerformanceEvent(row) {
-  const action = normalizeAction(row?.action);
-
-  if (!row || typeof row !== "object") return false;
-  if (!normalizeSide(row?.side)) return false;
-  if (!normalizeSymbol(row?.symbol)) return false;
-
-  if (row?.closed === true) return true;
-
-  if (["ENTRY", "HOLD", "PARTIAL_TP", "MOVE_BE", "TRAIL", "ADD", "EXIT", "TP", "SL"].includes(action)) {
-    return true;
-  }
-
-  if (
-    row?.exitReason ||
-    row?.resultR !== undefined ||
-    row?.realizedR !== undefined ||
-    row?.exitR !== undefined
-  ) {
-    return true;
-  }
-
-  return false;
-}
-
-function isClosedEvent(row) {
-  const action = normalizeAction(row?.action);
-
-  if (row?.closed === true) return true;
-  if (["EXIT", "TP", "SL"].includes(action)) return true;
-  if (row?.exitReason && row?.exitReason !== "RUNNING") return true;
-
-  return false;
-}
-
-function isOpenEvent(row) {
-  const action = normalizeAction(row?.action);
-
-  if (isClosedEvent(row)) return false;
-
-  return ["ENTRY", "HOLD", "PARTIAL_TP", "MOVE_BE", "TRAIL", "ADD"].includes(action);
-}
-
-function getResultR(row, closed) {
-  for (const value of [row?.resultR, row?.realizedR, row?.exitR, row?.pnlR, row?.r]) {
-    const n = safeNumber(value, Number.NaN);
-    if (Number.isFinite(n)) return n;
-  }
-
-  if (closed) {
-    const currentR = safeNumber(row?.currentR, Number.NaN);
-    if (Number.isFinite(currentR)) return currentR;
-  }
-
-  return 0;
-}
-
-function getPnlPct(row) {
-  for (const value of [row?.pnlPct, row?.totalPnlPct, row?.profitPct, row?.pnlPercent]) {
-    const n = safeNumber(value, Number.NaN);
-    if (Number.isFinite(n)) return n;
-  }
-
-  return 0;
-}
-
-function compactExample(row, normalized) {
   return {
-    tradeId: row?.tradeId || row?.id || normalized.tradeId,
-    symbol: normalized.symbol,
-    side: normalized.side,
-    action: normalizeAction(row?.action),
-    closed: normalized.closed,
-    resultR: normalized.resultR,
-    pnlPct: normalized.pnlPct,
-    exitReason: row?.exitReason || row?.reason || null,
-    entryType: row?.entryType || row?.runnerEntryType || null,
-    setupClass: row?.setupClass || null,
-    ts: row?.ts || row?.closedAt || row?.createdAt || null,
+    all,
+    long,
+    short,
+    byId,
   };
 }
 
-function normalizePerformanceEvent(row) {
-  const symbol = normalizeSymbol(row?.symbol);
-  const side = normalizeSide(row?.side);
-  const familyId = getFamilyId(row);
-
-  if (!symbol || !side || !familyId) return null;
-
-  const closed = isClosedEvent(row);
-  const open = isOpenEvent(row);
-  const resultR = getResultR(row, closed);
-  const pnlPct = getPnlPct(row);
-
-  const tradeId =
-    row?.tradeId ||
-    row?.id ||
-    `RUNNER_${symbol}_${side}_${row?.entry || ""}_${row?.ts || row?.closedAt || ""}`;
-
+function compactExample(row) {
   return {
-    raw: row,
-    tradeId,
-    symbol,
-    side,
-    familyId,
-    closed,
-    open,
-    pending: !closed && !open,
-    resultR,
-    pnlPct,
-    mfeR: safeNumber(row?.mfeR, 0),
-    maeR: safeNumber(row?.maeR, 0),
+    source: row.source,
+    sourceType: row.sourceType,
+    tradeId: row.tradeId,
+    symbol: row.symbol,
+    side: row.side,
+    action: row.action,
+    closed: row.closed,
+    open: row.open,
+    resultR: row.resultR,
+    pnlPct: row.pnlPct,
+    plannedRR: row.plannedRR,
+    setupClass: row.setupClass || null,
+    entryReason: row.entryReason || row.reason || row.entryType || null,
+    exitReason: row.exitReason || null,
+    rsiZone: row.rsiZone || null,
+    obBias: row.obBias || null,
+    flow: row.flow || null,
+    confluence: row.confluence ?? null,
+    sniperScore: row.sniperScore ?? null,
+    ts: row.ts || null,
   };
 }
 
@@ -879,11 +1100,8 @@ function classifyFamilyStatus(family, config) {
 }
 
 function finalizeFamily(family, config) {
-  family.pendingOutcome = Math.max(0, family.observed - family.closed - family.open);
+  family.pendingOutcome = Math.max(0, family.pendingOutcome);
   family.pending = family.pendingOutcome;
-
-  family.winrateNum = family.closed > 0 ? family.wins / family.closed : 0;
-  family.winrate = `${round(family.winrateNum * 100, 1)}%`;
 
   family.totalR = round(family.totalR, 3);
   family.avgR = family.closed > 0 ? round(family.totalR / family.closed, 3) : 0;
@@ -894,6 +1112,9 @@ function finalizeFamily(family, config) {
   family.grossWinR = round(family.grossWinR, 3);
   family.grossLossR = round(family.grossLossR, 3);
 
+  family.winrateNum = family.closed > 0 ? family.wins / family.closed : 0;
+  family.winrate = pctText(family.winrateNum);
+
   family.profitFactor =
     family.grossLossR > 0
       ? round(family.grossWinR / family.grossLossR, 3)
@@ -901,8 +1122,8 @@ function finalizeFamily(family, config) {
         ? round(family.grossWinR, 3)
         : 0;
 
-  family.pf = family.profitFactor;
   family.profitFactorR = family.profitFactor;
+  family.pf = family.profitFactor;
 
   family.avgMfeR = family.closed > 0 ? round(family.avgMfeR / family.closed, 3) : 0;
   family.avgMaeR = family.closed > 0 ? round(family.avgMaeR / family.closed, 3) : 0;
@@ -932,7 +1153,7 @@ function rankPnlFirst(a, b) {
   const avgR = safeNumber(b.avgR, 0) - safeNumber(a.avgR, 0);
   if (avgR !== 0) return avgR;
 
-  const pf = safeNumber(b.pf ?? b.profitFactor, 0) - safeNumber(a.pf ?? a.profitFactor, 0);
+  const pf = safeNumber(b.pf, 0) - safeNumber(a.pf, 0);
   if (pf !== 0) return pf;
 
   const closed = safeNumber(b.closed, 0) - safeNumber(a.closed, 0);
@@ -971,6 +1192,7 @@ function summarizeStatuses(rows) {
 
   for (const row of safeArray(rows)) {
     const status = String(row.status || "EMPTY").toUpperCase();
+
     if (out[status] === undefined) out[status] = 0;
     out[status] += 1;
   }
@@ -987,78 +1209,141 @@ function buildFilterValues() {
       "quality",
       "market",
       "timing",
+      "setupClass",
+      "entryReason",
       "confluence",
       "sniperScore",
-      "rr",
+      "plannedRR",
       "score",
       "stage",
       "flow",
       "rsiZone",
       "obBias",
-      "spreadBps",
+      "spreadPct",
       "depthMinUsd1p",
       "btcState",
       "funding",
       "tfScore",
+      "tfStrength",
+      "mfeR",
+      "maeR",
+      "source",
+      "sourceType",
     ],
-    qualityBuckets: Object.fromEntries(QUALITY_BUCKETS.map(b => [b.key, b])),
-    marketBuckets: Object.fromEntries(MARKET_BUCKETS.map(b => [b.key, b])),
-    timingBuckets: Object.fromEntries(TIMING_BUCKETS.map(b => [b.key, b])),
+    qualityBuckets: Object.fromEntries(QUALITY_BUCKETS.map(row => [row.key, row])),
+    marketBuckets: Object.fromEntries(MARKET_BUCKETS.map(row => [row.key, row])),
+    timingBuckets: Object.fromEntries(TIMING_BUCKETS.map(row => [row.key, row])),
   };
 }
 
-function buildReport(events, config) {
-  const familySet = buildFamilies();
+function addRowToFamily(family, row, config) {
+  family.observed += 1;
 
-  const normalizedEvents = safeArray(events)
-    .filter(isPerformanceEvent)
-    .map(normalizePerformanceEvent)
-    .filter(Boolean);
+  if (row.observationOnly) {
+    family.observations += 1;
+  }
 
-  for (const event of normalizedEvents) {
-    const family = familySet.byId.get(event.familyId);
-    if (!family) continue;
-
-    family.observed += 1;
+  if (row.isTradeLike) {
     family.trades += 1;
+  }
 
-    if (event.closed) {
-      family.closed += 1;
-      family.totalR += event.resultR;
-      family.totalPnlPct += event.pnlPct;
-      family.avgMfeR += event.mfeR;
-      family.avgMaeR += event.maeR;
+  if (row.open) {
+    family.open += 1;
+  }
 
-      if (event.resultR > config.breakevenREps) {
-        family.wins += 1;
-        family.grossWinR += event.resultR;
-      } else if (event.resultR < -config.breakevenREps) {
-        family.losses += 1;
-        family.grossLossR += Math.abs(event.resultR);
-      } else {
-        family.breakeven += 1;
-      }
-    } else if (event.open) {
-      family.open += 1;
-    }
+  if (row.shadowCompleted) {
+    family.shadowClosed += 1;
+  }
 
-    if (family.examples.length < config.maxExamplesPerFamily) {
-      family.examples.push(compactExample(event.raw, event));
+  if (row.realClosed || row.latestClosed) {
+    family.realClosed += 1;
+  }
+
+  if (row.closed) {
+    family.closed += 1;
+    family.totalR += row.resultR;
+    family.totalPnlPct += row.pnlPct;
+    family.avgMfeR += row.mfeR;
+    family.avgMaeR += row.maeR;
+
+    if (row.resultR > config.breakevenREps) {
+      family.wins += 1;
+      family.grossWinR += row.resultR;
+    } else if (row.resultR < -config.breakevenREps) {
+      family.losses += 1;
+      family.grossLossR += Math.abs(row.resultR);
+    } else {
+      family.breakeven += 1;
     }
   }
 
-  const all = familySet.all.map(family => finalizeFamily(family, config));
+  const pending =
+    !row.closed &&
+    !row.open &&
+    (
+      row.observationOnly ||
+      sourceIsPendingOutcome(row)
+    );
+
+  if (pending) {
+    family.pendingOutcome += 1;
+  }
+
+  if (family.examples.length < config.maxExamplesPerFamily) {
+    family.examples.push(compactExample(row));
+  }
+}
+
+function sourceIsPendingOutcome(row) {
+  if (row?.sourceType === "FEATURE_STORE") return true;
+
+  const status = String(row?.status || "").toUpperCase();
+  if (status === "OPEN") return true;
+
+  return false;
+}
+
+function buildReport(rows, config) {
+  const familySet = buildFamilySet();
+
+  const normalized = safeArray(rows)
+    .map(row => {
+      const familyId = getFamilyId(row);
+      if (!familyId) return null;
+
+      return {
+        ...row,
+        familyId,
+      };
+    })
+    .filter(Boolean);
+
+  for (const row of normalized) {
+    const family = familySet.byId.get(row.familyId);
+    if (!family) continue;
+
+    addRowToFamily(family, row, config);
+  }
+
+  const all = familySet.all.map(row => finalizeFamily(row, config));
   const long = familySet.long;
   const short = familySet.short;
 
   const closed = all.reduce((sum, row) => sum + row.closed, 0);
+  const realClosed = all.reduce((sum, row) => sum + row.realClosed, 0);
+  const shadowClosed = all.reduce((sum, row) => sum + row.shadowClosed, 0);
   const open = all.reduce((sum, row) => sum + row.open, 0);
   const pendingOutcome = all.reduce((sum, row) => sum + row.pendingOutcome, 0);
+
   const wins = all.reduce((sum, row) => sum + row.wins, 0);
   const losses = all.reduce((sum, row) => sum + row.losses, 0);
   const breakeven = all.reduce((sum, row) => sum + row.breakeven, 0);
+
   const totalR = round(all.reduce((sum, row) => sum + row.totalR, 0), 3);
   const totalPnlPct = round(all.reduce((sum, row) => sum + row.totalPnlPct, 0), 3);
+
+  const trades = all.reduce((sum, row) => sum + row.trades, 0);
+  const observations = all.reduce((sum, row) => sum + row.observations, 0);
 
   const longSummary = summarizeStatuses(long);
   const shortSummary = summarizeStatuses(short);
@@ -1073,8 +1358,9 @@ function buildReport(events, config) {
   const topTotalRFamilies = all
     .filter(row => row.closed > 0)
     .sort((a, b) => {
-      const totalRDiff = safeNumber(b.totalR, 0) - safeNumber(a.totalR, 0);
-      if (totalRDiff !== 0) return totalRDiff;
+      const diff = safeNumber(b.totalR, 0) - safeNumber(a.totalR, 0);
+      if (diff !== 0) return diff;
+
       return rankPnlFirst(a, b);
     })
     .slice(0, 25);
@@ -1082,8 +1368,9 @@ function buildReport(events, config) {
   const topWinrateFamilies = all
     .filter(row => row.closed >= config.minClosed)
     .sort((a, b) => {
-      const wr = safeNumber(b.winrateNum, 0) - safeNumber(a.winrateNum, 0);
-      if (wr !== 0) return wr;
+      const diff = safeNumber(b.winrateNum, 0) - safeNumber(a.winrateNum, 0);
+      if (diff !== 0) return diff;
+
       return rankPnlFirst(a, b);
     })
     .slice(0, 25);
@@ -1102,53 +1389,84 @@ function buildReport(events, config) {
     .slice(0, 8);
 
   const summary = {
-    actions: normalizedEvents.length,
-    trades: normalizedEvents.length,
-    observed: normalizedEvents.length,
+    actions: normalized.length,
+    observations,
+    trades,
+
     open,
     closed,
+    realClosed,
+    shadowClosed: config.includeShadow ? shadowClosed : 0,
+    shadowClosedAvailable: shadowClosed,
+
     pendingOutcome,
+
     wins,
     losses,
     breakeven,
+
     winrateNum: closed > 0 ? wins / closed : 0,
-    winrate: closed > 0 ? `${round((wins / closed) * 100, 1)}%` : "0%",
+    winrate: closed > 0 ? pctText(wins / closed) : "0%",
+
     totalR,
     avgR: closed > 0 ? round(totalR / closed, 3) : 0,
+
     totalPnlPct,
     avgPnlPct: closed > 0 ? round(totalPnlPct / closed, 3) : 0,
+
     longFamilies: longSummary,
     shortFamilies: shortSummary,
+
     familiesWithData: all.filter(row => row.observed > 0).length,
   };
 
   return {
     summary,
+
     diagnostics: {
-      inputEvents: safeArray(events).length,
-      performanceEvents: normalizedEvents.length,
-      droppedEvents: Math.max(0, safeArray(events).length - normalizedEvents.length),
+      inputRows: rows.length,
+      normalizedRows: normalized.length,
+      rowsWithoutFamily: Math.max(0, rows.length - normalized.length),
+      includeShadowInStats: config.includeShadow,
+      sourceCounts: normalized.reduce((acc, row) => {
+        acc[row.sourceType] = safeNumber(acc[row.sourceType], 0) + 1;
+        return acc;
+      }, {}),
     },
+
     config,
+
     families: {
       all,
       long,
       short,
       ranked,
+
       best: winnerCandidates,
+
       worst: [...all]
         .filter(row => row.closed > 0)
         .sort((a, b) => safeNumber(a.totalPnlPct, 0) - safeNumber(b.totalPnlPct, 0))
         .slice(0, 25),
+
       topPnl: topPnlFamilies,
       topTotalR: topTotalRFamilies,
       topWinrate: topWinrateFamilies,
     },
+
     filterValues: buildFilterValues(),
+
     familyPerformanceMatrix: {
-      long: { total: long.length, summary: longSummary },
-      short: { total: short.length, summary: shortSummary },
+      long: {
+        total: long.length,
+        summary: longSummary,
+      },
+      short: {
+        total: short.length,
+        summary: shortSummary,
+      },
     },
+
     best: {
       bestLongByPnl: long.filter(row => row.closed > 0).sort(rankPnlFirst)[0] || null,
       bestShortByPnl: short.filter(row => row.closed > 0).sort(rankPnlFirst)[0] || null,
@@ -1156,23 +1474,41 @@ function buildReport(events, config) {
       topTotalRFamily: topTotalRFamilies[0] || null,
       topWinrateFamily: topWinrateFamilies[0] || null,
     },
+
     winnerCandidates,
     winnerCandidateSummary: {
       count: winnerCandidates.length,
-      objective: "highest_total_pnl_pct_then_total_r",
-      message: "Runner candidates gerankt op Total PnL% en daarna Total R, Avg R, PF en sample-size.",
+      objective: "highest_total_pnl_pct_then_total_r_avg_r_pf_sample",
+      message: "Families gerankt op Total PnL%, daarna Total R, Avg R, Profit Factor en sample-size.",
     },
+
     winnerFamilies,
     winnerFamilySummary: {
       count: winnerFamilies.length,
-      rule: "HOT/GOOD/STABLE families met voldoende closed trades, positieve Avg R, positieve Total R en redelijke winrate.",
+      rule: "HOT/GOOD/STABLE families met voldoende closed trades, positieve Avg R, positieve Total R en minimale winrate.",
     },
+
     leaderboards: {
       topPnlFamilies,
       topTotalRFamilies,
       topWinrateFamilies,
     },
   };
+}
+
+function normalizeSourceRows(runtime, latest, config) {
+  const rows = [];
+
+  rows.push(
+    ...safeArray(runtime.closedTrades).map(row => normalizeAnalysisRow(row, "REAL_CLOSED", config)),
+    ...safeArray(runtime.recentEntries).map(row => normalizeAnalysisRow(row, "RECENT_ENTRY", config)),
+    ...safeArray(runtime.memoryOpen).map(row => normalizeAnalysisRow(row, "MEMORY_OPEN", config)),
+    ...safeArray(runtime.featureStore).map(row => normalizeAnalysisRow(row, "FEATURE_STORE", config)),
+    ...safeArray(runtime.shadowOutcomes).map(row => normalizeAnalysisRow(row, "SHADOW_OUTCOME", config)),
+    ...safeArray(latest.rows).map(row => normalizeAnalysisRow(row, "LATEST", config))
+  );
+
+  return uniqueRows(rows.filter(Boolean));
 }
 
 export default async function handler(req, res) {
@@ -1182,141 +1518,169 @@ export default async function handler(req, res) {
     res.setHeader("Cache-Control", "no-store, max-age=0");
     res.setHeader("Content-Type", "application/json; charset=utf-8");
 
-    const reset = normalizeBoolean(getQueryParam(req, "reset", ""), false);
     const includeLatest = normalizeBoolean(getQueryParam(req, "includeLatest", "true"), true);
-    const persistLatest = normalizeBoolean(getQueryParam(req, "persistLatest", "true"), true);
+    const includeShadow = normalizeBoolean(getQueryParam(req, "includeShadow", "false"), false);
+
+    const resetRequested = normalizeBoolean(getQueryParam(req, "reset", ""), false);
 
     const config = {
-      minClosed: Math.max(0, Math.round(safeNumber(getQueryParam(req, "minClosed", DEFAULT_MIN_CLOSED), DEFAULT_MIN_CLOSED))),
-      breakevenREps: safeNumber(getQueryParam(req, "breakevenREps", DEFAULT_BREAKEVEN_R_EPS), DEFAULT_BREAKEVEN_R_EPS),
+      strategyVersion: STRATEGY_VERSION,
+      minClosed: Math.max(
+        0,
+        Math.round(safeNumber(getQueryParam(req, "minClosed", DEFAULT_MIN_CLOSED), DEFAULT_MIN_CLOSED))
+      ),
       minWinrate: safeNumber(getQueryParam(req, "minWinrate", DEFAULT_MIN_WINRATE), DEFAULT_MIN_WINRATE),
+      breakevenREps: safeNumber(
+        getQueryParam(req, "breakevenREps", DEFAULT_BREAKEVEN_R_EPS),
+        DEFAULT_BREAKEVEN_R_EPS
+      ),
+      includeShadow,
       maxExamplesPerFamily: MAX_EXAMPLES_PER_FAMILY,
       familyCountPerSide: 50,
       totalFamilyCount: 100,
     };
 
-    if (reset) {
-      await resetRunnerAnalyzeStore();
-    }
+    const [runtime, latest] = await Promise.all([
+      loadDurableTradeSystemRuntime(),
+      loadLatestTradeSystemRows({ includeLatest }),
+    ]);
 
-    const storeBefore = await loadRunnerAnalyzeStore();
-    const latest = await loadLatestEvents({ includeLatest });
+    const rows = normalizeSourceRows(runtime, latest, config);
+    const report = buildReport(rows, config);
 
-    const storeEventsBefore = safeArray(storeBefore.events);
-    const latestEvents = safeArray(latest.events);
-
-    const mergedForStorage =
-      includeLatest && persistLatest
-        ? uniqueEvents([...storeEventsBefore, ...latestEvents]).slice(-MAX_STORED_EVENTS)
-        : storeEventsBefore;
-
-    const persistResult =
-      includeLatest && persistLatest && latestEvents.length
-        ? await persistRunnerAnalyzeStore(mergedForStorage)
-        : {
-            ok: true,
-            count: storeEventsBefore.length,
-            skipped: true,
-          };
-
-    const storeEvents = mergedForStorage;
-    const mergedEvents = includeLatest
-      ? uniqueEvents([...storeEvents, ...latestEvents])
-      : storeEvents;
-
-    const report = buildReport(mergedEvents, config);
     const latencyMs = Date.now() - startedAt;
-    const dataState = mergedEvents.length > 0 ? "READY" : "EMPTY";
+    const dataState = rows.length > 0 ? "READY" : "EMPTY";
+
+    const durableCount =
+      safeArray(runtime.closedTrades).length +
+      safeArray(runtime.recentEntries).length +
+      safeArray(runtime.memoryOpen).length +
+      safeArray(runtime.featureStore).length +
+      safeArray(runtime.shadowOutcomes).length;
 
     return res.status(200).json({
       ok: true,
+
       profile: SYSTEM_PROFILE,
       scannerProfile: SYSTEM_PROFILE,
       endpoint: ENDPOINT,
+
+      strategyVersion: STRATEGY_VERSION,
       objective: OBJECTIVE,
       strategy: STRATEGY,
+
       dataState,
       latencyMs,
       generatedAt: Date.now(),
       servedAt: Date.now(),
 
+      reset: {
+        requested: resetRequested,
+        ignored: resetRequested,
+        reason: resetRequested
+          ? "analyze leest tradeSystem durable runtime; reset wist geen trading-runtime"
+          : null,
+      },
+
       sources: {
-        mode: "RUNNER_ANALYZE_STORE_PLUS_LATEST",
-        storedEvents: storeEvents.length,
-        latestEvents: latestEvents.length,
-        mergedEvents: mergedEvents.length,
-        persistLatest,
-        persistResult,
-        store: {
-          ok: true,
-          count: storeEvents.length,
-          beforeCount: storeEventsBefore.length,
-          addedApprox: Math.max(0, storeEvents.length - storeEventsBefore.length),
-          path: storeBefore.path,
-          redisEnabled: storeBefore.redisEnabled,
-          fileEnabled: storeBefore.fileEnabled,
-          redisError: storeBefore.redisError || persistResult.redisError || null,
-          loadedAt: storeBefore.loadedAt,
-          lastPersistAt: persistResult.persistedAt || storeBefore.lastPersistAt,
-          maxStoredEvents: MAX_STORED_EVENTS,
+        mode: "TRADE_SYSTEM_DURABLE_RUNTIME_PLUS_LATEST",
+        storedEvents: durableCount,
+        latestEvents: safeArray(latest.rows).length,
+        mergedEvents: rows.length,
+
+        runtime: {
+          ok: runtime.ok,
+          mode: runtime.mode,
+          redisEnabled: runtime.redisEnabled,
+          strategyVersion: STRATEGY_VERSION,
+          error: runtime.error || null,
+          warning: runtime.warning || null,
+          loadedAt: runtime.loadedAt,
+          keys: runtime.keys || {
+            core: RUNTIME_CORE_KEY,
+            recent: RUNTIME_RECENT_KEY,
+            closedMeta: RUNTIME_CLOSED_META_KEY,
+            featureMeta: RUNTIME_FEATURE_META_KEY,
+            shadowMeta: RUNTIME_SHADOW_META_KEY,
+          },
+          counts: {
+            memoryOpen: safeArray(runtime.memoryOpen).length,
+            recentEntries: safeArray(runtime.recentEntries).length,
+            closedTrades: safeArray(runtime.closedTrades).length,
+            featureStore: safeArray(runtime.featureStore).length,
+            shadowOutcomes: safeArray(runtime.shadowOutcomes).length,
+          },
         },
+
         latest: {
           ok: latest.ok,
-          count: latestEvents.length,
+          count: safeArray(latest.rows).length,
           updatedAt: latest.updatedAt || 0,
-          note: latest.note || latest.error || null,
+          note: latest.note || null,
         },
       },
 
       report,
 
       source: {
-        mode: storeBefore.mode,
-        storeSource: storeBefore.storeSource,
-        redisKey: storeBefore.redisKey,
-        legacyRedisKey: storeBefore.legacyRedisKey,
-        path: storeBefore.path,
-        redisEnabled: storeBefore.redisEnabled,
-        fileEnabled: storeBefore.fileEnabled,
-        loadedAt: storeBefore.loadedAt,
-        lastPersistAt: persistResult.persistedAt || storeBefore.lastPersistAt,
+        mode: runtime.mode || "TRADE_SYSTEM_DURABLE_RUNTIME",
+        storeSource: "trade_system_durable_runtime",
+        redisEnabled: runtime.redisEnabled,
+        strategyVersion: STRATEGY_VERSION,
+        path: hasRedis() ? `redis:${RUNTIME_CORE_KEY}` : "redis:disabled",
+        loadedAt: runtime.loadedAt,
+        keys: runtime.keys || null,
       },
+
       store: {
-        ok: true,
-        count: storeEvents.length,
-        beforeCount: storeEventsBefore.length,
+        ok: runtime.ok,
+        count: durableCount,
+        beforeCount: durableCount,
         trades: report.summary.trades,
         open: report.summary.open,
         closed: report.summary.closed,
-        maxStoredEvents: MAX_STORED_EVENTS,
+        realClosed: report.summary.realClosed,
+        shadowClosedAvailable: report.summary.shadowClosedAvailable,
+        featureRows: safeArray(runtime.featureStore).length,
       },
+
       latest: {
         ok: latest.ok,
-        count: latestEvents.length,
-        note: latest.note || latest.error || null,
+        count: safeArray(latest.rows).length,
+        note: latest.note || null,
       },
+
       merged: {
-        count: mergedEvents.length,
-        source: includeLatest ? "runner_analyze_store_plus_latest" : "runner_analyze_store_only",
+        count: rows.length,
+        source: includeLatest
+          ? "trade_system_durable_runtime_plus_latest"
+          : "trade_system_durable_runtime_only",
       },
+
       stats: report.summary,
       familyPerformanceMatrix: report.familyPerformanceMatrix,
       best: report.best,
+
       winnerCandidates: report.winnerCandidates,
       winnerCandidateSummary: report.winnerCandidateSummary,
+
       winnerFamilies: report.winnerFamilies,
       winnerFamilySummary: report.winnerFamilySummary,
+
       leaderboards: report.leaderboards,
       families: report.families,
+
+      diagnostics: report.diagnostics,
     });
   } catch (error) {
-    console.error("RUNNER ANALYZE ERROR:", error);
+    console.error("ANALYZE API ERROR:", error);
 
     return res.status(500).json({
       ok: false,
       profile: SYSTEM_PROFILE,
       endpoint: ENDPOINT,
-      error: error?.message || "runner_analyze_failed",
+      strategyVersion: STRATEGY_VERSION,
+      error: error?.message || "analyze_failed",
       stack: process.env.NODE_ENV === "production" ? undefined : error?.stack,
       latencyMs: Date.now() - startedAt,
       servedAt: Date.now(),
