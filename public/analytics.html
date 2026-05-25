@@ -1,473 +1,1028 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="nl">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <title>Runner Analytics Desk</title>
-
-  <link rel="stylesheet" href="main.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>RUNNER ANALYTICS DESK</title>
 
   <style>
     :root {
-      --runner: #8b5cf6;
-      --runner-soft: rgba(139, 92, 246, 0.12);
-      --runner-border: rgba(139, 92, 246, 0.35);
+      --bg: #070a12;
+      --panel: #101522;
+      --panel2: #151c2c;
+      --text: #e7edf7;
+      --muted: #8d99ae;
+      --line: rgba(255,255,255,0.09);
+      --good: #38d996;
+      --bad: #ff5f6d;
+      --warn: #ffcc66;
+      --blue: #7aa2ff;
     }
 
-    .muted {
-      color: var(--muted);
+    * {
+      box-sizing: border-box;
     }
 
-    .header h1 {
-      color: #a78bfa;
-      margin: 0 0 4px;
-      font-size: 28px;
-    }
-
-    #statusLine {
-      color: var(--muted);
-      font-size: 14px;
-      margin-bottom: 16px;
-    }
-
-    .nav {
-      display: flex;
-      gap: 5px;
-      margin-bottom: 24px;
-    }
-
-    .btn {
-      flex: 1;
-      text-align: center;
-      padding: 10px 4px;
-      border-radius: 12px;
-      background: var(--panel);
-      border: 1px solid var(--border);
+    body {
+      margin: 0;
+      background: var(--bg);
       color: var(--text);
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    header {
+      padding: 22px 24px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #0d1320 0%, #070a12 100%);
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+
+    h1 {
+      font-size: 22px;
+    }
+
+    h2 {
+      font-size: 17px;
+      margin-bottom: 12px;
+    }
+
+    h3 {
+      font-size: 14px;
+      margin-bottom: 10px;
+      color: var(--muted);
+    }
+
+    .topbar {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 14px;
+    }
+
+    a, button {
+      border: 1px solid var(--line);
+      background: var(--panel2);
+      color: var(--text);
+      padding: 9px 12px;
+      border-radius: 10px;
       text-decoration: none;
-      font-size: 11px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    button:hover, a:hover {
+      border-color: var(--blue);
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    main {
+      padding: 20px 24px 50px;
+      max-width: 1500px;
+      margin: 0 auto;
+    }
+
+    .status-line {
+      margin: 14px 0 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(150px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      min-height: 82px;
+    }
+
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 8px;
+    }
+
+    .value {
+      font-size: 24px;
+      font-weight: 800;
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .ok {
+      color: var(--good);
+    }
+
+    .bad {
+      color: var(--bad);
+    }
+
+    .warn {
+      color: var(--warn);
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 18px;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 9px 8px;
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+
+    th {
+      color: var(--muted);
       font-weight: 700;
       text-transform: uppercase;
-    }
-
-    .btn.active.purple {
-      background: var(--runner);
-      color: #fff;
-      border-color: var(--runner);
-    }
-
-    .runner-card {
-      background: rgba(139, 92, 246, 0.08);
-      border: 1px solid var(--runner-border);
-      border-radius: 20px;
-      padding: 18px;
-      margin-bottom: 24px;
-      box-shadow: 0 8px 25px rgba(0,0,0,0.2);
-    }
-
-    .runner-title {
-      color: #a78bfa;
-      margin: 0 0 14px;
-      font-size: 20px;
-      font-weight: 900;
-      letter-spacing: 0.5px;
-    }
-
-    .runner-subtitle {
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.5;
-      margin: -8px 0 16px;
-    }
-
-    .metric-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      margin-bottom: 16px;
-    }
-
-    .metric-box {
-      background: rgba(255,255,255,0.04);
-      border: 1px solid rgba(255,255,255,0.06);
-      border-radius: 12px;
-      padding: 12px;
-      min-height: 62px;
-    }
-
-    .metric-box span {
-      display: block;
-      color: var(--muted);
-      font-size: 12px;
-      margin-bottom: 6px;
-    }
-
-    .metric-box strong {
-      font-size: 18px;
-      color: #fff;
-      word-break: break-word;
-    }
-
-    .metric-box strong.good {
-      color: var(--green);
-    }
-
-    .metric-box strong.bad {
-      color: var(--red);
-    }
-
-    .runner-advice {
-      background: rgba(139, 92, 246, 0.14);
-      border-left: 4px solid var(--runner);
-      border-radius: 4px 12px 12px 4px;
-      padding: 12px;
-      margin-bottom: 14px;
-      color: #e2e8f0;
-      line-height: 1.5;
-      font-size: 13px;
-    }
-
-    .runner-advice strong {
-      color: #c4b5fd;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-    }
-
-    .runner-section-label {
-      margin-top: 20px;
-      margin-bottom: 8px;
       font-size: 11px;
-      font-weight: 900;
-      color: #a78bfa;
-      letter-spacing: 1px;
-      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }
 
-    .telemetry-list {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .telemetry-card {
-      background: rgba(0, 0, 0, 0.16);
-      border: 1px solid rgba(139, 92, 246, 0.16);
-      border-radius: 12px;
-      padding: 14px;
-    }
-
-    .telemetry-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
-    }
-
-    .telemetry-name {
-      font-weight: 900;
-      font-size: 13px;
-      color: #e2e8f0;
-      word-break: break-word;
-    }
-
-    .telemetry-badge {
-      background: rgba(139, 92, 246, 0.15);
-      color: #a78bfa;
-      padding: 4px 8px;
-      border-radius: 6px;
-      font-size: 11px;
-      font-weight: 900;
-      border: 1px solid rgba(139, 92, 246, 0.3);
-      white-space: nowrap;
-    }
-
-    .telemetry-advice {
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.5;
-    }
-
-    .side-title {
-      font-size: 20px;
-      font-weight: 900;
-      margin: 32px 0 16px;
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 8px;
-      letter-spacing: 1px;
-    }
-
-    .analysis-card {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 18px;
-      margin-bottom: 16px;
-      box-shadow: 0 8px 25px rgba(0,0,0,0.2);
-    }
-
-    .a-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 16px;
-    }
-
-    .a-title {
-      font-size: 16px;
-      font-weight: 900;
-      letter-spacing: 2px;
-      color: var(--muted);
-    }
-
-    .a-total {
-      background: rgba(255, 255, 255, 0.08);
-      padding: 6px 12px;
-      border-radius: 12px;
-      font-size: 14px;
-      font-weight: 900;
-      white-space: nowrap;
-    }
-
-    .a-stats {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      margin-bottom: 16px;
-    }
-
-    .a-stat-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      font-size: 13px;
-      background: rgba(255, 255, 255, 0.02);
-      padding: 8px 12px;
-      border-radius: 10px;
-    }
-
-    .a-stat-label {
-      color: var(--muted);
-    }
-
-    .a-stat-val {
-      font-weight: 900;
-      font-size: 14px;
-    }
-
-    .a-stat-val.good {
-      color: var(--green);
-    }
-
-    .a-stat-val.bad {
-      color: var(--red);
-    }
-
-    .advice-content {
-      display: none;
-      margin-top: 12px;
-      background: rgba(139, 92, 246, 0.1);
-      border-left: 4px solid var(--runner);
-      padding: 12px 14px;
-      border-radius: 4px 12px 12px 4px;
-      font-size: 13px;
-      line-height: 1.6;
-    }
-
-    .advice-content strong {
-      color: #a78bfa;
-      font-size: 12px;
-      letter-spacing: 1px;
-      text-transform: uppercase;
-      display: block;
-      margin-bottom: 4px;
-    }
-
-    .advice-toggle-btn {
-      background: rgba(139, 92, 246, 0.1);
-      border: 1px solid rgba(139, 92, 246, 0.3);
-      border-radius: 8px;
-      color: #a78bfa;
-      width: 100%;
-      padding: 10px;
-      text-align: center;
-      font-weight: 900;
-      cursor: pointer;
-      transition: 0.2s;
-      font-size: 13px;
-      margin-top: 10px;
-    }
-
-    .advice-toggle-btn:hover {
-      background: rgba(139, 92, 246, 0.18);
+    tr:hover td {
+      background: rgba(255,255,255,0.025);
     }
 
     .table-wrap {
       overflow-x: auto;
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      margin-top: 10px;
-    }
-
-    .runner-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-      min-width: 900px;
-    }
-
-    .runner-table th,
-    .runner-table td {
-      padding: 10px;
-      border-bottom: 1px solid var(--border);
-      text-align: left;
-      white-space: nowrap;
-    }
-
-    .runner-table th {
-      color: #a78bfa;
-      background: rgba(139, 92, 246, 0.08);
-      text-transform: uppercase;
-      letter-spacing: 0.7px;
-      font-size: 11px;
-    }
-
-    .runner-table td {
-      color: #e5e7eb;
-    }
-
-    .runner-table tr:last-child td {
-      border-bottom: none;
     }
 
     .pill {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
+      display: inline-block;
+      padding: 3px 7px;
       border-radius: 999px;
-      padding: 4px 8px;
-      font-size: 11px;
-      font-weight: 900;
-      border: 1px solid var(--border);
+      border: 1px solid var(--line);
       background: rgba(255,255,255,0.04);
-      color: var(--muted);
+      font-size: 11px;
+      color: var(--text);
     }
 
     .pill.good {
-      color: var(--green);
-      border-color: rgba(34,197,94,0.35);
-      background: rgba(34,197,94,0.10);
+      border-color: rgba(56,217,150,0.35);
+      background: rgba(56,217,150,0.09);
     }
 
     .pill.bad {
-      color: var(--red);
-      border-color: rgba(239,68,68,0.35);
-      background: rgba(239,68,68,0.10);
+      border-color: rgba(255,95,109,0.35);
+      background: rgba(255,95,109,0.09);
     }
 
-    .pill.runner {
-      color: #c4b5fd;
-      border-color: rgba(139,92,246,0.35);
-      background: rgba(139,92,246,0.12);
+    .pill.warn {
+      border-color: rgba(255,204,102,0.35);
+      background: rgba(255,204,102,0.09);
     }
 
-    #globalAdvice {
+    .mono {
+      font-family: Consolas, Monaco, monospace;
+    }
+
+    .empty {
+      color: var(--muted);
+      padding: 12px 0;
+    }
+
+    .error-box {
       display: none;
-      background: var(--panel);
-      border: 1px solid var(--runner);
-      padding: 16px;
-      border-radius: 16px;
-      margin-bottom: 24px;
-      box-shadow: 0 5px 20px rgba(139, 92, 246, 0.15);
+      border: 1px solid rgba(255,95,109,0.35);
+      background: rgba(255,95,109,0.08);
+      color: #ffd7dc;
+      padding: 12px;
+      border-radius: 12px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      white-space: pre-wrap;
     }
 
-    #globalAdviceLabel {
-      font-size: 12px;
-      letter-spacing: 2px;
-      color: #a78bfa;
-      margin-bottom: 8px;
-      font-weight: 900;
-    }
-
-    #globalAdviceContent {
-      color: #e2e8f0;
-      font-size: 14px;
-      line-height: 1.6;
-      font-weight: 800;
-    }
-
-    @media (max-width: 720px) {
-      .header h1 {
-        font-size: 22px;
+    @media (max-width: 1100px) {
+      .grid {
+        grid-template-columns: repeat(3, minmax(150px, 1fr));
       }
 
-      .nav {
-        flex-wrap: wrap;
-      }
-
-      .btn {
-        flex: 1 1 30%;
-      }
-
-      .metric-grid,
-      .a-stats {
+      .split {
         grid-template-columns: 1fr;
       }
+    }
 
-      .telemetry-head {
-        align-items: flex-start;
-        flex-direction: column;
+    @media (max-width: 650px) {
+      main {
+        padding: 16px;
+      }
+
+      .grid {
+        grid-template-columns: repeat(2, minmax(120px, 1fr));
+      }
+
+      .value {
+        font-size: 20px;
       }
     }
   </style>
 </head>
 
 <body>
-  <div class="pageShell">
+  <header>
+    <h1>RUNNER ANALYTICS DESK</h1>
 
-    <div class="header">
-      <h1>🚀 RUNNER ANALYTICS DESK</h1>
-      <div id="statusLine">Laden...</div>
+    <div class="topbar">
+      <a href="/">Home</a>
+      <a href="/bull.html">Bull</a>
+      <a href="/bear.html">Bear</a>
+      <a href="/runner.html">Runner</a>
+      <a href="/analytics.html">Analyse</a>
 
-      <div class="nav">
-        <a href="index.html" class="btn">Home</a>
-        <a href="bull.html" class="btn">Bull</a>
-        <a href="bear.html" class="btn">Bear</a>
-        <a href="signals.html" class="btn">Runner</a>
-        <a href="analytics.html" class="btn active purple">Analyse</a>
+      <button id="refreshBtn" type="button">Refresh</button>
+      <button id="runBtn" type="button">Run trade-funnel</button>
+    </div>
+
+    <div id="statusLine" class="status-line">Initialiseren...</div>
+  </header>
+
+  <main>
+    <div id="errorBox" class="error-box"></div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="label">Data state</div>
+        <div id="scanReadyValue" class="value warn">INIT</div>
+        <div id="sourceValue" class="sub">source: -</div>
+      </div>
+
+      <div class="card">
+        <div class="label">Funnel</div>
+        <div id="funnelValue" class="value">0</div>
+        <div id="funnelSub" class="sub">bull 0 / bear 0</div>
+      </div>
+
+      <div class="card">
+        <div class="label">Trades</div>
+        <div id="tradesValue" class="value">0</div>
+        <div id="tradesSub" class="sub">entries 0 / waits 0</div>
+      </div>
+
+      <div class="card">
+        <div class="label">Candidates</div>
+        <div id="candidatesValue" class="value">0</div>
+        <div id="candidatesSub" class="sub">trade-funnel input 0</div>
+      </div>
+
+      <div class="card">
+        <div class="label">Open positions</div>
+        <div id="openPositionsValue" class="value">0</div>
+        <div id="openPositionsSub" class="sub">runtime memory</div>
+      </div>
+
+      <div class="card">
+        <div class="label">Updated</div>
+        <div id="updatedValue" class="value">-</div>
+        <div id="latencyValue" class="sub">latency -</div>
       </div>
     </div>
 
-    <div class="trade-section">
-
-      <div id="globalAdvice">
-        <div id="globalAdviceLabel">🧠 RUNNER STATUS</div>
-        <div id="globalAdviceContent"></div>
+    <section>
+      <h2>Runner Telemetry Engine</h2>
+      <div class="table-wrap">
+        <table>
+          <tbody id="telemetryBody">
+            <tr>
+              <td class="empty">Runner telemetry laden...</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
+    </section>
 
-      <div id="runnerTelemetry" class="runner-card">
-        <h2 class="runner-title">🚀 Runner Telemetry Engine</h2>
-        <p class="muted">Runner telemetry laden...</p>
+    <section>
+      <h2>Runner Performance</h2>
+      <div class="table-wrap">
+        <table>
+          <tbody id="performanceBody">
+            <tr>
+              <td class="empty">Runner performance laden...</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
+    </section>
 
-      <div id="runnerPerformance" class="runner-card">
-        <h2 class="runner-title">📊 Runner Performance</h2>
-        <p class="muted">Runner performance laden...</p>
+    <section>
+      <h2>Funnel Buckets</h2>
+      <div class="split">
+        <div>
+          <h3>Bull</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Stage</th>
+                  <th>Count</th>
+                  <th>Top symbols</th>
+                </tr>
+              </thead>
+              <tbody id="bullBucketsBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div>
+          <h3>Bear</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Stage</th>
+                  <th>Count</th>
+                  <th>Top symbols</th>
+                </tr>
+              </thead>
+              <tbody id="bearBucketsBody"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
+    </section>
 
-      <div id="analytics">
-        <p style="color:var(--muted); text-align:center; margin-top:40px;">
-          Scanner funnel analytics ophalen...
-        </p>
+    <section>
+      <h2>Trade Actions</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Action</th>
+              <th>Reason</th>
+              <th>Flow</th>
+              <th>Score</th>
+              <th>Conf</th>
+              <th>Sniper</th>
+              <th>RSI</th>
+              <th>OB</th>
+              <th>RR</th>
+              <th>R</th>
+              <th>PnL%</th>
+            </tr>
+          </thead>
+          <tbody id="actionsBody">
+            <tr>
+              <td colspan="13" class="empty">Scanner funnel analytics ophalen...</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
+    </section>
 
-    </div>
-  </div>
+    <section>
+      <h2>Open Positions</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Setup</th>
+              <th>Entry</th>
+              <th>SL</th>
+              <th>TP</th>
+              <th>Current R</th>
+              <th>MFE R</th>
+              <th>MAE R</th>
+              <th>Partial</th>
+              <th>BE</th>
+              <th>Trail</th>
+            </tr>
+          </thead>
+          <tbody id="openPositionsBody"></tbody>
+        </table>
+      </div>
+    </section>
 
-  <script src="analytics.js"></script>
+    <section>
+      <h2>Reject / Wait Reasons</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Reason</th>
+              <th>Count</th>
+            </tr>
+          </thead>
+          <tbody id="reasonsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Trade Funnel Input Symbols</h2>
+      <div id="symbolsBox" class="mono empty">-</div>
+    </section>
+  </main>
+
+  <script>
+    const ENDPOINTS = {
+      latest: "/api/public-latest",
+      tradeFunnelRead: "/api/trade-funnel?store=false",
+      tradeFunnelRun: "/api/trade-funnel?action=run&store=true&notify=false",
+    };
+
+    const FETCH_TIMEOUT_MS = 15000;
+    const RUN_TIMEOUT_MS = 65000;
+
+    const STAGES = ["entry", "almost", "buildup", "radar"];
+
+    let lastPayload = null;
+    let loading = false;
+
+    function byId(id) {
+      return document.getElementById(id);
+    }
+
+    function safeArray(value) {
+      return Array.isArray(value) ? value : [];
+    }
+
+    function safeNumber(value, fallback = 0) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
+
+    function esc(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function fmtNumber(value, decimals = 2) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "-";
+      return n.toFixed(decimals);
+    }
+
+    function fmtMaybe(value, decimals = 2) {
+      if (value === undefined || value === null || value === "") return "-";
+      return fmtNumber(value, decimals);
+    }
+
+    function fmtPct(value) {
+      if (value === undefined || value === null || value === "") return "-";
+      const n = Number(value);
+      if (!Number.isFinite(n)) return String(value);
+      return `${n.toFixed(2)}%`;
+    }
+
+    function fmtTime(ts) {
+      const n = Number(ts);
+      if (!Number.isFinite(n) || n <= 0) return "-";
+
+      try {
+        return new Date(n).toLocaleString("nl-NL");
+      } catch {
+        return "-";
+      }
+    }
+
+    function getFunnel(data) {
+      return {
+        bull: {
+          entry: safeArray(data?.funnel?.bull?.entry),
+          almost: safeArray(data?.funnel?.bull?.almost),
+          buildup: safeArray(data?.funnel?.bull?.buildup),
+          radar: safeArray(data?.funnel?.bull?.radar),
+        },
+        bear: {
+          entry: safeArray(data?.funnel?.bear?.entry),
+          almost: safeArray(data?.funnel?.bear?.almost),
+          buildup: safeArray(data?.funnel?.bear?.buildup),
+          radar: safeArray(data?.funnel?.bear?.radar),
+        },
+      };
+    }
+
+    function countSide(funnel, side) {
+      return STAGES.reduce((sum, stage) => {
+        return sum + safeArray(funnel?.[side]?.[stage]).length;
+      }, 0);
+    }
+
+    function countFunnel(funnel) {
+      return countSide(funnel, "bull") + countSide(funnel, "bear");
+    }
+
+    function getActions(data) {
+      const direct = safeArray(data?.trades);
+      const resultActions = safeArray(data?.tradeSystemResult?.actions);
+
+      return resultActions.length ? resultActions : direct;
+    }
+
+    function getOpenPositions(data) {
+      return safeArray(data?.tradeSystemResult?.openPositions);
+    }
+
+    function hasRealData(data) {
+      const funnel = getFunnel(data);
+      const actions = getActions(data);
+
+      return (
+        countFunnel(funnel) > 0 ||
+        actions.length > 0 ||
+        safeNumber(data?.scannerUpdatedAt, 0) > 0 ||
+        safeNumber(data?.tradeFunnelUpdatedAt, 0) > 0 ||
+        safeNumber(data?.updatedAt, 0) > 0
+      );
+    }
+
+    function mergePayload(latest, funnel) {
+      if (!latest && !funnel) return null;
+      if (!funnel?.ok) return latest;
+      if (!latest?.ok) return funnel;
+
+      const latestFunnel = getFunnel(latest);
+      const tradeFunnel = getFunnel(funnel);
+
+      const mergedFunnel = countFunnel(tradeFunnel) > 0 ? tradeFunnel : latestFunnel;
+
+      const latestActions = getActions(latest);
+      const funnelActions = getActions(funnel);
+
+      return {
+        ...latest,
+        ...funnel,
+
+        source: `${latest?.source || "latest"} + ${funnel?.source || "trade_funnel"}`,
+
+        funnel: mergedFunnel,
+        funnelCount: countFunnel(mergedFunnel),
+        bullCount: countSide(mergedFunnel, "bull"),
+        bearCount: countSide(mergedFunnel, "bear"),
+
+        trades: funnelActions.length ? funnelActions : latestActions,
+
+        tradeSystemResult:
+          funnel?.tradeSystemResult ||
+          latest?.tradeSystemResult ||
+          null,
+
+        dashboardStats:
+          funnel?.dashboardStats ||
+          latest?.dashboardStats ||
+          null,
+
+        scanReady:
+          Boolean(latest?.scanReady || funnel?.scanReady) ||
+          hasRealData(latest) ||
+          hasRealData(funnel),
+      };
+    }
+
+    async function fetchJson(url, timeoutMs = FETCH_TIMEOUT_MS) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        const res = await fetch(url, {
+          method: "GET",
+          cache: "no-store",
+          signal: controller.signal,
+          headers: {
+            "Accept": "application/json",
+          },
+        });
+
+        const text = await res.text();
+
+        let json = null;
+
+        try {
+          json = text ? JSON.parse(text) : null;
+        } catch {
+          throw new Error(`JSON parse failed for ${url}: ${text.slice(0, 300)}`);
+        }
+
+        if (!res.ok) {
+          throw new Error(json?.error || `HTTP ${res.status} for ${url}`);
+        }
+
+        return json;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    function setLoadingState(isLoading, text = "") {
+      loading = isLoading;
+      byId("refreshBtn").disabled = isLoading;
+      byId("runBtn").disabled = isLoading;
+
+      if (text) {
+        byId("statusLine").textContent = text;
+      }
+    }
+
+    function showError(message) {
+      const box = byId("errorBox");
+
+      if (!message) {
+        box.style.display = "none";
+        box.textContent = "";
+        return;
+      }
+
+      box.style.display = "block";
+      box.textContent = message;
+    }
+
+    function pill(value) {
+      const v = String(value || "-").toUpperCase();
+
+      let cls = "";
+
+      if (["ENTRY", "EXIT", "TP", "WIN", "RUNNING", "READY"].includes(v)) cls = "good";
+      if (["WAIT", "SL", "LOSS", "ERROR", "FAILED", "BUSY"].includes(v)) cls = "bad";
+      if (["HOLD", "PARTIAL_TP", "MOVE_BE", "TRAIL", "INIT"].includes(v)) cls = "warn";
+
+      return `<span class="pill ${cls}">${esc(value || "-")}</span>`;
+    }
+
+    function renderStatus(data) {
+      const funnel = getFunnel(data);
+      const actions = getActions(data);
+      const openPositions = getOpenPositions(data);
+
+      const entries = actions.filter(row => String(row?.action || "").toUpperCase() === "ENTRY").length;
+      const waits = actions.filter(row => String(row?.action || "").toUpperCase() === "WAIT").length;
+
+      const ready = Boolean(data?.scanReady) || hasRealData(data);
+
+      byId("scanReadyValue").textContent = ready ? "READY" : "NO DATA";
+      byId("scanReadyValue").className = `value ${ready ? "ok" : "bad"}`;
+
+      byId("sourceValue").textContent = `source: ${data?.source || "-"}`;
+
+      byId("funnelValue").textContent = String(countFunnel(funnel));
+      byId("funnelSub").textContent = `bull ${countSide(funnel, "bull")} / bear ${countSide(funnel, "bear")}`;
+
+      byId("tradesValue").textContent = String(actions.length);
+      byId("tradesSub").textContent = `entries ${entries} / waits ${waits}`;
+
+      byId("candidatesValue").textContent = String(
+        safeNumber(data?.candidates, 0) ||
+        safeNumber(data?.tradeSystemResult?.candidatesCount, 0)
+      );
+
+      byId("candidatesSub").textContent =
+        `trade-funnel input ${safeNumber(data?.tradeFunnelInputCount, 0)}`;
+
+      byId("openPositionsValue").textContent = String(openPositions.length);
+      byId("openPositionsSub").textContent =
+        `runnerStats ${safeNumber(data?.tradeSystemResult?.runnerStats?.openPositions, openPositions.length)}`;
+
+      const updatedAt =
+        data?.tradeFunnelUpdatedAt ||
+        data?.scannerUpdatedAt ||
+        data?.updatedAt ||
+        data?.servedAt ||
+        0;
+
+      byId("updatedValue").textContent = fmtTime(updatedAt);
+
+      const latency = updatedAt ? Date.now() - Number(updatedAt) : 0;
+      byId("latencyValue").textContent = latency > 0
+        ? `age ${Math.round(latency / 1000)}s`
+        : "latency -";
+
+      const busy = Boolean(data?.tradeFunnelBusy);
+      const err = data?.tradeFunnelError || null;
+
+      byId("statusLine").textContent = busy
+        ? `Trade-funnel busy: ${err || "lock active"}`
+        : `Laatste update: ${fmtTime(updatedAt)} | actions ${actions.length} | funnel ${countFunnel(funnel)}`;
+    }
+
+    function renderTelemetry(data) {
+      const stats = data?.tradeSystemResult?.runnerStats || {};
+      const result = data?.tradeSystemResult || {};
+
+      const rows = [
+        ["Profile", data?.profile || data?.scannerProfile || "RUNNER"],
+        ["Scan ready", Boolean(data?.scanReady) || hasRealData(data) ? "true" : "false"],
+        ["Trade-funnel mode", data?.tradeFunnelMode || "-"],
+        ["Trade-funnel busy", data?.tradeFunnelBusy ? "true" : "false"],
+        ["Trade-funnel error", data?.tradeFunnelError || "-"],
+        ["Run ID", result?.runId || "-"],
+        ["Strategy", result?.strategyVersion || stats?.strategyVersion || "-"],
+        ["Runs", stats?.runs ?? "-"],
+        ["Entries", stats?.entries ?? "-"],
+        ["Exits", stats?.exits ?? "-"],
+        ["Open positions", stats?.openPositions ?? "-"],
+        ["Durable saved", fmtTime(stats?.durableSavedAt)],
+      ];
+
+      byId("telemetryBody").innerHTML = rows.map(([k, v]) => `
+        <tr>
+          <th>${esc(k)}</th>
+          <td>${esc(v)}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderPerformance(data) {
+      const stats = data?.tradeSystemResult?.runnerStats || {};
+
+      const rows = [
+        ["Wins", stats?.wins ?? 0],
+        ["Losses", stats?.losses ?? 0],
+        ["Winrate", fmtPct(stats?.winrate ?? 0)],
+        ["Total R", fmtMaybe(stats?.totalR, 3)],
+        ["Avg R", fmtMaybe(stats?.avgR, 3)],
+        ["Total PnL%", fmtMaybe(stats?.totalPnlPct, 3)],
+        ["Avg PnL%", fmtMaybe(stats?.avgPnlPct, 3)],
+      ];
+
+      byId("performanceBody").innerHTML = rows.map(([k, v]) => `
+        <tr>
+          <th>${esc(k)}</th>
+          <td>${esc(v)}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderBuckets(data) {
+      const funnel = getFunnel(data);
+
+      function rowsFor(side) {
+        return STAGES.map(stage => {
+          const arr = safeArray(funnel?.[side]?.[stage]);
+          const symbols = arr
+            .slice(0, 12)
+            .map(c => `${c.symbol || "-"}:${Math.round(safeNumber(c.moveScore ?? c.score, 0))}`)
+            .join(", ");
+
+          return `
+            <tr>
+              <td>${pill(stage)}</td>
+              <td>${arr.length}</td>
+              <td class="mono">${esc(symbols || "-")}</td>
+            </tr>
+          `;
+        }).join("");
+      }
+
+      byId("bullBucketsBody").innerHTML = rowsFor("bull");
+      byId("bearBucketsBody").innerHTML = rowsFor("bear");
+    }
+
+    function renderActions(data) {
+      const actions = getActions(data).slice(-250).reverse();
+
+      if (!actions.length) {
+        byId("actionsBody").innerHTML = `
+          <tr>
+            <td colspan="13" class="empty">Geen trade actions gevonden.</td>
+          </tr>
+        `;
+        return;
+      }
+
+      byId("actionsBody").innerHTML = actions.map(row => `
+        <tr>
+          <td class="mono">${esc(row.symbol || "-")}</td>
+          <td>${esc(row.side || "-")}</td>
+          <td>${pill(row.action || "-")}</td>
+          <td class="mono">${esc(row.reason || row.exitReason || "-")}</td>
+          <td>${esc(row.flow || row.scannerFlow || "-")}</td>
+          <td>${fmtMaybe(row.score ?? row.moveScore, 0)}</td>
+          <td>${fmtMaybe(row.confluence, 0)}</td>
+          <td>${fmtMaybe(row.sniperScore, 0)}</td>
+          <td>${esc(row.rsiZone || "-")}</td>
+          <td>${esc(row.obBias || "-")}</td>
+          <td>${esc(row.rr ?? row.plannedRR ?? "-")}</td>
+          <td>${fmtMaybe(row.exitR ?? row.realizedR ?? row.pnlR, 3)}</td>
+          <td>${fmtMaybe(row.pnlPct, 3)}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderOpenPositions(data) {
+      const rows = getOpenPositions(data);
+
+      if (!rows.length) {
+        byId("openPositionsBody").innerHTML = `
+          <tr>
+            <td colspan="12" class="empty">Geen open positions.</td>
+          </tr>
+        `;
+        return;
+      }
+
+      byId("openPositionsBody").innerHTML = rows.map(pos => `
+        <tr>
+          <td class="mono">${esc(pos.symbol || "-")}</td>
+          <td>${esc(pos.side || "-")}</td>
+          <td>${esc(pos.setupClass || pos.entryType || "-")}</td>
+          <td>${fmtMaybe(pos.entry, 8)}</td>
+          <td>${fmtMaybe(pos.sl, 8)}</td>
+          <td>${fmtMaybe(pos.tp, 8)}</td>
+          <td>${fmtMaybe(pos.currentR, 3)}</td>
+          <td>${fmtMaybe(pos.mfeR, 3)}</td>
+          <td>${fmtMaybe(pos.maeR, 3)}</td>
+          <td>${pos.partialTaken ? "yes" : "no"}</td>
+          <td>${pos.breakEvenMoved ? "yes" : "no"}</td>
+          <td>${pos.trailingActive ? "yes" : "no"}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderReasons(data) {
+      const reasons = {
+        ...(data?.tradeFunnelRejectCounts || {}),
+        ...(data?.tradeSystemResult?.runnerStats?.waitReasons || {}),
+      };
+
+      const rows = Object.entries(reasons)
+        .map(([reason, count]) => ({ reason, count: safeNumber(count, 0) }))
+        .filter(row => row.count > 0)
+        .sort((a, b) => b.count - a.count);
+
+      if (!rows.length) {
+        byId("reasonsBody").innerHTML = `
+          <tr>
+            <td colspan="2" class="empty">Geen reject/wait reasons.</td>
+          </tr>
+        `;
+        return;
+      }
+
+      byId("reasonsBody").innerHTML = rows.map(row => `
+        <tr>
+          <td class="mono">${esc(row.reason)}</td>
+          <td>${row.count}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderSymbols(data) {
+      const symbols = safeArray(data?.tradeFunnelInputSymbols);
+
+      byId("symbolsBox").textContent = symbols.length
+        ? symbols.join(", ")
+        : "-";
+    }
+
+    function render(data) {
+      if (!data) {
+        showError("Geen payload ontvangen.");
+        return;
+      }
+
+      lastPayload = data;
+
+      renderStatus(data);
+      renderTelemetry(data);
+      renderPerformance(data);
+      renderBuckets(data);
+      renderActions(data);
+      renderOpenPositions(data);
+      renderReasons(data);
+      renderSymbols(data);
+    }
+
+    async function loadDashboard() {
+      if (loading) return;
+
+      setLoadingState(true, "Data ophalen...");
+      showError("");
+
+      const started = Date.now();
+
+      try {
+        const [latestResult, funnelResult] = await Promise.allSettled([
+          fetchJson(`${ENDPOINTS.latest}?_=${Date.now()}`, FETCH_TIMEOUT_MS),
+          fetchJson(`${ENDPOINTS.tradeFunnelRead}&_=${Date.now()}`, FETCH_TIMEOUT_MS),
+        ]);
+
+        const errors = [];
+
+        if (latestResult.status === "rejected") {
+          errors.push(`public-latest: ${latestResult.reason?.message || latestResult.reason}`);
+        }
+
+        if (funnelResult.status === "rejected") {
+          errors.push(`trade-funnel read: ${funnelResult.reason?.message || funnelResult.reason}`);
+        }
+
+        const latest = latestResult.status === "fulfilled" ? latestResult.value : null;
+        const funnel = funnelResult.status === "fulfilled" ? funnelResult.value : null;
+
+        const merged = mergePayload(latest, funnel);
+
+        if (!merged) {
+          throw new Error(errors.join("\n") || "Geen bruikbare API payload.");
+        }
+
+        render(merged);
+
+        if (errors.length) {
+          showError(errors.join("\n"));
+        }
+
+        byId("statusLine").textContent += ` | loaded in ${Date.now() - started}ms`;
+      } catch (error) {
+        showError(error?.message || String(error));
+        render(lastPayload || {
+          ok: false,
+          scanReady: false,
+          source: "frontend_error",
+          funnel: {
+            bull: { entry: [], almost: [], buildup: [], radar: [] },
+            bear: { entry: [], almost: [], buildup: [], radar: [] },
+          },
+          trades: [],
+          tradeSystemResult: {
+            actions: [],
+            openPositions: [],
+            runnerStats: {},
+          },
+        });
+      } finally {
+        setLoadingState(false);
+      }
+    }
+
+    async function runTradeFunnel() {
+      if (loading) return;
+
+      setLoadingState(true, "Trade-funnel run gestart...");
+      showError("");
+
+      const started = Date.now();
+
+      try {
+        const data = await fetchJson(`${ENDPOINTS.tradeFunnelRun}&_=${Date.now()}`, RUN_TIMEOUT_MS);
+        render(data);
+
+        const status = data?.tradeFunnelBusy
+          ? "Trade-funnel lock busy; snapshot getoond."
+          : `Trade-funnel run klaar in ${Date.now() - started}ms`;
+
+        byId("statusLine").textContent = status;
+      } catch (error) {
+        showError(error?.message || String(error));
+      } finally {
+        setLoadingState(false);
+      }
+    }
+
+    byId("refreshBtn").addEventListener("click", loadDashboard);
+    byId("runBtn").addEventListener("click", runTradeFunnel);
+
+    loadDashboard();
+
+    setInterval(() => {
+      if (!loading) loadDashboard();
+    }, 30000);
+  </script>
 </body>
 </html>
