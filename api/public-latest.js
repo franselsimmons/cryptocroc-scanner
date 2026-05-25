@@ -248,6 +248,7 @@ function compactTradeRow(row) {
 
     exit: row.exit,
     exitPrice: row.exitPrice,
+    executionPrice: row.executionPrice,
     exitR: row.exitR,
     realizedR: row.realizedR,
     pnlR: row.pnlR,
@@ -260,11 +261,48 @@ function compactTradeRow(row) {
   };
 }
 
+function compactOpenPosition(pos) {
+  if (!pos || typeof pos !== "object") return pos;
+
+  return {
+    symbol: pos.symbol,
+    side: pos.side,
+    setupClass: pos.setupClass,
+    entryType: pos.entryType || pos.runnerEntryType,
+    runnerEntryType: pos.runnerEntryType || pos.entryType,
+    scannerFlow: pos.scannerFlow,
+    liveEligible: Boolean(pos.liveEligible),
+    shadowOnly: Boolean(pos.shadowOnly),
+
+    entry: pos.entry,
+    sl: pos.sl,
+    initialSl: pos.initialSl,
+    tp: pos.tp,
+    partialTp: pos.partialTp,
+    trailPrice: pos.trailPrice ?? null,
+
+    currentR: safeNumber(pos.currentR, 0),
+    mfeR: safeNumber(pos.mfeR, 0),
+    maeR: safeNumber(pos.maeR, 0),
+
+    partialTaken: Boolean(pos.partialTaken),
+    breakEvenMoved: Boolean(pos.breakEvenMoved),
+    trailingActive: Boolean(pos.trailingActive),
+    adds: safeNumber(pos.adds, 0),
+  };
+}
+
 function compactTradeSystemResult(result) {
   if (!result || typeof result !== "object") return null;
 
-  const actions = safeArray(result.actions).slice(-MAX_PUBLIC_TRADES).map(compactTradeRow);
-  const openPositions = safeArray(result.openPositions).slice(-MAX_PUBLIC_ROWS).map(compactTradeRow);
+  const actions = safeArray(result.actions)
+    .slice(-MAX_PUBLIC_TRADES)
+    .map(compactTradeRow);
+
+  const openPositions = safeArray(result.openPositions)
+    .slice(-MAX_PUBLIC_ROWS)
+    .map(compactOpenPosition);
+
   const stats = result.runnerStats || {};
 
   return {
@@ -287,7 +325,12 @@ function compactTradeSystemResult(result) {
 
       runs: safeNumber(stats.runs, 0),
       entries: safeNumber(stats.entries, 0),
+      partials: safeNumber(stats.partials, 0),
+      movesToBE: safeNumber(stats.movesToBE, 0),
+      trails: safeNumber(stats.trails, 0),
+      adds: safeNumber(stats.adds, 0),
       exits: safeNumber(stats.exits, 0),
+
       wins: safeNumber(stats.wins, 0),
       losses: safeNumber(stats.losses, 0),
       winrate: safeNumber(stats.winrate, 0),
@@ -382,6 +425,7 @@ function hasUsableLatest(payload) {
   if (funnelCount > 0) return true;
   if (tradesCount > 0) return true;
   if (safeNumber(payload?.scannerUpdatedAt, 0) > 0) return true;
+  if (safeNumber(payload?.tradeFunnelUpdatedAt, 0) > 0) return true;
   if (safeNumber(payload?.updatedAt, 0) > 0) return true;
 
   return false;
@@ -414,16 +458,40 @@ function buildRunnerSummary(payload, funnel) {
   };
 }
 
+function inferScanReady({ payload, source, funnel, trades }) {
+  const hasRealData =
+    countFunnel(funnel) > 0 ||
+    trades.length > 0 ||
+    safeNumber(payload?.scannerUpdatedAt, 0) > 0 ||
+    safeNumber(payload?.tradeFunnelUpdatedAt, 0) > 0 ||
+    (
+      source !== "fallback_runner_live" &&
+      safeNumber(payload?.updatedAt, 0) > 0
+    );
+
+  return Boolean(payload?.scanReady || hasRealData);
+}
+
 function safePayload(payload, source) {
   const funnel = compactFunnel(payload?.funnel);
-  const trades = safeArray(payload?.trades).slice(-MAX_PUBLIC_TRADES).map(compactTradeRow);
+  const trades = safeArray(payload?.trades)
+    .slice(-MAX_PUBLIC_TRADES)
+    .map(compactTradeRow);
+
+  const scanReady = inferScanReady({
+    payload,
+    source,
+    funnel,
+    trades,
+  });
 
   const normalizedPayload = {
     ok: payload?.ok !== false,
+    profile: SYSTEM_PROFILE,
     source,
     scannerProfile: payload?.scannerProfile || SYSTEM_PROFILE,
 
-    scanReady: Boolean(payload?.scanReady),
+    scanReady,
     message: payload?.message || null,
 
     funnel,
@@ -544,7 +612,7 @@ export default async function handler(req, res) {
           regime: latest?.regime || "UNKNOWN",
           market: latest?.market || null,
           dashboardStats: latest?.dashboardStats || emptyDashboardStats(Date.now()),
-          updatedAt: Date.now(),
+          updatedAt: latest?.updatedAt || null,
         },
         "fallback_runner_live"
       )
@@ -555,6 +623,7 @@ export default async function handler(req, res) {
     return res.status(500).json({
       ok: false,
       profile: SYSTEM_PROFILE,
+      scanReady: false,
       error: err?.message || "public_latest_runner_failed",
       funnel: emptyFunnel(),
       trades: [],
