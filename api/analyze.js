@@ -2,22 +2,15 @@ import { getLatestScan } from "../lib/scanStore.js";
 import * as analyzeStore from "../lib/analyze/runnerAnalyzeStore.js";
 import * as familyEngine from "../lib/analyze/runnerFamilyEngine.js";
 
+const SYSTEM_PROFILE = "RUNNER";
 const DEFAULT_MIN_CLOSED = 10;
 const DEFAULT_INCLUDE_LATEST = false;
 const MAX_DEBUG_EVENTS = 50;
-
-const SYSTEM_PROFILE = "RUNNER";
 
 // ================= GENERIC HELPERS =================
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
-}
-
-function safeObject(value) {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value
-    : {};
 }
 
 function safeNumber(value, fallback = 0) {
@@ -30,8 +23,8 @@ function normalizeBoolean(value, fallback = false) {
 
   const v = String(value).trim().toLowerCase();
 
-  if (["true", "1", "yes", "y"].includes(v)) return true;
-  if (["false", "0", "no", "n"].includes(v)) return false;
+  if (["true", "1", "yes", "y", "on"].includes(v)) return true;
+  if (["false", "0", "no", "n", "off"].includes(v)) return false;
 
   return fallback;
 }
@@ -74,7 +67,7 @@ function serializeError(error, debug = false) {
   return payload;
 }
 
-// ================= TRADE RECORD HELPERS =================
+// ================= TRADE HELPERS =================
 
 function getTradeId(event) {
   const id =
@@ -83,8 +76,8 @@ function getTradeId(event) {
     event?.positionId ||
     event?.orderId ||
     event?.clientOrderId ||
-    event?.analyzeEventId ||
     event?.analyzeEventKey ||
+    event?.analyzeEventId ||
     event?.eventId ||
     event?.id;
 
@@ -103,8 +96,8 @@ function getEventTs(event, fallback = Date.now()) {
       event?.createdAt ??
       event?.entryTs ??
       event?.analyzeTs ??
-      event?.timestamp ??
-      event?.ts,
+      event?.ts ??
+      event?.timestamp,
     fallback
   );
 }
@@ -121,39 +114,49 @@ function isIgnoredAction(event) {
     action === "HOLD" ||
     action === "RUNNING" ||
     action === "NO_TRADE" ||
-    action === "SKIP" ||
-    action === "COOLDOWN"
+    action === "SKIP"
   );
+}
+
+function isRunnerRecord(event) {
+  const profile = normalizeText(
+    event?.profile ||
+      event?.runnerProfile ||
+      event?.filterSnapshot?.profile ||
+      event?.filterSnapshot?.runnerProfile ||
+      ""
+  );
+
+  return !profile || profile === SYSTEM_PROFILE;
 }
 
 function isTradeLikeRecord(event) {
   if (!event || typeof event !== "object") return false;
+  if (!isRunnerRecord(event)) return false;
   if (isIgnoredAction(event)) return false;
 
   const kind = normalizeText(event.analyzeKind || event.type);
+  const action = normalizeText(event.action || event.event || event.status || event.reason);
 
   if (kind === "TRADE_RECORD") return true;
   if (kind === "TRADE") return true;
   if (kind === "UNMATCHED_EXIT") return true;
 
-  const action = normalizeText(event.action || event.status || event.reason || event.event);
-
   if (action.includes("ENTRY")) return true;
   if (action.includes("EXIT")) return true;
   if (action.includes("TP")) return true;
   if (action.includes("SL")) return true;
-  if (action.includes("CLOSE")) return true;
-
+  if (action.includes("CLOSED")) return true;
   if (event.closed === true) return true;
   if (event.isClosed === true) return true;
 
   return Boolean(
     event.tradeId ||
+      event.positionTradeId ||
       event.positionId ||
       event.orderId ||
       event.entry !== undefined ||
       event.entryPrice !== undefined ||
-      event.openPrice !== undefined ||
       event.exit !== undefined ||
       event.exitPrice !== undefined ||
       event.realizedR !== undefined ||
@@ -227,12 +230,12 @@ function collectLatestEvents(latest) {
 
   const raw = [
     ...safeArray(latest.trades),
-    ...safeArray(latest.tradeSystemResult?.trades),
     ...safeArray(latest.tradeSystemResult?.actions),
-    ...safeArray(latest.actions),
-    ...safeArray(latest.runnerActions),
-    ...safeArray(latest.openPositions),
     ...safeArray(latest.tradeSystemResult?.openPositions),
+    ...safeArray(latest.tradeSystemAnalysis?.actions),
+    ...safeArray(latest.tradeSystemAnalysis?.openPositions),
+    ...safeArray(latest.actions),
+    ...safeArray(latest.openPositions),
   ];
 
   return dedupeEvents(raw.map(compactLatestEvent));
@@ -268,7 +271,7 @@ async function loadStoredEvents() {
     return {
       store: {
         ok: Boolean(store?.ok),
-        profile: store?.profile || SYSTEM_PROFILE,
+        profile: SYSTEM_PROFILE,
         path: store?.path || null,
         redisKey: store?.redisKey || null,
         count: safeNumber(store?.count, events.length),
@@ -345,7 +348,6 @@ async function clearStoredEvents() {
   if (typeof clearFn !== "function") {
     return {
       ok: false,
-      profile: SYSTEM_PROFILE,
       error: "NO_CLEAR_RUNNER_ANALYZE_EVENTS_EXPORT_FOUND",
     };
   }
@@ -374,7 +376,12 @@ function buildReport(events, options) {
     throw new Error("NO_RUNNER_ANALYZE_REPORT_BUILDER_FOUND");
   }
 
-  return buildFn(events, options);
+  return buildFn(events, {
+    profile: SYSTEM_PROFILE,
+    minClosed: safeNumber(options?.minClosed, DEFAULT_MIN_CLOSED),
+    familyCountLong: 50,
+    familyCountShort: 50,
+  });
 }
 
 function compactSourcePreview(events) {
@@ -384,20 +391,19 @@ function compactSourcePreview(events) {
       tradeId: getTradeId(event) || null,
       analyzeKind: event.analyzeKind || event.type || null,
       source: event.analyzeSource || null,
-      profile: event.profile || event.runnerProfile || null,
       symbol: event.symbol || null,
       side: normalizeSide(event.side || event.direction || event.tradeSide) || null,
       familyId:
-        event.runnerFamilyId ||
         event.familyId ||
+        event.runnerFamilyId ||
         event.analyzeFamilyId ||
-        event.filterSnapshot?.runnerFamilyId ||
         event.filterSnapshot?.familyId ||
+        event.filterSnapshot?.runnerFamilyId ||
         null,
       closed: Boolean(event.closed),
-      realizedR: event.realizedR ?? event.pnlR ?? event.resultR ?? event.outcomeR ?? null,
+      realizedR: event.realizedR ?? event.pnlR ?? event.resultR ?? null,
       pnlPct: event.pnlPct ?? event.realizedPnlPct ?? null,
-      exitReason: event.exitReason || event.reason || null,
+      exitReason: event.exitReason || null,
       ts: getEventTs(event, null),
     }));
 }
@@ -439,6 +445,8 @@ function selectEvents({ storedEvents, latestEvents, sourceMode }) {
 export default async function handler(req, res) {
   const startedAt = Date.now();
 
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+
   const debug = normalizeBoolean(req?.query?.debug, false);
   const reset = normalizeBoolean(req?.query?.reset, false);
 
@@ -455,8 +463,6 @@ export default async function handler(req, res) {
     : "stored";
 
   try {
-    res.setHeader("Cache-Control", "no-store, max-age=0");
-
     if (reset) {
       const clearResult = await clearStoredEvents();
 
@@ -489,12 +495,9 @@ export default async function handler(req, res) {
         };
 
     const storedEvents = dedupeEvents(storedEventsRaw);
-    const latestEvents =
-      latest?.ok && shouldLoadLatest
-        ? collectLatestEvents(latest)
-        : [];
-
-    const mergedEvents = dedupeEvents([...storedEvents, ...latestEvents]);
+    const latestEvents = latest?.ok && shouldLoadLatest
+      ? collectLatestEvents(latest)
+      : [];
 
     const { selectedEvents, selectedSource } = selectEvents({
       storedEvents,
@@ -503,10 +506,7 @@ export default async function handler(req, res) {
     });
 
     const report = buildReport(selectedEvents, {
-      profile: SYSTEM_PROFILE,
       minClosed,
-      familyCountLong: 50,
-      familyCountShort: 50,
     });
 
     const response = {
@@ -516,13 +516,12 @@ export default async function handler(req, res) {
       latencyMs: Date.now() - startedAt,
 
       mode: {
-        profile: SYSTEM_PROFILE,
         source: selectedSource,
         includeLatest,
         minClosed,
         note:
           selectedSource === "stored"
-            ? "Runner analyse gebruikt alleen opgeslagen runner analyse-records. Latest scan wordt niet meegeteld tenzij source=latest/merged of includeLatest=true met source=latest/merged."
+            ? "Runner analyse gebruikt alleen opgeslagen runner analyse-records. Latest scan wordt niet meegeteld tenzij source=latest/merged of includeLatest=true."
             : "Runner analyse gebruikt latest/debug data. Gebruik source=stored voor echte runner family-statistiek.",
       },
 
@@ -530,7 +529,10 @@ export default async function handler(req, res) {
         selectedEvents: selectedEvents.length,
         storedEvents: storedEvents.length,
         latestEvents: latestEvents.length,
-        mergedEvents: mergedEvents.length,
+        mergedEvents:
+          normalizedSourceMode === "merged"
+            ? dedupeEvents([...storedEvents, ...latestEvents]).length
+            : selectedEvents.length,
         storedKinds: countKinds(storedEvents),
         latestKinds: countKinds(latestEvents),
         selectedKinds: countKinds(selectedEvents),
@@ -559,7 +561,11 @@ export default async function handler(req, res) {
 
     return res.status(200).json(response);
   } catch (error) {
-    console.error("RUNNER ANALYZE API ERROR:", error);
+    console.error("RUNNER ANALYZE API ERROR:", {
+      message: error?.message || String(error),
+      name: error?.name,
+      stack: error?.stack,
+    });
 
     return res.status(500).json({
       ok: false,
