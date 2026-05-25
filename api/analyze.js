@@ -13,6 +13,22 @@ const TOTAL_FAMILY_COUNT = 100;
 const MAX_LEADERBOARD_ROWS = 20;
 const MAX_RETURNED_FAMILIES = 50;
 
+const NESTED_EVENT_KEYS = [
+  "trade",
+  "row",
+  "payload",
+  "data",
+  "item",
+  "record",
+  "position",
+  "closedTrade",
+  "tradeRow",
+  "actionRow",
+  "event",
+  "result",
+  "body",
+];
+
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -64,7 +80,6 @@ function normalizeSide(value) {
 function getRequestUrl(req) {
   const host = req?.headers?.host || "localhost";
   const proto = req?.headers?.["x-forwarded-proto"] || "https";
-
   return new URL(req?.url || "/", `${proto}://${host}`);
 }
 
@@ -74,17 +89,6 @@ function getQueryParam(req, key, fallback = "") {
   } catch {
     return fallback;
   }
-}
-
-function normalizeBoolean(value, fallback = false) {
-  if (value === undefined || value === null || value === "") return fallback;
-
-  const v = String(value).trim().toLowerCase();
-
-  if (["true", "1", "yes", "y", "on"].includes(v)) return true;
-  if (["false", "0", "no", "n", "off"].includes(v)) return false;
-
-  return fallback;
 }
 
 function getAction(req) {
@@ -97,11 +101,19 @@ function getConfig(req) {
   return {
     minClosed: Math.max(
       1,
-      Math.round(safeNumber(getQueryParam(req, "minClosed", DEFAULT_MIN_CLOSED), DEFAULT_MIN_CLOSED))
+      Math.round(
+        safeNumber(
+          getQueryParam(req, "minClosed", DEFAULT_MIN_CLOSED),
+          DEFAULT_MIN_CLOSED
+        )
+      )
     ),
     breakevenREps: Math.max(
       0,
-      safeNumber(getQueryParam(req, "breakevenREps", DEFAULT_BREAKEVEN_R_EPS), DEFAULT_BREAKEVEN_R_EPS)
+      safeNumber(
+        getQueryParam(req, "breakevenREps", DEFAULT_BREAKEVEN_R_EPS),
+        DEFAULT_BREAKEVEN_R_EPS
+      )
     ),
     maxExamplesPerFamily: Math.max(
       0,
@@ -117,7 +129,7 @@ function getConfig(req) {
   };
 }
 
-// ================= STORE LOADING =================
+// ================= STORE =================
 
 async function loadRunnerAnalyzeStore() {
   const mod = await import("../lib/analyze/runnerAnalyzeStore.js");
@@ -128,7 +140,8 @@ async function loadRunnerAnalyzeStore() {
     mod.getRunnerAnalyzeEvents ||
     mod.loadRunnerAnalyzeStore ||
     mod.readRunnerAnalyzeStore ||
-    mod.getRunnerAnalyzeStore;
+    mod.getRunnerAnalyzeStore ||
+    mod.default;
 
   if (typeof loader !== "function") {
     throw new Error("runner_analyze_store_loader_missing");
@@ -159,7 +172,16 @@ async function loadRunnerAnalyzeStore() {
 
   return {
     ok: obj.ok !== false,
-    events: safeArray(obj.events || obj.rows || obj.trades || obj.data),
+    events: safeArray(
+      obj.events ||
+        obj.rows ||
+        obj.trades ||
+        obj.actions ||
+        obj.data ||
+        obj.items ||
+        obj.history ||
+        obj.closedTrades
+    ),
     source: {
       mode: "RUNNER_ANALYZE_STORE",
       storeSource: obj.storeSource || "runner_analyze_store",
@@ -194,15 +216,193 @@ async function clearRunnerAnalyzeStore() {
   return clearer();
 }
 
+// ================= RAW EVENT UNWRAP =================
+
+function looksTradeLike(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
+
+  return Boolean(
+    obj.symbol ||
+      obj.instId ||
+      obj.marketSymbol ||
+      obj.contractSymbol ||
+      obj.tradeId ||
+      obj.positionTradeId ||
+      obj.side ||
+      obj.direction ||
+      obj.resultR !== undefined ||
+      obj.realizedR !== undefined ||
+      obj.pnlR !== undefined ||
+      obj.exitR !== undefined ||
+      obj.pnlPct !== undefined ||
+      obj.exitReason ||
+      obj.entryType ||
+      obj.runnerEntryType
+  );
+}
+
+function extractWrapperMeta(obj) {
+  const meta = {};
+
+  for (const [key, value] of Object.entries(obj || {})) {
+    if (NESTED_EVENT_KEYS.includes(key)) continue;
+    if (value && typeof value === "object") continue;
+
+    meta[key] = value;
+  }
+
+  meta.__wrapperAction =
+    obj?.action ||
+    obj?.type ||
+    obj?.eventType ||
+    obj?.eventName ||
+    obj?.kind ||
+    obj?.lifecycle ||
+    obj?.analyzeLifecycle ||
+    null;
+
+  meta.__wrapperClosed =
+    obj?.closed === true ||
+    normalizeText(obj?.status).includes("CLOSED") ||
+    normalizeText(obj?.type).includes("CLOSED") ||
+    normalizeText(obj?.eventType).includes("CLOSED");
+
+  return meta;
+}
+
+function unwrapAnalyzeEvent(input, depth = 0) {
+  if (!input || typeof input !== "object") return null;
+  if (depth > 6) return input;
+  if (Array.isArray(input)) return null;
+
+  if (looksTradeLike(input)) return input;
+
+  const wrapperMeta = extractWrapperMeta(input);
+
+  for (const key of NESTED_EVENT_KEYS) {
+    const nested = input[key];
+
+    if (!nested || typeof nested !== "object" || Array.isArray(nested)) {
+      continue;
+    }
+
+    const unwrapped = unwrapAnalyzeEvent(nested, depth + 1);
+
+    if (!unwrapped || typeof unwrapped !== "object") {
+      continue;
+    }
+
+    return {
+      ...wrapperMeta,
+      ...unwrapped,
+      __wrapperAction: wrapperMeta.__wrapperAction || unwrapped.__wrapperAction || null,
+      __wrapperClosed: Boolean(wrapperMeta.__wrapperClosed || unwrapped.__wrapperClosed),
+    };
+  }
+
+  return input;
+}
+
+function parseSymbolFromTradeId(value) {
+  const id = String(value || "").toUpperCase();
+  const match = id.match(/^RUNNER_(.+?)_(LONG|SHORT|BULL|BEAR)_/);
+
+  if (!match) return "";
+
+  return normalizeSymbol(match[1]);
+}
+
+function parseSideFromTradeId(value) {
+  const id = String(value || "").toUpperCase();
+  const match = id.match(/^RUNNER_.+?_(LONG|SHORT|BULL|BEAR)_/);
+
+  if (!match) return "";
+
+  return normalizeSide(match[1]);
+}
+
 // ================= TRADE NORMALIZATION =================
+
+function isExitAction(value) {
+  const a = normalizeText(value);
+
+  if (!a) return false;
+
+  return (
+    a === "EXIT" ||
+    a === "CLOSE" ||
+    a === "CLOSED" ||
+    a === "TRADE_CLOSED" ||
+    a === "POSITION_CLOSED" ||
+    a === "TP" ||
+    a === "SL" ||
+    a === "BE_SL" ||
+    a === "TRAIL_SL" ||
+    a.includes("EXIT") ||
+    a.includes("CLOSED") ||
+    a.includes("CLOSE")
+  );
+}
+
+function isEntryAction(value) {
+  const a = normalizeText(value);
+
+  if (!a) return false;
+  if (isExitAction(a)) return false;
+
+  return (
+    a === "ENTRY" ||
+    a === "OPEN" ||
+    a === "TRADE_OPEN" ||
+    a === "POSITION_OPEN" ||
+    a.includes("ENTRY")
+  );
+}
+
+function getLifecycle(row) {
+  const wrapperAction = normalizeText(row?.__wrapperAction);
+  const ownAction = normalizeText(
+    row?.action ||
+      row?.type ||
+      row?.eventType ||
+      row?.eventName ||
+      row?.kind ||
+      row?.lifecycle ||
+      row?.analyzeLifecycle ||
+      row?.status
+  );
+
+  if (isExitAction(wrapperAction)) return wrapperAction;
+  if (isExitAction(ownAction)) return ownAction;
+
+  return ownAction || wrapperAction;
+}
+
+function hasResultField(row) {
+  return (
+    row?.resultR !== undefined ||
+    row?.realizedR !== undefined ||
+    row?.pnlR !== undefined ||
+    row?.exitR !== undefined ||
+    row?.outcomeR !== undefined ||
+    row?.rMultiple !== undefined ||
+    row?.r !== undefined ||
+    row?.pnlPct !== undefined ||
+    row?.pnlPercent !== undefined ||
+    row?.realizedPnlPct !== undefined
+  );
+}
 
 function hasExitEvidence(row) {
   if (!row || typeof row !== "object") return false;
 
-  const action = normalizeText(row.action || row.analyzeLifecycle);
-  if (action === "EXIT") return true;
+  const lifecycle = getLifecycle(row);
 
-  if (row.closed === true && action !== "ENTRY") return true;
+  if (isExitAction(lifecycle)) return true;
+  if (row.__wrapperClosed === true) return true;
+
+  if (row.closed === true && !isEntryAction(lifecycle)) return true;
+  if (normalizeText(row.status).includes("CLOSED")) return true;
 
   if (row.exit !== undefined && row.exit !== null) return true;
   if (row.exitPrice !== undefined && row.exitPrice !== null) return true;
@@ -210,45 +410,7 @@ function hasExitEvidence(row) {
   if (row.closedAt !== undefined && row.closedAt !== null) return true;
   if (row.exitedAt !== undefined && row.exitedAt !== null) return true;
 
-  if (row.realizedR !== undefined && row.realizedR !== null) return true;
-  if (row.pnlR !== undefined && row.pnlR !== null) return true;
-  if (row.exitR !== undefined && row.exitR !== null) return true;
-  if (row.resultR !== undefined && row.resultR !== null) return true;
-  if (row.outcomeR !== undefined && row.outcomeR !== null) return true;
-  if (row.rMultiple !== undefined && row.rMultiple !== null) return true;
-
-  return false;
-}
-
-function isEntryPlaceholder(row) {
-  const action = normalizeText(row?.action || row?.analyzeLifecycle);
-  const exitReason = normalizeText(row?.exitReason || row?.reason);
-  const entryType = normalizeText(row?.entryType || row?.runnerEntryType);
-  const resultR = safeNumber(
-    row?.resultR ?? row?.realizedR ?? row?.pnlR ?? row?.exitR ?? row?.outcomeR ?? row?.rMultiple,
-    0
-  );
-
-  if (action === "ENTRY") return true;
-
-  if (
-    Math.abs(resultR) <= 1e-12 &&
-    entryType &&
-    exitReason &&
-    exitReason === entryType
-  ) {
-    return true;
-  }
-
-  if (
-    Math.abs(resultR) <= 1e-12 &&
-    exitReason.startsWith("RUNNER_") &&
-    !row?.exit &&
-    !row?.exitPrice &&
-    !row?.executionPrice
-  ) {
-    return true;
-  }
+  if (hasResultField(row) && !isEntryAction(lifecycle)) return true;
 
   return false;
 }
@@ -260,7 +422,12 @@ function getTradeR(row) {
       row?.pnlR ??
       row?.exitR ??
       row?.outcomeR ??
-      row?.rMultiple,
+      row?.rMultiple ??
+      row?.r ??
+      row?.metrics?.resultR ??
+      row?.metrics?.realizedR ??
+      row?.result?.resultR ??
+      row?.result?.r,
     0
   );
 }
@@ -271,7 +438,9 @@ function getTradePnlPct(row) {
       row?.pnlPercent ??
       row?.realizedPnlPct ??
       row?.resultPnlPct ??
-      row?.profitPct,
+      row?.profitPct ??
+      row?.metrics?.pnlPct ??
+      row?.result?.pnlPct,
     0
   );
 }
@@ -284,12 +453,13 @@ function getTradeTimestamp(row) {
       row?.ts ??
       row?.analyzeTs ??
       row?.storedAt ??
-      row?.updatedAt,
+      row?.updatedAt ??
+      row?.createdAt,
     0
   );
 }
 
-function getTradeId(row) {
+function getTradeId(row, symbol, side) {
   const direct =
     row?.tradeId ||
     row?.positionTradeId ||
@@ -299,8 +469,6 @@ function getTradeId(row) {
 
   if (direct) return String(direct);
 
-  const symbol = normalizeSymbol(row?.symbol);
-  const side = normalizeSide(row?.side);
   const entry = safeNumber(row?.entry ?? row?.entryPrice ?? row?.openPrice, 0);
   const ts = getTradeTimestamp(row);
   const r = getTradeR(row);
@@ -308,15 +476,46 @@ function getTradeId(row) {
   return `RUNNER_${symbol}_${side}_${entry}_${ts}_${r}`;
 }
 
-function normalizeTrade(row) {
+function normalizeTrade(input) {
+  const row = unwrapAnalyzeEvent(input);
+
   if (!row || typeof row !== "object") return null;
 
-  const symbol = normalizeSymbol(row.symbol);
-  const side = normalizeSide(row.side);
+  const lifecycle = getLifecycle(row);
+
+  if (isEntryAction(lifecycle) && !hasExitEvidence(row)) {
+    return null;
+  }
+
+  if (!hasExitEvidence(row)) {
+    return null;
+  }
+
+  const directTradeId =
+    row?.tradeId ||
+    row?.positionTradeId ||
+    row?.orderId ||
+    row?.clientOrderId ||
+    row?.id;
+
+  const symbol = normalizeSymbol(
+    row.symbol ||
+      row.instId ||
+      row.marketSymbol ||
+      row.contractSymbol ||
+      row.productSymbol ||
+      parseSymbolFromTradeId(directTradeId)
+  );
+
+  const side = normalizeSide(
+    row.side ||
+      row.positionSide ||
+      row.direction ||
+      row.tradeSide ||
+      parseSideFromTradeId(directTradeId)
+  );
 
   if (!symbol || !side) return null;
-  if (isEntryPlaceholder(row)) return null;
-  if (!hasExitEvidence(row)) return null;
 
   const resultR = getTradeR(row);
   const pnlPct = getTradePnlPct(row);
@@ -325,7 +524,7 @@ function normalizeTrade(row) {
   return {
     raw: row,
 
-    tradeId: getTradeId(row),
+    tradeId: getTradeId(row, symbol, side),
     symbol,
     side,
 
@@ -333,8 +532,10 @@ function normalizeTrade(row) {
     resultR: round(resultR, 4),
     pnlPct: round(pnlPct, 4),
 
-    exitReason: row.exitReason || row.reason || null,
+    action: lifecycle || row.action || null,
+    exitReason: row.exitReason || row.reason || lifecycle || null,
     entryType: row.entryType || row.runnerEntryType || null,
+    runnerEntryType: row.runnerEntryType || row.entryType || null,
     setupClass: row.setupClass || null,
 
     confluence: safeNumber(row.confluence, 0),
@@ -343,9 +544,12 @@ function normalizeTrade(row) {
     moveScore: safeNumber(row.moveScore ?? row.score, 0),
 
     rr: safeNumber(row.finalRR ?? row.baseRR ?? row.plannedRR ?? row.rr ?? row.targetR, 0),
+    plannedRR: safeNumber(row.plannedRR ?? row.rr, 0),
     targetR: safeNumber(row.targetR, 0),
 
     stage: normalizeText(row.stage || row.scannerStage),
+    scannerStage: normalizeText(row.scannerStage || row.stage),
+
     flow: normalizeText(row.flow || row.scannerFlow),
     scannerFlow: normalizeText(row.scannerFlow || row.flow),
 
@@ -378,7 +582,7 @@ function normalizeTrade(row) {
 function dedupeTrades(trades) {
   const map = new Map();
 
-  for (const trade of trades) {
+  for (const trade of safeArray(trades)) {
     if (!trade) continue;
 
     const key = [
@@ -404,7 +608,7 @@ function dedupeTrades(trades) {
 function getQualityIndex(trade) {
   const conf = safeNumber(trade.confluence, 0);
   const sniper = safeNumber(trade.sniperScore, 0);
-  const rr = safeNumber(trade.rr || trade.targetR, 0);
+  const rr = safeNumber(trade.rr || trade.targetR || trade.plannedRR, 0);
   const score = safeNumber(trade.score || trade.moveScore, 0);
 
   if (conf >= 85 && sniper >= 85 && rr >= 2 && score >= 85) return 5;
@@ -439,6 +643,8 @@ function getMarketIndex(trade) {
     (side === "LONG" && btc === "BULLISH") ||
     (side === "SHORT" && btc === "BEARISH");
 
+  const btcNeutral = !btc || btc === "NEUTRAL" || btc === "UNKNOWN";
+
   const fundingCrowded =
     (side === "LONG" && funding > 0.0005) ||
     (side === "SHORT" && funding < -0.0005);
@@ -453,11 +659,27 @@ function getMarketIndex(trade) {
     return 2;
   }
 
-  if (spreadBps > 8 || depth < 100000 || (!btcWith && btc !== "NEUTRAL")) {
+  if (spreadBps > 8 || depth < 100000 || (!btcWith && !btcNeutral)) {
     return 3;
   }
 
-  if ((obWith || ob === "NEUTRAL") && spreadBps <= 12 && depth >= 100000 && fundingOk) {
+  if (
+    (obWith || ob === "NEUTRAL" || !ob) &&
+    spreadBps <= 5 &&
+    depth >= 250000 &&
+    (btcWith || btcNeutral) &&
+    fundingOk
+  ) {
+    return 5;
+  }
+
+  if (
+    (obWith || ob === "NEUTRAL" || !ob) &&
+    spreadBps <= 12 &&
+    depth >= 100000 &&
+    (btcWith || btcNeutral) &&
+    fundingOk
+  ) {
     return 4;
   }
 
@@ -467,7 +689,7 @@ function getMarketIndex(trade) {
 function getTimingIndex(trade) {
   const side = normalizeSide(trade.side);
   const rsi = safeNumber(trade.rsi, 50);
-  const stage = normalizeText(trade.stage);
+  const stage = normalizeText(trade.stage || trade.scannerStage);
   const flow = normalizeText(trade.flow || trade.scannerFlow);
   const tfStrength = Math.abs(safeNumber(trade.tfStrength ?? trade.tfScore, 0));
 
@@ -505,6 +727,7 @@ function qualityLabel(index) {
 }
 
 function marketLabel(index) {
+  if (index === 5) return "M5_PRISTINE";
   if (index === 4) return "M4_CLEAN";
   if (index === 3) return "M3_NORMAL";
   if (index === 2) return "M2_WEAK";
@@ -514,31 +737,29 @@ function marketLabel(index) {
 
 function timingLabel(index) {
   if (index === 2) return "T2_TIMED";
-
   return "T1_EARLY_OR_NOISY";
 }
 
 function getQualityRuleLabels(index) {
-  if (index === 5) {
-    return ["CONF_85_100", "SNIPER_85_100", "RR_2p00_PLUS", "SCORE_85_100"];
-  }
-
-  if (index === 4) {
-    return ["CONF_75_85", "SNIPER_75_85", "RR_1p50_2p00", "SCORE_75_85"];
-  }
-
-  if (index === 3) {
-    return ["CONF_65_75", "SNIPER_65_75", "RR_1p20_1p50", "SCORE_65_75"];
-  }
-
-  if (index === 2) {
-    return ["CONF_50_65", "SNIPER_50_65", "RR_1p00_1p20", "SCORE_50_65"];
-  }
+  if (index === 5) return ["CONF_85_100", "SNIPER_85_100", "RR_2p00_PLUS", "SCORE_85_100"];
+  if (index === 4) return ["CONF_75_85", "SNIPER_75_85", "RR_1p50_2p00", "SCORE_75_85"];
+  if (index === 3) return ["CONF_65_75", "SNIPER_65_75", "RR_1p20_1p50", "SCORE_65_75"];
+  if (index === 2) return ["CONF_50_65", "SNIPER_50_65", "RR_1p00_1p20", "SCORE_50_65"];
 
   return ["CONF_0_50", "SNIPER_0_50", "RR_LT_1p00", "SCORE_0_50"];
 }
 
 function getMarketRuleLabels(index) {
+  if (index === 5) {
+    return [
+      "OB_REL_WITH",
+      "SPREAD_LT_5BPS",
+      "DEPTH_GT_250K",
+      "BTC_REL_WITH_OR_NEUTRAL",
+      "FUNDING_OK",
+    ];
+  }
+
   if (index === 4) {
     return [
       "OB_REL_WITH_OR_NEUTRAL",
@@ -652,17 +873,19 @@ function getFamilyForTrade(trade) {
   const side = normalizeSide(trade.side);
   if (!side) return null;
 
-  const qualityIndex = getQualityIndex(trade);
-  const marketIndex = getMarketIndex(trade);
-  const timingIndex = getTimingIndex(trade);
-
-  return buildFamilyDefinition(side, qualityIndex, marketIndex, timingIndex);
+  return buildFamilyDefinition(
+    side,
+    getQualityIndex(trade),
+    getMarketIndex(trade),
+    getTimingIndex(trade)
+  );
 }
 
 // ================= STATS =================
 
 function summarizeTrades(trades, breakevenREps) {
   const closedTrades = safeArray(trades).filter(t => t?.closed === true);
+
   const wins = closedTrades.filter(t => safeNumber(t.resultR, 0) > breakevenREps).length;
   const losses = closedTrades.filter(t => safeNumber(t.resultR, 0) < -breakevenREps).length;
   const breakeven = closedTrades.length - wins - losses;
@@ -691,6 +914,7 @@ function summarizeTrades(trades, breakevenREps) {
     : 0;
 
   const winrateNum = closedTrades.length ? wins / closedTrades.length : 0;
+  const pf = grossLossRAbs > 0 ? grossWinR / grossLossRAbs : grossWinR > 0 ? 999 : 0;
 
   return {
     actions: safeArray(trades).length,
@@ -714,8 +938,8 @@ function summarizeTrades(trades, breakevenREps) {
 
     grossWinR: round(grossWinR, 3),
     grossLossR: round(grossLossRAbs, 3),
-    profitFactor: grossLossRAbs > 0 ? round(grossWinR / grossLossRAbs, 3) : grossWinR > 0 ? 999 : 0,
-    pf: grossLossRAbs > 0 ? round(grossWinR / grossLossRAbs, 3) : grossWinR > 0 ? 999 : 0,
+    profitFactor: round(pf, 3),
+    pf: round(pf, 3),
 
     avgMfeR: round(avgMfeR, 3),
     avgMaeR: round(avgMaeR, 3),
@@ -820,10 +1044,7 @@ function buildFamilyPerformance(family, trades, config) {
     avgMaeR: stats.avgMaeR,
 
     status,
-    score: scoreFamily({
-      ...stats,
-      status,
-    }),
+    score: scoreFamily(stats),
 
     examples,
   };
@@ -949,11 +1170,10 @@ function buildMatrix(trades, config) {
   };
 }
 
-// ================= RESPONSE BUILD =================
+// ================= RESPONSE =================
 
 function buildStoreMeta(loaded, rawEvents, trades) {
   const raw = safeObject(loaded.raw);
-
   const closed = safeArray(trades).filter(t => t.closed).length;
 
   return {
@@ -967,7 +1187,40 @@ function buildStoreMeta(loaded, rawEvents, trades) {
   };
 }
 
-function buildResponse({ loaded, rawEvents, trades, config, startedAt }) {
+function buildDebug(rawEvents, trades) {
+  const firstRaw = safeArray(rawEvents)[0] || null;
+  const firstUnwrapped = firstRaw ? unwrapAnalyzeEvent(firstRaw) : null;
+
+  return {
+    rawCount: safeArray(rawEvents).length,
+    parsedTrades: safeArray(trades).length,
+    firstRawKeys: firstRaw && typeof firstRaw === "object" ? Object.keys(firstRaw).slice(0, 30) : [],
+    firstUnwrappedKeys:
+      firstUnwrapped && typeof firstUnwrapped === "object"
+        ? Object.keys(firstUnwrapped).slice(0, 40)
+        : [],
+    firstUnwrappedSample: firstUnwrapped
+      ? {
+          symbol: firstUnwrapped.symbol,
+          side: firstUnwrapped.side,
+          tradeId: firstUnwrapped.tradeId,
+          action: firstUnwrapped.action,
+          type: firstUnwrapped.type,
+          eventType: firstUnwrapped.eventType,
+          closed: firstUnwrapped.closed,
+          resultR: firstUnwrapped.resultR,
+          realizedR: firstUnwrapped.realizedR,
+          pnlR: firstUnwrapped.pnlR,
+          exitR: firstUnwrapped.exitR,
+          pnlPct: firstUnwrapped.pnlPct,
+          exitReason: firstUnwrapped.exitReason,
+          entryType: firstUnwrapped.entryType,
+        }
+      : null,
+  };
+}
+
+function buildResponse({ loaded, rawEvents, trades, config, startedAt, debug }) {
   const matrix = buildMatrix(trades, config);
   const allFamilies = matrix.allFamilies;
 
@@ -979,6 +1232,7 @@ function buildResponse({ loaded, rawEvents, trades, config, startedAt }) {
   const familiesWithData = allFamilies.filter(f => safeNumber(f.closed, 0) > 0).length;
 
   const best = buildBest(allFamilies, config);
+
   const winnerCandidates = filterClosedSample(allFamilies, config)
     .filter(f => safeNumber(f.totalR, 0) > 0 || safeNumber(f.totalPnlPct, 0) > 0)
     .sort(sortByPnl)
@@ -987,7 +1241,7 @@ function buildResponse({ loaded, rawEvents, trades, config, startedAt }) {
   const winnerFamilies = filterWinnerFamilies(allFamilies, config);
   const leaderboards = buildLeaderboards(allFamilies, config);
 
-  return {
+  const response = {
     ok: true,
     profile: SYSTEM_PROFILE,
     endpoint: ENDPOINT,
@@ -999,7 +1253,6 @@ function buildResponse({ loaded, rawEvents, trades, config, startedAt }) {
     servedAt: Date.now(),
 
     config,
-
     source: loaded.source,
 
     store: buildStoreMeta(loaded, rawEvents, trades),
@@ -1058,6 +1311,12 @@ function buildResponse({ loaded, rawEvents, trades, config, startedAt }) {
 
     leaderboards,
   };
+
+  if (debug) {
+    response.debug = buildDebug(rawEvents, trades);
+  }
+
+  return response;
 }
 
 // ================= HANDLER =================
@@ -1084,8 +1343,9 @@ export default async function handler(req, res) {
     }
 
     const config = getConfig(req);
-    const loaded = await loadRunnerAnalyzeStore();
+    const debug = String(getQueryParam(req, "debug", "false")).toLowerCase() === "true";
 
+    const loaded = await loadRunnerAnalyzeStore();
     const rawEvents = safeArray(loaded.events);
 
     const trades = dedupeTrades(
@@ -1100,6 +1360,7 @@ export default async function handler(req, res) {
       trades,
       config,
       startedAt,
+      debug,
     });
 
     return res.status(200).json(response);
