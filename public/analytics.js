@@ -3,9 +3,6 @@ import * as analyzeStore from "../lib/analyze/analyzeStore.js";
 import * as familyEngine from "../lib/analyze/familyEngine.js";
 
 const SYSTEM_PROFILE = "RUNNER";
-const SYSTEM_MODE = "MOMENTUM_RUNNER";
-const STRATEGY_FAMILY = "BREAKOUT_CONTINUATION_SQUEEZE";
-
 const DEFAULT_MIN_CLOSED = 10;
 const DEFAULT_INCLUDE_LATEST = false;
 const MAX_DEBUG_EVENTS = 50;
@@ -32,8 +29,8 @@ function normalizeBoolean(value, fallback = false) {
 
   const v = String(value).trim().toLowerCase();
 
-  if (["true", "1", "yes", "y", "on"].includes(v)) return true;
-  if (["false", "0", "no", "n", "off"].includes(v)) return false;
+  if (["true", "1", "yes", "y"].includes(v)) return true;
+  if (["false", "0", "no", "n"].includes(v)) return false;
 
   return fallback;
 }
@@ -157,20 +154,11 @@ function compactLatestEvent(event) {
 
   return {
     ...event,
-
-    profile: event.profile || SYSTEM_PROFILE,
-    systemProfile: SYSTEM_PROFILE,
-    tradeSystemProfile: SYSTEM_PROFILE,
-
     tradeId: tradeId || undefined,
     side: side || event.side,
-
-    analyzeSource: event.analyzeSource || "runner_latest_scan_debug",
+    profile: event.profile || SYSTEM_PROFILE,
+    analyzeSource: event.analyzeSource || "latest_scan_debug",
     analyzeTs: getEventTs(event),
-
-    // Runner compatibility aliases.
-    familyProfile: SYSTEM_PROFILE,
-    runnerFamily: true,
   };
 }
 
@@ -224,12 +212,8 @@ function collectLatestEvents(latest) {
 
   const raw = [
     ...safeArray(latest.trades),
-    ...safeArray(latest.actions),
     ...safeArray(latest.tradeSystemResult?.actions),
-    ...safeArray(latest.runnerTradeSystemResult?.actions),
-    ...safeArray(latest.tradeSystemAnalysis?.actions),
-    ...safeArray(latest.runnerStats?.closedTrades),
-    ...safeArray(latest.tradeSystemResult?.runnerStats?.closedTrades),
+    ...safeArray(latest.actions),
   ];
 
   return dedupeEvents(raw.map(compactLatestEvent));
@@ -302,7 +286,7 @@ async function loadStoredEvents() {
       primary: null,
       redisEnabled: false,
       fileEnabled: false,
-      error: "NO_RUNNER_ANALYZE_STORE_LOADER_FOUND",
+      error: "NO_ANALYZE_STORE_LOADER_FOUND",
     },
     events: [],
   };
@@ -318,7 +302,7 @@ async function clearStoredEvents() {
   if (typeof clearFn !== "function") {
     return {
       ok: false,
-      error: "NO_CLEAR_RUNNER_ANALYZE_EVENTS_EXPORT_FOUND",
+      error: "NO_CLEAR_ANALYZE_EVENTS_EXPORT_FOUND",
     };
   }
 
@@ -341,15 +325,10 @@ function buildReport(events, options) {
     familyEngine.default?.createAnalyzeReport;
 
   if (typeof buildFn !== "function") {
-    throw new Error("NO_RUNNER_ANALYZE_REPORT_BUILDER_FOUND");
+    throw new Error("NO_ANALYZE_REPORT_BUILDER_FOUND");
   }
 
-  return buildFn(events, {
-    ...options,
-    profile: SYSTEM_PROFILE,
-    mode: SYSTEM_MODE,
-    strategyFamily: STRATEGY_FAMILY,
-  });
+  return buildFn(events, options);
 }
 
 function compactSourcePreview(events) {
@@ -359,21 +338,14 @@ function compactSourcePreview(events) {
       tradeId: getTradeId(event) || null,
       analyzeKind: event.analyzeKind || event.type || null,
       source: event.analyzeSource || null,
+      profile: event.profile || SYSTEM_PROFILE,
       symbol: event.symbol || null,
       side: normalizeSide(event.side || event.direction || event.tradeSide) || null,
-      familyId:
-        event.familyId ||
-        event.runnerFamilyId ||
-        event.analyzeFamilyId ||
-        event.filterSnapshot?.familyId ||
-        null,
-      setupClass: event.setupClass || event.filterSnapshot?.setupClass || null,
-      entryType: event.entryType || event.runnerEntryType || event.filterSnapshot?.entryType || null,
-      flow: event.flow || event.scannerFlow || event.filterSnapshot?.flow || null,
+      familyId: event.familyId || event.analyzeFamilyId || event.filterSnapshot?.familyId || null,
       closed: Boolean(event.closed),
-      realizedR: event.realizedR ?? event.pnlR ?? event.resultR ?? event.exitR ?? null,
+      realizedR: event.realizedR ?? event.pnlR ?? event.resultR ?? null,
       pnlPct: event.pnlPct ?? event.realizedPnlPct ?? null,
-      exitReason: event.exitReason || event.reason || null,
+      exitReason: event.exitReason || null,
       ts: getEventTs(event, null),
     }));
 }
@@ -438,9 +410,8 @@ export default async function handler(req, res) {
 
       return res.status(clearResult?.ok ? 200 : 500).json({
         ok: Boolean(clearResult?.ok),
-        system: SYSTEM_PROFILE,
         profile: SYSTEM_PROFILE,
-        mode: SYSTEM_MODE,
+        system: SYSTEM_PROFILE,
         reset: true,
         clearResult,
         generatedAt: new Date().toISOString(),
@@ -450,26 +421,22 @@ export default async function handler(req, res) {
 
     const { store, events: storedEventsRaw } = await loadStoredEvents();
 
-    const shouldLoadLatest =
-      includeLatest ||
-      normalizedSourceMode === "latest" ||
-      normalizedSourceMode === "merged";
-
-    const latest = shouldLoadLatest
-      ? await getLatestScan().catch(error => ({
-          ok: false,
-          error: error?.message || String(error),
-        }))
-      : {
-          ok: null,
-          skipped: true,
-          reason: "includeLatest=false",
-        };
+    const latest =
+      includeLatest || normalizedSourceMode === "latest" || normalizedSourceMode === "merged"
+        ? await getLatestScan().catch(error => ({
+            ok: false,
+            error: error?.message || String(error),
+          }))
+        : {
+            ok: null,
+            skipped: true,
+            reason: "includeLatest=false",
+          };
 
     const storedEvents = dedupeEvents(storedEventsRaw);
-
     const latestEvents =
-      latest?.ok && shouldLoadLatest
+      latest?.ok &&
+      (includeLatest || normalizedSourceMode === "latest" || normalizedSourceMode === "merged")
         ? collectLatestEvents(latest)
         : [];
 
@@ -484,22 +451,13 @@ export default async function handler(req, res) {
       familyCountLong: 50,
       familyCountShort: 50,
       profile: SYSTEM_PROFILE,
-      mode: SYSTEM_MODE,
-      strategyFamily: STRATEGY_FAMILY,
+      runnerMode: true,
     });
 
     const response = {
       ok: true,
-
-      system: SYSTEM_PROFILE,
       profile: SYSTEM_PROFILE,
-      scannerProfile: SYSTEM_PROFILE,
-      tradeSystemProfile: SYSTEM_PROFILE,
-      analyzerProfile: SYSTEM_PROFILE,
-
-      modeName: SYSTEM_MODE,
-      strategyFamily: STRATEGY_FAMILY,
-
+      system: SYSTEM_PROFILE,
       generatedAt: new Date().toISOString(),
       latencyMs: Date.now() - startedAt,
 
@@ -509,47 +467,30 @@ export default async function handler(req, res) {
         minClosed,
         note:
           selectedSource === "stored"
-            ? "Runner analyse gebruikt alleen opgeslagen runner analyse-records. Latest scan wordt niet meegeteld tenzij source=latest/merged of includeLatest=true."
-            : "Runner analyse gebruikt latest/debug data. Gebruik source=stored voor echte family-statistiek.",
+            ? "Runner analyse gebruikt alleen opgeslagen analyse-records. Latest scan wordt niet meegeteld tenzij source=latest/merged of includeLatest=true."
+            : "Runner analyse gebruikt debug/latest data. Gebruik source=stored voor echte family-statistiek.",
       },
 
       sources: {
         selectedEvents: selectedEvents.length,
         storedEvents: storedEvents.length,
         latestEvents: latestEvents.length,
-        mergedEvents: dedupeEvents([...storedEvents, ...latestEvents]).length,
-
         storedKinds: countKinds(storedEvents),
         latestKinds: countKinds(latestEvents),
         selectedKinds: countKinds(selectedEvents),
-
         store,
-
         latest: {
           ok: latest?.ok ?? null,
           skipped: Boolean(latest?.skipped),
           reason: latest?.reason || null,
           updatedAt: latest?.updatedAt || null,
           tradeFunnelUpdatedAt: latest?.tradeFunnelUpdatedAt || null,
-          runnerUpdatedAt:
-            latest?.runnerUpdatedAt ||
-            latest?.tradeSystemResult?.runnerStats?.servedAt ||
-            latest?.tradeSystemResult?.runnerStats?.durableSavedAt ||
-            null,
           error: latest?.error || null,
         },
       },
 
       tradesLoaded: selectedEvents.length,
       report,
-
-      routes: {
-        self: "/api/analyze",
-        performance: "/api/performance",
-        tradeStats: "/api/trade-stats",
-        tradeHistory: "/api/trade-history",
-        publicLatest: "/api/public-latest",
-      },
     };
 
     if (debug) {
@@ -562,13 +503,12 @@ export default async function handler(req, res) {
 
     return res.status(200).json(response);
   } catch (error) {
-    console.error("RUNNER ANALYZE API ERROR:", error);
+    console.error("RUNNER ANALYSE API ERROR:", error);
 
     return res.status(500).json({
       ok: false,
-      system: SYSTEM_PROFILE,
       profile: SYSTEM_PROFILE,
-      mode: SYSTEM_MODE,
+      system: SYSTEM_PROFILE,
       generatedAt: new Date().toISOString(),
       latencyMs: Date.now() - startedAt,
       error: serializeError(error, debug),
