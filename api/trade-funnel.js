@@ -616,6 +616,7 @@ function compactTradeSystemResult(result) {
       profile: SYSTEM_PROFILE,
       ok: true,
       actions: [],
+      openPositions: [],
       candidatesCount: 0,
       reason: "no_runner_candidates",
     };
@@ -689,6 +690,18 @@ function trimDashboardRows(stats) {
   };
 }
 
+function inferScanReady({ latest, funnel, trades, mode }) {
+  const hasRealData =
+    countFunnel(funnel) > 0 ||
+    trades.length > 0 ||
+    safeNumber(latest?.scannerUpdatedAt, 0) > 0 ||
+    safeNumber(latest?.tradeFunnelUpdatedAt, 0) > 0 ||
+    safeNumber(latest?.updatedAt, 0) > 0 ||
+    mode === "run";
+
+  return Boolean(latest?.scanReady || hasRealData);
+}
+
 function buildTradeFunnelPayload({
   latest,
   selection,
@@ -700,11 +713,19 @@ function buildTradeFunnelPayload({
 }) {
   const funnel = compactFunnel(latest?.funnel || emptyFunnel());
   const compactResult = compactTradeSystemResult(result || latest?.tradeSystemResult);
+
   const trades = safeArray(
     result?.actions?.length ? result.actions : latest?.trades
   )
     .slice(-MAX_STORED_ACTIONS)
     .map(compactTradeRow);
+
+  const scanReady = inferScanReady({
+    latest,
+    funnel,
+    trades,
+    mode,
+  });
 
   return {
     ok: true,
@@ -716,7 +737,7 @@ function buildTradeFunnelPayload({
     tradeFunnelBusy: Boolean(busy),
     tradeFunnelError: error,
 
-    scanReady: Boolean(latest?.scanReady),
+    scanReady,
     message: latest?.message || null,
 
     funnel,
@@ -808,6 +829,7 @@ export async function runTradeFunnel(options = {}) {
       : {
           ok: true,
           actions: [],
+          openPositions: [],
           candidatesCount: 0,
           profile: SYSTEM_PROFILE,
           reason: "no_runner_candidates",
@@ -872,6 +894,7 @@ export default async function handler(req, res) {
     return res.status(500).json({
       ok: false,
       profile: SYSTEM_PROFILE,
+      scanReady: false,
       error: error?.message || "trade_funnel_failed",
       servedAt: Date.now(),
     });
