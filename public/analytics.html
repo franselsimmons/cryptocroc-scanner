@@ -7,7 +7,7 @@
 
   <title>Runner TradeSystem Analyse</title>
 
-  <link rel="stylesheet" href="/analytics.css?v=runner-pnl-1" />
+  <link rel="stylesheet" href="/analytics.css?v=runner-pnl-v2" />
 </head>
 
 <body>
@@ -20,9 +20,8 @@
           <h1>Runner Family Performance Matrix</h1>
 
           <p class="hero-text">
-            50 LONG families + 50 SHORT families. Elke runner-trade wordt op entry vastgezet
-            in één frozen filter-family. Ranking is PnL-first: hoogste Total PnL%, daarna
-            Total R, Avg R, Profit Factor en sample-size.
+            50 LONG families + 50 SHORT families. Elke runner-trade wordt op entry vastgezet in één frozen filter-family.
+            Ranking is PnL-first: hoogste Total PnL%, daarna Total R, Avg R, Profit Factor en sample-size.
           </p>
         </div>
 
@@ -30,10 +29,10 @@
           <button id="refreshBtn" type="button">Refresh</button>
           <button id="autoBtn" type="button">Auto: OFF</button>
           <button id="resetBtn" type="button" class="danger">Reset</button>
-          <a id="apiLink" href="/api/analyze?minClosed=10&debug=true" target="_blank" rel="noopener">API</a>
+          <a id="apiLink" href="/api/analyze?minClosed=10&includeLatest=true&debug=true" target="_blank" rel="noopener">API</a>
         </div>
 
-        <div class="hero-status-grid" aria-label="Analyzer status">
+        <div class="hero-status-grid" aria-label="Runner analyzer status">
           <article class="status-card">
             <span>Stored</span>
             <strong id="sourceStored">0</strong>
@@ -139,7 +138,7 @@
       </article>
     </section>
 
-    <section class="panel winner-panel" aria-label="Runner winner candidates">
+    <section class="panel winners-panel" aria-label="Beste runner families">
       <div class="table-header">
         <div>
           <h2>Winner candidates</h2>
@@ -158,7 +157,7 @@
       </div>
     </section>
 
-    <section class="panel top-pnl-panel" aria-label="Top PnL families">
+    <section class="panel pnl-panel" aria-label="Top PnL families">
       <div class="table-header">
         <div>
           <h2>Top PnL families</h2>
@@ -188,7 +187,8 @@
         <label class="field">
           <span>Data source</span>
           <select id="sourceSelect">
-            <option value="RUNNER" selected>RUNNER analyze-store</option>
+            <option value="MERGED" selected>RUNNER analyze-store + latest</option>
+            <option value="STORED">RUNNER analyze-store</option>
           </select>
         </label>
 
@@ -304,6 +304,6 @@
     </section>
   </main>
 
-  <script type="module" src="/analytics.js?v=runner-pnl-1"></script>
+  <script type="module" src="/analytics.js?v=runner-pnl-v2"></script>
 </body>
 </html>
