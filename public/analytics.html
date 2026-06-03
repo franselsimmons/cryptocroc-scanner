@@ -2,12 +2,12 @@
 <html lang="nl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
   <meta name="theme-color" content="#07101c" />
 
   <title>Runner TradeSystem Analyse</title>
 
-  <link rel="stylesheet" href="/analytics.css?v=runner-micro-v1" />
+  <link rel="stylesheet" href="/analytics.css?v=runner-micro-v2" />
 </head>
 
 <body>
@@ -93,7 +93,7 @@
       </article>
 
       <article class="metric-card">
-        <span class="metric-label">Pending outcome</span>
+        <span class="metric-label">Pending</span>
         <strong id="mPending" class="metric-value">0</strong>
       </article>
 
@@ -330,20 +330,22 @@
           <input
             id="searchInput"
             type="search"
-            placeholder="LONG_48, Q5_ELITE, CLEAN, DEPTH, micro key..."
+            placeholder="LONG_48, Q5_ELITE, CLEAN, micro key..."
             autocomplete="off"
           />
         </label>
 
-        <label class="check-field">
-          <input id="hideEmptyInput" type="checkbox" checked />
-          <span>Hide empty</span>
-        </label>
+        <div class="check-field-group">
+          <label class="check-field">
+            <input id="hideEmptyInput" type="checkbox" checked />
+            <span>Hide empty</span>
+          </label>
 
-        <label class="check-field">
-          <input id="includeShadowInput" type="checkbox" />
-          <span>Include shadow</span>
-        </label>
+          <label class="check-field">
+            <input id="includeShadowInput" type="checkbox" />
+            <span>Include shadow</span>
+          </label>
+        </div>
       </div>
 
       <div class="table-header">
@@ -420,6 +422,6 @@
     </section>
   </main>
 
-  <script type="module" src="/analytics.js?v=runner-micro-v1"></script>
+  <script type="module" src="/analytics.js?v=runner-micro-v2"></script>
 </body>
 </html>
