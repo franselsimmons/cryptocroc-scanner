@@ -107,6 +107,13 @@ function asPctStringFromRatio(value, decimals = 1) {
   return fmtPct(n * 100, decimals);
 }
 
+function normalizeMicroKey(value) {
+  return text(value)
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+}
+
 function normalizeFamily(row = {}) {
   const id =
     row.id ||
@@ -186,12 +193,120 @@ function normalizeFamily(row = {}) {
     winrateScore: safeNumber(row.winrateScore, 0),
     qualityScore: safeNumber(row.qualityScore, 0),
 
+    microFamilyCount: safeNumber(row.microFamilyCount, 0),
+    microFamilyKeys: safeObject(row.microFamilyKeys),
+    topMicroFamilyKeys: safeArray(row.topMicroFamilyKeys),
+
     ready: Boolean(row.ready),
     allowed: Boolean(row.allowed),
     blocked: Boolean(row.blocked),
 
     examples: safeArray(row.examples),
     topSymbols: safeArray(row.topSymbols),
+  };
+}
+
+function normalizeMicroFamily(row = {}) {
+  const microFamilyKey = normalizeMicroKey(
+    row.microFamilyKey ||
+      row.runnerMicroFamilyKey ||
+      row.analyzeMicroFamilyKey ||
+      row.analysisMicroFamilyKey ||
+      row.discordMicroFamilyKey ||
+      row.id ||
+      ""
+  );
+
+  const microFamilyId =
+    row.microFamilyId ||
+    row.runnerMicroFamilyId ||
+    row.analyzeMicroFamilyId ||
+    row.analysisMicroFamilyId ||
+    row.discordMicroFamilyId ||
+    "";
+
+  const familyId =
+    row.familyId ||
+    row.macroFamilyId ||
+    text(microFamilyKey).split("::")[0] ||
+    "";
+
+  const labels = safeArray(row.microLabels).length
+    ? safeArray(row.microLabels)
+    : safeArray(row.labels);
+
+  const winrateNum = safeNumber(row.winrateNum, 0);
+
+  return {
+    ...row,
+
+    id: microFamilyKey || row.id || "-",
+
+    microFamilyKey,
+    runnerMicroFamilyKey: row.runnerMicroFamilyKey || microFamilyKey,
+    analyzeMicroFamilyKey: row.analyzeMicroFamilyKey || microFamilyKey,
+    analysisMicroFamilyKey: row.analysisMicroFamilyKey || microFamilyKey,
+    discordMicroFamilyKey: row.discordMicroFamilyKey || microFamilyKey,
+
+    microFamilyId,
+    runnerMicroFamilyId: row.runnerMicroFamilyId || microFamilyId,
+    analyzeMicroFamilyId: row.analyzeMicroFamilyId || microFamilyId,
+    analysisMicroFamilyId: row.analysisMicroFamilyId || microFamilyId,
+    discordMicroFamilyId: row.discordMicroFamilyId || microFamilyId,
+
+    familyId,
+    macroFamilyId: row.macroFamilyId || familyId,
+
+    side: normalizeSide(row.side || ""),
+
+    definition:
+      row.microDefinition ||
+      row.definition ||
+      labels.join(" | ") ||
+      microFamilyKey,
+
+    microDefinition:
+      row.microDefinition ||
+      row.definition ||
+      labels.join(" | ") ||
+      microFamilyKey,
+
+    labels,
+    microLabels: labels,
+
+    status: normalizeStatus(row.status),
+
+    observed: safeNumber(row.observed, 0),
+    observations: safeNumber(row.observations, 0),
+    trades: safeNumber(row.trades, 0),
+    closed: safeNumber(row.closed, 0),
+    realClosed: safeNumber(row.realClosed, 0),
+    shadowClosed: safeNumber(row.shadowClosed, 0),
+    open: safeNumber(row.open, 0),
+    pendingOutcome: safeNumber(row.pendingOutcome ?? row.pending, 0),
+
+    wins: safeNumber(row.wins, 0),
+    losses: safeNumber(row.losses, 0),
+    breakeven: safeNumber(row.breakeven, 0),
+
+    winrateNum,
+    winrate: row.winrate || asPctStringFromRatio(winrateNum, 1),
+
+    totalR: safeNumber(row.totalR, 0),
+    avgR: safeNumber(row.avgR, 0),
+
+    totalPnlPct: safeNumber(row.totalPnlPct, 0),
+    avgPnlPct: safeNumber(row.avgPnlPct, 0),
+
+    pf: safeNumber(row.pf ?? row.profitFactor ?? row.profitFactorR, 0),
+    profitFactorR: safeNumber(row.profitFactorR ?? row.pf ?? row.profitFactor, 0),
+
+    avgMfeR: safeNumber(row.avgMfeR, 0),
+    avgMaeR: safeNumber(row.avgMaeR, 0),
+
+    score: safeNumber(row.score, 0),
+
+    examples: safeArray(row.examples),
   };
 }
 
@@ -334,6 +449,10 @@ function normalizeFamilyList(value) {
   return safeArray(value).map(normalizeFamily);
 }
 
+function normalizeMicroFamilyList(value) {
+  return safeArray(value).map(normalizeMicroFamily);
+}
+
 function firstNonEmptyArray(...values) {
   for (const value of values) {
     const arr = safeArray(value);
@@ -355,8 +474,10 @@ function normalizePayload(payload) {
   const report = safeObject(payload.report);
   const summary = safeObject(report.summary || payload.stats);
   const familiesRaw = safeObject(report.families || payload.families);
+  const microFamiliesRaw = safeObject(report.microFamilies || payload.microFamilies);
   const leaderboards = safeObject(report.leaderboards || payload.leaderboards);
   const selection = safeObject(report.selection || payload.selection);
+  const best = safeObject(report.best || payload.best);
 
   const allFamilies = normalizeFamilyList(
     firstNonEmptyArray(
@@ -428,7 +549,50 @@ function normalizePayload(payload) {
     )
   );
 
-  const worstFamilies = normalizeFamilyList(familiesRaw.worst);
+  const microAll = normalizeMicroFamilyList(
+    firstNonEmptyArray(
+      microFamiliesRaw.all,
+      microFamiliesRaw.ranked,
+      microFamiliesRaw.topPnl,
+      leaderboards.topMicroFamiliesByPnl
+    )
+  );
+
+  const microLong = safeArray(microFamiliesRaw.long).length
+    ? normalizeMicroFamilyList(microFamiliesRaw.long)
+    : microAll.filter(row => row.side === "LONG");
+
+  const microShort = safeArray(microFamiliesRaw.short).length
+    ? normalizeMicroFamilyList(microFamiliesRaw.short)
+    : microAll.filter(row => row.side === "SHORT");
+
+  const bestLongMicro =
+    microFamiliesRaw.bestLongByPnl ||
+    leaderboards.bestLongMicroFamilyByPnl ||
+    best.bestLongMicroFamilyByPnl ||
+    null;
+
+  const bestShortMicro =
+    microFamiliesRaw.bestShortByPnl ||
+    leaderboards.bestShortMicroFamilyByPnl ||
+    best.bestShortMicroFamilyByPnl ||
+    null;
+
+  const allowedMicroFamilyKeys =
+    safeArray(microFamiliesRaw.allowedMicroFamilyKeys).length
+      ? safeArray(microFamiliesRaw.allowedMicroFamilyKeys)
+      : safeArray(best.allowedMicroFamilyKeys);
+
+  const microEnvLine =
+    microFamiliesRaw.envLine ||
+    best.microFamilyEnvLine ||
+    summary.microFamilyEnvLine ||
+    "";
+
+  const microTradeSystemSnippet =
+    microFamiliesRaw.tradeSystemSnippet ||
+    best.microFamilyTradeSystemSnippet ||
+    {};
 
   return {
     raw: payload,
@@ -461,12 +625,57 @@ function normalizePayload(payload) {
         bestWinrate: normalizeFamilyList(familiesRaw.bestWinrate),
         bestAvgR: normalizeFamilyList(familiesRaw.bestAvgR),
 
-        worst: worstFamilies,
+        worst: normalizeFamilyList(familiesRaw.worst),
 
         topPnl: topPnlFamilies,
         topTotalR: topTotalRFamilies,
         topWinrate: topWinrateFamilies,
         topBalance: topBalanceFamilies,
+      },
+
+      microFamilies: {
+        all: microAll,
+        long: microLong,
+        short: microShort,
+        ranked: safeArray(microFamiliesRaw.ranked).length
+          ? normalizeMicroFamilyList(microFamiliesRaw.ranked)
+          : microAll,
+
+        best: normalizeMicroFamilyList(
+          firstNonEmptyArray(
+            microFamiliesRaw.best,
+            leaderboards.bestMicroFamilies
+          )
+        ),
+
+        topPnl: normalizeMicroFamilyList(
+          firstNonEmptyArray(
+            microFamiliesRaw.topPnl,
+            leaderboards.topMicroFamiliesByPnl
+          )
+        ),
+
+        topLongByPnl: normalizeMicroFamilyList(
+          firstNonEmptyArray(
+            microFamiliesRaw.topLongByPnl,
+            leaderboards.topLongMicroFamiliesByPnl
+          )
+        ),
+
+        topShortByPnl: normalizeMicroFamilyList(
+          firstNonEmptyArray(
+            microFamiliesRaw.topShortByPnl,
+            leaderboards.topShortMicroFamiliesByPnl
+          )
+        ),
+
+        bestLongByPnl: bestLongMicro ? normalizeMicroFamily(bestLongMicro) : null,
+        bestShortByPnl: bestShortMicro ? normalizeMicroFamily(bestShortMicro) : null,
+
+        allowedMicroFamilyKeys,
+        envLine: microEnvLine,
+        tradeSystemSnippet: microTradeSystemSnippet,
+        summary: safeObject(microFamiliesRaw.summary),
       },
     },
   };
@@ -520,6 +729,7 @@ function renderSummary() {
   const summary = state.report?.summary || {};
   const longFamilies = safeArray(state.report?.families?.long);
   const shortFamilies = safeArray(state.report?.families?.short);
+  const microFamilies = state.report?.microFamilies || {};
 
   setText("mActions", fmtNum(summary.actions || 0, 0));
   setText("mTrades", fmtNum(summary.trades || summary.observed || summary.observations || 0, 0));
@@ -539,6 +749,19 @@ function renderSummary() {
 
   setText("mLongMeta", readSummarySideText(summary.longFamilies, longFamilies));
   setText("mShortMeta", readSummarySideText(summary.shortFamilies, shortFamilies));
+
+  setText(
+    "mMicroFamilies",
+    fmtNum(summary.microFamiliesWithData ?? microFamilies.summary?.total ?? safeArray(microFamilies.all).length, 0)
+  );
+
+  setText(
+    "mMicroClosed",
+    fmtNum(summary.microFamiliesWithClosed ?? microFamilies.summary?.withClosed ?? 0, 0)
+  );
+
+  setText("mBestLongMicro", microFamilies.bestLongByPnl?.microFamilyKey || "-");
+  setText("mBestShortMicro", microFamilies.bestShortByPnl?.microFamilyKey || "-");
 }
 
 function renderSourceCards() {
@@ -568,6 +791,7 @@ function renderSourceCards() {
 
   const storePath =
     source.path ||
+    runtime.keys?.runnerMeta ||
     runtime.keys?.core ||
     runtime.keys?.legacy ||
     store.path ||
@@ -674,6 +898,7 @@ function getSelectedFamilies() {
         row.totalPnlPct,
         row.avgPnlPct,
         row.pf,
+        row.topMicroFamilyKeys?.map(item => item.microFamilyKey).join(" "),
       ].join(" ").toUpperCase();
 
       return haystack.includes(query);
@@ -837,16 +1062,14 @@ function renderWinners() {
 }
 
 function renderTopPnl() {
-  const families = firstNonEmptyArray(
+  const source = firstNonEmptyArray(
     state.report?.families?.topPnl,
     state.report?.families?.bestPnl,
     state.report?.families?.bestRunnerPnl
-  ).length
-    ? firstNonEmptyArray(
-        state.report?.families?.topPnl,
-        state.report?.families?.bestPnl,
-        state.report?.families?.bestRunnerPnl
-      ).map(normalizeFamily)
+  );
+
+  const families = source.length
+    ? source.map(normalizeFamily)
     : safeArray(state.report?.families?.all)
         .map(normalizeFamily)
         .filter(row => row.closed > 0)
@@ -860,6 +1083,140 @@ function renderTopPnl() {
   }
 
   renderFamilyCards("topPnlGrid", families.slice(0, 8), "Nog geen PnL families.");
+}
+
+function renderMicroStat(label, value, className = "") {
+  return `
+    <div class="winner-stat">
+      <span>${escapeHtml(label)}</span>
+      <strong class="${escapeHtml(className)}">${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
+function renderMicroFamilyCard(row, title) {
+  const micro = normalizeMicroFamily(row || {});
+  const status = normalizeStatus(micro.status);
+  const key = micro.microFamilyKey || "-";
+  const envLine = `RUNNER_ALLOWED_MICRO_FAMILY_KEYS=${key}`;
+  const labels = safeArray(micro.microLabels).slice(0, 10).join(" | ");
+
+  return `
+    <article class="micro-card ${status.toLowerCase()}">
+      <div class="winner-top">
+        <div>
+          <span class="micro-card-label">${escapeHtml(title)}</span>
+          <h3>${escapeHtml(key)}</h3>
+        </div>
+        <span class="status-pill ${statusClass(status)}">${escapeHtml(status)}</span>
+      </div>
+
+      <div class="micro-meta-row">
+        <span class="side-pill ${escapeHtml(micro.side.toLowerCase())}">${escapeHtml(micro.side || "-")}</span>
+        <span class="micro-family-parent">${escapeHtml(micro.familyId || "-")}</span>
+      </div>
+
+      <div class="winner-stats micro-stats">
+        ${renderMicroStat("Closed", fmtNum(micro.closed, 0))}
+        ${renderMicroStat("Winrate", micro.winrate || "0%")}
+        ${renderMicroStat("Total PnL%", fmtPct(micro.totalPnlPct, 3), signedClass(micro.totalPnlPct))}
+        ${renderMicroStat("Total R", fmtNum(micro.totalR, 3), signedClass(micro.totalR))}
+        ${renderMicroStat("Avg R", fmtNum(micro.avgR, 3), signedClass(micro.avgR))}
+        ${renderMicroStat("PF", fmtNum(micro.pf, 3))}
+      </div>
+
+      <div class="copy-stack">
+        <button type="button" class="copy-btn" data-copy="${escapeHtml(key)}">Copy key</button>
+        <button type="button" class="copy-btn" data-copy="${escapeHtml(envLine)}">Copy env</button>
+      </div>
+
+      <p class="winner-definition">${escapeHtml(labels || micro.definition || key)}</p>
+    </article>
+  `;
+}
+
+function renderBestMicroFamilies() {
+  const micro = state.report?.microFamilies || {};
+  const grid = $("microBestGrid");
+  const count = $("microBestCount");
+
+  if (!grid && !count) return;
+
+  const bestLong = micro.bestLongByPnl;
+  const bestShort = micro.bestShortByPnl;
+  const cards = [];
+
+  if (bestLong) cards.push(renderMicroFamilyCard(bestLong, "Beste LONG micro-family"));
+  if (bestShort) cards.push(renderMicroFamilyCard(bestShort, "Beste SHORT micro-family"));
+
+  if (count) {
+    const n = Number(Boolean(bestLong)) + Number(Boolean(bestShort));
+    count.textContent = `${n} selected`;
+  }
+
+  if (grid) {
+    grid.innerHTML = cards.length
+      ? cards.join("")
+      : `<article class="winner-empty">Nog geen micro-family met bruikbare key. Check diagnostics.rowsWithMicroFamilyKey.</article>`;
+  }
+
+  const allowed = safeArray(micro.allowedMicroFamilyKeys);
+  const envLine = micro.envLine || `RUNNER_ALLOWED_MICRO_FAMILY_KEYS=${allowed.join(",")}`;
+  const snippet = safeObject(micro.tradeSystemSnippet);
+
+  setText("microAllowedKeys", allowed.length ? allowed.join(",") : "-");
+  setText("microEnvLine", envLine || "-");
+  setText("microJsSnippet", snippet.js || "-");
+  setText("microGateSnippet", snippet.gate || "-");
+
+  const envBtn = $("copyMicroEnvBtn");
+  if (envBtn) envBtn.dataset.copy = envLine || "";
+
+  const keysBtn = $("copyMicroKeysBtn");
+  if (keysBtn) keysBtn.dataset.copy = allowed.join(",");
+
+  const jsBtn = $("copyMicroJsBtn");
+  if (jsBtn) jsBtn.dataset.copy = snippet.js || "";
+
+  const gateBtn = $("copyMicroGateBtn");
+  if (gateBtn) jsBtn.dataset.copy = snippet.gate || "";
+
+  const diagnostics = state.report?.diagnostics || {};
+  setText(
+    "microDiagnosticsLine",
+    `micro rows: ${fmtNum(diagnostics.rowsWithMicroFamilyKey || micro.summary?.rowsWithMicroFamilyKey || 0, 0)} | missing: ${fmtNum(diagnostics.rowsWithoutMicroFamilyKey || micro.summary?.rowsWithoutMicroFamilyKey || 0, 0)}`
+  );
+}
+
+function renderMicroPnl() {
+  const micro = state.report?.microFamilies || {};
+  const grid = $("microPnlGrid");
+  const count = $("microPnlCount");
+
+  if (!grid && !count) return;
+
+  const rows = firstNonEmptyArray(
+    micro.topPnl,
+    micro.best,
+    micro.ranked,
+    micro.all
+  ).map(normalizeMicroFamily)
+    .filter(row => row.microFamilyKey)
+    .sort(rankPnlFirst)
+    .slice(0, 8);
+
+  if (count) {
+    count.textContent = `${rows.length} micro families`;
+  }
+
+  if (!grid) return;
+
+  if (!rows.length) {
+    grid.innerHTML = `<article class="winner-empty">Nog geen micro-family PnL data.</article>`;
+    return;
+  }
+
+  grid.innerHTML = rows.map(row => renderMicroFamilyCard(row, row.side || "MICRO")).join("");
 }
 
 function renderFilters() {
@@ -909,6 +1266,13 @@ function renderDebug() {
     objective: state.raw?.objective || state.report?.objective || null,
     sources: state.raw?.sources || null,
     summary: state.report?.summary || null,
+    microFamilies: {
+      summary: state.report?.microFamilies?.summary || null,
+      bestLongByPnl: state.report?.microFamilies?.bestLongByPnl || null,
+      bestShortByPnl: state.report?.microFamilies?.bestShortByPnl || null,
+      allowedMicroFamilyKeys: state.report?.microFamilies?.allowedMicroFamilyKeys || [],
+      envLine: state.report?.microFamilies?.envLine || null,
+    },
     selection: state.report?.selection || null,
     diagnostics: state.report?.diagnostics || null,
     config: state.report?.config || null,
@@ -928,8 +1292,10 @@ function render() {
 
   renderSummary();
   renderSourceCards();
+  renderBestMicroFamilies();
   renderWinners();
   renderTopPnl();
+  renderMicroPnl();
   renderFamilies();
   renderFilters();
   renderDebug();
@@ -953,8 +1319,10 @@ async function loadAnalytics({ force = false } = {}) {
       ? new Date(normalized.raw.generatedAt || normalized.raw.servedAt).toLocaleString()
       : new Date().toLocaleString();
 
+    const microRows = normalized.report?.diagnostics?.rowsWithMicroFamilyKey ?? 0;
+
     setStatus(
-      `Laatste update: ${updated} | data ${normalized.raw?.dataState || "UNKNOWN"} | loaded in ${fmtNum(normalized.raw?.latencyMs || 0, 0)}ms`,
+      `Laatste update: ${updated} | data ${normalized.raw?.dataState || "UNKNOWN"} | micro rows ${fmtNum(microRows, 0)} | loaded in ${fmtNum(normalized.raw?.latencyMs || 0, 0)}ms`,
       false
     );
 
@@ -1056,6 +1424,54 @@ function scheduleReload() {
   }, 350);
 }
 
+async function copyToClipboard(value) {
+  const textValue = text(value).trim();
+  if (!textValue) return false;
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(textValue);
+    return true;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = textValue;
+  textarea.setAttribute("readonly", "readonly");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+
+  document.body.appendChild(textarea);
+  textarea.select();
+
+  const ok = document.execCommand("copy");
+  document.body.removeChild(textarea);
+
+  return ok;
+}
+
+function wireCopyEvents() {
+  document.addEventListener("click", async event => {
+    const button = event.target?.closest?.("[data-copy]");
+    if (!button) return;
+
+    const value = button.dataset.copy || "";
+    if (!value) return;
+
+    try {
+      const ok = await copyToClipboard(value);
+      const original = button.textContent;
+
+      button.textContent = ok ? "Copied" : "Copy failed";
+
+      setTimeout(() => {
+        button.textContent = original;
+      }, 900);
+    } catch (error) {
+      console.error("COPY ERROR:", error);
+      button.textContent = "Copy failed";
+    }
+  });
+}
+
 function wireEvents() {
   $("refreshBtn")?.addEventListener("click", () => loadAnalytics());
   $("resetBtn")?.addEventListener("click", resetAnalytics);
@@ -1091,14 +1507,18 @@ function wireEvents() {
   minClosedInput?.addEventListener("input", () => {
     renderFamilies();
     renderWinners();
+    renderBestMicroFamilies();
     scheduleReload();
   });
 
   minClosedInput?.addEventListener("change", () => {
     renderFamilies();
     renderWinners();
+    renderBestMicroFamilies();
     scheduleReload();
   });
+
+  wireCopyEvents();
 }
 
 function ensureRuntimeDefaults() {
