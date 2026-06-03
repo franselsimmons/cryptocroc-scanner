@@ -17,8 +17,16 @@ const SYSTEM_PROFILE = "RUNNER";
 const MAX_STORED_ENTRY_ROWS = 250;
 const MAX_STORED_REJECT_ROWS = 500;
 const MAX_STORED_TRADE_ROWS = 500;
-const MAX_STORED_ACTIONS = 250;
-const MAX_STORED_OPEN_POSITIONS = 100;
+
+// Dashboard/history. Mag gecapt worden.
+const MAX_STORED_ACTIONS = readNumberEnv("TRADE_FUNNEL_MAX_STORED_ACTIONS", 750);
+
+// Live state. Niet op 100 cappen, anders vergeet runner posities en opent hij elke scan opnieuw.
+const MAX_STORED_OPEN_POSITIONS = readNumberEnv(
+  "TRADE_FUNNEL_MAX_STORED_OPEN_POSITIONS",
+  2500
+);
+
 const MAX_SYMBOL_LOGS = 80;
 
 const RUNNER_ANALYZE_PERSIST =
@@ -32,6 +40,11 @@ const RUNNER_FLOWS = new Set([
 ]);
 
 // ================= ROUTE TRACE CONFIG =================
+
+function readNumberEnv(key, fallback) {
+  const n = Number(process.env[key]);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 
 function envFlag(name, fallback = false) {
   const raw = process.env[name];
@@ -824,6 +837,7 @@ function compactTradeRow(row) {
     partialTp: row.partialTp,
     breakevenAt: row.breakevenAt,
     trailStart: row.trailStart,
+    trailPrice: row.trailPrice,
 
     rr: row.rr,
     baseRR: row.baseRR,
@@ -890,8 +904,98 @@ function compactTradeRow(row) {
     entryTs: row.entryTs,
     createdAt: row.createdAt,
     exitedAt: row.exitedAt,
+    updatedAt: row.updatedAt,
     ts: row.ts,
   };
+}
+
+function isOpenPositionForState(pos) {
+  if (!pos || typeof pos !== "object") return false;
+  if (pos.closed === true || pos.isClosed === true) return false;
+
+  const action = normalizeText(pos.action || pos.status || pos.state);
+  if (["EXIT", "CLOSE", "CLOSED"].includes(action)) return false;
+
+  if (pos.closedAt || pos.exitedAt || pos.exitAt || pos.exitTs) return false;
+
+  const symbol = normalizeSymbol(pos.symbol);
+  const side = normalizeSide(pos.side);
+
+  return Boolean(symbol && side);
+}
+
+function getOpenPositionTs(pos) {
+  return safeNumber(
+    firstDefined(
+      pos.updatedAt,
+      pos.createdAt,
+      pos.openedAt,
+      pos.entryTs,
+      pos.ts
+    ),
+    0
+  );
+}
+
+function getOpenPositionKey(pos) {
+  const direct =
+    pos?.tradeId ||
+    pos?.positionTradeId ||
+    pos?.positionId ||
+    pos?.orderId ||
+    pos?.clientOrderId;
+
+  if (direct) return `ID|${String(direct)}`;
+
+  return [
+    "FALLBACK",
+    normalizeSymbol(pos?.symbol),
+    normalizeSide(pos?.side),
+    normalizeText(pos?.entryType || pos?.runnerEntryType || pos?.setupClass),
+    nullableNumber(pos?.entry ?? pos?.entryPrice ?? pos?.openPrice) ?? "",
+  ].join("|");
+}
+
+function openPositionCompletenessScore(pos) {
+  let score = 0;
+
+  if (pos?.tradeId) score += 20;
+  if (pos?.positionTradeId) score += 15;
+  if (pos?.positionId) score += 10;
+  if (pos?.familyId || pos?.runnerFamilyId || pos?.analyzeFamilyId) score += 10;
+  if (pos?.entry !== undefined || pos?.entryPrice !== undefined || pos?.openPrice !== undefined) score += 10;
+  if (pos?.sl !== undefined || pos?.initialSl !== undefined) score += 5;
+  if (pos?.tp !== undefined) score += 5;
+  if (pos?.entryType || pos?.runnerEntryType) score += 5;
+  if (pos?.discordEntryNotified === true) score += 3;
+
+  score += Math.min(getOpenPositionTs(pos) / 1e15, 1);
+
+  return score;
+}
+
+function dedupeOpenPositionsForState(positions) {
+  const map = new Map();
+
+  for (const pos of safeArray(positions)) {
+    if (!isOpenPositionForState(pos)) continue;
+
+    const key = getOpenPositionKey(pos);
+    if (!key || key === "FALLBACK||||") continue;
+
+    const prev = map.get(key);
+
+    if (!prev) {
+      map.set(key, pos);
+      continue;
+    }
+
+    if (openPositionCompletenessScore(pos) >= openPositionCompletenessScore(prev)) {
+      map.set(key, pos);
+    }
+  }
+
+  return Array.from(map.values());
 }
 
 function compactOpenPosition(pos) {
@@ -900,13 +1004,20 @@ function compactOpenPosition(pos) {
   return {
     tradeId: pos.tradeId,
     positionTradeId: pos.positionTradeId,
+    positionId: pos.positionId,
+    orderId: pos.orderId,
+    clientOrderId: pos.clientOrderId,
 
     symbol: pos.symbol,
     side: pos.side,
+
     setupClass: pos.setupClass,
     entryType: pos.entryType || pos.runnerEntryType,
     runnerEntryType: pos.runnerEntryType || pos.entryType,
+
     scannerFlow: pos.scannerFlow,
+    flow: pos.flow,
+
     liveEligible: Boolean(pos.liveEligible),
     shadowOnly: Boolean(pos.shadowOnly),
 
@@ -917,11 +1028,53 @@ function compactOpenPosition(pos) {
     discordFamilyId: pos.discordFamilyId,
 
     entry: pos.entry,
+    entryPrice: pos.entryPrice,
+    openPrice: pos.openPrice,
+
     sl: pos.sl,
     initialSl: pos.initialSl,
     tp: pos.tp,
     partialTp: pos.partialTp,
+    breakevenAt: pos.breakevenAt,
+    trailStart: pos.trailStart,
     trailPrice: pos.trailPrice ?? null,
+
+    rr: pos.rr,
+    baseRR: pos.baseRR,
+    plannedRR: pos.plannedRR,
+    finalRR: pos.finalRR,
+    targetR: pos.targetR,
+
+    confluence: pos.confluence,
+    sniperScore: pos.sniperScore,
+    score: pos.score,
+    moveScore: pos.moveScore,
+
+    flowStrength: pos.flowStrength,
+    detectedFlow: pos.detectedFlow,
+
+    rsi: pos.rsi,
+    rsiHTF: pos.rsiHTF,
+    rsiZone: pos.rsiZone,
+    rsiContinuationScore: pos.rsiContinuationScore,
+
+    obBias: pos.obBias,
+    spreadPct: pos.spreadPct,
+    spreadBps: pos.spreadBps,
+    depthMinUsd1p: pos.depthMinUsd1p,
+    depthUsd1p: pos.depthUsd1p,
+
+    btcState: pos.btcState,
+    regime: pos.regime,
+    funding: pos.funding,
+    fundingRate: pos.fundingRate,
+
+    runnerPressure: pos.runnerPressure,
+    runnerAcceleration: pos.runnerAcceleration,
+
+    tfScore: pos.tfScore,
+    tfStrength: pos.tfStrength,
+    tfAlignment: pos.tfAlignment,
 
     currentR: safeNumber(pos.currentR, 0),
     mfeR: safeNumber(pos.mfeR, 0),
@@ -932,14 +1085,41 @@ function compactOpenPosition(pos) {
     trailingActive: Boolean(pos.trailingActive),
     adds: safeNumber(pos.adds, 0),
 
+    closed: Boolean(pos.closed),
+    closedAt: pos.closedAt || null,
+    exitedAt: pos.exitedAt || null,
+
     discordEntryAllowed: pos.discordEntryAllowed,
     discordEntryNotified: pos.discordEntryNotified,
     discordEntryBlocked: pos.discordEntryBlocked,
     discordBlockReason: pos.discordBlockReason,
 
     createdAt: pos.createdAt,
+    openedAt: pos.openedAt,
+    entryTs: pos.entryTs,
     updatedAt: pos.updatedAt,
+    ts: pos.ts,
   };
+}
+
+function compactOpenPositionsForState(positions) {
+  const raw = safeArray(positions);
+
+  const rows = dedupeOpenPositionsForState(raw)
+    .sort((a, b) => getOpenPositionTs(a) - getOpenPositionTs(b));
+
+  if (rows.length > MAX_STORED_OPEN_POSITIONS) {
+    routeLog("OPEN_POSITIONS_STATE_CAP_HIT", {
+      raw: raw.length,
+      deduped: rows.length,
+      cap: MAX_STORED_OPEN_POSITIONS,
+      message: "Open position state cap hit. Increase TRADE_FUNNEL_MAX_STORED_OPEN_POSITIONS.",
+    });
+  }
+
+  return rows
+    .slice(-MAX_STORED_OPEN_POSITIONS)
+    .map(compactOpenPosition);
 }
 
 function compactTradeSystemResult(result) {
@@ -948,12 +1128,14 @@ function compactTradeSystemResult(result) {
       profile: SYSTEM_PROFILE,
       ok: true,
       actions: [],
+      openPositions: [],
       candidatesCount: 0,
       reason: "no_runner_candidates",
     };
   }
 
   const stats = safeObject(result.runnerStats);
+  const openPositions = compactOpenPositionsForState(result.openPositions);
 
   return {
     profile: result.profile || SYSTEM_PROFILE,
@@ -967,9 +1149,7 @@ function compactTradeSystemResult(result) {
     shadowOnlyCandidates: safeNumber(result.shadowOnlyCandidates, 0),
 
     actions: safeArray(result.actions).slice(-MAX_STORED_ACTIONS).map(compactTradeRow),
-    openPositions: safeArray(result.openPositions)
-      .slice(-MAX_STORED_OPEN_POSITIONS)
-      .map(compactOpenPosition),
+    openPositions,
 
     actionSummary: summarizeActions(result.actions),
 
@@ -994,7 +1174,7 @@ function compactTradeSystemResult(result) {
       totalPnlPct: safeNumber(stats.totalPnlPct, 0),
       avgPnlPct: safeNumber(stats.avgPnlPct, 0),
 
-      openPositions: safeNumber(stats.openPositions, 0),
+      openPositions: openPositions.length,
 
       waitReasons: normalizeCounterMap(stats.waitReasons),
       entryTypes: normalizeCounterMap(stats.entryTypes),
@@ -1271,8 +1451,7 @@ function buildRunnerAnalyzeEvent(row, latest, now) {
 function collectAnalyzeInputRows(rawResult) {
   const rows = [];
 
-  // Bewust alleen deze run. Geen oude latest.trades meer.
-  // Anders krijg je stale reprocessing en fake unmatched exits.
+  // Bewust alleen deze run. Geen oude latest.trades.
   rows.push(...safeArray(rawResult?.actions));
 
   const map = new Map();
@@ -1421,7 +1600,12 @@ function buildTradeFunnelPayload({
   trace = null,
 }) {
   const funnel = compactFunnel(latest?.funnel || emptyFunnel());
-  const compactResult = compactTradeSystemResult(result || latest?.tradeSystemResult);
+  const sourceResult = result || latest?.tradeSystemResult;
+
+  const compactResult =
+    sourceResult?.actionSummary && sourceResult?.runnerStats
+      ? sourceResult
+      : compactTradeSystemResult(sourceResult);
 
   const trades = safeArray(
     result?.actions?.length ? result.actions : latest?.trades
@@ -1600,6 +1784,7 @@ export async function runTradeFunnel(options = {}) {
       rawResult = {
         ok: true,
         actions: [],
+        openPositions: safeArray(latest?.tradeSystemResult?.openPositions),
         candidatesCount: 0,
         profile: SYSTEM_PROFILE,
         reason: "no_runner_candidates",
@@ -1614,6 +1799,7 @@ export async function runTradeFunnel(options = {}) {
         store,
         btcState: latest?.btc?.state || null,
         regime: latest?.regime || null,
+        previousOpenPositions: safeArray(latest?.tradeSystemResult?.openPositions).length,
         symbols: candidates
           .slice(0, MAX_SYMBOL_LOGS)
           .map(c => `${c.symbol}_${c.side}_${c.stage}_${c.flow}_${Math.round(c.moveScore || 0)}`),
@@ -1638,7 +1824,7 @@ export async function runTradeFunnel(options = {}) {
         runId: rawResult?.runId || null,
         candidatesCount: safeNumber(rawResult?.candidatesCount, 0),
         liveEligibleCandidates: safeNumber(rawResult?.liveEligibleCandidates, 0),
-        openPositions: safeArray(rawResult?.openPositions).length,
+        openPositionsRaw: safeArray(rawResult?.openPositions).length,
         actionSummary: summarizeActions(rawResult?.actions),
         runnerWaitReasons: normalizeCounterMap(rawResult?.runnerStats?.waitReasons),
         runnerActionCounts: normalizeCounterMap(rawResult?.runnerStats?.actionCounts),
@@ -1712,7 +1898,8 @@ export async function runTradeFunnel(options = {}) {
       totalDurationMs: Date.now() - startedAt,
       runnerRunId: rawResult?.runId || null,
       actionSummary: summarizeActions(rawResult?.actions),
-      openPositions: safeArray(rawResult?.openPositions).length,
+      openPositionsRaw: safeArray(rawResult?.openPositions).length,
+      openPositionsStored: safeArray(result?.openPositions).length,
       analyzePersist,
     },
   });
@@ -1721,8 +1908,9 @@ export async function runTradeFunnel(options = {}) {
     routeLog("LATEST_SCAN_STORE_START", {
       requestId,
       mode,
-      actions: safeArray(result?.actions).length,
-      openPositions: safeArray(result?.openPositions).length,
+      actionsStored: safeArray(result?.actions).length,
+      openPositionsRaw: safeArray(rawResult?.openPositions).length,
+      openPositionsStored: safeArray(result?.openPositions).length,
     });
 
     await setLatestScan(updated);
@@ -1746,6 +1934,8 @@ export async function runTradeFunnel(options = {}) {
     rawCount: selection.rawCount,
     acceptedCount: selection.candidates.length,
     actionSummary: summarizeActions(rawResult?.actions),
+    openPositionsRaw: safeArray(rawResult?.openPositions).length,
+    openPositionsStored: safeArray(result?.openPositions).length,
     analyzePersist,
   });
 
@@ -1809,6 +1999,7 @@ export default async function handler(req, res) {
       durationMs: Date.now() - startedAt,
       inputCount: safeNumber(data?.tradeFunnelInputCount, 0),
       rawCount: safeNumber(data?.tradeFunnelRawCount, 0),
+      openPositionsStored: safeArray(data?.tradeSystemResult?.openPositions).length,
       actionSummary: data?.tradeSystemResult?.actionSummary || null,
     });
 
