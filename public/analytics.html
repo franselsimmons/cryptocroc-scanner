@@ -7,7 +7,7 @@
 
   <title>Runner TradeSystem Analyse</title>
 
-  <link rel="stylesheet" href="/analytics.css?v=runner-pnl-v3" />
+  <link rel="stylesheet" href="/analytics.css?v=runner-micro-v1" />
 </head>
 
 <body>
@@ -20,7 +20,7 @@
           <h1>Runner Family Performance Matrix</h1>
 
           <p class="hero-text">
-            50 LONG families + 50 SHORT families. Elke runner-trade wordt gegroepeerd in een frozen filter-family.
+            50 LONG families + 50 SHORT families met micro-family discovery. Elke runner-trade wordt gegroepeerd in een frozen macro-family en waar beschikbaar in een exacte micro-family key.
             Ranking is PnL-first: hoogste Total PnL%, daarna Total R, Avg R, Profit Factor en sample-size.
           </p>
         </div>
@@ -143,6 +143,86 @@
         <strong id="mShortFamilies" class="metric-value">50</strong>
         <small id="mShortMeta" class="metric-sub">HOT 0 | GOOD 0 | STABLE 0 | BAD 0 | COLLECTING 0 | EMPTY 50</small>
       </article>
+
+      <article class="metric-card micro-metric-card">
+        <span class="metric-label">Micro families</span>
+        <strong id="mMicroFamilies" class="metric-value">0</strong>
+        <small class="metric-sub">Unieke micro-family keys met data.</small>
+      </article>
+
+      <article class="metric-card micro-metric-card">
+        <span class="metric-label">Micro closed</span>
+        <strong id="mMicroClosed" class="metric-value">0</strong>
+        <small class="metric-sub">Micro families met minimaal één closed trade.</small>
+      </article>
+
+      <article class="metric-card micro-key-card">
+        <span class="metric-label">Best LONG micro</span>
+        <strong id="mBestLongMicro" class="metric-value micro-key-value">-</strong>
+      </article>
+
+      <article class="metric-card micro-key-card">
+        <span class="metric-label">Best SHORT micro</span>
+        <strong id="mBestShortMicro" class="metric-value micro-key-value">-</strong>
+      </article>
+    </section>
+
+    <section class="panel micro-best-panel" aria-label="Beste micro families">
+      <div class="table-header">
+        <div>
+          <h2>Best micro families</h2>
+          <p class="panel-subtitle">
+            Direct bruikbaar voor TradeSystem gating. Selectie is PnL-first per side: beste LONG micro-family en beste SHORT micro-family.
+          </p>
+        </div>
+
+        <span id="microBestCount">0 selected</span>
+      </div>
+
+      <div id="microBestGrid" class="micro-best-grid">
+        <article class="winner-empty">
+          Nog geen micro-family data geladen.
+        </article>
+      </div>
+
+      <div class="takeover-box">
+        <div class="takeover-header">
+          <div>
+            <h3>TradeSystem takeover</h3>
+            <p>
+              Kopieer de geselecteerde micro-family keys naar je TradeSystem env/config en gate alleen entries die matchen.
+            </p>
+          </div>
+
+          <span id="microDiagnosticsLine">micro rows: 0 | missing: 0</span>
+        </div>
+
+        <div class="takeover-grid">
+          <article class="takeover-item">
+            <span>Allowed keys</span>
+            <code id="microAllowedKeys">-</code>
+            <button id="copyMicroKeysBtn" type="button" class="copy-btn" data-copy="">Copy keys</button>
+          </article>
+
+          <article class="takeover-item">
+            <span>ENV</span>
+            <code id="microEnvLine">-</code>
+            <button id="copyMicroEnvBtn" type="button" class="copy-btn" data-copy="">Copy env</button>
+          </article>
+
+          <article class="takeover-item wide">
+            <span>JS config snippet</span>
+            <pre id="microJsSnippet">-</pre>
+            <button id="copyMicroJsBtn" type="button" class="copy-btn" data-copy="">Copy JS</button>
+          </article>
+
+          <article class="takeover-item wide">
+            <span>Gate snippet</span>
+            <pre id="microGateSnippet">-</pre>
+            <button id="copyMicroGateBtn" type="button" class="copy-btn" data-copy="">Copy gate</button>
+          </article>
+        </div>
+      </div>
     </section>
 
     <section class="panel winners-panel" aria-label="Beste runner families">
@@ -150,7 +230,7 @@
         <div>
           <h2>Winner candidates</h2>
           <p class="panel-subtitle">
-            PnL-first selectie: voldoende closed trades, positieve Avg R, positieve Total R en positieve Total PnL%.
+            Macro-family selectie: voldoende closed trades, positieve Avg R, positieve Total R en positieve Total PnL%.
           </p>
         </div>
 
@@ -179,6 +259,25 @@
       <div id="topPnlGrid" class="winner-grid">
         <article class="winner-empty">
           Nog geen PnL families.
+        </article>
+      </div>
+    </section>
+
+    <section class="panel micro-pnl-panel" aria-label="Top micro PnL families">
+      <div class="table-header">
+        <div>
+          <h2>Top micro PnL families</h2>
+          <p class="panel-subtitle">
+            Micro-family leaderboard. Gebruik dit om extra keys te whitelisten of zwakke keys uit te sluiten.
+          </p>
+        </div>
+
+        <span id="microPnlCount">0 micro families</span>
+      </div>
+
+      <div id="microPnlGrid" class="micro-best-grid">
+        <article class="winner-empty">
+          Nog geen micro-family PnL data.
         </article>
       </div>
     </section>
@@ -231,7 +330,7 @@
           <input
             id="searchInput"
             type="search"
-            placeholder="LONG_48, Q5_ELITE, CLEAN, DEPTH..."
+            placeholder="LONG_48, Q5_ELITE, CLEAN, DEPTH, micro key..."
             autocomplete="off"
           />
         </label>
@@ -303,7 +402,7 @@
         <div>
           <h2>Tracked filters</h2>
           <p class="panel-subtitle">
-            Labels waarop de runner families worden gegroepeerd.
+            Labels waarop de runner families en micro-families worden gegroepeerd.
           </p>
         </div>
 
@@ -321,6 +420,6 @@
     </section>
   </main>
 
-  <script type="module" src="/analytics.js?v=runner-pnl-v3"></script>
+  <script type="module" src="/analytics.js?v=runner-micro-v1"></script>
 </body>
 </html>
