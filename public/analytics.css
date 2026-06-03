@@ -59,6 +59,10 @@ a {
   -webkit-tap-highlight-color: transparent;
 }
 
+button {
+  user-select: none;
+}
+
 .page {
   width: min(1180px, 100%);
   margin: 0 auto;
@@ -445,7 +449,7 @@ h1 {
 
 .filter-grid {
   display: grid;
-  grid-template-columns: 1.1fr 0.75fr 0.9fr 0.65fr 1.6fr auto;
+  grid-template-columns: 1.15fr 0.7fr 0.85fr 0.62fr 1.55fr auto auto;
   gap: 14px;
   align-items: end;
   margin-bottom: 28px;
@@ -485,12 +489,14 @@ h1 {
   gap: 10px;
   min-height: 46px;
   color: var(--soft);
+  white-space: nowrap;
 }
 
 .check-field input {
   width: 20px;
   height: 20px;
   accent-color: #7c3aed;
+  flex: 0 0 auto;
 }
 
 .check-field span {
@@ -612,6 +618,16 @@ h1 {
   line-height: 1.45;
 }
 
+@media (max-width: 1100px) {
+  .filter-grid {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+
+  .search-field {
+    grid-column: span 2;
+  }
+}
+
 @media (max-width: 900px) {
   .page {
     padding-left: 18px;
@@ -633,6 +649,10 @@ h1 {
 
   .filter-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .search-field {
+    grid-column: span 2;
   }
 
   .metric-card.family-card {
@@ -661,6 +681,10 @@ h1 {
   .winner-grid,
   .filter-grid {
     grid-template-columns: 1fr;
+  }
+
+  .search-field {
+    grid-column: auto;
   }
 
   .metric-card.family-card {
@@ -698,5 +722,9 @@ h1 {
 
   .winner-id {
     font-size: 1.45rem;
+  }
+
+  .check-field {
+    justify-content: flex-start;
   }
 }
