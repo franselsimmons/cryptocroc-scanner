@@ -31,15 +31,6 @@ const RUNNER_FLOWS = new Set([
   "BUILDING",
 ]);
 
-const IMPORTANT_ACTIONS = new Set([
-  "ENTRY",
-  "EXIT",
-  "PARTIAL_TP",
-  "MOVE_BE",
-  "TRAIL",
-  "ADD",
-]);
-
 // ================= ROUTE TRACE CONFIG =================
 
 function envFlag(name, fallback = false) {
@@ -63,7 +54,7 @@ const TRADE_FUNNEL_ROUTE_DEBUG =
 const RUNNER_AUTO_RUN = envFlag("RUNNER_AUTO_RUN", true);
 
 function compactRouteLogValue(value, depth = 0) {
-  if (depth > 8) return "[depth_limit]";
+  if (depth > 4) return "[depth_limit]";
   if (value === undefined) return undefined;
   if (value === null) return null;
 
@@ -158,18 +149,17 @@ function safeObject(value) {
 }
 
 function safeNumber(value, fallback = 0) {
+  if (value === undefined || value === null || value === "") return fallback;
+
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 }
 
 function nullableNumber(value) {
+  if (value === undefined || value === null || value === "") return null;
+
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
-}
-
-function precisionKey(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n.toPrecision(12) : "";
 }
 
 function getRequestUrl(req) {
@@ -309,16 +299,32 @@ function firstDefined(...values) {
   return undefined;
 }
 
+function getStableEntryPrice(row) {
+  return nullableNumber(row?.entry ?? row?.entryPrice ?? row?.openPrice);
+}
+
+function buildAnalyzeStableTradeId(row) {
+  const symbol = normalizeSymbol(row?.symbol);
+  const side = normalizeAnalyzeSide(row?.side);
+  const entry = getStableEntryPrice(row);
+
+  if (!symbol || !side || entry === null) return "";
+
+  return `RUNNER_${symbol}_${side}_${Number(entry).toPrecision(12)}`;
+}
+
 function buildDedupeKey(row) {
+  const action = normalizeText(row?.action || row?.analyzeLifecycle || row?.status);
+  const stableTradeId = buildAnalyzeStableTradeId(row);
+
   return [
+    stableTradeId,
     normalizeSymbol(row?.symbol),
     normalizeSide(row?.side),
-    normalizeText(row?.action),
-    row?.tradeId || row?.positionTradeId || "",
-    row?.entry ?? "",
+    action,
     row?.exit ?? row?.exitPrice ?? row?.executionPrice ?? "",
-    row?.exitR ?? row?.realizedR ?? row?.pnlR ?? "",
-    row?.closedAt ?? row?.exitedAt ?? row?.ts ?? "",
+    row?.exitR ?? row?.realizedR ?? row?.pnlR ?? row?.resultR ?? "",
+    row?.closedAt ?? row?.exitedAt ?? row?.exitTs ?? row?.ts ?? "",
   ].join("|");
 }
 
@@ -351,46 +357,16 @@ function shouldRunRequest(req) {
   return normalizeBoolean(runValue, RUNNER_AUTO_RUN);
 }
 
-function getActionName(row) {
-  return normalizeText(row?.action || row?.analyzeLifecycle || row?.status);
-}
-
-function trimActionRows(rows, limit = MAX_STORED_ACTIONS) {
-  const arr = safeArray(rows);
-  if (arr.length <= limit) return arr;
-
-  const important = [];
-  const passive = [];
-
-  for (const row of arr) {
-    if (IMPORTANT_ACTIONS.has(getActionName(row))) {
-      important.push(row);
-      continue;
-    }
-
-    passive.push(row);
-  }
-
-  if (important.length >= limit) {
-    return important.slice(-limit);
-  }
-
-  return [
-    ...important,
-    ...passive.slice(-(limit - important.length)),
-  ];
-}
-
 function compactActionForLog(row) {
   return {
     symbol: normalizeSymbol(row?.symbol),
     side: normalizeSide(row?.side),
     action: normalizeText(row?.action),
-    reason: row?.reason || row?.exitReason || null,
+    reason: row?.reason || null,
 
     familyId: row?.familyId || null,
-    runnerFamilyId: row?.runnerFamilyId || null,
-    analyzeFamilyId: row?.analyzeFamilyId || null,
+    runnerFamilyId: row?.runnerFamilyId || row?.familyId || null,
+    analyzeFamilyId: row?.analyzeFamilyId || row?.familyId || null,
     discordFamilyId: row?.discordFamilyId || null,
 
     setupClass: row?.setupClass || null,
@@ -401,16 +377,17 @@ function compactActionForLog(row) {
     entry: row?.entry ?? null,
     sl: row?.sl ?? null,
     tp: row?.tp ?? null,
+
     exit: row?.exit ?? row?.exitPrice ?? row?.executionPrice ?? null,
-    exitR: row?.exitR ?? row?.realizedR ?? row?.pnlR ?? null,
+    exitR: row?.exitR ?? row?.realizedR ?? row?.pnlR ?? row?.resultR ?? null,
     pnlPct: row?.pnlPct ?? null,
 
     confluence: row?.confluence ?? null,
     sniperScore: row?.sniperScore ?? null,
     score: row?.score ?? row?.moveScore ?? null,
 
-    flow: row?.flow || null,
-    scannerFlow: row?.scannerFlow || null,
+    flow: row?.flow || row?.scannerFlow || null,
+    scannerFlow: row?.scannerFlow || row?.flow || null,
     rsiZone: row?.rsiZone || null,
     obBias: row?.obBias || null,
     spreadPct: row?.spreadPct ?? null,
@@ -448,17 +425,12 @@ function summarizeActions(actions) {
     if (row?.discordNotifyFailed === true) discord.failed++;
   }
 
-  const top = rows
-    .filter(row => IMPORTANT_ACTIONS.has(getActionName(row)))
-    .slice(0, 30)
-    .map(compactActionForLog);
-
   return {
     total: rows.length,
     counts: normalizeCounterMap(counts),
     reasons: normalizeCounterMap(reasons),
     discord,
-    top,
+    top: rows.slice(0, 30).map(compactActionForLog),
   };
 }
 
@@ -824,6 +796,7 @@ function compactTradeRow(row) {
 
     tradeId: row.tradeId,
     positionTradeId: row.positionTradeId,
+    sourceTradeId: row.sourceTradeId,
 
     symbol: row.symbol,
     side: row.side,
@@ -836,9 +809,9 @@ function compactTradeRow(row) {
     grade: row.grade,
 
     familyId: row.familyId,
-    runnerFamilyId: row.runnerFamilyId,
-    analyzeFamilyId: row.analyzeFamilyId,
-    analysisFamilyId: row.analysisFamilyId,
+    runnerFamilyId: row.runnerFamilyId || row.familyId,
+    analyzeFamilyId: row.analyzeFamilyId || row.familyId,
+    analysisFamilyId: row.analysisFamilyId || row.familyId,
     discordFamilyId: row.discordFamilyId,
 
     entry: row.entry,
@@ -900,6 +873,7 @@ function compactTradeRow(row) {
     executionPrice: row.executionPrice,
     exitR: row.exitR,
     realizedR: row.realizedR,
+    resultR: row.resultR,
     pnlR: row.pnlR,
     pnlPct: row.pnlPct,
     exitReason: row.exitReason,
@@ -909,7 +883,6 @@ function compactTradeRow(row) {
     discordBlockReason: row.discordBlockReason,
     discordNotifyFailed: row.discordNotifyFailed,
     discordNotifyError: row.discordNotifyError,
-    discordDecision: row.discordDecision,
 
     closed: row.closed,
     closedAt: row.closedAt,
@@ -937,6 +910,12 @@ function compactOpenPosition(pos) {
     liveEligible: Boolean(pos.liveEligible),
     shadowOnly: Boolean(pos.shadowOnly),
 
+    familyId: pos.familyId,
+    runnerFamilyId: pos.runnerFamilyId || pos.familyId,
+    analyzeFamilyId: pos.analyzeFamilyId || pos.familyId,
+    analysisFamilyId: pos.analysisFamilyId || pos.familyId,
+    discordFamilyId: pos.discordFamilyId,
+
     entry: pos.entry,
     sl: pos.sl,
     initialSl: pos.initialSl,
@@ -957,7 +936,6 @@ function compactOpenPosition(pos) {
     discordEntryNotified: pos.discordEntryNotified,
     discordEntryBlocked: pos.discordEntryBlocked,
     discordBlockReason: pos.discordBlockReason,
-    discordDecision: pos.discordDecision,
 
     createdAt: pos.createdAt,
     updatedAt: pos.updatedAt,
@@ -972,13 +950,10 @@ function compactTradeSystemResult(result) {
       actions: [],
       candidatesCount: 0,
       reason: "no_runner_candidates",
-      actionSummary: summarizeActions([]),
     };
   }
 
   const stats = safeObject(result.runnerStats);
-  const rawActions = safeArray(result.actions);
-  const storedActions = trimActionRows(rawActions, MAX_STORED_ACTIONS).map(compactTradeRow);
 
   return {
     profile: result.profile || SYSTEM_PROFILE,
@@ -991,12 +966,12 @@ function compactTradeSystemResult(result) {
     liveEligibleCandidates: safeNumber(result.liveEligibleCandidates, 0),
     shadowOnlyCandidates: safeNumber(result.shadowOnlyCandidates, 0),
 
-    actions: storedActions,
+    actions: safeArray(result.actions).slice(-MAX_STORED_ACTIONS).map(compactTradeRow),
     openPositions: safeArray(result.openPositions)
       .slice(-MAX_STORED_OPEN_POSITIONS)
       .map(compactOpenPosition),
 
-    actionSummary: result.actionSummary || summarizeActions(rawActions),
+    actionSummary: summarizeActions(result.actions),
 
     runnerStats: {
       profile: stats.profile || SYSTEM_PROFILE,
@@ -1060,20 +1035,6 @@ function isAnalyzePersistableRow(row) {
   if (action === "ENTRY") return true;
   if (action === "EXIT") return true;
 
-  if (row?.closed === true) return true;
-
-  if (
-    row?.exit !== undefined ||
-    row?.exitPrice !== undefined ||
-    row?.executionPrice !== undefined ||
-    row?.exitR !== undefined ||
-    row?.realizedR !== undefined ||
-    row?.pnlR !== undefined ||
-    row?.pnlPct !== undefined
-  ) {
-    return true;
-  }
-
   return false;
 }
 
@@ -1083,39 +1044,33 @@ function getAnalyzeLifecycle(row) {
   if (action === "ENTRY") return "ENTRY";
   if (action === "EXIT") return "EXIT";
 
-  if (
-    row?.closed === true ||
-    row?.exit !== undefined ||
-    row?.exitPrice !== undefined ||
-    row?.executionPrice !== undefined ||
-    row?.exitR !== undefined ||
-    row?.realizedR !== undefined ||
-    row?.pnlR !== undefined ||
-    row?.pnlPct !== undefined
-  ) {
-    return "EXIT";
-  }
-
   return "";
 }
 
 function buildStableAnalyzeTradeId(row) {
+  const stable = buildAnalyzeStableTradeId(row);
+  if (stable) return stable;
+
+  const direct =
+    row?.positionTradeId ||
+    row?.tradeId ||
+    row?.positionId ||
+    row?.orderId ||
+    row?.clientOrderId;
+
+  return direct ? String(direct) : "";
+}
+
+function getSourceTradeId(row) {
   const direct =
     row?.tradeId ||
     row?.positionTradeId ||
     row?.positionId ||
     row?.orderId ||
-    row?.clientOrderId;
+    row?.clientOrderId ||
+    row?.id;
 
-  if (direct) return String(direct);
-
-  const symbol = normalizeSymbol(row?.symbol);
-  const side = normalizeAnalyzeSide(row?.side);
-  const entry = nullableNumber(row?.entry ?? row?.entryPrice ?? row?.openPrice);
-
-  if (!symbol || !side || !entry) return "";
-
-  return `RUNNER_${symbol}_${side}_${Number(entry).toPrecision(12)}`;
+  return direct ? String(direct) : null;
 }
 
 function buildRunnerAnalyzeEvent(row, latest, now) {
@@ -1132,6 +1087,8 @@ function buildRunnerAnalyzeEvent(row, latest, now) {
   if (!symbol || !side || !tradeId) return null;
 
   const compact = compactTradeRow(row);
+  const sourceTradeId = getSourceTradeId(row);
+
   const r = firstDefined(
     row.realizedR,
     row.pnlR,
@@ -1162,6 +1119,13 @@ function buildRunnerAnalyzeEvent(row, latest, now) {
       )
     : null;
 
+  const familyId =
+    row.familyId ||
+    row.runnerFamilyId ||
+    row.analyzeFamilyId ||
+    row.analysisFamilyId ||
+    null;
+
   return {
     ...compact,
 
@@ -1175,6 +1139,7 @@ function buildRunnerAnalyzeEvent(row, latest, now) {
 
     tradeId,
     positionTradeId: tradeId,
+    sourceTradeId,
 
     symbol,
     side,
@@ -1217,10 +1182,11 @@ function buildRunnerAnalyzeEvent(row, latest, now) {
 
     exitReason: row.exitReason || row.reason || null,
 
-    familyId: row.familyId || null,
-    runnerFamilyId: row.runnerFamilyId || row.familyId || null,
-    analyzeFamilyId: row.analyzeFamilyId || row.familyId || null,
-    analysisFamilyId: row.analysisFamilyId || row.familyId || null,
+    familyId,
+    runnerFamilyId: row.runnerFamilyId || familyId,
+    analyzeFamilyId: row.analyzeFamilyId || familyId,
+    analysisFamilyId: row.analysisFamilyId || familyId,
+    discordFamilyId: row.discordFamilyId || null,
 
     filterSnapshot: {
       ...safeObject(row.filterSnapshot),
@@ -1228,9 +1194,11 @@ function buildRunnerAnalyzeEvent(row, latest, now) {
       profile: SYSTEM_PROFILE,
       runnerProfile: SYSTEM_PROFILE,
 
-      familyId: row.familyId || row.runnerFamilyId || row.analyzeFamilyId || null,
-      runnerFamilyId: row.runnerFamilyId || row.familyId || null,
-      analyzeFamilyId: row.analyzeFamilyId || row.familyId || null,
+      familyId,
+      runnerFamilyId: row.runnerFamilyId || familyId,
+      analyzeFamilyId: row.analyzeFamilyId || familyId,
+      analysisFamilyId: row.analysisFamilyId || familyId,
+      discordFamilyId: row.discordFamilyId || null,
 
       side,
       setupClass: row.setupClass,
@@ -1300,30 +1268,22 @@ function buildRunnerAnalyzeEvent(row, latest, now) {
   };
 }
 
-function collectAnalyzeInputRows(_latest, rawResult) {
-  const rows = safeArray(rawResult?.actions);
+function collectAnalyzeInputRows(rawResult) {
+  const rows = [];
+
+  // Bewust alleen deze run. Geen oude latest.trades meer.
+  // Anders krijg je stale reprocessing en fake unmatched exits.
+  rows.push(...safeArray(rawResult?.actions));
+
   const map = new Map();
 
   for (const row of rows) {
-    if (!row || typeof row !== "object") continue;
+    if (!row) continue;
 
     const action = getRowAction(row);
     if (action !== "ENTRY" && action !== "EXIT") continue;
 
-    const tradeId = buildStableAnalyzeTradeId(row);
-
-    const key = [
-      action,
-      normalizeSymbol(row?.symbol),
-      normalizeAnalyzeSide(row?.side),
-      tradeId,
-      precisionKey(row?.entry ?? row?.entryPrice ?? row?.openPrice),
-      precisionKey(row?.exit ?? row?.exitPrice ?? row?.executionPrice),
-      precisionKey(row?.exitR ?? row?.realizedR ?? row?.pnlR),
-      normalizeText(row?.reason || row?.exitReason),
-      safeNumber(row?.ts || row?.createdAt || row?.exitedAt || 0, 0),
-    ].join("|");
-
+    const key = buildDedupeKey(row);
     if (!key.trim()) continue;
 
     map.set(key, row);
@@ -1348,7 +1308,7 @@ async function persistRunnerAnalyzeActions({ latest, rawResult, now, requestId }
     };
   }
 
-  const inputRows = collectAnalyzeInputRows(latest, rawResult);
+  const inputRows = collectAnalyzeInputRows(rawResult);
 
   const events = inputRows
     .map(row => buildRunnerAnalyzeEvent(row, latest, now))
@@ -1360,6 +1320,19 @@ async function persistRunnerAnalyzeActions({ latest, rawResult, now, requestId }
     events: events.length,
     entries: events.filter(e => e.action === "ENTRY").length,
     exits: events.filter(e => e.action === "EXIT").length,
+    missingFamily: events.filter(e => !e.familyId).length,
+    sample: events.slice(0, 12).map(e => ({
+      symbol: e.symbol,
+      side: e.side,
+      action: e.action,
+      tradeId: e.tradeId,
+      sourceTradeId: e.sourceTradeId,
+      familyId: e.familyId,
+      entry: e.entry,
+      exitR: e.exitR,
+      pnlPct: e.pnlPct,
+      closed: e.closed,
+    })),
   });
 
   if (!events.length) {
@@ -1448,14 +1421,13 @@ function buildTradeFunnelPayload({
   trace = null,
 }) {
   const funnel = compactFunnel(latest?.funnel || emptyFunnel());
-  const sourceResult = result || latest?.tradeSystemResult;
-  const compactResult = compactTradeSystemResult(sourceResult);
+  const compactResult = compactTradeSystemResult(result || latest?.tradeSystemResult);
 
-  const sourceActions = safeArray(
-    sourceResult?.actions?.length ? sourceResult.actions : latest?.trades
-  );
-
-  const trades = trimActionRows(sourceActions, MAX_STORED_ACTIONS).map(compactTradeRow);
+  const trades = safeArray(
+    result?.actions?.length ? result.actions : latest?.trades
+  )
+    .slice(-MAX_STORED_ACTIONS)
+    .map(compactTradeRow);
 
   return {
     ok: true,
@@ -1659,11 +1631,6 @@ export async function runTradeFunnel(options = {}) {
 
       runnerDurationMs = Date.now() - runnerStartedAt;
 
-      rawResult = {
-        ...safeObject(rawResult),
-        actionSummary: summarizeActions(rawResult?.actions),
-      };
-
       routeLog("RUNNER_CALL_DONE", {
         requestId,
         durationMs: runnerDurationMs,
@@ -1672,7 +1639,7 @@ export async function runTradeFunnel(options = {}) {
         candidatesCount: safeNumber(rawResult?.candidatesCount, 0),
         liveEligibleCandidates: safeNumber(rawResult?.liveEligibleCandidates, 0),
         openPositions: safeArray(rawResult?.openPositions).length,
-        actionSummary: rawResult.actionSummary,
+        actionSummary: summarizeActions(rawResult?.actions),
         runnerWaitReasons: normalizeCounterMap(rawResult?.runnerStats?.waitReasons),
         runnerActionCounts: normalizeCounterMap(rawResult?.runnerStats?.actionCounts),
       });
@@ -1744,7 +1711,7 @@ export async function runTradeFunnel(options = {}) {
       runnerDurationMs,
       totalDurationMs: Date.now() - startedAt,
       runnerRunId: rawResult?.runId || null,
-      actionSummary: rawResult?.actionSummary || summarizeActions(rawResult?.actions),
+      actionSummary: summarizeActions(rawResult?.actions),
       openPositions: safeArray(rawResult?.openPositions).length,
       analyzePersist,
     },
@@ -1778,7 +1745,7 @@ export async function runTradeFunnel(options = {}) {
     durationMs: Date.now() - startedAt,
     rawCount: selection.rawCount,
     acceptedCount: selection.candidates.length,
-    actionSummary: rawResult?.actionSummary || summarizeActions(rawResult?.actions),
+    actionSummary: summarizeActions(rawResult?.actions),
     analyzePersist,
   });
 
@@ -1842,10 +1809,7 @@ export default async function handler(req, res) {
       durationMs: Date.now() - startedAt,
       inputCount: safeNumber(data?.tradeFunnelInputCount, 0),
       rawCount: safeNumber(data?.tradeFunnelRawCount, 0),
-      actionSummary:
-        data?.tradeFunnelTrace?.actionSummary ||
-        data?.tradeSystemResult?.actionSummary ||
-        null,
+      actionSummary: data?.tradeSystemResult?.actionSummary || null,
     });
 
     return res.status(200).json(data);
