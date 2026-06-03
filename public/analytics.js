@@ -28,6 +28,12 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function safeObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
+}
+
 function safeNumber(value, fallback = 0) {
   if (typeof value === "string") {
     const cleaned = value.replace("%", "").replace(",", ".").trim();
@@ -87,33 +93,105 @@ function normalizeStatus(status) {
   return text(status, "EMPTY").toUpperCase();
 }
 
-function normalizeFamily(row) {
-  const id = row.id || row.familyId || "-";
+function normalizeSide(value) {
+  const side = text(value).toUpperCase();
+
+  if (["LONG", "BULL", "BUY"].includes(side)) return "LONG";
+  if (["SHORT", "BEAR", "SELL"].includes(side)) return "SHORT";
+
+  return side;
+}
+
+function asPctStringFromRatio(value, decimals = 1) {
+  const n = safeNumber(value, 0);
+  return fmtPct(n * 100, decimals);
+}
+
+function normalizeFamily(row = {}) {
+  const id =
+    row.id ||
+    row.familyId ||
+    row.runnerFamilyId ||
+    row.analyzeFamilyId ||
+    row.analysisFamilyId ||
+    "-";
+
+  const winrateNum = safeNumber(row.winrateNum, 0);
+  const winrate = row.winrate || asPctStringFromRatio(winrateNum, 1);
+
+  const totalPnlPct = safeNumber(row.totalPnlPct, 0);
+  const avgPnlPct = safeNumber(row.avgPnlPct, 0);
 
   return {
     ...row,
+
     id,
     familyId: id,
-    side: text(row.side || "").toUpperCase(),
+    runnerFamilyId: row.runnerFamilyId || id,
+    analyzeFamilyId: row.analyzeFamilyId || id,
+    analysisFamilyId: row.analysisFamilyId || id,
+
+    side: normalizeSide(row.side || row.sideLabel || ""),
+
     quality: row.quality || row.qualityBucket || "",
     market: row.market || row.marketBucket || "",
     timing: row.timing || row.timingBucket || "",
-    status: normalizeStatus(row.status),
-    definition: row.definition || safeArray(row.labels).join(" | "),
-    observed: safeNumber(row.observed, 0),
-    trades: safeNumber(row.trades, row.observed || 0),
+
+    qualityBucket: row.qualityBucket || row.quality || "",
+    marketBucket: row.marketBucket || row.market || "",
+    timingBucket: row.timingBucket || row.timing || "",
+
+    status: normalizeStatus(row.status || row.bucket || row.label || row.qualityStatus),
+
+    definition:
+      row.definition ||
+      row.familyDefinition ||
+      safeArray(row.definitionParts).join(" | ") ||
+      safeArray(row.labels).join(" | "),
+
+    observed: safeNumber(row.observed ?? row.actions ?? row.served, 0),
+    trades: safeNumber(row.trades, row.observed ?? row.actions ?? 0),
+    actions: safeNumber(row.actions, row.observed ?? row.trades ?? 0),
+
     closed: safeNumber(row.closed, 0),
+    realClosed: safeNumber(row.realClosed, 0),
+    shadowClosed: safeNumber(row.shadowClosed, 0),
     open: safeNumber(row.open, 0),
-    pendingOutcome: safeNumber(row.pendingOutcome ?? row.pending, 0),
+    pendingOutcome: safeNumber(row.pendingOutcome ?? row.pending ?? row.unresolved, 0),
+
     wins: safeNumber(row.wins, 0),
     losses: safeNumber(row.losses, 0),
-    winrate: row.winrate || fmtPct(safeNumber(row.winrateNum, 0) * 100, 1),
-    winrateNum: safeNumber(row.winrateNum, 0),
+    breakeven: safeNumber(row.breakeven, 0),
+
+    winrate,
+    winrateNum,
+    winratePct: safeNumber(row.winratePct, winrateNum * 100),
+
     totalR: safeNumber(row.totalR, 0),
     avgR: safeNumber(row.avgR, 0),
-    totalPnlPct: safeNumber(row.totalPnlPct, 0),
-    avgPnlPct: safeNumber(row.avgPnlPct, 0),
+    medianR: safeNumber(row.medianR, 0),
+
+    totalPnlPct,
+    avgPnlPct,
+
     pf: safeNumber(row.pf ?? row.profitFactor ?? row.profitFactorR, 0),
+    profitFactorR: safeNumber(row.profitFactorR ?? row.pf ?? row.profitFactor, 0),
+
+    avgMfeR: safeNumber(row.avgMfeR, 0),
+    avgMaeR: safeNumber(row.avgMaeR, 0),
+
+    pnlScore: safeNumber(row.pnlScore ?? row.runnerPnlScore, 0),
+    runnerPnlScore: safeNumber(row.runnerPnlScore ?? row.pnlScore, 0),
+    balanceScore: safeNumber(row.balanceScore, 0),
+    winrateScore: safeNumber(row.winrateScore, 0),
+    qualityScore: safeNumber(row.qualityScore, 0),
+
+    ready: Boolean(row.ready),
+    allowed: Boolean(row.allowed),
+    blocked: Boolean(row.blocked),
+
+    examples: safeArray(row.examples),
+    topSymbols: safeArray(row.topSymbols),
   };
 }
 
@@ -205,11 +283,17 @@ function getSourceMode() {
   return select?.value || "MERGED";
 }
 
+function getIncludeShadowValue() {
+  const input = firstEl("includeShadowInput", "includeShadow");
+  return Boolean(input?.checked);
+}
+
 function buildApiUrl(extra = {}) {
   const params = new URLSearchParams();
 
   params.set("minClosed", String(getMinClosedValue()));
   params.set("includeLatest", getSourceMode() === "STORED" ? "false" : "true");
+  params.set("includeShadow", getIncludeShadowValue() ? "true" : "false");
   params.set("debug", extra.debug === false ? "false" : "true");
   params.set("t", String(Date.now()));
 
@@ -246,6 +330,19 @@ async function fetchJson(url) {
   return payload;
 }
 
+function normalizeFamilyList(value) {
+  return safeArray(value).map(normalizeFamily);
+}
+
+function firstNonEmptyArray(...values) {
+  for (const value of values) {
+    const arr = safeArray(value);
+    if (arr.length) return arr;
+  }
+
+  return [];
+}
+
 function normalizePayload(payload) {
   if (!payload || typeof payload !== "object") {
     throw new Error("API gaf geen geldig JSON-object terug.");
@@ -255,51 +352,121 @@ function normalizePayload(payload) {
     throw payload;
   }
 
-  const report = payload.report || {};
-  const summary = report.summary || payload.stats || {};
-  const familiesRaw = report.families || payload.families || {};
-  const leaderboards = report.leaderboards || payload.leaderboards || {};
+  const report = safeObject(payload.report);
+  const summary = safeObject(report.summary || payload.stats);
+  const familiesRaw = safeObject(report.families || payload.families);
+  const leaderboards = safeObject(report.leaderboards || payload.leaderboards);
+  const selection = safeObject(report.selection || payload.selection);
 
-  const allFamilies = safeArray(
-    familiesRaw.all ||
-      familiesRaw.ranked ||
-      familiesRaw.topPnl ||
-      leaderboards.topPnlFamilies
-  ).map(normalizeFamily);
+  const allFamilies = normalizeFamilyList(
+    firstNonEmptyArray(
+      familiesRaw.all,
+      familiesRaw.ranked,
+      familiesRaw.best,
+      familiesRaw.bestRunnerPnl,
+      familiesRaw.bestPnl,
+      familiesRaw.topPnl,
+      leaderboards.topPnlFamilies,
+      payload.winnerCandidates
+    )
+  );
 
   const longFamilies = safeArray(familiesRaw.long).length
-    ? safeArray(familiesRaw.long).map(normalizeFamily)
+    ? normalizeFamilyList(familiesRaw.long)
     : allFamilies.filter(row => row.side === "LONG");
 
   const shortFamilies = safeArray(familiesRaw.short).length
-    ? safeArray(familiesRaw.short).map(normalizeFamily)
+    ? normalizeFamilyList(familiesRaw.short)
     : allFamilies.filter(row => row.side === "SHORT");
 
   const rankedFamilies = safeArray(familiesRaw.ranked).length
-    ? safeArray(familiesRaw.ranked).map(normalizeFamily)
+    ? normalizeFamilyList(familiesRaw.ranked)
     : allFamilies;
 
-  const bestFamilies = safeArray(familiesRaw.best || payload.winnerCandidates).map(normalizeFamily);
+  const bestFamilies = normalizeFamilyList(
+    firstNonEmptyArray(
+      familiesRaw.best,
+      familiesRaw.bestRunnerPnl,
+      familiesRaw.bestPnl,
+      familiesRaw.winners,
+      payload.winnerCandidates,
+      report.winnerCandidates
+    )
+  );
+
+  const topPnlFamilies = normalizeFamilyList(
+    firstNonEmptyArray(
+      familiesRaw.topPnl,
+      familiesRaw.bestPnl,
+      familiesRaw.bestRunnerPnl,
+      leaderboards.topPnlFamilies,
+      bestFamilies
+    )
+  );
+
+  const topTotalRFamilies = normalizeFamilyList(
+    firstNonEmptyArray(
+      familiesRaw.topTotalR,
+      familiesRaw.bestTotalR,
+      leaderboards.topTotalRFamilies
+    )
+  );
+
+  const topWinrateFamilies = normalizeFamilyList(
+    firstNonEmptyArray(
+      familiesRaw.topWinrate,
+      familiesRaw.bestWinrate,
+      leaderboards.topWinrateFamilies
+    )
+  );
+
+  const topBalanceFamilies = normalizeFamilyList(
+    firstNonEmptyArray(
+      familiesRaw.bestBalance,
+      familiesRaw.topBalance,
+      leaderboards.topBalanceFamilies
+    )
+  );
+
+  const worstFamilies = normalizeFamilyList(familiesRaw.worst);
 
   return {
     raw: payload,
     report: {
       ...report,
+
       summary,
-      diagnostics: report.diagnostics || {},
+      diagnostics: report.diagnostics || payload.diagnostics || {},
       config: report.config || payload.config || {},
-      filterValues: report.filterValues || {},
-      familyPerformanceMatrix: report.familyPerformanceMatrix || payload.familyPerformanceMatrix || {},
+      objective: report.objective || payload.objective || null,
+      selection,
+      filterValues: report.filterValues || payload.filterValues || {},
+      familyPerformanceMatrix:
+        report.familyPerformanceMatrix ||
+        payload.familyPerformanceMatrix ||
+        {},
+
       families: {
         all: allFamilies,
         long: longFamilies,
         short: shortFamilies,
         ranked: rankedFamilies,
+
+        winners: normalizeFamilyList(familiesRaw.winners),
         best: bestFamilies,
-        worst: safeArray(familiesRaw.worst).map(normalizeFamily),
-        topPnl: safeArray(familiesRaw.topPnl || leaderboards.topPnlFamilies).map(normalizeFamily),
-        topTotalR: safeArray(familiesRaw.topTotalR || leaderboards.topTotalRFamilies).map(normalizeFamily),
-        topWinrate: safeArray(familiesRaw.topWinrate || leaderboards.topWinrateFamilies).map(normalizeFamily),
+        bestRunnerPnl: normalizeFamilyList(familiesRaw.bestRunnerPnl),
+        bestPnl: normalizeFamilyList(familiesRaw.bestPnl),
+        bestTotalR: normalizeFamilyList(familiesRaw.bestTotalR),
+        bestBalance: topBalanceFamilies,
+        bestWinrate: normalizeFamilyList(familiesRaw.bestWinrate),
+        bestAvgR: normalizeFamilyList(familiesRaw.bestAvgR),
+
+        worst: worstFamilies,
+
+        topPnl: topPnlFamilies,
+        topTotalR: topTotalRFamilies,
+        topWinrate: topWinrateFamilies,
+        topBalance: topBalanceFamilies,
       },
     },
   };
@@ -331,45 +498,89 @@ function familyMetaText(families) {
   return `HOT ${c.HOT} | GOOD ${c.GOOD} | STABLE ${c.STABLE} | BAD ${c.BAD} | COLLECTING ${c.COLLECTING} | EMPTY ${c.EMPTY}`;
 }
 
+function readSummarySideCount(summarySide, fallbackRows) {
+  if (typeof summarySide === "number") return summarySide;
+
+  if (summarySide && typeof summarySide === "object") {
+    return safeNumber(summarySide.count ?? summarySide.total ?? summarySide.families, fallbackRows.length);
+  }
+
+  return fallbackRows.length || 50;
+}
+
+function readSummarySideText(summarySide, fallbackRows) {
+  if (summarySide && typeof summarySide === "object" && summarySide.text) {
+    return summarySide.text;
+  }
+
+  return familyMetaText(fallbackRows);
+}
+
 function renderSummary() {
   const summary = state.report?.summary || {};
   const longFamilies = safeArray(state.report?.families?.long);
   const shortFamilies = safeArray(state.report?.families?.short);
 
   setText("mActions", fmtNum(summary.actions || 0, 0));
-  setText("mTrades", fmtNum(summary.trades || summary.observed || 0, 0));
+  setText("mTrades", fmtNum(summary.trades || summary.observed || summary.observations || 0, 0));
   setText("mOpen", fmtNum(summary.open || 0, 0));
   setText("mClosed", fmtNum(summary.closed || 0, 0));
   setText("mPending", fmtNum(summary.pendingOutcome || summary.unresolved || 0, 0));
   setText("mWins", fmtNum(summary.wins || 0, 0));
   setText("mLosses", fmtNum(summary.losses || 0, 0));
   setText("mBreakeven", fmtNum(summary.breakeven || 0, 0));
-  setText("mWinrate", summary.winrate || fmtPct(safeNumber(summary.winrateNum, 0) * 100));
+  setText("mWinrate", summary.winrate || asPctStringFromRatio(summary.winrateNum, 1));
   setText("mTotalR", fmtNum(summary.totalR || 0, 3));
   setText("mAvgR", fmtNum(summary.avgR || 0, 3));
   setText("mTotalPnl", fmtPct(summary.totalPnlPct || 0, 3));
 
-  setText("mLongFamilies", fmtNum(summary.longFamilies?.count || longFamilies.length || 50, 0));
-  setText("mShortFamilies", fmtNum(summary.shortFamilies?.count || shortFamilies.length || 50, 0));
+  setText("mLongFamilies", fmtNum(readSummarySideCount(summary.longFamilies, longFamilies), 0));
+  setText("mShortFamilies", fmtNum(readSummarySideCount(summary.shortFamilies, shortFamilies), 0));
 
-  setText("mLongMeta", summary.longFamilies?.text || familyMetaText(longFamilies));
-  setText("mShortMeta", summary.shortFamilies?.text || familyMetaText(shortFamilies));
+  setText("mLongMeta", readSummarySideText(summary.longFamilies, longFamilies));
+  setText("mShortMeta", readSummarySideText(summary.shortFamilies, shortFamilies));
 }
 
 function renderSourceCards() {
   const raw = state.raw || {};
   const sources = raw.sources || {};
-  const store = sources.store || raw.store || {};
+  const runtime = sources.runtime || {};
+  const source = raw.source || {};
+  const store = raw.store || {};
   const latest = sources.latest || raw.latest || {};
+  const merged = raw.merged || {};
 
-  setText("sourceStored", fmtNum(sources.storedEvents ?? store.count ?? 0, 0));
-  setText("sourceLatest", fmtNum(sources.latestEvents ?? latest.count ?? 0, 0));
-  setText("sourceMerged", fmtNum(sources.mergedEvents ?? raw.merged?.count ?? 0, 0));
+  const storedEvents =
+    sources.storedEvents ??
+    store.count ??
+    runtime.counts?.closedTrades ??
+    0;
+
+  const latestEvents =
+    sources.latestEvents ??
+    latest.count ??
+    0;
+
+  const mergedEvents =
+    sources.mergedEvents ??
+    merged.count ??
+    0;
+
+  const storePath =
+    source.path ||
+    runtime.keys?.core ||
+    runtime.keys?.legacy ||
+    store.path ||
+    "n/a";
+
+  setText("sourceStored", fmtNum(storedEvents, 0));
+  setText("sourceLatest", fmtNum(latestEvents, 0));
+  setText("sourceMerged", fmtNum(mergedEvents, 0));
   setText("sourceLatency", `${fmtNum(raw.latencyMs ?? 0, 0)}ms`);
 
-  setText("sourceStoredSub", store.path ? `store: ${store.path}` : "store: n/a");
+  setText("sourceStoredSub", `store: ${storePath}`);
   setText("sourceLatestSub", latest.ok ? "latest scan OK" : `latest scan ${latest.error || latest.note || "n/a"}`);
-  setText("sourceMergedSub", `loaded: ${fmtNum(sources.mergedEvents ?? raw.merged?.count ?? 0, 0)}`);
+  setText("sourceMergedSub", `loaded: ${fmtNum(mergedEvents, 0)}`);
   setText("sourceLatencySub", raw.generatedAt || raw.servedAt ? new Date(raw.generatedAt || raw.servedAt).toLocaleString() : "-");
 }
 
@@ -379,7 +590,9 @@ function getBaseFamilies() {
   if (state.activeTab === "LONG") return safeArray(families.long);
   if (state.activeTab === "SHORT") return safeArray(families.short);
 
-  return safeArray(families.ranked || families.all);
+  return safeArray(families.ranked).length
+    ? safeArray(families.ranked)
+    : safeArray(families.all);
 }
 
 function rankPnlFirst(a, b) {
@@ -409,8 +622,8 @@ function sortFamilies(rows) {
   };
 
   return [...safeArray(rows)].sort((a, b) => {
-    const s = (statusRank[b.status] || 0) - (statusRank[a.status] || 0);
-    if (s !== 0) return s;
+    const statusDiff = (statusRank[b.status] || 0) - (statusRank[a.status] || 0);
+    if (statusDiff !== 0) return statusDiff;
 
     return rankPnlFirst(a, b);
   });
@@ -444,12 +657,17 @@ function getSelectedFamilies() {
     rows = rows.filter(row => {
       const haystack = [
         row.id,
+        row.familyId,
+        row.runnerFamilyId,
         row.side,
         row.status,
         row.definition,
         row.quality,
         row.market,
         row.timing,
+        row.qualityBucket,
+        row.marketBucket,
+        row.timingBucket,
         row.winrate,
         row.totalR,
         row.avgR,
@@ -489,7 +707,8 @@ function renderFamilies() {
     return;
   }
 
-  tbody.innerHTML = rows.map(row => {
+  tbody.innerHTML = rows.map(raw => {
+    const row = normalizeFamily(raw);
     const status = normalizeStatus(row.status);
     const side = text(row.side);
     const sideClass = side.toLowerCase();
@@ -523,11 +742,20 @@ function renderFamilies() {
 
 function getWinnerFamilies() {
   const minClosed = Math.max(1, getMinClosedValue());
-  const apiBest = safeArray(state.report?.families?.best);
+
+  const apiBest = firstNonEmptyArray(
+    state.report?.families?.best,
+    state.report?.families?.bestRunnerPnl,
+    state.report?.families?.bestPnl,
+    state.report?.families?.winners
+  );
 
   const source = apiBest.length
     ? apiBest
-    : safeArray(state.report?.families?.ranked || state.report?.families?.all);
+    : firstNonEmptyArray(
+        state.report?.families?.ranked,
+        state.report?.families?.all
+      );
 
   return source
     .map(normalizeFamily)
@@ -609,8 +837,16 @@ function renderWinners() {
 }
 
 function renderTopPnl() {
-  const families = safeArray(state.report?.families?.topPnl).length
-    ? safeArray(state.report?.families?.topPnl).map(normalizeFamily)
+  const families = firstNonEmptyArray(
+    state.report?.families?.topPnl,
+    state.report?.families?.bestPnl,
+    state.report?.families?.bestRunnerPnl
+  ).length
+    ? firstNonEmptyArray(
+        state.report?.families?.topPnl,
+        state.report?.families?.bestPnl,
+        state.report?.families?.bestRunnerPnl
+      ).map(normalizeFamily)
     : safeArray(state.report?.families?.all)
         .map(normalizeFamily)
         .filter(row => row.closed > 0)
@@ -650,6 +886,11 @@ function renderFilters() {
     count.textContent = `${chips.length} labels`;
   }
 
+  if (!chips.length) {
+    body.innerHTML = `<span class="filter-chip"><b>INFO</b> Geen tracked filter labels in payload.</span>`;
+    return;
+  }
+
   body.innerHTML = chips.map(chip => `
     <span class="filter-chip">
       <b>${escapeHtml(chip.group)}</b>
@@ -664,8 +905,11 @@ function renderDebug() {
 
   debugJson.textContent = JSON.stringify({
     dataState: state.raw?.dataState || null,
+    strategyVersion: state.raw?.strategyVersion || null,
+    objective: state.raw?.objective || state.report?.objective || null,
     sources: state.raw?.sources || null,
     summary: state.report?.summary || null,
+    selection: state.report?.selection || null,
     diagnostics: state.report?.diagnostics || null,
     config: state.report?.config || null,
   }, null, 2);
@@ -726,13 +970,15 @@ async function loadAnalytics({ force = false } = {}) {
 }
 
 async function resetAnalytics() {
-  const ok = window.confirm("Runner analyse-store resetten? Dit wist de opgeslagen family-history.");
+  const ok = window.confirm(
+    "Analyze reset aanvragen? Let op: /api/analyze leest de TradeSystem runtime en wist geen live trading-runtime."
+  );
 
   if (!ok) return;
   if (state.loading) return;
 
   setBusy(true);
-  setStatus("Reset bezig...", false);
+  setStatus("Reset request bezig...", false);
 
   try {
     const payload = await fetchJson(buildApiUrl({ reset: true, debug: true }));
@@ -741,8 +987,14 @@ async function resetAnalytics() {
       throw payload;
     }
 
+    const resetReason = payload.reset?.reason
+      ? ` | ${payload.reset.reason}`
+      : "";
+
     state.raw = null;
     state.report = null;
+
+    setStatus(`Reset request verwerkt${resetReason}`, false);
 
     setBusy(false);
     await loadAnalytics({ force: true });
@@ -821,6 +1073,7 @@ function wireEvents() {
   const minClosedInput = getMinClosedInput();
   const searchInput = $("searchInput");
   const hideEmptyInput = $("hideEmptyInput");
+  const includeShadowInput = firstEl("includeShadowInput", "includeShadow");
 
   sourceSelect?.addEventListener("change", () => loadAnalytics());
 
@@ -833,6 +1086,7 @@ function wireEvents() {
   statusSelect?.addEventListener("change", renderFamilies);
   searchInput?.addEventListener("input", renderFamilies);
   hideEmptyInput?.addEventListener("change", renderFamilies);
+  includeShadowInput?.addEventListener("change", () => loadAnalytics());
 
   minClosedInput?.addEventListener("input", () => {
     renderFamilies();
