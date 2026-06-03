@@ -5,6 +5,13 @@ import {
   appendRunnerAnalyzeEvents,
 } from "../lib/analyze/runnerAnalyzeStore.js";
 
+export const config = {
+  api: {
+    bodyParser: true,
+    responseLimit: false,
+  },
+};
+
 const SYSTEM_PROFILE = "RUNNER";
 
 const MAX_STORED_ENTRY_ROWS = 250;
@@ -23,6 +30,114 @@ const RUNNER_FLOWS = new Set([
   "BREAKOUT",
   "BUILDING",
 ]);
+
+// ================= ROUTE TRACE CONFIG =================
+
+function envFlag(name, fallback = false) {
+  const raw = process.env[name];
+
+  if (raw === undefined || raw === null || raw === "") return fallback;
+
+  const value = String(raw).trim().toLowerCase();
+
+  if (["true", "1", "yes", "y", "on"].includes(value)) return true;
+  if (["false", "0", "no", "n", "off"].includes(value)) return false;
+
+  return fallback;
+}
+
+// Default: route logs AAN. Uitzetten met TRADE_FUNNEL_ROUTE_LOG=false.
+const TRADE_FUNNEL_ROUTE_LOG = envFlag("TRADE_FUNNEL_ROUTE_LOG", true);
+const TRADE_FUNNEL_ROUTE_DEBUG =
+  envFlag("TRADE_FUNNEL_ROUTE_DEBUG", false) ||
+  envFlag("RUNNER_DEBUG", false);
+
+// Default: /api/trade-funnel runt de runner.
+// Read-only: /api/trade-funnel?action=snapshot of /api/trade-funnel?run=false
+const RUNNER_AUTO_RUN = envFlag("RUNNER_AUTO_RUN", true);
+
+function compactRouteLogValue(value, depth = 0) {
+  if (depth > 3) return "[depth_limit]";
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return 0;
+    return Number(value.toFixed(6));
+  }
+
+  if (typeof value === "string") {
+    if (value.length <= 450) return value;
+    return `${value.slice(0, 450)}…`;
+  }
+
+  if (typeof value === "boolean") return value;
+
+  if (Array.isArray(value)) {
+    return value.slice(0, 30).map(v => compactRouteLogValue(v, depth + 1));
+  }
+
+  if (typeof value === "object") {
+    const out = {};
+
+    for (const [key, val] of Object.entries(value)) {
+      const compacted = compactRouteLogValue(val, depth + 1);
+      if (compacted !== undefined) out[key] = compacted;
+    }
+
+    return out;
+  }
+
+  return String(value);
+}
+
+function routeLog(tag, payload = {}) {
+  if (!TRADE_FUNNEL_ROUTE_LOG) return;
+
+  console.log(JSON.stringify(compactRouteLogValue({
+    app: "TRADE_FUNNEL_ROUTE",
+    profile: SYSTEM_PROFILE,
+    level: "info",
+    tag,
+    ts: Date.now(),
+    iso: new Date().toISOString(),
+    vercelRegion: process.env.VERCEL_REGION || null,
+    vercelEnv: process.env.VERCEL_ENV || process.env.NODE_ENV || null,
+    ...payload,
+  })));
+}
+
+function routeDebug(tag, payload = {}) {
+  if (!TRADE_FUNNEL_ROUTE_DEBUG) return;
+  routeLog(tag, payload);
+}
+
+function routeError(tag, error, payload = {}) {
+  console.error(JSON.stringify(compactRouteLogValue({
+    app: "TRADE_FUNNEL_ROUTE",
+    profile: SYSTEM_PROFILE,
+    level: "error",
+    tag,
+    ts: Date.now(),
+    iso: new Date().toISOString(),
+    vercelRegion: process.env.VERCEL_REGION || null,
+    vercelEnv: process.env.VERCEL_ENV || process.env.NODE_ENV || null,
+    error: error?.message || String(error || "unknown_error"),
+    stack: TRADE_FUNNEL_ROUTE_DEBUG ? error?.stack : undefined,
+    ...payload,
+  })));
+}
+
+function setNoStoreHeaders(res, requestId = null) {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
+
+  if (requestId) {
+    res.setHeader("X-Request-Id", requestId);
+  }
+}
 
 // ================= GENERIC HELPERS =================
 
@@ -94,8 +209,8 @@ function normalizeBoolean(value, fallback = false) {
   return fallback;
 }
 
-function normalizeNotify(value) {
-  return normalizeBoolean(value, false);
+function normalizeNotify(value, fallback = true) {
+  return normalizeBoolean(value, fallback);
 }
 
 function normalizeStore(value, fallback = true) {
@@ -194,6 +309,89 @@ function buildDedupeKey(row) {
     row?.exitR ?? row?.realizedR ?? row?.pnlR ?? "",
     row?.closedAt ?? row?.exitedAt ?? row?.ts ?? "",
   ].join("|");
+}
+
+function createRequestId(prefix = "trade_funnel") {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isSnapshotAction(action) {
+  return [
+    "read",
+    "readonly",
+    "read_only",
+    "snapshot",
+    "status",
+    "state",
+    "latest",
+  ].includes(String(action || "").toLowerCase());
+}
+
+function shouldRunRequest(req) {
+  const action = normalizeAction(req);
+  const runValue = firstDefined(
+    getQueryParam(req, "run", undefined),
+    getBodyValue(req, "run", undefined)
+  );
+
+  if (isSnapshotAction(action)) return false;
+  if (action === "run" || action === "execute") return true;
+
+  return normalizeBoolean(runValue, RUNNER_AUTO_RUN);
+}
+
+function compactActionForLog(row) {
+  return {
+    symbol: normalizeSymbol(row?.symbol),
+    side: normalizeSide(row?.side),
+    action: normalizeText(row?.action),
+    reason: row?.reason || null,
+    setupClass: row?.setupClass || null,
+    entryType: row?.entryType || row?.runnerEntryType || null,
+    grade: row?.grade || null,
+    rr: row?.rr ?? row?.plannedRR ?? null,
+    entry: row?.entry ?? null,
+    sl: row?.sl ?? null,
+    tp: row?.tp ?? null,
+    exitR: row?.exitR ?? null,
+    pnlPct: row?.pnlPct ?? null,
+    discordAllowed: row?.discordAllowed ?? null,
+    discordNotified: row?.discordNotified ?? null,
+    discordBlockReason: row?.discordBlockReason ?? null,
+  };
+}
+
+function summarizeActions(actions) {
+  const rows = safeArray(actions);
+  const counts = {};
+  const reasons = {};
+  const discord = {
+    allowed: 0,
+    blocked: 0,
+    notified: 0,
+    failed: 0,
+  };
+
+  for (const row of rows) {
+    incrementCounter(counts, row?.action || "UNKNOWN");
+
+    if (row?.reason) {
+      incrementCounter(reasons, row.reason);
+    }
+
+    if (row?.discordAllowed === true) discord.allowed++;
+    if (row?.discordAllowed === false) discord.blocked++;
+    if (row?.discordNotified === true) discord.notified++;
+    if (row?.discordNotifyFailed === true) discord.failed++;
+  }
+
+  return {
+    total: rows.length,
+    counts: normalizeCounterMap(counts),
+    reasons: normalizeCounterMap(reasons),
+    discord,
+    top: rows.slice(0, 12).map(compactActionForLog),
+  };
 }
 
 // ================= FUNNEL HELPERS =================
@@ -531,18 +729,14 @@ function getTradeFunnelCandidates(latest) {
     return safeNumber(b.moveScore, 0) - safeNumber(a.moveScore, 0);
   });
 
-  if (String(process.env.RUNNER_DEBUG || "false").toLowerCase() === "true") {
-    console.log("RUNNER TRADE FUNNEL raw:", buckets.length);
-    console.log("RUNNER TRADE FUNNEL accepted:", result.length);
-    console.log("RUNNER TRADE FUNNEL rejected:", rejectCounts);
-    console.log(
-      "RUNNER TRADE FUNNEL symbols:",
-      result
-        .slice(0, MAX_SYMBOL_LOGS)
-        .map(c => `${c.symbol}_${c.side}_${c.stage}_${c.flow}_${Math.round(c.moveScore || 0)}`)
-        .join(", ")
-    );
-  }
+  routeDebug("TRADE_FUNNEL_SELECTION_DEBUG", {
+    raw: buckets.length,
+    accepted: result.length,
+    rejected: normalizeCounterMap(rejectCounts),
+    symbols: result
+      .slice(0, MAX_SYMBOL_LOGS)
+      .map(c => `${c.symbol}_${c.side}_${c.stage}_${c.flow}_${Math.round(c.moveScore || 0)}`),
+  });
 
   return {
     candidates: result,
@@ -636,6 +830,12 @@ function compactTradeRow(row) {
     pnlPct: row.pnlPct,
     exitReason: row.exitReason,
 
+    discordAllowed: row.discordAllowed,
+    discordNotified: row.discordNotified,
+    discordBlockReason: row.discordBlockReason,
+    discordNotifyFailed: row.discordNotifyFailed,
+    discordNotifyError: row.discordNotifyError,
+
     closed: row.closed,
     closedAt: row.closedAt,
     openedAt: row.openedAt,
@@ -678,6 +878,11 @@ function compactOpenPosition(pos) {
     trailingActive: Boolean(pos.trailingActive),
     adds: safeNumber(pos.adds, 0),
 
+    discordEntryAllowed: pos.discordEntryAllowed,
+    discordEntryNotified: pos.discordEntryNotified,
+    discordEntryBlocked: pos.discordEntryBlocked,
+    discordBlockReason: pos.discordBlockReason,
+
     createdAt: pos.createdAt,
     updatedAt: pos.updatedAt,
   };
@@ -711,6 +916,8 @@ function compactTradeSystemResult(result) {
     openPositions: safeArray(result.openPositions)
       .slice(-MAX_STORED_OPEN_POSITIONS)
       .map(compactOpenPosition),
+
+    actionSummary: summarizeActions(result.actions),
 
     runnerStats: {
       profile: stats.profile || SYSTEM_PROFILE,
@@ -993,6 +1200,10 @@ function buildRunnerAnalyzeEvent(row, latest, now) {
       maeR: row.maeR,
       currentR: row.currentR,
 
+      discordAllowed: row.discordAllowed,
+      discordNotified: row.discordNotified,
+      discordBlockReason: row.discordBlockReason,
+
       strategyVersion: row.strategyVersion,
     },
 
@@ -1030,8 +1241,13 @@ function collectAnalyzeInputRows(latest, rawResult) {
   return Array.from(map.values());
 }
 
-async function persistRunnerAnalyzeActions({ latest, rawResult, now }) {
+async function persistRunnerAnalyzeActions({ latest, rawResult, now, requestId }) {
   if (!RUNNER_ANALYZE_PERSIST) {
+    routeLog("ANALYZE_PERSIST_SKIPPED", {
+      requestId,
+      reason: "RUNNER_ANALYZE_PERSIST_FALSE",
+    });
+
     return {
       ok: true,
       skipped: true,
@@ -1046,6 +1262,14 @@ async function persistRunnerAnalyzeActions({ latest, rawResult, now }) {
   const events = inputRows
     .map(row => buildRunnerAnalyzeEvent(row, latest, now))
     .filter(Boolean);
+
+  routeLog("ANALYZE_PERSIST_PREPARED", {
+    requestId,
+    received: inputRows.length,
+    events: events.length,
+    entries: events.filter(e => e.action === "ENTRY").length,
+    exits: events.filter(e => e.action === "EXIT").length,
+  });
 
   if (!events.length) {
     return {
@@ -1065,6 +1289,20 @@ async function persistRunnerAnalyzeActions({ latest, rawResult, now }) {
       market: latest?.market,
       tradeFunnelUpdatedAt: now,
       latestUpdatedAt: latest?.updatedAt,
+    });
+
+    routeLog("ANALYZE_PERSIST_DONE", {
+      requestId,
+      ok: result?.ok !== false,
+      accepted: safeNumber(result?.accepted ?? result?.added, 0),
+      ignored: safeNumber(result?.ignored, 0),
+      ignoredReasons: result?.ignoredReasons || {},
+      entries: safeNumber(result?.entries, 0),
+      matchedExits: safeNumber(result?.matchedExits, 0),
+      unmatchedExits: safeNumber(result?.unmatchedExits, 0),
+      count: safeNumber(result?.count, 0),
+      open: safeNumber(result?.open, 0),
+      closed: safeNumber(result?.closed, 0),
     });
 
     return {
@@ -1087,6 +1325,12 @@ async function persistRunnerAnalyzeActions({ latest, rawResult, now }) {
       path: result?.path || null,
     };
   } catch (error) {
+    routeError("ANALYZE_PERSIST_FAILED", error, {
+      requestId,
+      received: inputRows.length,
+      attempted: events.length,
+    });
+
     return {
       ok: false,
       skipped: false,
@@ -1109,6 +1353,8 @@ function buildTradeFunnelPayload({
   error = null,
   analyzePersist = null,
   now = Date.now(),
+  requestId = null,
+  trace = null,
 }) {
   const funnel = compactFunnel(latest?.funnel || emptyFunnel());
   const compactResult = compactTradeSystemResult(result || latest?.tradeSystemResult);
@@ -1123,6 +1369,8 @@ function buildTradeFunnelPayload({
     ok: true,
     profile: SYSTEM_PROFILE,
     scannerProfile: latest?.scannerProfile || SYSTEM_PROFILE,
+
+    requestId,
 
     source: mode === "run" ? "trade_funnel_run" : "trade_funnel_snapshot",
     tradeFunnelMode: mode,
@@ -1169,6 +1417,14 @@ function buildTradeFunnelPayload({
       .slice(0, MAX_SYMBOL_LOGS)
       .map(c => `${c.symbol}_${c.side}_${c.stage}_${c.flow}_${Math.round(c.moveScore || 0)}`),
 
+    tradeFunnelTrace: trace || {
+      requestId,
+      mode,
+      autoRunDefault: RUNNER_AUTO_RUN,
+      routeLogsEnabled: TRADE_FUNNEL_ROUTE_LOG,
+      routeDebugEnabled: TRADE_FUNNEL_ROUTE_DEBUG,
+    },
+
     dashboardStats: trimDashboardRows(latest?.dashboardStats),
 
     scannerUpdatedAt: latest?.scannerUpdatedAt || null,
@@ -1186,12 +1442,38 @@ function isLockBusyError(error) {
 // ================= CORE =================
 
 export async function runTradeFunnel(options = {}) {
+  const startedAt = Date.now();
+
   const notify = options.notify !== false;
   const store = options.store !== false;
   const mode = options.mode || "read_only";
+  const requestId = options.requestId || createRequestId("trade_funnel_run");
   const now = Date.now();
 
+  routeLog("RUN_TRADE_FUNNEL_START", {
+    requestId,
+    mode,
+    notify,
+    store,
+    autoRunDefault: RUNNER_AUTO_RUN,
+  });
+
   const latest = await getLatestScan();
+
+  routeLog("LATEST_SCAN_LOADED", {
+    requestId,
+    ok: Boolean(latest?.ok),
+    scanReady: Boolean(latest?.scanReady),
+    updatedAt: latest?.updatedAt || null,
+    scannerUpdatedAt: latest?.scannerUpdatedAt || null,
+    funnelCount: countFunnel(latest?.funnel || emptyFunnel()),
+    bullEntry: countStage(latest?.funnel, "bull", "entry"),
+    bullAlmost: countStage(latest?.funnel, "bull", "almost"),
+    bearEntry: countStage(latest?.funnel, "bear", "entry"),
+    bearAlmost: countStage(latest?.funnel, "bear", "almost"),
+    previousRunnerActions: safeArray(latest?.tradeSystemResult?.actions).length,
+    previousOpenPositions: safeArray(latest?.tradeSystemResult?.openPositions).length,
+  });
 
   if (!latest?.ok) {
     throw new Error("no_latest_scan_available");
@@ -1199,39 +1481,112 @@ export async function runTradeFunnel(options = {}) {
 
   const selection = getTradeFunnelCandidates(latest);
 
+  routeLog("SELECTION_BUILT", {
+    requestId,
+    mode,
+    rawCount: selection.rawCount,
+    acceptedCount: selection.candidates.length,
+    rejectCounts: normalizeCounterMap(selection.rejectCounts),
+    symbols: selection.candidates
+      .slice(0, MAX_SYMBOL_LOGS)
+      .map(c => `${c.symbol}_${c.side}_${c.stage}_${c.flow}_${Math.round(c.moveScore || 0)}`),
+  });
+
   if (mode !== "run") {
-    return buildTradeFunnelPayload({
+    const payload = buildTradeFunnelPayload({
       latest,
       selection,
       mode: "read_only",
       now,
+      requestId,
+      trace: {
+        requestId,
+        mode: "read_only",
+        reason: "SNAPSHOT_ONLY",
+        rawCount: selection.rawCount,
+        acceptedCount: selection.candidates.length,
+        rejectCounts: normalizeCounterMap(selection.rejectCounts),
+        durationMs: Date.now() - startedAt,
+      },
     });
+
+    routeLog("RUN_TRADE_FUNNEL_DONE", {
+      requestId,
+      mode: "read_only",
+      durationMs: Date.now() - startedAt,
+      acceptedCount: selection.candidates.length,
+    });
+
+    return payload;
   }
 
   const candidates = selection.candidates;
 
   let rawResult = null;
+  let runnerDurationMs = 0;
 
   try {
-    rawResult = candidates.length
-      ? await processTrades(candidates, {
-          notify,
-          log: true,
-          profile: SYSTEM_PROFILE,
-          runner: true,
-          btc: latest.btc,
-          regime: latest.regime,
-          market: latest.market,
-        })
-      : {
-          ok: true,
-          actions: [],
-          candidatesCount: 0,
-          profile: SYSTEM_PROFILE,
-          reason: "no_runner_candidates",
-        };
+    if (!candidates.length) {
+      routeLog("RUNNER_SKIPPED_NO_CANDIDATES", {
+        requestId,
+        rawCount: selection.rawCount,
+        rejectCounts: normalizeCounterMap(selection.rejectCounts),
+      });
+
+      rawResult = {
+        ok: true,
+        actions: [],
+        candidatesCount: 0,
+        profile: SYSTEM_PROFILE,
+        reason: "no_runner_candidates",
+      };
+    } else {
+      const runnerStartedAt = Date.now();
+
+      routeLog("RUNNER_CALL_START", {
+        requestId,
+        candidates: candidates.length,
+        notify,
+        store,
+        btcState: latest?.btc?.state || null,
+        regime: latest?.regime || null,
+        symbols: candidates
+          .slice(0, MAX_SYMBOL_LOGS)
+          .map(c => `${c.symbol}_${c.side}_${c.stage}_${c.flow}_${Math.round(c.moveScore || 0)}`),
+      });
+
+      rawResult = await processTrades(candidates, {
+        notify,
+        log: true,
+        profile: SYSTEM_PROFILE,
+        runner: true,
+        btc: latest.btc,
+        regime: latest.regime,
+        market: latest.market,
+      });
+
+      runnerDurationMs = Date.now() - runnerStartedAt;
+
+      routeLog("RUNNER_CALL_DONE", {
+        requestId,
+        durationMs: runnerDurationMs,
+        ok: rawResult?.ok !== false,
+        runId: rawResult?.runId || null,
+        candidatesCount: safeNumber(rawResult?.candidatesCount, 0),
+        liveEligibleCandidates: safeNumber(rawResult?.liveEligibleCandidates, 0),
+        openPositions: safeArray(rawResult?.openPositions).length,
+        actionSummary: summarizeActions(rawResult?.actions),
+        runnerWaitReasons: normalizeCounterMap(rawResult?.runnerStats?.waitReasons),
+        runnerActionCounts: normalizeCounterMap(rawResult?.runnerStats?.actionCounts),
+      });
+    }
   } catch (error) {
     if (isLockBusyError(error)) {
+      routeLog("RUNNER_LOCK_BUSY", {
+        requestId,
+        durationMs: Date.now() - startedAt,
+      });
+
       return buildTradeFunnelPayload({
         latest,
         selection,
@@ -1239,8 +1594,27 @@ export async function runTradeFunnel(options = {}) {
         busy: true,
         error: "RUNNER_TRADE_SYSTEM_LOCK_BUSY",
         now,
+        requestId,
+        trace: {
+          requestId,
+          mode: "read_only",
+          reason: "RUNNER_TRADE_SYSTEM_LOCK_BUSY",
+          rawCount: selection.rawCount,
+          acceptedCount: selection.candidates.length,
+          rejectCounts: normalizeCounterMap(selection.rejectCounts),
+          durationMs: Date.now() - startedAt,
+        },
       });
     }
+
+    routeError("RUNNER_CALL_FAILED", error, {
+      requestId,
+      durationMs: Date.now() - startedAt,
+      candidates: candidates.length,
+      symbols: candidates
+        .slice(0, MAX_SYMBOL_LOGS)
+        .map(c => `${c.symbol}_${c.side}_${c.stage}_${c.flow}_${Math.round(c.moveScore || 0)}`),
+    });
 
     throw error;
   }
@@ -1249,6 +1623,7 @@ export async function runTradeFunnel(options = {}) {
     latest,
     rawResult,
     now,
+    requestId,
   });
 
   const result = compactTradeSystemResult(rawResult);
@@ -1260,11 +1635,55 @@ export async function runTradeFunnel(options = {}) {
     mode: "run",
     analyzePersist,
     now,
+    requestId,
+    trace: {
+      requestId,
+      mode: "run",
+      notify,
+      store,
+      rawCount: selection.rawCount,
+      acceptedCount: selection.candidates.length,
+      rejectCounts: normalizeCounterMap(selection.rejectCounts),
+      runnerDurationMs,
+      totalDurationMs: Date.now() - startedAt,
+      runnerRunId: rawResult?.runId || null,
+      actionSummary: summarizeActions(rawResult?.actions),
+      openPositions: safeArray(rawResult?.openPositions).length,
+      analyzePersist,
+    },
   });
 
   if (store) {
+    routeLog("LATEST_SCAN_STORE_START", {
+      requestId,
+      mode,
+      actions: safeArray(result?.actions).length,
+      openPositions: safeArray(result?.openPositions).length,
+    });
+
     await setLatestScan(updated);
+
+    routeLog("LATEST_SCAN_STORE_DONE", {
+      requestId,
+      mode,
+      durationMs: Date.now() - startedAt,
+    });
+  } else {
+    routeLog("LATEST_SCAN_STORE_SKIPPED", {
+      requestId,
+      reason: "STORE_FALSE",
+    });
   }
+
+  routeLog("RUN_TRADE_FUNNEL_DONE", {
+    requestId,
+    mode: "run",
+    durationMs: Date.now() - startedAt,
+    rawCount: selection.rawCount,
+    acceptedCount: selection.candidates.length,
+    actionSummary: summarizeActions(rawResult?.actions),
+    analyzePersist,
+  });
 
   return updated;
 }
@@ -1272,31 +1691,76 @@ export async function runTradeFunnel(options = {}) {
 // ================= HANDLER =================
 
 export default async function handler(req, res) {
+  const startedAt = Date.now();
+  const requestId = createRequestId("trade_funnel_request");
+
+  setNoStoreHeaders(res, requestId);
+
   try {
-    res.setHeader("Cache-Control", "no-store, max-age=0");
-
     const action = normalizeAction(req);
-    const notify = normalizeNotify(getQueryParam(req, "notify", ""));
-    const store = normalizeStore(getQueryParam(req, "store", undefined), true);
 
-    const shouldRun =
-      action === "run" ||
-      action === "execute" ||
-      normalizeBoolean(getQueryParam(req, "run", ""), false);
+    const notify = normalizeNotify(
+      firstDefined(
+        getQueryParam(req, "notify", undefined),
+        getBodyValue(req, "notify", undefined)
+      ),
+      true
+    );
+
+    const store = normalizeStore(
+      firstDefined(
+        getQueryParam(req, "store", undefined),
+        getBodyValue(req, "store", undefined)
+      ),
+      true
+    );
+
+    const shouldRun = shouldRunRequest(req);
+
+    routeLog("REQUEST_START", {
+      requestId,
+      method: req?.method || null,
+      url: req?.url || null,
+      action: action || null,
+      shouldRun,
+      notify,
+      store,
+      autoRunDefault: RUNNER_AUTO_RUN,
+      routeLogsEnabled: TRADE_FUNNEL_ROUTE_LOG,
+      routeDebugEnabled: TRADE_FUNNEL_ROUTE_DEBUG,
+    });
 
     const data = await runTradeFunnel({
+      requestId,
       notify,
       store,
       mode: shouldRun ? "run" : "read_only",
     });
 
+    routeLog("REQUEST_DONE", {
+      requestId,
+      status: 200,
+      mode: data?.tradeFunnelMode || null,
+      busy: Boolean(data?.tradeFunnelBusy),
+      durationMs: Date.now() - startedAt,
+      inputCount: safeNumber(data?.tradeFunnelInputCount, 0),
+      rawCount: safeNumber(data?.tradeFunnelRawCount, 0),
+      actionSummary: data?.tradeSystemResult?.actionSummary || null,
+    });
+
     return res.status(200).json(data);
   } catch (error) {
-    console.error("RUNNER TRADE-FUNNEL ERROR:", error);
+    routeError("REQUEST_FAILED", error, {
+      requestId,
+      method: req?.method || null,
+      url: req?.url || null,
+      durationMs: Date.now() - startedAt,
+    });
 
     return res.status(500).json({
       ok: false,
       profile: SYSTEM_PROFILE,
+      requestId,
       error: error?.message || "trade_funnel_failed",
       servedAt: Date.now(),
     });
