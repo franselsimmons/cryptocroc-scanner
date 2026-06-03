@@ -7,7 +7,7 @@
 
   <title>Runner TradeSystem Analyse</title>
 
-  <link rel="stylesheet" href="/analytics.css?v=runner-pnl-v2" />
+  <link rel="stylesheet" href="/analytics.css?v=runner-pnl-v3" />
 </head>
 
 <body>
@@ -20,7 +20,7 @@
           <h1>Runner Family Performance Matrix</h1>
 
           <p class="hero-text">
-            50 LONG families + 50 SHORT families. Elke runner-trade wordt op entry vastgezet in één frozen filter-family.
+            50 LONG families + 50 SHORT families. Elke runner-trade wordt gegroepeerd in een frozen filter-family.
             Ranking is PnL-first: hoogste Total PnL%, daarna Total R, Avg R, Profit Factor en sample-size.
           </p>
         </div>
@@ -29,7 +29,14 @@
           <button id="refreshBtn" type="button">Refresh</button>
           <button id="autoBtn" type="button">Auto: OFF</button>
           <button id="resetBtn" type="button" class="danger">Reset</button>
-          <a id="apiLink" href="/api/analyze?minClosed=10&includeLatest=true&debug=true" target="_blank" rel="noopener">API</a>
+          <a
+            id="apiLink"
+            href="/api/analyze?minClosed=10&includeLatest=true&includeShadow=false&debug=true"
+            target="_blank"
+            rel="noopener"
+          >
+            API
+          </a>
         </div>
 
         <div class="hero-status-grid" aria-label="Runner analyzer status">
@@ -143,7 +150,7 @@
         <div>
           <h2>Winner candidates</h2>
           <p class="panel-subtitle">
-            PnL-first selectie: voldoende closed trades, positieve Avg R, positieve Total R en redelijke winrate.
+            PnL-first selectie: voldoende closed trades, positieve Avg R, positieve Total R en positieve Total PnL%.
           </p>
         </div>
 
@@ -187,8 +194,8 @@
         <label class="field">
           <span>Data source</span>
           <select id="sourceSelect">
-            <option value="MERGED" selected>RUNNER analyze-store + latest</option>
-            <option value="STORED">RUNNER analyze-store</option>
+            <option value="MERGED" selected>Runtime + latest</option>
+            <option value="STORED">Runtime only</option>
           </select>
         </label>
 
@@ -221,12 +228,22 @@
 
         <label class="field search-field">
           <span>Search</span>
-          <input id="searchInput" type="search" placeholder="LONG_48, Q5_ELITE, CLEAN, DEPTH..." autocomplete="off" />
+          <input
+            id="searchInput"
+            type="search"
+            placeholder="LONG_48, Q5_ELITE, CLEAN, DEPTH..."
+            autocomplete="off"
+          />
         </label>
 
         <label class="check-field">
           <input id="hideEmptyInput" type="checkbox" checked />
           <span>Hide empty</span>
+        </label>
+
+        <label class="check-field">
+          <input id="includeShadowInput" type="checkbox" />
+          <span>Include shadow</span>
         </label>
       </div>
 
@@ -234,7 +251,7 @@
         <div>
           <h2>Families</h2>
           <p class="panel-subtitle">
-            Observed = alle records. Closed = alleen afgerekende trades. Winrate/PnL gebruikt uitsluitend closed.
+            Observed = alle records. Closed = alleen afgerekende trades. Winrate/PnL gebruikt closed rows volgens API-config.
           </p>
         </div>
 
@@ -286,7 +303,7 @@
         <div>
           <h2>Tracked filters</h2>
           <p class="panel-subtitle">
-            Dit zijn de labels waarop de runner families worden gegroepeerd.
+            Labels waarop de runner families worden gegroepeerd.
           </p>
         </div>
 
@@ -304,6 +321,6 @@
     </section>
   </main>
 
-  <script type="module" src="/analytics.js?v=runner-pnl-v2"></script>
+  <script type="module" src="/analytics.js?v=runner-pnl-v3"></script>
 </body>
 </html>
