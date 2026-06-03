@@ -216,9 +216,13 @@ function getMicroFamilyKeyFromRow(row = {}) {
       row.analysisMicroFamilyKey ||
       row.discordMicroFamilyKey ||
       row?.family?.microFamilyKey ||
+      row?.family?.runnerMicroFamilyKey ||
       row?.discordDecision?.microFamilyKey ||
+      row?.discordDecision?.runnerMicroFamilyKey ||
       row?.discordDecision?.micro?.microFamilyKey ||
+      row?.discordDecision?.micro?.runnerMicroFamilyKey ||
       row?.discordDecision?.family?.microFamilyKey ||
+      row?.discordDecision?.family?.runnerMicroFamilyKey ||
       ""
   );
 }
@@ -231,9 +235,13 @@ function getMicroFamilyIdFromRow(row = {}) {
       row.analysisMicroFamilyId ||
       row.discordMicroFamilyId ||
       row?.family?.microFamilyId ||
+      row?.family?.runnerMicroFamilyId ||
       row?.discordDecision?.microFamilyId ||
+      row?.discordDecision?.runnerMicroFamilyId ||
       row?.discordDecision?.micro?.microFamilyId ||
+      row?.discordDecision?.micro?.runnerMicroFamilyId ||
       row?.discordDecision?.family?.microFamilyId ||
+      row?.discordDecision?.family?.runnerMicroFamilyId ||
       ""
   );
 }
@@ -272,6 +280,28 @@ function getMacroFamilyIdFromRow(row = {}) {
   const microMacro = normalizeExplicitFamilyId(microFamilyKey.split("::")[0]);
 
   return microMacro || null;
+}
+
+function buildAllowedMicroFamilyKeys(bestLong, bestShort) {
+  return [
+    bestLong?.microFamilyKey,
+    bestShort?.microFamilyKey,
+  ].filter(Boolean);
+}
+
+function buildMicroFamilyEnvLine(bestLong, bestShort) {
+  return `RUNNER_ALLOWED_MICRO_FAMILY_KEYS=${buildAllowedMicroFamilyKeys(bestLong, bestShort).join(",")}`;
+}
+
+function buildMicroFamilyTradeSystemSnippet(bestLong, bestShort) {
+  const keys = buildAllowedMicroFamilyKeys(bestLong, bestShort);
+
+  return {
+    envLine: `RUNNER_ALLOWED_MICRO_FAMILY_KEYS=${keys.join(",")}`,
+    allowedMicroFamilyKeys: keys,
+    js: `const RUNNER_ALLOWED_MICRO_FAMILY_KEYS = new Set((process.env.RUNNER_ALLOWED_MICRO_FAMILY_KEYS || "").split(",").map(v => v.trim().toUpperCase()).filter(Boolean));`,
+    gate: `if (RUNNER_ALLOWED_MICRO_FAMILY_KEYS.size && !RUNNER_ALLOWED_MICRO_FAMILY_KEYS.has(decision.microFamilyKey)) return null;`,
+  };
 }
 
 // ================= REDIS =================
@@ -852,8 +882,19 @@ function normalizeAnalysisRow(rawRow, sourceType, config) {
 
     familyId: macroFamilyId || row.familyId || null,
     macroFamilyId: macroFamilyId || row.macroFamilyId || null,
+
     microFamilyId: microFamilyId || null,
+    runnerMicroFamilyId: microFamilyId || null,
+    analyzeMicroFamilyId: microFamilyId || null,
+    analysisMicroFamilyId: microFamilyId || null,
+    discordMicroFamilyId: microFamilyId || null,
+
     microFamilyKey: microFamilyKey || null,
+    runnerMicroFamilyKey: microFamilyKey || null,
+    analyzeMicroFamilyKey: microFamilyKey || null,
+    analysisMicroFamilyKey: microFamilyKey || null,
+    discordMicroFamilyKey: microFamilyKey || null,
+
     microLabels: getFamilyLabelsFromRow(row),
 
     ts: safeNumber(row.ts || row.createdAt || row.closedAt || row.exitedAt || row.completedAt, 0),
@@ -1279,6 +1320,7 @@ function compactExample(row) {
     familyId: row.familyId || null,
     microFamilyId: row.microFamilyId || null,
     microFamilyKey: row.microFamilyKey || null,
+    runnerMicroFamilyKey: row.runnerMicroFamilyKey || row.microFamilyKey || null,
     microLabels: safeArray(row.microLabels).slice(0, 12),
 
     closed: row.closed,
@@ -1523,20 +1565,31 @@ function finalizeFamily(family, config) {
 function createMicroFamily(key, row) {
   const macroFamilyId = getFamilyId(row);
   const side = normalizeSide(row.side);
+  const labels = safeArray(row.microLabels);
 
   return {
     id: key,
     microFamilyKey: key,
+    runnerMicroFamilyKey: key,
+    analyzeMicroFamilyKey: key,
+    analysisMicroFamilyKey: key,
+    discordMicroFamilyKey: key,
+
     microFamilyId: row.microFamilyId || null,
+    runnerMicroFamilyId: row.microFamilyId || null,
+    analyzeMicroFamilyId: row.microFamilyId || null,
+    analysisMicroFamilyId: row.microFamilyId || null,
+    discordMicroFamilyId: row.microFamilyId || null,
+
     familyId: macroFamilyId,
     macroFamilyId,
     side,
 
-    definition: safeArray(row.microLabels).length
-      ? safeArray(row.microLabels).join(" | ")
-      : key,
+    definition: labels.length ? labels.join(" | ") : key,
+    microDefinition: labels.length ? labels.join(" | ") : key,
 
-    labels: safeArray(row.microLabels),
+    labels,
+    microLabels: labels,
 
     observed: 0,
     observations: 0,
@@ -1603,12 +1656,46 @@ function addRowToMicroFamily(micro, row, config) {
   }
 }
 
+function pickBestMicroFamily(rows, config) {
+  const strict = safeArray(rows)
+    .filter(row => row.closed >= config.minClosed)
+    .filter(row => row.avgR > 0)
+    .filter(row => row.totalR > 0)
+    .filter(row => row.totalPnlPct > 0)
+    .filter(row => row.winrateNum >= config.minWinrate)
+    .sort(rankPnlFirst);
+
+  if (strict.length) return strict[0];
+
+  const relaxedPositive = safeArray(rows)
+    .filter(row => row.closed > 0)
+    .filter(row => row.avgR > 0)
+    .filter(row => row.totalR > 0)
+    .filter(row => row.totalPnlPct > 0)
+    .sort(rankPnlFirst);
+
+  if (relaxedPositive.length) return relaxedPositive[0];
+
+  const anyClosed = safeArray(rows)
+    .filter(row => row.closed > 0)
+    .sort(rankPnlFirst);
+
+  if (anyClosed.length) return anyClosed[0];
+
+  return safeArray(rows)
+    .filter(row => row.observed > 0)
+    .sort(rankFamilyTable)[0] || null;
+}
+
 function buildMicroFamilyReport(rows, config) {
   const groups = new Map();
+  let rowsWithMicroFamilyKey = 0;
 
   for (const row of safeArray(rows)) {
     const key = getMicroFamilyKeyFromRow(row);
     if (!key) continue;
+
+    rowsWithMicroFamilyKey += 1;
 
     if (!groups.has(key)) {
       groups.set(key, createMicroFamily(key, row));
@@ -1621,13 +1708,28 @@ function buildMicroFamilyReport(rows, config) {
     .map(row => finalizeStats(row, config))
     .sort(rankFamilyTable);
 
-  const long = all.filter(row => row.side === "LONG");
-  const short = all.filter(row => row.side === "SHORT");
+  const long = all
+    .filter(row => row.side === "LONG")
+    .sort(rankFamilyTable);
+
+  const short = all
+    .filter(row => row.side === "SHORT")
+    .sort(rankFamilyTable);
 
   const topPnl = all
     .filter(row => row.closed > 0)
     .sort(rankPnlFirst)
-    .slice(0, 30);
+    .slice(0, 50);
+
+  const topLongByPnl = long
+    .filter(row => row.closed > 0)
+    .sort(rankPnlFirst)
+    .slice(0, 25);
+
+  const topShortByPnl = short
+    .filter(row => row.closed > 0)
+    .sort(rankPnlFirst)
+    .slice(0, 25);
 
   const best = all
     .filter(row => row.closed >= config.minClosed)
@@ -1638,16 +1740,42 @@ function buildMicroFamilyReport(rows, config) {
     .sort(rankPnlFirst)
     .slice(0, 20);
 
+  const bestLongByPnl = pickBestMicroFamily(long, config);
+  const bestShortByPnl = pickBestMicroFamily(short, config);
+
+  const allowedMicroFamilyKeys = buildAllowedMicroFamilyKeys(bestLongByPnl, bestShortByPnl);
+  const envLine = buildMicroFamilyEnvLine(bestLongByPnl, bestShortByPnl);
+  const tradeSystemSnippet = buildMicroFamilyTradeSystemSnippet(bestLongByPnl, bestShortByPnl);
+
   return {
     all,
     long,
     short,
     ranked: all,
+
     best,
+    bestLongByPnl,
+    bestShortByPnl,
+
     topPnl,
+    topLongByPnl,
+    topShortByPnl,
+
+    allowedMicroFamilyKeys,
+    envLine,
+    tradeSystemSnippet,
+
     summary: {
       total: all.length,
       withClosed: all.filter(row => row.closed > 0).length,
+      rowsWithMicroFamilyKey,
+      rowsWithoutMicroFamilyKey: Math.max(0, safeArray(rows).length - rowsWithMicroFamilyKey),
+
+      bestLongMicroFamilyKey: bestLongByPnl?.microFamilyKey || null,
+      bestShortMicroFamilyKey: bestShortByPnl?.microFamilyKey || null,
+      allowedMicroFamilyKeys,
+      envLine,
+
       long: summarizeStatuses(long),
       short: summarizeStatuses(short),
     },
@@ -1814,6 +1942,11 @@ function buildReport(rows, config) {
     familiesWithData: all.filter(row => row.observed > 0).length,
     microFamiliesWithData: microFamilies.all.length,
     microFamiliesWithClosed: microFamilies.summary.withClosed,
+
+    bestLongMicroFamilyKey: microFamilies.summary.bestLongMicroFamilyKey,
+    bestShortMicroFamilyKey: microFamilies.summary.bestShortMicroFamilyKey,
+    allowedMicroFamilyKeys: microFamilies.allowedMicroFamilyKeys,
+    microFamilyEnvLine: microFamilies.envLine,
   };
 
   return {
@@ -1829,6 +1962,7 @@ function buildReport(rows, config) {
         return acc;
       }, {}),
       rowsWithMicroFamilyKey: normalized.filter(row => row.microFamilyKey).length,
+      rowsWithoutMicroFamilyKey: normalized.filter(row => !row.microFamilyKey).length,
     },
 
     config,
@@ -1873,7 +2007,14 @@ function buildReport(rows, config) {
       topPnlFamily: topPnlFamilies[0] || null,
       topTotalRFamily: topTotalRFamilies[0] || null,
       topWinrateFamily: topWinrateFamilies[0] || null,
+
       topMicroFamilyByPnl: microFamilies.topPnl[0] || null,
+      bestLongMicroFamilyByPnl: microFamilies.bestLongByPnl,
+      bestShortMicroFamilyByPnl: microFamilies.bestShortByPnl,
+
+      allowedMicroFamilyKeys: microFamilies.allowedMicroFamilyKeys,
+      microFamilyEnvLine: microFamilies.envLine,
+      microFamilyTradeSystemSnippet: microFamilies.tradeSystemSnippet,
     },
 
     winnerCandidates,
@@ -1893,8 +2034,13 @@ function buildReport(rows, config) {
       topPnlFamilies,
       topTotalRFamilies,
       topWinrateFamilies,
+
       topMicroFamiliesByPnl: microFamilies.topPnl,
+      topLongMicroFamiliesByPnl: microFamilies.topLongByPnl,
+      topShortMicroFamiliesByPnl: microFamilies.topShortByPnl,
       bestMicroFamilies: microFamilies.best,
+      bestLongMicroFamilyByPnl: microFamilies.bestLongByPnl,
+      bestShortMicroFamilyByPnl: microFamilies.bestShortByPnl,
     },
   };
 }
