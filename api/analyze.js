@@ -1,7 +1,13 @@
 // ================= api/analyze.js =================
 // RUNNER / TRADESYSTEM ANALYZER
-// Loose analyzer: leest tradeSystem durable runtime direct.
-// Geen harde entry-gates in analyze. Analyze groepeert alleen en rekent outcomes af.
+// Leest de actuele RUNNER durable runtime direct uit Redis.
+// Ondersteunt:
+// - huidige chunked runtime: runnerTradeSystem:runtime:<STRATEGY_VERSION>:meta/chunk
+// - legacy split runtime
+// - legacy single runtime
+//
+// Analyze doet geen harde live-entry gates.
+// Analyze groepeert, rekent outcomes af en rankt PnL-first.
 
 import { getLatestScan } from "../lib/scanStore.js";
 
@@ -12,11 +18,17 @@ const STRATEGY_VERSION =
   process.env.RUNNER_STRATEGY_VERSION ||
   process.env.TRADE_SYSTEM_STRATEGY_VERSION ||
   process.env.STRATEGY_VERSION ||
-  "TS_V12_5_FIX";
+  "RUNNER_TS_V2_1_EXACT_MICRO_FAMILY_KEY_GATE";
 
 const OBJECTIVE = "PNL_FIRST_FROZEN_FAMILY_ANALYZE";
-const STRATEGY = "50_LONG_FAMILIES_PLUS_50_SHORT_FAMILIES_LOOSE_DISCOVERY";
+const STRATEGY = "50_LONG_FAMILIES_PLUS_50_SHORT_FAMILIES_MICRO_KEY_DISCOVERY";
 
+// Huidige runnerTradeSystem durable chunked runtime.
+const RUNNER_RUNTIME_STORE_KEY = `runnerTradeSystem:runtime:${STRATEGY_VERSION}`;
+const RUNNER_RUNTIME_META_KEY = `${RUNNER_RUNTIME_STORE_KEY}:meta`;
+const RUNNER_RUNTIME_CHUNK_PREFIX = `${RUNNER_RUNTIME_STORE_KEY}:chunk:`;
+
+// Oude/split runtime fallback.
 const RUNTIME_STORE_KEY = `${STRATEGY_VERSION}:runtime:legacy`;
 const RUNTIME_CORE_KEY = `${STRATEGY_VERSION}:runtime:core`;
 const RUNTIME_RECENT_KEY = `${STRATEGY_VERSION}:runtime:recent_entries`;
@@ -31,6 +43,8 @@ const RUNTIME_SHADOW_META_KEY = `${STRATEGY_VERSION}:runtime:shadow_outcomes:met
 const RUNTIME_SHADOW_CHUNK_PREFIX = `${STRATEGY_VERSION}:runtime:shadow_outcomes:chunk:`;
 
 const MAX_EXAMPLES_PER_FAMILY = 10;
+const MAX_EXAMPLES_PER_MICRO_FAMILY = 8;
+
 const DEFAULT_MIN_CLOSED = 10;
 const DEFAULT_MIN_WINRATE = 0.35;
 const DEFAULT_BREAKEVEN_R_EPS = 0.05;
@@ -55,6 +69,8 @@ const TIMING_BUCKETS = [
   { index: 1, key: "T1_EARLY_OR_NOISY" },
   { index: 2, key: "T2_TIMED" },
 ];
+
+// ================= BASIC HELPERS =================
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
@@ -119,9 +135,14 @@ function normalizeBoolean(value, fallback = false) {
   return fallback;
 }
 
+function pctText(value) {
+  return `${round(safeNumber(value, 0) * 100, 1)}%`;
+}
+
 function getRequestUrl(req) {
   const host = req?.headers?.host || "localhost";
   const proto = req?.headers?.["x-forwarded-proto"] || "https";
+
   return new URL(req?.url || "/", `${proto}://${host}`);
 }
 
@@ -161,6 +182,23 @@ function normalizeAction(value, fallback = "OBSERVE") {
   return a || fallback;
 }
 
+function normalizeFamilyId(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function normalizeMicroFamilyKey(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "");
+}
+
+function normalizeLabels(labels) {
+  return safeArray(labels)
+    .map(label => String(label || "").trim().toUpperCase())
+    .filter(Boolean);
+}
+
 function normalizeSpread(spreadPct) {
   let spread = safeNumber(spreadPct, 0);
 
@@ -170,9 +208,73 @@ function normalizeSpread(spreadPct) {
   return spread;
 }
 
-function pctText(value) {
-  return `${round(safeNumber(value, 0) * 100, 1)}%`;
+function getMicroFamilyKeyFromRow(row = {}) {
+  return normalizeMicroFamilyKey(
+    row.microFamilyKey ||
+      row.runnerMicroFamilyKey ||
+      row.analyzeMicroFamilyKey ||
+      row.analysisMicroFamilyKey ||
+      row.discordMicroFamilyKey ||
+      row?.family?.microFamilyKey ||
+      row?.discordDecision?.microFamilyKey ||
+      row?.discordDecision?.micro?.microFamilyKey ||
+      row?.discordDecision?.family?.microFamilyKey ||
+      ""
+  );
 }
+
+function getMicroFamilyIdFromRow(row = {}) {
+  return normalizeFamilyId(
+    row.microFamilyId ||
+      row.runnerMicroFamilyId ||
+      row.analyzeMicroFamilyId ||
+      row.analysisMicroFamilyId ||
+      row.discordMicroFamilyId ||
+      row?.family?.microFamilyId ||
+      row?.discordDecision?.microFamilyId ||
+      row?.discordDecision?.micro?.microFamilyId ||
+      row?.discordDecision?.family?.microFamilyId ||
+      ""
+  );
+}
+
+function getFamilyLabelsFromRow(row = {}) {
+  return normalizeLabels(
+    row.microLabels ||
+      row.labels ||
+      row?.family?.microLabels ||
+      row?.family?.labels ||
+      row?.discordDecision?.microLabels ||
+      row?.discordDecision?.family?.microLabels ||
+      row?.discordDecision?.family?.labels ||
+      row?.discordDecision?.micro?.microLabels ||
+      row?.discordDecision?.micro?.labels ||
+      []
+  );
+}
+
+function getMacroFamilyIdFromRow(row = {}) {
+  const explicit =
+    row.familyId ||
+    row.runnerFamilyId ||
+    row.analyzeFamilyId ||
+    row.analysisFamilyId ||
+    row.discordFamilyId ||
+    row.macroFamilyId ||
+    row.frozenFamilyId ||
+    row.filterFamily ||
+    "";
+
+  const normalized = normalizeExplicitFamilyId(explicit);
+  if (normalized) return normalized;
+
+  const microFamilyKey = getMicroFamilyKeyFromRow(row);
+  const microMacro = normalizeExplicitFamilyId(microFamilyKey.split("::")[0]);
+
+  return microMacro || null;
+}
+
+// ================= REDIS =================
 
 function getRedisUrl() {
   return (
@@ -238,23 +340,61 @@ async function readJsonArrayChunks(metaKey, chunkPrefix) {
     return [];
   }
 
-  const chunkCount = Math.max(0, Math.round(safeNumber(meta.chunks, 0)));
+  const chunkCount = Math.max(
+    0,
+    Math.round(safeNumber(meta.chunks ?? meta.chunkCount, 0))
+  );
+
   if (!chunkCount) return [];
 
   const reads = [];
 
   for (let i = 0; i < chunkCount; i++) {
-    reads.push(
-      redisGetJson(`${chunkPrefix}${i}`).catch(() => [])
-    );
+    reads.push(redisGetJson(`${chunkPrefix}${i}`).catch(() => []));
   }
 
   const chunks = await Promise.all(reads);
 
   return chunks
-    .filter(Array.isArray)
-    .flat()
+    .flatMap(chunk => {
+      if (Array.isArray(chunk)) return chunk;
+
+      const parsed = parseJsonLoose(chunk, []);
+      if (Array.isArray(parsed)) return parsed;
+
+      return [];
+    })
     .filter(row => row && typeof row === "object");
+}
+
+async function readRunnerChunkedRuntimePayload() {
+  const meta = await redisGetJson(RUNNER_RUNTIME_META_KEY).catch(() => null);
+
+  if (!meta || typeof meta !== "object") return null;
+
+  const chunkCount = Math.max(0, Math.round(safeNumber(meta.chunkCount, 0)));
+  if (!chunkCount) return null;
+
+  const chunks = [];
+
+  for (let i = 0; i < chunkCount; i += 1) {
+    const chunk = await redisCommand(["GET", `${RUNNER_RUNTIME_CHUNK_PREFIX}${i}`]).catch(() => null);
+
+    if (typeof chunk !== "string") {
+      throw new Error(`runner_runtime_chunk_missing:${i}`);
+    }
+
+    chunks.push(chunk);
+  }
+
+  const payload = parseJsonLoose(chunks.join(""), null);
+
+  if (!payload || typeof payload !== "object") return null;
+
+  return {
+    ...payload,
+    __meta: meta,
+  };
 }
 
 function memoryPairsToRows(memoryPairs) {
@@ -278,6 +418,107 @@ function memoryPairsToRows(memoryPairs) {
     .filter(Boolean);
 }
 
+function getPayloadWeight(payload) {
+  if (!payload || typeof payload !== "object") return 0;
+
+  return (
+    safeArray(payload.memory).length * 10 +
+    safeArray(payload.stats?.closedTrades).length * 8 +
+    safeArray(payload.stats?.featureRows).length +
+    safeArray(payload.stats?.shadowRows).length
+  );
+}
+
+function runtimePayloadToRuntime(payload) {
+  const stats = safeObject(payload?.stats);
+
+  return {
+    ok: true,
+    mode: "RUNNER_TRADE_SYSTEM_CHUNKED_RUNTIME",
+    redisEnabled: true,
+    strategyVersion: payload?.strategyVersion || STRATEGY_VERSION,
+    core: payload,
+    recentEntries: [],
+    closedTrades: safeArray(stats.closedTrades),
+    featureStore: safeArray(stats.featureRows),
+    shadowOutcomes: safeArray(stats.shadowRows),
+    memoryOpen: memoryPairsToRows(payload?.memory),
+    loadedAt: Date.now(),
+    keys: {
+      runnerStore: RUNNER_RUNTIME_STORE_KEY,
+      runnerMeta: RUNNER_RUNTIME_META_KEY,
+      runnerChunkPrefix: RUNNER_RUNTIME_CHUNK_PREFIX,
+    },
+    meta: payload?.__meta || null,
+  };
+}
+
+async function loadLegacySplitRuntime() {
+  const core = await redisGetJson(RUNTIME_CORE_KEY).catch(() => null);
+
+  if (core?.strategyVersion === STRATEGY_VERSION) {
+    const [
+      recentEntries,
+      closedTrades,
+      featureStore,
+      shadowOutcomes,
+    ] = await Promise.all([
+      redisGetJson(RUNTIME_RECENT_KEY).then(v => Array.isArray(v) ? v : []).catch(() => []),
+      readJsonArrayChunks(RUNTIME_CLOSED_META_KEY, RUNTIME_CLOSED_CHUNK_PREFIX),
+      readJsonArrayChunks(RUNTIME_FEATURE_META_KEY, RUNTIME_FEATURE_CHUNK_PREFIX),
+      readJsonArrayChunks(RUNTIME_SHADOW_META_KEY, RUNTIME_SHADOW_CHUNK_PREFIX),
+    ]);
+
+    return {
+      ok: true,
+      mode: "TRADE_SYSTEM_DURABLE_SPLIT",
+      redisEnabled: true,
+      strategyVersion: STRATEGY_VERSION,
+      core,
+      recentEntries,
+      closedTrades,
+      featureStore,
+      shadowOutcomes,
+      memoryOpen: memoryPairsToRows(core?.memory),
+      loadedAt: Date.now(),
+      keys: {
+        core: RUNTIME_CORE_KEY,
+        recent: RUNTIME_RECENT_KEY,
+        closedMeta: RUNTIME_CLOSED_META_KEY,
+        featureMeta: RUNTIME_FEATURE_META_KEY,
+        shadowMeta: RUNTIME_SHADOW_META_KEY,
+      },
+    };
+  }
+
+  return null;
+}
+
+async function loadLegacySingleRuntime() {
+  const legacy = await redisGetJson(RUNTIME_STORE_KEY).catch(() => null);
+
+  if (legacy?.strategyVersion !== STRATEGY_VERSION) return null;
+
+  const audit = safeObject(legacy.audit);
+
+  return {
+    ok: true,
+    mode: "TRADE_SYSTEM_DURABLE_LEGACY",
+    redisEnabled: true,
+    strategyVersion: STRATEGY_VERSION,
+    core: legacy,
+    recentEntries: safeArray(audit.recentEntries),
+    closedTrades: safeArray(audit.closedTrades),
+    featureStore: safeArray(audit.featureStore),
+    shadowOutcomes: safeArray(audit.shadowOutcomes),
+    memoryOpen: memoryPairsToRows(legacy.memory),
+    loadedAt: Date.now(),
+    keys: {
+      legacy: RUNTIME_STORE_KEY,
+    },
+  };
+}
+
 async function loadDurableTradeSystemRuntime() {
   const redisEnabled = hasRedis();
 
@@ -296,88 +537,39 @@ async function loadDurableTradeSystemRuntime() {
     };
   }
 
-  const loadedAt = Date.now();
-
   try {
-    const core = await redisGetJson(RUNTIME_CORE_KEY).catch(() => null);
+    const runnerPayload = await readRunnerChunkedRuntimePayload().catch(() => null);
 
-    if (core?.strategyVersion === STRATEGY_VERSION) {
-      const [
-        recentEntries,
-        closedTrades,
-        featureStore,
-        shadowOutcomes,
-      ] = await Promise.all([
-        redisGetJson(RUNTIME_RECENT_KEY).then(v => Array.isArray(v) ? v : []).catch(() => []),
-        readJsonArrayChunks(RUNTIME_CLOSED_META_KEY, RUNTIME_CLOSED_CHUNK_PREFIX),
-        readJsonArrayChunks(RUNTIME_FEATURE_META_KEY, RUNTIME_FEATURE_CHUNK_PREFIX),
-        readJsonArrayChunks(RUNTIME_SHADOW_META_KEY, RUNTIME_SHADOW_CHUNK_PREFIX),
-      ]);
-
-      return {
-        ok: true,
-        mode: "TRADE_SYSTEM_DURABLE_SPLIT",
-        redisEnabled,
-        strategyVersion: STRATEGY_VERSION,
-        core,
-        recentEntries,
-        closedTrades,
-        featureStore,
-        shadowOutcomes,
-        memoryOpen: memoryPairsToRows(core?.memory),
-        loadedAt,
-        keys: {
-          core: RUNTIME_CORE_KEY,
-          recent: RUNTIME_RECENT_KEY,
-          closedMeta: RUNTIME_CLOSED_META_KEY,
-          featureMeta: RUNTIME_FEATURE_META_KEY,
-          shadowMeta: RUNTIME_SHADOW_META_KEY,
-        },
-      };
+    if (runnerPayload && getPayloadWeight(runnerPayload) > 0) {
+      return runtimePayloadToRuntime(runnerPayload);
     }
 
-    const legacy = await redisGetJson(RUNTIME_STORE_KEY).catch(() => null);
+    const split = await loadLegacySplitRuntime();
+    if (split) return split;
 
-    if (legacy?.strategyVersion === STRATEGY_VERSION) {
-      const audit = safeObject(legacy.audit);
-
-      return {
-        ok: true,
-        mode: "TRADE_SYSTEM_DURABLE_LEGACY",
-        redisEnabled,
-        strategyVersion: STRATEGY_VERSION,
-        core: legacy,
-        recentEntries: safeArray(audit.recentEntries),
-        closedTrades: safeArray(audit.closedTrades),
-        featureStore: safeArray(audit.featureStore),
-        shadowOutcomes: safeArray(audit.shadowOutcomes),
-        memoryOpen: memoryPairsToRows(legacy.memory),
-        loadedAt,
-        keys: {
-          legacy: RUNTIME_STORE_KEY,
-        },
-      };
-    }
+    const single = await loadLegacySingleRuntime();
+    if (single) return single;
 
     return {
       ok: true,
       mode: "TRADE_SYSTEM_DURABLE_EMPTY_OR_VERSION_MISMATCH",
       redisEnabled,
       strategyVersion: STRATEGY_VERSION,
-      core,
+      core: null,
       recentEntries: [],
       closedTrades: [],
       featureStore: [],
       shadowOutcomes: [],
       memoryOpen: [],
-      loadedAt,
+      loadedAt: Date.now(),
       keys: {
+        runnerStore: RUNNER_RUNTIME_STORE_KEY,
+        runnerMeta: RUNNER_RUNTIME_META_KEY,
+        runnerChunkPrefix: RUNNER_RUNTIME_CHUNK_PREFIX,
         core: RUNTIME_CORE_KEY,
         legacy: RUNTIME_STORE_KEY,
       },
-      warning: core?.strategyVersion
-        ? `runtime_version_mismatch:${core.strategyVersion}`
-        : "runtime_empty",
+      warning: "runtime_empty_or_version_mismatch",
     };
   } catch (error) {
     return {
@@ -392,10 +584,12 @@ async function loadDurableTradeSystemRuntime() {
       featureStore: [],
       shadowOutcomes: [],
       memoryOpen: [],
-      loadedAt,
+      loadedAt: Date.now(),
     };
   }
 }
+
+// ================= LATEST SCAN =================
 
 async function loadLatestTradeSystemRows({ includeLatest }) {
   if (!includeLatest) {
@@ -458,19 +652,23 @@ async function loadLatestTradeSystemRows({ includeLatest }) {
   }
 }
 
+// ================= ROW NORMALIZATION =================
+
 function getRowKey(row) {
   const symbol = normalizeSymbol(row?.symbol);
   const side = normalizeSide(row?.side);
   const action = normalizeAction(row?.action, "OBSERVE");
+  const microFamilyKey = getMicroFamilyKeyFromRow(row);
 
   return [
-    row?.tradeId || row?.id || "",
+    row?.tradeId || row?.positionTradeId || row?.id || "",
     row?.runId || "",
     row?.source || "",
     symbol,
     side,
     action,
     row?.entryReason || row?.reason || row?.entryType || "",
+    microFamilyKey,
     row?.entry ?? "",
     row?.exit ?? row?.exitPrice ?? "",
     row?.exitR ?? row?.resultR ?? row?.realizedR ?? row?.pnlR ?? "",
@@ -561,6 +759,7 @@ function getPnlPct(row) {
 function getPlannedRR(row) {
   return readNumber(row, [
     "plannedRR",
+    "finalRR",
     "finalRr",
     "effectiveRR",
     "rr",
@@ -581,7 +780,10 @@ function normalizeAnalysisRow(rawRow, sourceType, config) {
   const action = normalizeAction(row.action, "OBSERVE");
   const source = String(row.source || sourceType || "UNKNOWN").toUpperCase();
 
-  const shadowCompleted = source.includes("SHADOW") && isCompletedShadow(row);
+  const shadowCompleted =
+    (source.includes("SHADOW") || sourceType === "SHADOW_OUTCOME") &&
+    isCompletedShadow(row);
+
   const realClosed = sourceType === "REAL_CLOSED";
   const latestClosed = sourceType === "LATEST" && isClosedAction(row) && !source.includes("SHADOW");
 
@@ -598,15 +800,19 @@ function normalizeAnalysisRow(rawRow, sourceType, config) {
     latestClosed ||
     sourceType === "RECENT_ENTRY" ||
     sourceType === "MEMORY_OPEN" ||
-    ["ENTRY", "HOLD", "EXIT", "TP", "SL", "PARTIAL_TP", "MOVE_BE", "TRAIL"].includes(action);
+    ["ENTRY", "HOLD", "EXIT", "TP", "SL", "PARTIAL_TP", "MOVE_BE", "TRAIL", "ADD"].includes(action);
 
   const observationOnly =
     !isTradeLike ||
     sourceType === "FEATURE_STORE" ||
-    source.includes("SCAN_OBSERVATION");
+    source.includes("SCAN") ||
+    source.includes("ANALYZE_ONLY");
 
   const resultR = getResultR(row);
   const pnlPct = getPnlPct(row);
+  const microFamilyKey = getMicroFamilyKeyFromRow(row);
+  const microFamilyId = getMicroFamilyIdFromRow(row);
+  const macroFamilyId = getMacroFamilyIdFromRow(row);
 
   return {
     ...row,
@@ -633,6 +839,7 @@ function normalizeAnalysisRow(rawRow, sourceType, config) {
 
     tradeId:
       row.tradeId ||
+      row.positionTradeId ||
       row.id ||
       `${STRATEGY_VERSION}_${symbol}_${side}_${row.createdAt || row.ts || row.closedAt || row.exitedAt || ""}`,
 
@@ -643,9 +850,17 @@ function normalizeAnalysisRow(rawRow, sourceType, config) {
     mfeR: safeNumber(row.mfeR, 0),
     maeR: safeNumber(row.maeR, 0),
 
+    familyId: macroFamilyId || row.familyId || null,
+    macroFamilyId: macroFamilyId || row.macroFamilyId || null,
+    microFamilyId: microFamilyId || null,
+    microFamilyKey: microFamilyKey || null,
+    microLabels: getFamilyLabelsFromRow(row),
+
     ts: safeNumber(row.ts || row.createdAt || row.closedAt || row.exitedAt || row.completedAt, 0),
   };
 }
+
+// ================= FAMILY BUCKETING =================
 
 function bucketScoreToIndex(value) {
   const n = safeNumber(value, 0);
@@ -672,9 +887,9 @@ function bucketRrToIndex(value) {
 function setupFallbackQualityIndex(row) {
   const setup = String(row?.setupClass || row?.oldSetupClass || "").toUpperCase();
 
-  if (setup === "GOD") return 5;
-  if (setup === "A" || setup === "A_SHORT_EXCEPTION") return 4;
-  if (setup === "B" || setup === "B_TREND_PROBE") return 3;
+  if (["RUNNER_C", "GOD", "A_PLUS"].includes(setup)) return 5;
+  if (["RUNNER_A", "A", "A_SHORT_EXCEPTION"].includes(setup)) return 4;
+  if (["RUNNER_B", "B", "B_TREND_PROBE"].includes(setup)) return 3;
 
   return 1;
 }
@@ -683,7 +898,7 @@ function getQualityIndex(row) {
   const parts = [];
 
   const confluence = readNumber(row, ["confluence", "effectiveConfluence", "rawConfluence"], null);
-  const sniper = readNumber(row, ["sniperScore", "rawSniperScore"], null);
+  const sniper = readNumber(row, ["sniperScore", "rawSniperScore", "sniper"], null);
   const score = readNumber(row, ["score", "moveScore"], null);
   const rr = getPlannedRR(row);
 
@@ -814,7 +1029,7 @@ function rsiTimingOk(row, side) {
 function flowTimingOk(row) {
   const flow = String(row?.flow || row?.scannerFlow || "").toUpperCase();
 
-  return ["TREND", "BUILDING", "BUILDUP", "BREAKOUT", "RUNNING", "SQUEEZE"].includes(flow);
+  return ["TREND", "BUILDING", "BUILDUP", "BREAKOUT", "RUNNING", "SQUEEZE", "PULLBACK"].includes(flow);
 }
 
 function stageTimingOk(row) {
@@ -822,7 +1037,7 @@ function stageTimingOk(row) {
   const action = normalizeAction(row?.action, "");
 
   if (["entry", "almost", "open_position"].includes(stage)) return true;
-  if (["ENTRY", "HOLD", "EXIT", "PARTIAL_TP", "MOVE_BE", "TRAIL"].includes(action)) return true;
+  if (["ENTRY", "HOLD", "EXIT", "PARTIAL_TP", "MOVE_BE", "TRAIL", "ADD"].includes(action)) return true;
 
   return false;
 }
@@ -848,14 +1063,15 @@ function tfTimingOk(row, side) {
 
 function structureTimingOk(row) {
   return Boolean(
-    row?.pullbackConfirmed ||
-    row?.sweepConfirmed ||
-    row?.retestConfirmed ||
-    row?.fakeBreakout ||
-    row?.fakeBreakoutConfirmed ||
-    row?.confirmationOk ||
-    row?.nearTpSeen ||
-    row?.reachedHalfR
+    row?.structureAligned ||
+      row?.pullbackConfirmed ||
+      row?.sweepConfirmed ||
+      row?.retestConfirmed ||
+      row?.fakeBreakout ||
+      row?.fakeBreakoutConfirmed ||
+      row?.confirmationOk ||
+      row?.nearTpSeen ||
+      row?.reachedHalfR
   );
 }
 
@@ -889,9 +1105,11 @@ function normalizeExplicitFamilyId(value) {
 function getFamilyId(row) {
   const explicit = normalizeExplicitFamilyId(
     row.runnerFamilyId ||
-    row.familyId ||
-    row.frozenFamilyId ||
-    row.filterFamily
+      row.familyId ||
+      row.macroFamilyId ||
+      row.frozenFamilyId ||
+      row.filterFamily ||
+      getMicroFamilyKeyFromRow(row).split("::")[0]
   );
 
   if (explicit) return explicit;
@@ -956,6 +1174,7 @@ function buildFamily(side, qualityIndex, marketIndex, timingIndex) {
   return {
     id,
     familyId: id,
+    macroFamilyId: id,
     index,
     side,
 
@@ -1008,6 +1227,9 @@ function buildFamily(side, qualityIndex, marketIndex, timingIndex) {
     avgMfeR: 0,
     avgMaeR: 0,
 
+    microFamilyKeys: {},
+    microFamilyCount: 0,
+
     status: "EMPTY",
     score: 0,
 
@@ -1043,6 +1265,8 @@ function buildFamilySet() {
   };
 }
 
+// ================= REPORT STATS =================
+
 function compactExample(row) {
   return {
     source: row.source,
@@ -1051,14 +1275,23 @@ function compactExample(row) {
     symbol: row.symbol,
     side: row.side,
     action: row.action,
+
+    familyId: row.familyId || null,
+    microFamilyId: row.microFamilyId || null,
+    microFamilyKey: row.microFamilyKey || null,
+    microLabels: safeArray(row.microLabels).slice(0, 12),
+
     closed: row.closed,
     open: row.open,
     resultR: row.resultR,
     pnlPct: row.pnlPct,
     plannedRR: row.plannedRR,
+
     setupClass: row.setupClass || null,
+    entryType: row.entryType || row.runnerEntryType || null,
     entryReason: row.entryReason || row.reason || row.entryType || null,
-    exitReason: row.exitReason || null,
+    exitReason: row.exitReason || row.reason || null,
+
     rsiZone: row.rsiZone || null,
     obBias: row.obBias || null,
     flow: row.flow || null,
@@ -1068,79 +1301,99 @@ function compactExample(row) {
   };
 }
 
-function classifyFamilyStatus(family, config) {
-  if (family.observed <= 0) return "EMPTY";
-  if (family.closed < config.minClosed) return "COLLECTING";
+function addOutcomeStats(target, row, config) {
+  if (row.closed) {
+    target.closed += 1;
+    target.totalR += row.resultR;
+    target.totalPnlPct += row.pnlPct;
+    target.avgMfeR += row.mfeR;
+    target.avgMaeR += row.maeR;
 
-  if (family.totalR <= 0 || family.avgR <= 0 || family.totalPnlPct <= 0) return "BAD";
+    if (row.resultR > config.breakevenREps) {
+      target.wins += 1;
+      target.grossWinR += row.resultR;
+    } else if (row.resultR < -config.breakevenREps) {
+      target.losses += 1;
+      target.grossLossR += Math.abs(row.resultR);
+    } else {
+      target.breakeven += 1;
+    }
+  }
+}
+
+function finalizeStats(target, config) {
+  target.pendingOutcome = Math.max(0, target.pendingOutcome);
+  target.pending = target.pendingOutcome;
+
+  target.totalR = round(target.totalR, 3);
+  target.avgR = target.closed > 0 ? round(target.totalR / target.closed, 3) : 0;
+
+  target.totalPnlPct = round(target.totalPnlPct, 3);
+  target.avgPnlPct = target.closed > 0 ? round(target.totalPnlPct / target.closed, 3) : 0;
+
+  target.grossWinR = round(target.grossWinR, 3);
+  target.grossLossR = round(target.grossLossR, 3);
+
+  target.winrateNum = target.closed > 0 ? target.wins / target.closed : 0;
+  target.winrate = pctText(target.winrateNum);
+
+  target.profitFactor =
+    target.grossLossR > 0
+      ? round(target.grossWinR / target.grossLossR, 3)
+      : target.grossWinR > 0
+        ? round(target.grossWinR, 3)
+        : 0;
+
+  target.profitFactorR = target.profitFactor;
+  target.pf = target.profitFactor;
+
+  target.avgMfeR = target.closed > 0 ? round(target.avgMfeR / target.closed, 3) : 0;
+  target.avgMaeR = target.closed > 0 ? round(target.avgMaeR / target.closed, 3) : 0;
+
+  target.status = classifyStatus(target, config);
+
+  target.score = round(
+    target.totalPnlPct * 5 +
+      target.totalR * 3 +
+      target.avgR * 50 +
+      target.winrateNum * 25 +
+      Math.log10(Math.max(target.closed, 1)) * 8 +
+      target.pf * 6,
+    3
+  );
+
+  return target;
+}
+
+function classifyStatus(row, config) {
+  if (row.observed <= 0) return "EMPTY";
+  if (row.closed < config.minClosed) return "COLLECTING";
+
+  if (row.totalR <= 0 || row.avgR <= 0 || row.totalPnlPct <= 0) return "BAD";
 
   if (
-    family.closed >= Math.max(config.minClosed * 4, 40) &&
-    family.totalPnlPct >= 25 &&
-    family.avgR >= 0.25 &&
-    family.winrateNum >= 0.48 &&
-    family.pf >= 1.8
+    row.closed >= Math.max(config.minClosed * 4, 40) &&
+    row.totalPnlPct >= 25 &&
+    row.avgR >= 0.25 &&
+    row.winrateNum >= 0.48 &&
+    row.pf >= 1.8
   ) {
     return "HOT";
   }
 
   if (
-    family.winrateNum >= config.minWinrate &&
-    family.avgR >= 0.1 &&
-    family.pf >= 1.15
+    row.winrateNum >= config.minWinrate &&
+    row.avgR >= 0.1 &&
+    row.pf >= 1.15
   ) {
     return "GOOD";
   }
 
-  if (family.winrateNum >= 0.25 && family.avgR > 0 && family.totalR > 0) {
+  if (row.winrateNum >= 0.25 && row.avgR > 0 && row.totalR > 0) {
     return "STABLE";
   }
 
   return "BAD";
-}
-
-function finalizeFamily(family, config) {
-  family.pendingOutcome = Math.max(0, family.pendingOutcome);
-  family.pending = family.pendingOutcome;
-
-  family.totalR = round(family.totalR, 3);
-  family.avgR = family.closed > 0 ? round(family.totalR / family.closed, 3) : 0;
-
-  family.totalPnlPct = round(family.totalPnlPct, 3);
-  family.avgPnlPct = family.closed > 0 ? round(family.totalPnlPct / family.closed, 3) : 0;
-
-  family.grossWinR = round(family.grossWinR, 3);
-  family.grossLossR = round(family.grossLossR, 3);
-
-  family.winrateNum = family.closed > 0 ? family.wins / family.closed : 0;
-  family.winrate = pctText(family.winrateNum);
-
-  family.profitFactor =
-    family.grossLossR > 0
-      ? round(family.grossWinR / family.grossLossR, 3)
-      : family.grossWinR > 0
-        ? round(family.grossWinR, 3)
-        : 0;
-
-  family.profitFactorR = family.profitFactor;
-  family.pf = family.profitFactor;
-
-  family.avgMfeR = family.closed > 0 ? round(family.avgMfeR / family.closed, 3) : 0;
-  family.avgMaeR = family.closed > 0 ? round(family.avgMaeR / family.closed, 3) : 0;
-
-  family.status = classifyFamilyStatus(family, config);
-
-  family.score = round(
-    family.totalPnlPct * 5 +
-      family.totalR * 3 +
-      family.avgR * 50 +
-      family.winrateNum * 25 +
-      Math.log10(Math.max(family.closed, 1)) * 8 +
-      family.pf * 6,
-    3
-  );
-
-  return family;
 }
 
 function rankPnlFirst(a, b) {
@@ -1159,7 +1412,7 @@ function rankPnlFirst(a, b) {
   const closed = safeNumber(b.closed, 0) - safeNumber(a.closed, 0);
   if (closed !== 0) return closed;
 
-  return String(a.id).localeCompare(String(b.id));
+  return String(a.id || a.microFamilyKey || "").localeCompare(String(b.id || b.microFamilyKey || ""));
 }
 
 function rankFamilyTable(a, b) {
@@ -1202,14 +1455,219 @@ function summarizeStatuses(rows) {
   return out;
 }
 
+function sourceIsPendingOutcome(row) {
+  if (row?.sourceType === "FEATURE_STORE") return true;
+
+  const status = String(row?.status || "").toUpperCase();
+  if (status === "OPEN") return true;
+
+  return false;
+}
+
+function addRowToFamily(family, row, config) {
+  family.observed += 1;
+
+  if (row.observationOnly) {
+    family.observations += 1;
+  }
+
+  if (row.isTradeLike) {
+    family.trades += 1;
+  }
+
+  if (row.open) {
+    family.open += 1;
+  }
+
+  if (row.shadowCompleted) {
+    family.shadowClosed += 1;
+  }
+
+  if (row.realClosed || row.latestClosed) {
+    family.realClosed += 1;
+  }
+
+  addOutcomeStats(family, row, config);
+
+  const pending =
+    !row.closed &&
+    !row.open &&
+    (
+      row.observationOnly ||
+      sourceIsPendingOutcome(row)
+    );
+
+  if (pending) {
+    family.pendingOutcome += 1;
+  }
+
+  if (row.microFamilyKey) {
+    family.microFamilyKeys[row.microFamilyKey] = safeNumber(family.microFamilyKeys[row.microFamilyKey], 0) + 1;
+  }
+
+  if (family.examples.length < config.maxExamplesPerFamily) {
+    family.examples.push(compactExample(row));
+  }
+}
+
+function finalizeFamily(family, config) {
+  family.microFamilyCount = Object.keys(family.microFamilyKeys || {}).length;
+  family.topMicroFamilyKeys = Object.entries(family.microFamilyKeys || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([microFamilyKey, count]) => ({ microFamilyKey, count }));
+
+  return finalizeStats(family, config);
+}
+
+function createMicroFamily(key, row) {
+  const macroFamilyId = getFamilyId(row);
+  const side = normalizeSide(row.side);
+
+  return {
+    id: key,
+    microFamilyKey: key,
+    microFamilyId: row.microFamilyId || null,
+    familyId: macroFamilyId,
+    macroFamilyId,
+    side,
+
+    definition: safeArray(row.microLabels).length
+      ? safeArray(row.microLabels).join(" | ")
+      : key,
+
+    labels: safeArray(row.microLabels),
+
+    observed: 0,
+    observations: 0,
+    trades: 0,
+    closed: 0,
+    realClosed: 0,
+    shadowClosed: 0,
+    open: 0,
+    pending: 0,
+    pendingOutcome: 0,
+
+    wins: 0,
+    losses: 0,
+    breakeven: 0,
+
+    winrateNum: 0,
+    winrate: "0%",
+
+    totalR: 0,
+    avgR: 0,
+    totalPnlPct: 0,
+    avgPnlPct: 0,
+
+    grossWinR: 0,
+    grossLossR: 0,
+
+    profitFactor: 0,
+    profitFactorR: 0,
+    pf: 0,
+
+    avgMfeR: 0,
+    avgMaeR: 0,
+
+    status: "EMPTY",
+    score: 0,
+
+    examples: [],
+  };
+}
+
+function addRowToMicroFamily(micro, row, config) {
+  micro.observed += 1;
+
+  if (row.observationOnly) micro.observations += 1;
+  if (row.isTradeLike) micro.trades += 1;
+  if (row.open) micro.open += 1;
+  if (row.shadowCompleted) micro.shadowClosed += 1;
+  if (row.realClosed || row.latestClosed) micro.realClosed += 1;
+
+  addOutcomeStats(micro, row, config);
+
+  const pending =
+    !row.closed &&
+    !row.open &&
+    (
+      row.observationOnly ||
+      sourceIsPendingOutcome(row)
+    );
+
+  if (pending) micro.pendingOutcome += 1;
+
+  if (micro.examples.length < config.maxExamplesPerMicroFamily) {
+    micro.examples.push(compactExample(row));
+  }
+}
+
+function buildMicroFamilyReport(rows, config) {
+  const groups = new Map();
+
+  for (const row of safeArray(rows)) {
+    const key = getMicroFamilyKeyFromRow(row);
+    if (!key) continue;
+
+    if (!groups.has(key)) {
+      groups.set(key, createMicroFamily(key, row));
+    }
+
+    addRowToMicroFamily(groups.get(key), row, config);
+  }
+
+  const all = Array.from(groups.values())
+    .map(row => finalizeStats(row, config))
+    .sort(rankFamilyTable);
+
+  const long = all.filter(row => row.side === "LONG");
+  const short = all.filter(row => row.side === "SHORT");
+
+  const topPnl = all
+    .filter(row => row.closed > 0)
+    .sort(rankPnlFirst)
+    .slice(0, 30);
+
+  const best = all
+    .filter(row => row.closed >= config.minClosed)
+    .filter(row => row.avgR > 0)
+    .filter(row => row.totalR > 0)
+    .filter(row => row.totalPnlPct > 0)
+    .filter(row => row.winrateNum >= config.minWinrate)
+    .sort(rankPnlFirst)
+    .slice(0, 20);
+
+  return {
+    all,
+    long,
+    short,
+    ranked: all,
+    best,
+    topPnl,
+    summary: {
+      total: all.length,
+      withClosed: all.filter(row => row.closed > 0).length,
+      long: summarizeStatuses(long),
+      short: summarizeStatuses(short),
+    },
+  };
+}
+
+// ================= REPORT BUILDING =================
+
 function buildFilterValues() {
   return {
     trackedFields: [
       "side",
+      "familyId",
+      "microFamilyKey",
+      "microFamilyId",
       "quality",
       "market",
       "timing",
       "setupClass",
+      "entryType",
       "entryReason",
       "confluence",
       "sniperScore",
@@ -1236,73 +1694,6 @@ function buildFilterValues() {
   };
 }
 
-function addRowToFamily(family, row, config) {
-  family.observed += 1;
-
-  if (row.observationOnly) {
-    family.observations += 1;
-  }
-
-  if (row.isTradeLike) {
-    family.trades += 1;
-  }
-
-  if (row.open) {
-    family.open += 1;
-  }
-
-  if (row.shadowCompleted) {
-    family.shadowClosed += 1;
-  }
-
-  if (row.realClosed || row.latestClosed) {
-    family.realClosed += 1;
-  }
-
-  if (row.closed) {
-    family.closed += 1;
-    family.totalR += row.resultR;
-    family.totalPnlPct += row.pnlPct;
-    family.avgMfeR += row.mfeR;
-    family.avgMaeR += row.maeR;
-
-    if (row.resultR > config.breakevenREps) {
-      family.wins += 1;
-      family.grossWinR += row.resultR;
-    } else if (row.resultR < -config.breakevenREps) {
-      family.losses += 1;
-      family.grossLossR += Math.abs(row.resultR);
-    } else {
-      family.breakeven += 1;
-    }
-  }
-
-  const pending =
-    !row.closed &&
-    !row.open &&
-    (
-      row.observationOnly ||
-      sourceIsPendingOutcome(row)
-    );
-
-  if (pending) {
-    family.pendingOutcome += 1;
-  }
-
-  if (family.examples.length < config.maxExamplesPerFamily) {
-    family.examples.push(compactExample(row));
-  }
-}
-
-function sourceIsPendingOutcome(row) {
-  if (row?.sourceType === "FEATURE_STORE") return true;
-
-  const status = String(row?.status || "").toUpperCase();
-  if (status === "OPEN") return true;
-
-  return false;
-}
-
 function buildReport(rows, config) {
   const familySet = buildFamilySet();
 
@@ -1314,6 +1705,7 @@ function buildReport(rows, config) {
       return {
         ...row,
         familyId,
+        macroFamilyId: familyId,
       };
     })
     .filter(Boolean);
@@ -1388,6 +1780,8 @@ function buildReport(rows, config) {
     .filter(row => ["HOT", "GOOD", "STABLE"].includes(row.status))
     .slice(0, 8);
 
+  const microFamilies = buildMicroFamilyReport(normalized, config);
+
   const summary = {
     actions: normalized.length,
     observations,
@@ -1418,6 +1812,8 @@ function buildReport(rows, config) {
     shortFamilies: shortSummary,
 
     familiesWithData: all.filter(row => row.observed > 0).length,
+    microFamiliesWithData: microFamilies.all.length,
+    microFamiliesWithClosed: microFamilies.summary.withClosed,
   };
 
   return {
@@ -1432,6 +1828,7 @@ function buildReport(rows, config) {
         acc[row.sourceType] = safeNumber(acc[row.sourceType], 0) + 1;
         return acc;
       }, {}),
+      rowsWithMicroFamilyKey: normalized.filter(row => row.microFamilyKey).length,
     },
 
     config,
@@ -1454,6 +1851,8 @@ function buildReport(rows, config) {
       topWinrate: topWinrateFamilies,
     },
 
+    microFamilies,
+
     filterValues: buildFilterValues(),
 
     familyPerformanceMatrix: {
@@ -1465,6 +1864,7 @@ function buildReport(rows, config) {
         total: short.length,
         summary: shortSummary,
       },
+      micro: microFamilies.summary,
     },
 
     best: {
@@ -1473,6 +1873,7 @@ function buildReport(rows, config) {
       topPnlFamily: topPnlFamilies[0] || null,
       topTotalRFamily: topTotalRFamilies[0] || null,
       topWinrateFamily: topWinrateFamilies[0] || null,
+      topMicroFamilyByPnl: microFamilies.topPnl[0] || null,
     },
 
     winnerCandidates,
@@ -1492,6 +1893,8 @@ function buildReport(rows, config) {
       topPnlFamilies,
       topTotalRFamilies,
       topWinrateFamilies,
+      topMicroFamiliesByPnl: microFamilies.topPnl,
+      bestMicroFamilies: microFamilies.best,
     },
   };
 }
@@ -1511,6 +1914,8 @@ function normalizeSourceRows(runtime, latest, config) {
   return uniqueRows(rows.filter(Boolean));
 }
 
+// ================= HANDLER =================
+
 export default async function handler(req, res) {
   const startedAt = Date.now();
 
@@ -1520,7 +1925,6 @@ export default async function handler(req, res) {
 
     const includeLatest = normalizeBoolean(getQueryParam(req, "includeLatest", "true"), true);
     const includeShadow = normalizeBoolean(getQueryParam(req, "includeShadow", "false"), false);
-
     const resetRequested = normalizeBoolean(getQueryParam(req, "reset", ""), false);
 
     const config = {
@@ -1536,6 +1940,7 @@ export default async function handler(req, res) {
       ),
       includeShadow,
       maxExamplesPerFamily: MAX_EXAMPLES_PER_FAMILY,
+      maxExamplesPerMicroFamily: MAX_EXAMPLES_PER_MICRO_FAMILY,
       familyCountPerSide: 50,
       totalFamilyCount: 100,
     };
@@ -1578,12 +1983,12 @@ export default async function handler(req, res) {
         requested: resetRequested,
         ignored: resetRequested,
         reason: resetRequested
-          ? "analyze leest tradeSystem durable runtime; reset wist geen trading-runtime"
+          ? "analyze leest runnerTradeSystem durable runtime; reset wist geen trading-runtime"
           : null,
       },
 
       sources: {
-        mode: "TRADE_SYSTEM_DURABLE_RUNTIME_PLUS_LATEST",
+        mode: "RUNNER_TRADE_SYSTEM_DURABLE_RUNTIME_PLUS_LATEST",
         storedEvents: durableCount,
         latestEvents: safeArray(latest.rows).length,
         mergedEvents: rows.length,
@@ -1592,11 +1997,14 @@ export default async function handler(req, res) {
           ok: runtime.ok,
           mode: runtime.mode,
           redisEnabled: runtime.redisEnabled,
-          strategyVersion: STRATEGY_VERSION,
+          strategyVersion: runtime.strategyVersion || STRATEGY_VERSION,
           error: runtime.error || null,
           warning: runtime.warning || null,
           loadedAt: runtime.loadedAt,
           keys: runtime.keys || {
+            runnerStore: RUNNER_RUNTIME_STORE_KEY,
+            runnerMeta: RUNNER_RUNTIME_META_KEY,
+            runnerChunkPrefix: RUNNER_RUNTIME_CHUNK_PREFIX,
             core: RUNTIME_CORE_KEY,
             recent: RUNTIME_RECENT_KEY,
             closedMeta: RUNTIME_CLOSED_META_KEY,
@@ -1610,6 +2018,7 @@ export default async function handler(req, res) {
             featureStore: safeArray(runtime.featureStore).length,
             shadowOutcomes: safeArray(runtime.shadowOutcomes).length,
           },
+          meta: runtime.meta || null,
         },
 
         latest: {
@@ -1623,11 +2032,11 @@ export default async function handler(req, res) {
       report,
 
       source: {
-        mode: runtime.mode || "TRADE_SYSTEM_DURABLE_RUNTIME",
-        storeSource: "trade_system_durable_runtime",
+        mode: runtime.mode || "RUNNER_TRADE_SYSTEM_DURABLE_RUNTIME",
+        storeSource: "runner_trade_system_durable_runtime",
         redisEnabled: runtime.redisEnabled,
-        strategyVersion: STRATEGY_VERSION,
-        path: hasRedis() ? `redis:${RUNTIME_CORE_KEY}` : "redis:disabled",
+        strategyVersion: runtime.strategyVersion || STRATEGY_VERSION,
+        path: hasRedis() ? `redis:${RUNNER_RUNTIME_META_KEY}` : "redis:disabled",
         loadedAt: runtime.loadedAt,
         keys: runtime.keys || null,
       },
@@ -1653,8 +2062,8 @@ export default async function handler(req, res) {
       merged: {
         count: rows.length,
         source: includeLatest
-          ? "trade_system_durable_runtime_plus_latest"
-          : "trade_system_durable_runtime_only",
+          ? "runner_trade_system_durable_runtime_plus_latest"
+          : "runner_trade_system_durable_runtime_only",
       },
 
       stats: report.summary,
@@ -1669,6 +2078,7 @@ export default async function handler(req, res) {
 
       leaderboards: report.leaderboards,
       families: report.families,
+      microFamilies: report.microFamilies,
 
       diagnostics: report.diagnostics,
     });
