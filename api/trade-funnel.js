@@ -31,6 +31,15 @@ const RUNNER_FLOWS = new Set([
   "BUILDING",
 ]);
 
+const IMPORTANT_ACTIONS = new Set([
+  "ENTRY",
+  "EXIT",
+  "PARTIAL_TP",
+  "MOVE_BE",
+  "TRAIL",
+  "ADD",
+]);
+
 // ================= ROUTE TRACE CONFIG =================
 
 function envFlag(name, fallback = false) {
@@ -46,18 +55,15 @@ function envFlag(name, fallback = false) {
   return fallback;
 }
 
-// Default: route logs AAN. Uitzetten met TRADE_FUNNEL_ROUTE_LOG=false.
 const TRADE_FUNNEL_ROUTE_LOG = envFlag("TRADE_FUNNEL_ROUTE_LOG", true);
 const TRADE_FUNNEL_ROUTE_DEBUG =
   envFlag("TRADE_FUNNEL_ROUTE_DEBUG", false) ||
   envFlag("RUNNER_DEBUG", false);
 
-// Default: /api/trade-funnel runt de runner.
-// Read-only: /api/trade-funnel?action=snapshot of /api/trade-funnel?run=false
 const RUNNER_AUTO_RUN = envFlag("RUNNER_AUTO_RUN", true);
 
 function compactRouteLogValue(value, depth = 0) {
-  if (depth > 3) return "[depth_limit]";
+  if (depth > 8) return "[depth_limit]";
   if (value === undefined) return undefined;
   if (value === null) return null;
 
@@ -159,6 +165,11 @@ function safeNumber(value, fallback = 0) {
 function nullableNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function precisionKey(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toPrecision(12) : "";
 }
 
 function getRequestUrl(req) {
@@ -340,24 +351,76 @@ function shouldRunRequest(req) {
   return normalizeBoolean(runValue, RUNNER_AUTO_RUN);
 }
 
+function getActionName(row) {
+  return normalizeText(row?.action || row?.analyzeLifecycle || row?.status);
+}
+
+function trimActionRows(rows, limit = MAX_STORED_ACTIONS) {
+  const arr = safeArray(rows);
+  if (arr.length <= limit) return arr;
+
+  const important = [];
+  const passive = [];
+
+  for (const row of arr) {
+    if (IMPORTANT_ACTIONS.has(getActionName(row))) {
+      important.push(row);
+      continue;
+    }
+
+    passive.push(row);
+  }
+
+  if (important.length >= limit) {
+    return important.slice(-limit);
+  }
+
+  return [
+    ...important,
+    ...passive.slice(-(limit - important.length)),
+  ];
+}
+
 function compactActionForLog(row) {
   return {
     symbol: normalizeSymbol(row?.symbol),
     side: normalizeSide(row?.side),
     action: normalizeText(row?.action),
-    reason: row?.reason || null,
+    reason: row?.reason || row?.exitReason || null,
+
+    familyId: row?.familyId || null,
+    runnerFamilyId: row?.runnerFamilyId || null,
+    analyzeFamilyId: row?.analyzeFamilyId || null,
+    discordFamilyId: row?.discordFamilyId || null,
+
     setupClass: row?.setupClass || null,
     entryType: row?.entryType || row?.runnerEntryType || null,
     grade: row?.grade || null,
+
     rr: row?.rr ?? row?.plannedRR ?? null,
     entry: row?.entry ?? null,
     sl: row?.sl ?? null,
     tp: row?.tp ?? null,
-    exitR: row?.exitR ?? null,
+    exit: row?.exit ?? row?.exitPrice ?? row?.executionPrice ?? null,
+    exitR: row?.exitR ?? row?.realizedR ?? row?.pnlR ?? null,
     pnlPct: row?.pnlPct ?? null,
+
+    confluence: row?.confluence ?? null,
+    sniperScore: row?.sniperScore ?? null,
+    score: row?.score ?? row?.moveScore ?? null,
+
+    flow: row?.flow || null,
+    scannerFlow: row?.scannerFlow || null,
+    rsiZone: row?.rsiZone || null,
+    obBias: row?.obBias || null,
+    spreadPct: row?.spreadPct ?? null,
+    spreadBps: row?.spreadBps ?? null,
+    depthMinUsd1p: row?.depthMinUsd1p ?? null,
+
     discordAllowed: row?.discordAllowed ?? null,
     discordNotified: row?.discordNotified ?? null,
     discordBlockReason: row?.discordBlockReason ?? null,
+    discordNotifyFailed: row?.discordNotifyFailed ?? null,
   };
 }
 
@@ -385,12 +448,17 @@ function summarizeActions(actions) {
     if (row?.discordNotifyFailed === true) discord.failed++;
   }
 
+  const top = rows
+    .filter(row => IMPORTANT_ACTIONS.has(getActionName(row)))
+    .slice(0, 30)
+    .map(compactActionForLog);
+
   return {
     total: rows.length,
     counts: normalizeCounterMap(counts),
     reasons: normalizeCounterMap(reasons),
     discord,
-    top: rows.slice(0, 12).map(compactActionForLog),
+    top,
   };
 }
 
@@ -767,6 +835,12 @@ function compactTradeRow(row) {
     runnerEntryType: row.runnerEntryType || row.entryType,
     grade: row.grade,
 
+    familyId: row.familyId,
+    runnerFamilyId: row.runnerFamilyId,
+    analyzeFamilyId: row.analyzeFamilyId,
+    analysisFamilyId: row.analysisFamilyId,
+    discordFamilyId: row.discordFamilyId,
+
     entry: row.entry,
     entryPrice: row.entryPrice,
     openPrice: row.openPrice,
@@ -835,6 +909,7 @@ function compactTradeRow(row) {
     discordBlockReason: row.discordBlockReason,
     discordNotifyFailed: row.discordNotifyFailed,
     discordNotifyError: row.discordNotifyError,
+    discordDecision: row.discordDecision,
 
     closed: row.closed,
     closedAt: row.closedAt,
@@ -882,6 +957,7 @@ function compactOpenPosition(pos) {
     discordEntryNotified: pos.discordEntryNotified,
     discordEntryBlocked: pos.discordEntryBlocked,
     discordBlockReason: pos.discordBlockReason,
+    discordDecision: pos.discordDecision,
 
     createdAt: pos.createdAt,
     updatedAt: pos.updatedAt,
@@ -896,10 +972,13 @@ function compactTradeSystemResult(result) {
       actions: [],
       candidatesCount: 0,
       reason: "no_runner_candidates",
+      actionSummary: summarizeActions([]),
     };
   }
 
   const stats = safeObject(result.runnerStats);
+  const rawActions = safeArray(result.actions);
+  const storedActions = trimActionRows(rawActions, MAX_STORED_ACTIONS).map(compactTradeRow);
 
   return {
     profile: result.profile || SYSTEM_PROFILE,
@@ -912,12 +991,12 @@ function compactTradeSystemResult(result) {
     liveEligibleCandidates: safeNumber(result.liveEligibleCandidates, 0),
     shadowOnlyCandidates: safeNumber(result.shadowOnlyCandidates, 0),
 
-    actions: safeArray(result.actions).slice(-MAX_STORED_ACTIONS).map(compactTradeRow),
+    actions: storedActions,
     openPositions: safeArray(result.openPositions)
       .slice(-MAX_STORED_OPEN_POSITIONS)
       .map(compactOpenPosition),
 
-    actionSummary: summarizeActions(result.actions),
+    actionSummary: result.actionSummary || summarizeActions(rawActions),
 
     runnerStats: {
       profile: stats.profile || SYSTEM_PROFILE,
@@ -1221,21 +1300,33 @@ function buildRunnerAnalyzeEvent(row, latest, now) {
   };
 }
 
-function collectAnalyzeInputRows(latest, rawResult) {
-  const rows = [];
-
-  rows.push(...safeArray(latest?.trades));
-  rows.push(...safeArray(latest?.tradeSystemResult?.actions));
-  rows.push(...safeArray(latest?.tradeSystemResult?.runnerStats?.closedTrades));
-
-  rows.push(...safeArray(rawResult?.actions));
-  rows.push(...safeArray(rawResult?.runnerStats?.closedTrades));
-
+function collectAnalyzeInputRows(_latest, rawResult) {
+  const rows = safeArray(rawResult?.actions);
   const map = new Map();
 
   for (const row of rows) {
-    if (!row) continue;
-    map.set(buildDedupeKey(row), row);
+    if (!row || typeof row !== "object") continue;
+
+    const action = getRowAction(row);
+    if (action !== "ENTRY" && action !== "EXIT") continue;
+
+    const tradeId = buildStableAnalyzeTradeId(row);
+
+    const key = [
+      action,
+      normalizeSymbol(row?.symbol),
+      normalizeAnalyzeSide(row?.side),
+      tradeId,
+      precisionKey(row?.entry ?? row?.entryPrice ?? row?.openPrice),
+      precisionKey(row?.exit ?? row?.exitPrice ?? row?.executionPrice),
+      precisionKey(row?.exitR ?? row?.realizedR ?? row?.pnlR),
+      normalizeText(row?.reason || row?.exitReason),
+      safeNumber(row?.ts || row?.createdAt || row?.exitedAt || 0, 0),
+    ].join("|");
+
+    if (!key.trim()) continue;
+
+    map.set(key, row);
   }
 
   return Array.from(map.values());
@@ -1357,13 +1448,14 @@ function buildTradeFunnelPayload({
   trace = null,
 }) {
   const funnel = compactFunnel(latest?.funnel || emptyFunnel());
-  const compactResult = compactTradeSystemResult(result || latest?.tradeSystemResult);
+  const sourceResult = result || latest?.tradeSystemResult;
+  const compactResult = compactTradeSystemResult(sourceResult);
 
-  const trades = safeArray(
-    result?.actions?.length ? result.actions : latest?.trades
-  )
-    .slice(-MAX_STORED_ACTIONS)
-    .map(compactTradeRow);
+  const sourceActions = safeArray(
+    sourceResult?.actions?.length ? sourceResult.actions : latest?.trades
+  );
+
+  const trades = trimActionRows(sourceActions, MAX_STORED_ACTIONS).map(compactTradeRow);
 
   return {
     ok: true,
@@ -1567,6 +1659,11 @@ export async function runTradeFunnel(options = {}) {
 
       runnerDurationMs = Date.now() - runnerStartedAt;
 
+      rawResult = {
+        ...safeObject(rawResult),
+        actionSummary: summarizeActions(rawResult?.actions),
+      };
+
       routeLog("RUNNER_CALL_DONE", {
         requestId,
         durationMs: runnerDurationMs,
@@ -1575,7 +1672,7 @@ export async function runTradeFunnel(options = {}) {
         candidatesCount: safeNumber(rawResult?.candidatesCount, 0),
         liveEligibleCandidates: safeNumber(rawResult?.liveEligibleCandidates, 0),
         openPositions: safeArray(rawResult?.openPositions).length,
-        actionSummary: summarizeActions(rawResult?.actions),
+        actionSummary: rawResult.actionSummary,
         runnerWaitReasons: normalizeCounterMap(rawResult?.runnerStats?.waitReasons),
         runnerActionCounts: normalizeCounterMap(rawResult?.runnerStats?.actionCounts),
       });
@@ -1647,7 +1744,7 @@ export async function runTradeFunnel(options = {}) {
       runnerDurationMs,
       totalDurationMs: Date.now() - startedAt,
       runnerRunId: rawResult?.runId || null,
-      actionSummary: summarizeActions(rawResult?.actions),
+      actionSummary: rawResult?.actionSummary || summarizeActions(rawResult?.actions),
       openPositions: safeArray(rawResult?.openPositions).length,
       analyzePersist,
     },
@@ -1681,7 +1778,7 @@ export async function runTradeFunnel(options = {}) {
     durationMs: Date.now() - startedAt,
     rawCount: selection.rawCount,
     acceptedCount: selection.candidates.length,
-    actionSummary: summarizeActions(rawResult?.actions),
+    actionSummary: rawResult?.actionSummary || summarizeActions(rawResult?.actions),
     analyzePersist,
   });
 
@@ -1745,7 +1842,10 @@ export default async function handler(req, res) {
       durationMs: Date.now() - startedAt,
       inputCount: safeNumber(data?.tradeFunnelInputCount, 0),
       rawCount: safeNumber(data?.tradeFunnelRawCount, 0),
-      actionSummary: data?.tradeSystemResult?.actionSummary || null,
+      actionSummary:
+        data?.tradeFunnelTrace?.actionSummary ||
+        data?.tradeSystemResult?.actionSummary ||
+        null,
     });
 
     return res.status(200).json(data);
