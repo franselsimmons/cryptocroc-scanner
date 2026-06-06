@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>SHORT Micro-Family Trading Admin</title>
+  <title>LONG Micro-Family Trading Admin</title>
 
   <style>
     :root {
@@ -30,8 +30,8 @@
     body {
       margin: 0;
       background:
-        radial-gradient(circle at top left, rgba(220, 38, 38, 0.12), transparent 26%),
-        radial-gradient(circle at top right, rgba(15, 23, 42, 0.10), transparent 30%),
+        radial-gradient(circle at top left, rgba(22, 163, 74, 0.13), transparent 26%),
+        radial-gradient(circle at top right, rgba(37, 99, 235, 0.10), transparent 30%),
         var(--bg);
       color: var(--text);
     }
@@ -62,9 +62,9 @@
     }
 
     button.primary { background: var(--dark); color: white; border-color: var(--dark); }
-    button.short-action,
-    button.danger { background: var(--red); color: white; border-color: var(--red); }
+    button.long-action,
     button.success { background: var(--green); color: white; border-color: var(--green); }
+    button.danger { background: var(--red); color: white; border-color: var(--red); }
     button.warn { background: var(--amber); color: white; border-color: var(--amber); }
     button.small { padding: 6px 9px; font-size: 12px; border-radius: 9px; }
 
@@ -81,7 +81,7 @@
     input[type="search"] { min-width: 320px; }
 
     header {
-      background: linear-gradient(135deg, #450a0a 0%, #7f1d1d 45%, #0f172a 100%);
+      background: linear-gradient(135deg, #052e16 0%, #065f46 45%, #0f172a 100%);
       color: white;
       padding: 24px;
     }
@@ -107,9 +107,9 @@
       border-radius: 16px;
       display: grid;
       place-items: center;
-      background: linear-gradient(135deg, #dc2626, #fb7185);
+      background: linear-gradient(135deg, #16a34a, #22c55e);
       font-weight: 900;
-      box-shadow: 0 12px 32px rgba(220, 38, 38, 0.35);
+      box-shadow: 0 12px 32px rgba(22, 163, 74, 0.35);
     }
 
     .brand-title strong {
@@ -120,7 +120,7 @@
     }
 
     .brand-subtitle {
-      color: #fecaca;
+      color: #bbf7d0;
       margin-top: 6px;
       font-size: 14px;
       line-height: 1.45;
@@ -142,7 +142,7 @@
       border-radius: 999px;
       background: rgba(255, 255, 255, 0.08);
       border: 1px solid rgba(255, 255, 255, 0.12);
-      color: #fee2e2;
+      color: #dcfce7;
       font-size: 13px;
     }
 
@@ -150,8 +150,8 @@
       width: 8px;
       height: 8px;
       border-radius: 999px;
-      background: #fb7185;
-      box-shadow: 0 0 0 4px rgba(251, 113, 133, 0.16);
+      background: #22c55e;
+      box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.16);
     }
 
     main {
@@ -306,13 +306,13 @@
       white-space: nowrap;
     }
 
-    .pill.short,
-    .pill.bear,
-    .pill.danger { background: #fee2e2; color: #991b1b; }
-
     .pill.long,
     .pill.bull,
     .pill.active { background: #dcfce7; color: #166534; }
+
+    .pill.short,
+    .pill.bear,
+    .pill.danger { background: #fee2e2; color: #991b1b; }
 
     .pill.warn { background: #fef3c7; color: #92400e; }
     .pill.info { background: #dbeafe; color: #1d4ed8; }
@@ -337,11 +337,11 @@
       background: #94a3b8;
     }
 
-    .coin-card.short::before,
-    .coin-card.bear::before { background: linear-gradient(90deg, #dc2626, #fb7185); }
-
     .coin-card.long::before,
     .coin-card.bull::before { background: linear-gradient(90deg, #16a34a, #22c55e); }
+
+    .coin-card.short::before,
+    .coin-card.bear::before { background: linear-gradient(90deg, #dc2626, #fb7185); }
 
     .coin-head {
       display: flex;
@@ -433,7 +433,7 @@
       display: block;
       height: 100%;
       width: var(--w);
-      background: linear-gradient(90deg, #dc2626, #fb7185);
+      background: linear-gradient(90deg, #16a34a, #22c55e);
       border-radius: inherit;
     }
 
@@ -532,8 +532,8 @@
       <div class="brand-title">
         <div class="brand-logo">MF</div>
         <div>
-          <strong>SHORT Micro-Family Trading Admin</strong>
-          <div class="brand-subtitle">Scanner → TradeSystem → Analyze → SHORT Micro Rotation → Discord</div>
+          <strong>LONG Micro-Family Trading Admin</strong>
+          <div class="brand-subtitle">Scanner → TradeSystem → Analyze → LONG Micro Rotation → Discord</div>
         </div>
       </div>
 
@@ -567,9 +567,9 @@
   </main>
 
   <script>
-    const TARGET_TRADE_SIDE = "SHORT";
-    const TARGET_DASHBOARD_SIDE = "bear";
-    const OPPOSITE_TRADE_SIDE = "LONG";
+    const TARGET_TRADE_SIDE = "LONG";
+    const TARGET_DASHBOARD_SIDE = "bull";
+    const OPPOSITE_TRADE_SIDE = "SHORT";
 
     const state = {
       activeTab: "overview",
@@ -581,7 +581,7 @@
       discord: null,
       microMode: "balanced",
       microSearch: "",
-      apiTimeoutMs: 22000
+      apiTimeoutMs: 24000
     };
 
     const endpoints = {
@@ -641,10 +641,60 @@
       return raw || "UNKNOWN";
     }
 
+    function inferTradeSideFromText(value) {
+      const text = upper(value);
+
+      if (!text) return "UNKNOWN";
+
+      const longHit = (
+        text.includes("MICRO_LONG_") ||
+        text.includes("TRADESIDE=LONG") ||
+        text.includes("TRADE_SIDE=LONG") ||
+        text.includes("SIDE=LONG") ||
+        text.includes("SIDE=BULL") ||
+        text.includes("DIRECTION=LONG") ||
+        text.includes("DIRECTION=BULL") ||
+        text.includes("SIDE=BUY") ||
+        text.includes("DIRECTION=BUY") ||
+        text.includes("LONG_") ||
+        text.includes("_LONG") ||
+        text.includes("BULL_") ||
+        text.includes("_BULL") ||
+        text.includes("BUY_") ||
+        text.includes("_BUY")
+      );
+
+      const shortHit = (
+        text.includes("MICRO_SHORT_") ||
+        text.includes("TRADESIDE=SHORT") ||
+        text.includes("TRADE_SIDE=SHORT") ||
+        text.includes("SIDE=SHORT") ||
+        text.includes("SIDE=BEAR") ||
+        text.includes("DIRECTION=SHORT") ||
+        text.includes("DIRECTION=BEAR") ||
+        text.includes("SIDE=SELL") ||
+        text.includes("DIRECTION=SELL") ||
+        text.includes("SHORT_") ||
+        text.includes("_SHORT") ||
+        text.includes("BEAR_") ||
+        text.includes("_BEAR") ||
+        text.includes("SELL_") ||
+        text.includes("_SELL")
+      );
+
+      if (longHit && !shortHit) return "LONG";
+      if (shortHit && !longHit) return "SHORT";
+
+      if (longHit) return "LONG";
+      if (shortHit) return "SHORT";
+
+      return "UNKNOWN";
+    }
+
     function inferTradeSide(row = {}) {
-      if (typeof row === "string") {
-        return inferTradeSideFromText(row);
-      }
+      if (typeof row === "string") return inferTradeSideFromText(row);
+
+      if (!row || typeof row !== "object") return "UNKNOWN";
 
       const direct = normalizeSide(
         row.tradeSide ||
@@ -696,55 +746,6 @@
       return inferTradeSideFromText(haystack);
     }
 
-    function inferTradeSideFromText(value) {
-      const text = upper(value);
-
-      if (!text) return "UNKNOWN";
-
-      const longHit = (
-        text.includes("MICRO_LONG_") ||
-        text.includes("TRADESIDE=LONG") ||
-        text.includes("TRADE_SIDE=LONG") ||
-        text.includes("SIDE=LONG") ||
-        text.includes("SIDE=BULL") ||
-        text.includes("DIRECTION=LONG") ||
-        text.includes("DIRECTION=BULL") ||
-        text.includes("SIDE=BUY") ||
-        text.includes("DIRECTION=BUY") ||
-        text.includes("LONG_") ||
-        text.includes("_LONG") ||
-        text.includes("BULL_") ||
-        text.includes("_BULL") ||
-        text.includes("BUY_") ||
-        text.includes("_BUY")
-      );
-
-      const shortHit = (
-        text.includes("MICRO_SHORT_") ||
-        text.includes("TRADESIDE=SHORT") ||
-        text.includes("TRADE_SIDE=SHORT") ||
-        text.includes("SIDE=SHORT") ||
-        text.includes("SIDE=BEAR") ||
-        text.includes("DIRECTION=SHORT") ||
-        text.includes("DIRECTION=BEAR") ||
-        text.includes("SIDE=SELL") ||
-        text.includes("DIRECTION=SELL") ||
-        text.includes("SHORT_") ||
-        text.includes("_SHORT") ||
-        text.includes("BEAR_") ||
-        text.includes("_BEAR") ||
-        text.includes("SELL_") ||
-        text.includes("_SELL")
-      );
-
-      if (shortHit && !longHit) return "SHORT";
-      if (longHit && !shortHit) return "LONG";
-      if (shortHit) return "SHORT";
-      if (longHit) return "LONG";
-
-      return "UNKNOWN";
-    }
-
     function isTargetSide(row = {}) {
       return inferTradeSide(row) === TARGET_TRADE_SIDE;
     }
@@ -760,8 +761,8 @@
     function sideClass(row = {}) {
       const side = inferTradeSide(row);
 
-      if (side === "SHORT") return "short";
       if (side === "LONG") return "long";
+      if (side === "SHORT") return "short";
 
       return "neutral";
     }
@@ -907,6 +908,14 @@
       }
     }
 
+    async function safeApi(url, fallback = null, options = {}) {
+      try {
+        return await api(url, options);
+      } catch {
+        return fallback;
+      }
+    }
+
     function showLoading(tabId, label = "Laden...") {
       $(tabId).innerHTML = `
         <div class="card">
@@ -918,33 +927,25 @@
 
     function fmt(value, decimals = 3) {
       const n = Number(value);
-
       if (!Number.isFinite(n)) return "-";
-
       return n.toFixed(decimals);
     }
 
     function fmtInt(value) {
       const n = Number(value);
-
       if (!Number.isFinite(n)) return "0";
-
       return Math.round(n).toLocaleString();
     }
 
     function fmtPctRatio(value) {
       const n = Number(value);
-
       if (!Number.isFinite(n)) return "-";
-
       return `${(n * 100).toFixed(1)}%`;
     }
 
     function fmtPctRaw(value) {
       const n = Number(value);
-
       if (!Number.isFinite(n)) return "-";
-
       return `${n.toFixed(2)}%`;
     }
 
@@ -1011,7 +1012,6 @@
 
     function scoreBar(value, max = 100) {
       const n = Math.max(0, Math.min(100, (Number(value) / max) * 100 || 0));
-
       return `<div class="score-bar"><span style="--w:${n.toFixed(1)}%"></span></div>`;
     }
 
@@ -1061,13 +1061,20 @@
     }
 
     function deepCandidateArrays(value, depth = 0, out = []) {
-      if (!value || depth > 5) return out;
+      if (!value || depth > 7) return out;
 
       if (Array.isArray(value)) {
         const candidateLike = value.some((row) => (
           row &&
           typeof row === "object" &&
-          (row.symbol || row.contractSymbol || row.scannerScore || row.moveScore)
+          (
+            row.symbol ||
+            row.baseSymbol ||
+            row.contractSymbol ||
+            row.scannerScore !== undefined ||
+            row.moveScore !== undefined ||
+            row.scannerReason
+          )
         ));
 
         if (candidateLike) out.push(value);
@@ -1091,6 +1098,7 @@
 
     function unwrapScanPayload(data = {}) {
       if (data?.result?.result?.candidates) return data.result.result;
+      if (data?.result?.result?.result?.candidates) return data.result.result.result;
       if (data?.result?.candidates) return data.result;
       if (data?.snapshot?.candidates) return data.snapshot;
       if (data?.latestSnapshot?.candidates) return data.latestSnapshot;
@@ -1106,9 +1114,18 @@
       if (Array.isArray(payload.candidates)) return payload.candidates;
 
       const arrays = deepCandidateArrays(data);
-      const largest = arrays.sort((a, b) => b.length - a.length)[0];
+      const targetFirst = arrays
+        .map((rows) => ({
+          rows,
+          targetCount: targetRows(rows).length,
+          length: rows.length
+        }))
+        .sort((a, b) => {
+          if (b.targetCount !== a.targetCount) return b.targetCount - a.targetCount;
+          return b.length - a.length;
+        })[0];
 
-      return Array.isArray(largest) ? largest : [];
+      return Array.isArray(targetFirst?.rows) ? targetFirst.rows : [];
     }
 
     function extractMicroRows(data = {}) {
@@ -1116,7 +1133,8 @@
         "best25MicroFamilies",
         "topMicroFamilies",
         "bestMicroFamilies",
-        "shortRows",
+        "longRows",
+        "bullRows",
         "rows",
         "microFamilies",
         "micros",
@@ -1274,46 +1292,67 @@
     async function renderOverview() {
       showLoading("overview");
 
-      const data = await api(endpoints.overview);
-      state.overview = data;
+      const overview = await safeApi(endpoints.overview, {});
+      const scanner = await safeApi(endpoints.scanner, {});
+      const trade = await safeApi(endpoints.trade, {});
 
-      const activeRotation = data.activeRotation || {};
+      state.overview = overview;
+      state.scanner = scanner;
+      state.trade = trade;
+
+      const scanPayload = unwrapScanPayload(scanner || overview?.latestScan || {});
+      const scanRows = targetRows(scannerCandidates(scanner || overview?.latestScan || {}));
+
+      const activeRotation = overview?.activeRotation || trade?.activeRotation || {};
       const activeMicroCount =
         activeRotation.microFamilyIds?.length ||
         activeRotation.activeMicroFamilyIds?.length ||
         activeRotation.trueMicroFamilyIds?.length ||
-        data.activeRotationCount ||
-        data.activeMicroFamilies ||
+        overview?.activeRotationCount ||
+        overview?.activeMicroFamilies ||
+        trade?.runMeta?.activeMicroFamilies ||
         0;
 
       const activeMacroCount =
         activeRotation.macroFamilyIds?.length ||
         activeRotation.activeMacroFamilyIds?.length ||
-        data.activeMacroFamilies ||
+        overview?.activeMacroFamilies ||
+        trade?.runMeta?.activeMacroFamilies ||
         0;
 
       $("overview").innerHTML = `
         <div class="grid">
-          ${metricCard("Current week", data.weekKey || data.currentWeek || "-")}
-          ${metricCard("Previous week", data.previousWeekKey || "-")}
-          ${metricCard("Active SHORT true micro", activeMicroCount)}
-          ${metricCard("Active SHORT macro", activeMacroCount)}
-          ${metricCard("Open positions", fmtInt(data.openPositions))}
-          ${metricCard("Scanner candidates", fmtInt(data.latestScan?.candidatesCount || data.scannerCandidates))}
-          ${metricCard("Current week families", fmtInt(data.currentWeekMicroFamilies))}
-          ${metricCard("Previous week families", fmtInt(data.previousWeekMicroFamilies))}
+          ${metricCard("Current week", overview?.weekKey || overview?.currentWeek || "-")}
+          ${metricCard("Previous week", overview?.previousWeekKey || "-")}
+          ${metricCard("Active LONG true micro", activeMicroCount)}
+          ${metricCard("Active LONG macro", activeMacroCount)}
+          ${metricCard("Open positions", fmtInt(overview?.openPositions || getRows(trade, ["positions", "openPositions"]).length))}
+          ${metricCard("Scanner LONG candidates", fmtInt(scanRows.length || scanPayload?.longCandidatesCount || 0))}
+          ${metricCard("Gate passed", fmtInt(scanPayload?.scannerGateCandidatesCount || scanRows.filter((row) => row.scannerGatePassed).length))}
+          ${metricCard("Analyze only", fmtInt(scanPayload?.analyzeOnlyCandidatesCount || scanRows.filter((row) => row.tradeDiscoveryOnly || !row.scannerGatePassed).length))}
         </div>
 
         <div class="card">
           <h3>System status</h3>
           <div class="toolbar">
-            <span class="pill short">SHORT ONLY</span>
-            <span class="pill danger">LONG DISABLED</span>
+            <span class="pill long">LONG ONLY</span>
+            <span class="pill danger">SHORT DISABLED</span>
             <span class="pill info">Scanner → Analyze → Rotation → TradeSystem</span>
           </div>
           <div class="metric-extra">
-            Scanner moet SHORT candidates tonen. TradeSystem run verwerkt deze candidates en schrijft observations/shadow outcomes naar Analyze.
+            Deze admin filtert uitsluitend op LONG. Als /api/scanner/run LONG candidates geeft, worden ze hier zichtbaar.
           </div>
+        </div>
+
+        <div class="section-title">
+          <div>
+            <h2>Laatste LONG scanner feed</h2>
+            <p>Snelle preview van de candidates die Analyze moeten gaan voeden.</p>
+          </div>
+        </div>
+
+        <div class="coin-grid">
+          ${scanRows.slice(0, 8).length ? scanRows.slice(0, 8).map(coinCard).join("") : '<div class="empty">Nog geen LONG candidates zichtbaar in admin snapshot. Open Scanner tab en klik Run Scanner now.</div>'}
         </div>
 
         <div class="card">
@@ -1323,7 +1362,7 @@
 
         <div class="card">
           <h3>Trade meta</h3>
-          ${jsonBlock(data.tradeMeta || data.runMeta || null)}
+          ${jsonBlock(trade?.runMeta || overview?.tradeMeta || overview?.runMeta || null)}
         </div>
       `;
     }
@@ -1343,7 +1382,7 @@
       const candidates = targetRows(rawCandidates);
       const gateCandidates = candidates.filter((candidate) => candidate.scannerGatePassed);
       const analyzeOnly = candidates.filter((candidate) => candidate.tradeDiscoveryOnly || !candidate.scannerGatePassed);
-      const ignoredLong = rawCandidates.filter(isOppositeSide).length;
+      const ignoredShort = rawCandidates.filter(isOppositeSide).length;
       const topCandidates = candidates.slice(0, 16);
 
       const avgScore = candidates.reduce((sum, candidate) => (
@@ -1361,10 +1400,10 @@
           ${metricCard("Snapshot age", ageText(payload.createdAt), fmtTs(payload.createdAt))}
           ${metricCard("BTC state", payload.btcState || "-")}
           ${metricCard("Regime", payload.regime || "-")}
-          ${metricCard("SHORT candidates", fmtInt(candidates.length))}
+          ${metricCard("LONG candidates", fmtInt(candidates.length))}
           ${metricCard("Gate passed", fmtInt(gateCandidates.length))}
           ${metricCard("Analyze only", fmtInt(analyzeOnly.length))}
-          ${metricCard("LONG ignored", fmtInt(ignoredLong))}
+          ${metricCard("SHORT ignored", fmtInt(ignoredShort))}
           ${metricCard("Avg score", fmt(avgScore, 1))}
           ${metricCard("Raw count", fmtInt(payload.rawCount))}
           ${metricCard("Filtered universe", fmtInt(payload.filteredUniverse))}
@@ -1373,13 +1412,13 @@
 
         <div class="section-title">
           <div>
-            <h2>Scanner SHORT candidates</h2>
-            <p>Coins die de SHORT scannerfilter hebben overleefd. Deze feed bouwt Analyze micro-family data op via TradeSystem.</p>
+            <h2>Scanner LONG candidates</h2>
+            <p>Coins die de LONG scannerfilter hebben overleefd. Deze feed bouwt Analyze micro-family data op via TradeSystem.</p>
           </div>
         </div>
 
         <div class="coin-grid">
-          ${topCandidates.length ? topCandidates.map(coinCard).join("") : '<div class="empty">Geen SHORT scanner candidates zichtbaar. Run scanner of check /api/scanner/run.</div>'}
+          ${topCandidates.length ? topCandidates.map(coinCard).join("") : '<div class="empty">Geen LONG scanner candidates zichtbaar. Klik Run Scanner now of check /api/scanner/run.</div>'}
         </div>
 
         <div class="section-title">
@@ -1398,18 +1437,19 @@
           { label: "1h", render: (row) => fmtPctRaw(row.change1h) },
           { label: "24h", render: (row) => fmtPctRaw(row.change24h) },
           { label: "Vol24h", render: (row) => fmtMoneyLike(row.volume24h) },
+          { label: "Vol source", render: (row) => escapeHtml(row.volumeSource || "-") },
           { label: "Gate", render: (row) => row.scannerGatePassed ? '<span class="pill active">PASS</span>' : '<span class="pill warn">ANALYZE</span>' },
           { label: "FakeBO", render: (row) => row.fakeBreakout ? '<span class="pill danger">YES</span>' : '<span class="pill active">NO</span>' },
           { label: "FakeRisk", render: (row) => row.fakeBreakoutRisk ? '<span class="pill warn">RISK</span>' : '<span class="pill active">OK</span>' },
           { label: "Reason", render: (row) => escapeHtml(row.scannerReason || "") }
-        ])}
+        ], "Geen LONG candidates in deze response.")}
       `;
 
       $("runScannerBtn")?.addEventListener("click", async () => {
         try {
-          const result = await api(endpoints.runScanner, { timeoutMs: 30000 });
+          const result = await api(endpoints.runScanner, { timeoutMs: 32000 });
           state.scanner = result;
-          setMessage("Scanner handmatig gestart. SHORT candidates zijn opnieuw geladen.", "ok");
+          setMessage("Scanner handmatig gestart. LONG candidates zijn opnieuw geladen.", "ok");
           renderScannerData(result);
         } catch (error) {
           setMessage(friendlyApiMessage(error), "warn");
@@ -1437,7 +1477,7 @@
         </div>
 
         <div class="grid">
-          ${metricCard("Open SHORT positions", fmtInt(positions.length))}
+          ${metricCard("Open LONG positions", fmtInt(positions.length))}
           ${metricCard("In sync", data.scannerAndTradeInSync ? "YES" : "NO")}
           ${metricCard("Last processed", data.lastProcessed?.snapshotId || data.lastProcessedSnapshot || data.lastProcessedSnapshotId || "-")}
           ${metricCard("Latest scanner", data.latestScannerSnapshotId || "-")}
@@ -1457,13 +1497,13 @@
 
         <div class="section-title">
           <div>
-            <h2>Open SHORT positions</h2>
+            <h2>Open LONG positions</h2>
             <p>Live positie-overzicht met R, MFE, MAE en gekoppelde true micro-family.</p>
           </div>
         </div>
 
         <div class="coin-grid">
-          ${topPositions.length ? topPositions.map(positionCard).join("") : '<div class="empty">Geen open SHORT posities.</div>'}
+          ${topPositions.length ? topPositions.map(positionCard).join("") : '<div class="empty">Geen open LONG posities.</div>'}
         </div>
 
         ${table(positions, [
@@ -1479,7 +1519,7 @@
           { label: "True Micro", render: (row) => `<code>${escapeHtml(microId(row))}</code>` },
           { label: "Macro", render: (row) => `<code>${escapeHtml(macroId(row))}</code>` },
           { label: "Opened", render: (row) => fmtTs(row.openedAt || row.createdAt) }
-        ])}
+        ], "Geen open LONG posities.")}
 
         <div class="card">
           <h3>Run meta</h3>
@@ -1489,7 +1529,7 @@
 
       $("runTradeBtn")?.addEventListener("click", async () => {
         try {
-          const result = await api(endpoints.runTrade, { timeoutMs: 30000 });
+          const result = await api(endpoints.runTrade, { timeoutMs: 32000 });
           const counts = result.counts || result.actionCounts || result.result?.actionCounts || {};
           setMessage(`TradeSystem run klaar. ENTRY=${counts.ENTRY || counts.entries || 0}, WAIT=${counts.WAIT || counts.waits || 0}. Analyze is gevoed.`, "ok");
           await renderTrade();
@@ -1517,7 +1557,7 @@
       params.set("fast", "1");
 
       const data = await api(`${endpoints.micros}?${params.toString()}`, {
-        timeoutMs: 22000
+        timeoutMs: 24000
       });
 
       state.micros = data;
@@ -1541,12 +1581,12 @@
 
           <input id="microSearch" type="search" placeholder="Zoek micro, macro, family, bucket..." value="${escapeAttr(state.microSearch)}" />
 
-          <button type="button" class="short-action" id="copyMicroIdsBtn">Copy SHORT micro IDs</button>
+          <button type="button" class="long-action" id="copyMicroIdsBtn">Copy LONG micro IDs</button>
           <button type="button" id="downloadMicrosBtn">Export JSON</button>
         </div>
 
         <div class="grid">
-          ${metricCard("SHORT micro rows", fmtInt(rows.length))}
+          ${metricCard("LONG micro rows", fmtInt(rows.length))}
           ${metricCard("Best balanced", best ? fmt(best.dashboardBalancedScore ?? best.balancedScore, 2) : "-")}
           ${metricCard("Best completed", best ? fmt(best.completed ?? best.winrateSample, 2) : "-")}
           ${metricCard("Best totalR", best ? fmt(best.totalR, 2) : "-")}
@@ -1581,7 +1621,7 @@
           { label: "PF", render: (row) => fmt(row.profitFactor, 2) },
           { label: "DirectSL", render: (row) => fmtPctRatio(row.directSLPct) },
           { label: "Balanced", render: (row) => `<strong>${fmt(row.dashboardBalancedScore ?? row.balancedScore, 2)}</strong>` }
-        ], "Nog geen SHORT micro-family data. Run Scanner en daarna TradeSystem.")}
+        ], "Nog geen LONG micro-family data. Run Scanner en daarna TradeSystem.")}
       `;
 
       $("microMode")?.addEventListener("change", (event) => {
@@ -1589,17 +1629,17 @@
         renderMicros();
       });
 
-      $("microSearch")?.addEventListener("input", (event) => {
+      $("microSearch")?.addEventListener("change", (event) => {
         state.microSearch = event.target.value;
         renderMicros();
       });
 
       $("copyMicroIdsBtn")?.addEventListener("click", () => {
         const ids = [...new Set(rows.map(microId).filter(Boolean))];
-        copyText(JSON.stringify(ids, null, 2), `${ids.length} SHORT micro IDs gekopieerd.`);
+        copyText(JSON.stringify(ids, null, 2), `${ids.length} LONG micro IDs gekopieerd.`);
       });
 
-      $("downloadMicrosBtn")?.addEventListener("click", () => downloadJson("short-micro-families.json", data));
+      $("downloadMicrosBtn")?.addEventListener("click", () => downloadJson("long-micro-families.json", data));
     }
 
     async function renderRotation() {
@@ -1611,7 +1651,7 @@
       params.set("compact", "1");
 
       const data = await api(`${endpoints.rotation}?${params.toString()}`, {
-        timeoutMs: 22000
+        timeoutMs: 24000
       });
 
       state.rotation = data;
@@ -1621,8 +1661,8 @@
 
       const activeRowsRaw = getRows(data, ["activeRows", "rows", "activeMicroFamilies"]);
       const activeRows = targetRows(activeRowsRaw.length ? activeRowsRaw : active.microFamilies || []);
-      const activeIds = extractRotationIds(active);
-      const nextIds = extractRotationIds(next);
+      const activeIds = extractRotationIds(active).filter((id) => inferTradeSide(id) === TARGET_TRADE_SIDE);
+      const nextIds = extractRotationIds(next).filter((id) => inferTradeSide(id) === TARGET_TRADE_SIDE);
 
       $("rotation").innerHTML = `
         <div class="toolbar">
@@ -1631,14 +1671,14 @@
         </div>
 
         <div class="grid">
-          ${metricCard("Active SHORT true micro", fmtInt(activeIds.length || activeRows.length))}
+          ${metricCard("Active LONG true micro", fmtInt(activeIds.length || activeRows.length))}
           ${metricCard("Next true micro", fmtInt(nextIds.length))}
           ${metricCard("Rotation ID", active.rotationId || "-")}
           ${metricCard("Mode", active.mode || data.mode || "-")}
           ${metricCard("Source week", active.sourceWeekKey || data.sourceWeekKey || "-")}
           ${metricCard("Eligible", fmtInt(active.eligibleCount || data.eligibleCount))}
-          ${metricCard("SHORT only", "YES")}
-          ${metricCard("LONG disabled", "YES")}
+          ${metricCard("LONG only", "YES")}
+          ${metricCard("SHORT disabled", "YES")}
         </div>
 
         ${table(activeRows.length ? activeRows : activeIds.map((id, index) => ({ rank: index + 1, microFamilyId: id, tradeSide: TARGET_TRADE_SIDE })), [
@@ -1651,7 +1691,7 @@
           { label: "AvgR", render: (row) => fmt(row.avgR, 3) },
           { label: "TotalR", render: (row) => fmt(row.totalR, 3) },
           { label: "Balanced", render: (row) => fmt(row.dashboardBalancedScore ?? row.balancedScore, 2) }
-        ], "Geen actieve SHORT rotation gevonden.")}
+        ], "Geen actieve LONG rotation gevonden.")}
 
         <div class="card">
           <h3>Raw active rotation</h3>
@@ -1663,7 +1703,7 @@
         try {
           const result = await api(endpoints.weeklyFreeze, {
             method: "POST",
-            timeoutMs: 30000,
+            timeoutMs: 32000,
             body: JSON.stringify({
               force: true,
               mode: "balanced",
@@ -1694,7 +1734,7 @@
       state.discord = data;
 
       const logs = getRows(data, ["logs", "items"]);
-      const shortLogs = logs.filter((row) => isTargetSide(row.payload || row));
+      const longLogs = logs.filter((row) => isTargetSide(row.payload || row));
 
       $("discord").innerHTML = `
         <div class="toolbar">
@@ -1703,13 +1743,13 @@
         </div>
 
         <div class="grid">
-          ${metricCard("SHORT logs", fmtInt(shortLogs.length))}
+          ${metricCard("LONG logs", fmtInt(longLogs.length))}
           ${metricCard("Raw logs", fmtInt(logs.length))}
           ${metricCard("Last log", fmtTs(logs[0]?.ts || logs[0]?.createdAt))}
-          ${metricCard("LONG ignored", fmtInt(logs.filter((row) => isOppositeSide(row.payload || row)).length))}
+          ${metricCard("SHORT ignored", fmtInt(logs.filter((row) => isOppositeSide(row.payload || row)).length))}
         </div>
 
-        ${table(shortLogs, [
+        ${table(longLogs, [
           { label: "TS", render: (row) => fmtTs(row.ts || row.createdAt) },
           { label: "Type", render: (row) => escapeHtml(row.type || row.level || "-") },
           { label: "Coin", render: (row) => symbolCell(row.payload || row) },
@@ -1717,7 +1757,7 @@
           { label: "True Micro", render: (row) => `<code>${escapeHtml(microId(row.payload || row))}</code>` },
           { label: "Macro", render: (row) => `<code>${escapeHtml(macroId(row.payload || row))}</code>` },
           { label: "Result", render: (row) => escapeHtml(row.result ? JSON.stringify(row.result) : row.message || row.content || "") }
-        ])}
+        ], "Geen LONG Discord logs.")}
       `;
 
       $("copyDiscordJsonBtn")?.addEventListener("click", () => copyText(JSON.stringify(data, null, 2), "Discord JSON gekopieerd."));
