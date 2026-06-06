@@ -6,8 +6,31 @@ import { getVolatileRedis } from '../../src/redis.js';
 import { withRedisLock } from '../../src/lock.js';
 import { runScanner } from '../../src/market/scanner.js';
 
-const TARGET_TRADE_SIDE = 'LONG';
-const TARGET_DASHBOARD_SIDE = 'bull';
+const TARGET_TRADE_SIDE = 'SHORT';
+const TARGET_DASHBOARD_SIDE = 'bear';
+const SIDE_MODE = 'SHORT_ONLY';
+
+function now() {
+  return Date.now();
+}
+
+function shortOnlyMeta(extra = {}) {
+  return {
+    sideMode: SIDE_MODE,
+
+    targetTradeSide: TARGET_TRADE_SIDE,
+    targetScannerSide: TARGET_DASHBOARD_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+
+    shortOnly: true,
+    longDisabled: true,
+
+    longOnly: false,
+    shortDisabled: false,
+
+    ...extra
+  };
+}
 
 function methodNotAllowed(res) {
   res.setHeader('Allow', 'GET, POST');
@@ -16,11 +39,7 @@ function methodNotAllowed(res) {
     ok: false,
     error: 'METHOD_NOT_ALLOWED',
     allowed: ['GET', 'POST'],
-
-    targetTradeSide: TARGET_TRADE_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-    longOnly: true,
-    shortDisabled: true
+    ...shortOnlyMeta()
   });
 }
 
@@ -29,9 +48,11 @@ function isAllowedMethod(method) {
 }
 
 function getLockTtlSec() {
-  const ttl = Number(CONFIG.scanner?.lockTtlSec || 240);
+  const ttl = Number(CONFIG.scanner?.lockTtlSec || 540);
 
-  return Number.isFinite(ttl) && ttl > 0 ? ttl : 240;
+  return Number.isFinite(ttl) && ttl > 0
+    ? Math.floor(ttl)
+    : 540;
 }
 
 function sourceLabel(req) {
@@ -43,8 +64,8 @@ function sourceLabel(req) {
 function normalizeTradeSide(value) {
   const raw = String(value || '').trim().toUpperCase();
 
-  if (['LONG', 'BULL', 'BULLISH', 'BUY'].includes(raw)) return 'LONG';
   if (['SHORT', 'BEAR', 'BEARISH', 'SELL'].includes(raw)) return 'SHORT';
+  if (['LONG', 'BULL', 'BULLISH', 'BUY'].includes(raw)) return 'LONG';
 
   return 'UNKNOWN';
 }
@@ -55,7 +76,6 @@ function inferTradeSideFromText(value) {
   if (!text) return 'UNKNOWN';
 
   if (
-    text.includes('MICRO_LONG_') ||
     text.includes('TRADESIDE=LONG') ||
     text.includes('TRADE_SIDE=LONG') ||
     text.includes('SIDE=LONG') ||
@@ -64,18 +84,21 @@ function inferTradeSideFromText(value) {
     text.includes('DIRECTION=BULL') ||
     text.includes('SIDE=BUY') ||
     text.includes('DIRECTION=BUY') ||
+    text.includes('MICRO_LONG_') ||
     text.includes('LONG_') ||
-    text.includes('_LONG') ||
+    text.includes('_LONG_') ||
+    text.endsWith('_LONG') ||
     text.includes('BULL_') ||
-    text.includes('_BULL') ||
+    text.includes('_BULL_') ||
+    text.endsWith('_BULL') ||
     text.includes('BUY_') ||
-    text.includes('_BUY')
+    text.includes('_BUY_') ||
+    text.endsWith('_BUY')
   ) {
     return 'LONG';
   }
 
   if (
-    text.includes('MICRO_SHORT_') ||
     text.includes('TRADESIDE=SHORT') ||
     text.includes('TRADE_SIDE=SHORT') ||
     text.includes('SIDE=SHORT') ||
@@ -84,12 +107,16 @@ function inferTradeSideFromText(value) {
     text.includes('DIRECTION=BEAR') ||
     text.includes('SIDE=SELL') ||
     text.includes('DIRECTION=SELL') ||
+    text.includes('MICRO_SHORT_') ||
     text.includes('SHORT_') ||
-    text.includes('_SHORT') ||
+    text.includes('_SHORT_') ||
+    text.endsWith('_SHORT') ||
     text.includes('BEAR_') ||
-    text.includes('_BEAR') ||
+    text.includes('_BEAR_') ||
+    text.endsWith('_BEAR') ||
     text.includes('SELL_') ||
-    text.includes('_SELL')
+    text.includes('_SELL_') ||
+    text.endsWith('_SELL')
   ) {
     return 'SHORT';
   }
@@ -100,14 +127,15 @@ function inferTradeSideFromText(value) {
 function rowSide(row = {}) {
   const direct = normalizeTradeSide(
     row.tradeSide ||
-    row.side ||
     row.positionSide ||
     row.direction ||
     row.scannerSide ||
-    row.analysisSide
+    row.actualScannerSide ||
+    row.analysisSide ||
+    row.side
   );
 
-  if (direct === 'LONG' || direct === 'SHORT') return direct;
+  if (direct === 'SHORT' || direct === 'LONG') return direct;
 
   const haystack = [
     row.familyId,
@@ -142,70 +170,84 @@ function rowSide(row = {}) {
   return inferTradeSideFromText(haystack);
 }
 
-function isLongCandidate(row = {}) {
+function isShortCandidate(row = {}) {
   return rowSide(row) === TARGET_TRADE_SIDE;
 }
 
-function isShortCandidate(row = {}) {
-  return rowSide(row) === 'SHORT';
-}
-
-function normalizeLongCandidate(candidate = {}) {
+function normalizeShortCandidate(candidate = {}) {
   return {
     ...candidate,
 
     side: TARGET_DASHBOARD_SIDE,
     tradeSide: TARGET_TRADE_SIDE,
-    targetTradeSide: TARGET_TRADE_SIDE,
+    positionSide: TARGET_TRADE_SIDE,
+    direction: TARGET_TRADE_SIDE,
 
-    longOnly: true,
-    shortDisabled: true
+    scannerSide: TARGET_TRADE_SIDE,
+    actualScannerSide: TARGET_TRADE_SIDE,
+    analysisSide: TARGET_TRADE_SIDE,
+
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+
+    shortOnly: true,
+    longDisabled: true,
+
+    longOnly: false,
+    shortDisabled: false
   };
 }
 
-function enforceLongOnlyResult(result = {}) {
-  if (!result || typeof result !== 'object') return result;
+function enforceShortOnlySnapshot(snapshot = {}) {
+  if (!snapshot || typeof snapshot !== 'object') return snapshot;
 
-  const rawCandidates = Array.isArray(result.candidates)
-    ? result.candidates
+  const rawCandidates = Array.isArray(snapshot.candidates)
+    ? snapshot.candidates
     : [];
 
   const candidates = rawCandidates
-    .filter(isLongCandidate)
-    .map(normalizeLongCandidate);
+    .filter(isShortCandidate)
+    .map(normalizeShortCandidate);
 
-  const scannerGateCandidates = candidates.filter((candidate) => candidate.scannerGatePassed);
-  const analyzeOnlyCandidates = candidates.filter((candidate) => candidate.tradeDiscoveryOnly);
+  const scannerGateCandidates = candidates.filter((candidate) => (
+    candidate.scannerGatePassed === true
+  ));
 
-  const shortCandidatesIgnored = rawCandidates.filter(isShortCandidate).length;
+  const analyzeOnlyCandidates = candidates.filter((candidate) => (
+    candidate.tradeDiscoveryOnly === true ||
+    candidate.discoveryOnly === true ||
+    candidate.analyzeOnly === true
+  ));
+
+  const longCandidatesIgnored = rawCandidates.filter((candidate) => (
+    rowSide(candidate) === 'LONG'
+  )).length;
+
   const unknownSideCandidatesIgnored = rawCandidates.filter((candidate) => (
     rowSide(candidate) === 'UNKNOWN'
   )).length;
 
   return {
-    ...result,
+    ...snapshot,
 
-    longOnly: true,
-    targetTradeSide: TARGET_TRADE_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-    shortDisabled: true,
+    ...shortOnlyMeta(),
 
     candidates,
     candidatesCount: candidates.length,
 
-    longCandidatesCount: candidates.length,
-    shortCandidatesCount: 0,
+    shortCandidatesCount: candidates.length,
+    longCandidatesCount: 0,
 
     scannerGateCandidatesCount: scannerGateCandidates.length,
     analyzeOnlyCandidatesCount: analyzeOnlyCandidates.length,
 
     rawCandidatesCount: rawCandidates.length,
-    rawShortCandidatesIgnored: shortCandidatesIgnored,
+    rawLongCandidatesIgnored: longCandidatesIgnored,
     rawUnknownSideCandidatesIgnored: unknownSideCandidatesIgnored,
 
     // Backwards-compatible namen voor admin.html.
-    bullCandidates: candidates.length,
-    bearCandidates: 0,
+    bearCandidates: candidates.length,
+    bullCandidates: 0,
 
     topSymbols: candidates
       .slice(0, 20)
@@ -215,16 +257,38 @@ function enforceLongOnlyResult(result = {}) {
     scannerGateSymbols: scannerGateCandidates
       .slice(0, 20)
       .map((candidate) => candidate.symbol)
+      .filter(Boolean),
+
+    analyzeOnlySymbols: analyzeOnlyCandidates
+      .slice(0, 20)
+      .map((candidate) => candidate.symbol)
       .filter(Boolean)
+  };
+}
+
+function enforceShortOnlyLockResult(rawResult = {}) {
+  if (!rawResult || typeof rawResult !== 'object') return rawResult;
+
+  const nestedSnapshot = rawResult.result && typeof rawResult.result === 'object'
+    ? enforceShortOnlySnapshot(rawResult.result)
+    : rawResult.result;
+
+  return {
+    ...rawResult,
+    ...shortOnlyMeta(),
+
+    result: nestedSnapshot
   };
 }
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   res.setHeader('X-Scanner-Target-Side', TARGET_TRADE_SIDE);
-  res.setHeader('X-Short-Disabled', 'true');
+  res.setHeader('X-Scanner-Side-Mode', SIDE_MODE);
+  res.setHeader('X-Long-Disabled', 'true');
+  res.setHeader('X-Short-Disabled', 'false');
 
-  const startedAt = Date.now();
+  const startedAt = now();
 
   try {
     if (!isAllowedMethod(req.method)) {
@@ -242,32 +306,26 @@ export default async function handler(req, res) {
       async () => runScanner()
     );
 
-    const result = enforceLongOnlyResult(rawResult);
+    const result = enforceShortOnlyLockResult(rawResult);
 
     return res.status(200).json({
       ok: result?.ok !== false,
 
       source: sourceLabel(req),
 
-      targetTradeSide: TARGET_TRADE_SIDE,
-      dashboardSide: TARGET_DASHBOARD_SIDE,
-      longOnly: true,
-      shortDisabled: true,
+      ...shortOnlyMeta(),
 
-      durationMs: Date.now() - startedAt,
+      durationMs: now() - startedAt,
       result
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
 
-      targetTradeSide: TARGET_TRADE_SIDE,
-      dashboardSide: TARGET_DASHBOARD_SIDE,
-      longOnly: true,
-      shortDisabled: true,
+      ...shortOnlyMeta(),
 
       error: error?.message || String(error),
-      durationMs: Date.now() - startedAt,
+      durationMs: now() - startedAt,
       stack: process.env.NODE_ENV === 'production'
         ? undefined
         : error?.stack
