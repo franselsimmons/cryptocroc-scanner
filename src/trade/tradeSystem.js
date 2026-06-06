@@ -48,6 +48,7 @@ import {
 import { sendEntryAlert } from '../discord/discord.js';
 
 const DEFAULT_MAX_CANDIDATES_PER_SNAPSHOT = 300;
+const SNAPSHOT_SEARCH_LIMIT = 80;
 
 const VALID_TRADE_SIDES = new Set(['LONG', 'SHORT']);
 const TARGET_TRADE_SIDE = 'LONG';
@@ -1041,17 +1042,270 @@ async function fetchMidPrice(symbol) {
   return safeNumber(ob?.mid, 0);
 }
 
+function hasFullSnapshotShape(value) {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    Array.isArray(value.candidates)
+  );
+}
+
+function snapshotPattern() {
+  try {
+    return KEYS.scan.snapshot('*');
+  } catch {
+    return 'SCAN:SNAPSHOT:*';
+  }
+}
+
+function snapshotCreatedAt(snapshot = {}) {
+  return safeNumber(
+    snapshot.createdAt ||
+    snapshot.completedAt ||
+    snapshot.ts ||
+    snapshot.scannerTs,
+    0
+  );
+}
+
+function extractSnapshotId(latest) {
+  if (!latest) return null;
+  if (typeof latest === 'string') return latest;
+
+  if (typeof latest === 'object') {
+    return (
+      latest.snapshotId ||
+      latest.id ||
+      latest.latestSnapshotId ||
+      latest.scanId ||
+      null
+    );
+  }
+
+  return null;
+}
+
+function candidateTradeSide(candidate = {}) {
+  return normalizeTradeSide(
+    candidate.tradeSide ||
+    candidate.positionSide ||
+    candidate.direction ||
+    candidate.scannerSide ||
+    candidate.actualScannerSide ||
+    candidate.analysisSide ||
+    candidate.side
+  );
+}
+
+function countTargetCandidates(snapshot = {}) {
+  const rows = Array.isArray(snapshot.candidates)
+    ? snapshot.candidates
+    : [];
+
+  return rows.filter((candidate) => candidateTradeSide(candidate) === TARGET_TRADE_SIDE).length;
+}
+
+function countOppositeCandidates(snapshot = {}) {
+  const rows = Array.isArray(snapshot.candidates)
+    ? snapshot.candidates
+    : [];
+
+  return rows.filter((candidate) => candidateTradeSide(candidate) === OPPOSITE_TRADE_SIDE).length;
+}
+
+async function safeGetSnapshotJson(redis, key, fallback = null) {
+  return getJson(redis, key, fallback).catch(() => fallback);
+}
+
+async function loadRecentTargetSnapshots(redis) {
+  const keys = await getKeys(
+    redis,
+    snapshotPattern(),
+    SNAPSHOT_SEARCH_LIMIT
+  ).catch(() => []);
+
+  if (!keys.length) return [];
+
+  const rows = await Promise.all(
+    keys.map(async (key) => {
+      const snapshot = await safeGetSnapshotJson(redis, key, null);
+
+      if (!hasFullSnapshotShape(snapshot)) return null;
+
+      return {
+        key,
+        snapshot,
+        targetCount: countTargetCandidates(snapshot),
+        oppositeCount: countOppositeCandidates(snapshot),
+        createdAt: snapshotCreatedAt(snapshot)
+      };
+    })
+  );
+
+  return rows
+    .filter(Boolean)
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+function normalizeSelectedSnapshot(snapshot = {}, meta = {}) {
+  const rows = Array.isArray(snapshot.candidates)
+    ? snapshot.candidates
+    : [];
+
+  const targetRows = rows
+    .filter((candidate) => candidateTradeSide(candidate) === TARGET_TRADE_SIDE)
+    .map((candidate) => ({
+      ...candidate,
+      side: TARGET_DASHBOARD_SIDE,
+      tradeSide: TARGET_TRADE_SIDE,
+      positionSide: TARGET_TRADE_SIDE,
+      direction: TARGET_TRADE_SIDE,
+      targetTradeSide: TARGET_TRADE_SIDE,
+      dashboardSide: TARGET_DASHBOARD_SIDE,
+      longOnly: true,
+      shortDisabled: true
+    }));
+
+  return {
+    ...snapshot,
+
+    selectedSnapshotSource: meta.source || null,
+    selectedSnapshotReason: meta.reason || null,
+    selectedTargetCandidateCount: targetRows.length,
+    selectedOppositeCandidateCount: countOppositeCandidates(snapshot),
+
+    targetTradeSide: TARGET_TRADE_SIDE,
+    targetScannerSide: TARGET_DASHBOARD_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    candidates: targetRows,
+    candidatesCount: targetRows.length,
+    longCandidatesCount: targetRows.length,
+    shortCandidatesCount: 0,
+
+    scannerGateCandidatesCount: targetRows.filter((row) => row.scannerGatePassed).length,
+    analyzeOnlyCandidatesCount: targetRows.filter((row) => (
+      row.tradeDiscoveryOnly ||
+      row.discoveryOnly ||
+      row.analyzeOnly
+    )).length,
+
+    topSymbols: targetRows
+      .slice(0, 20)
+      .map((row) => row.symbol)
+      .filter(Boolean),
+
+    scannerGateSymbols: targetRows
+      .filter((row) => row.scannerGatePassed)
+      .slice(0, 20)
+      .map((row) => row.symbol)
+      .filter(Boolean)
+  };
+}
+
 async function getLatestSnapshot() {
   const volatileRedis = getVolatileRedis();
-  const latest = await getJson(volatileRedis, KEYS.scan.latest, null);
 
-  if (!latest?.snapshotId) return null;
-
-  return getJson(
+  const latest = await safeGetSnapshotJson(
     volatileRedis,
-    KEYS.scan.snapshot(latest.snapshotId),
+    KEYS.scan.latest,
     null
   );
+
+  const latestSnapshotId = extractSnapshotId(latest);
+
+  const candidates = [];
+
+  if (hasFullSnapshotShape(latest)) {
+    candidates.push({
+      source: 'SCAN:LATEST_FULL_SNAPSHOT',
+      snapshot: latest,
+      targetCount: countTargetCandidates(latest),
+      oppositeCount: countOppositeCandidates(latest),
+      createdAt: snapshotCreatedAt(latest)
+    });
+  }
+
+  if (latestSnapshotId) {
+    const byId = await safeGetSnapshotJson(
+      volatileRedis,
+      KEYS.scan.snapshot(latestSnapshotId),
+      null
+    );
+
+    if (hasFullSnapshotShape(byId)) {
+      candidates.push({
+        source: 'SCAN:SNAPSHOT_BY_LATEST_ID',
+        snapshot: byId,
+        targetCount: countTargetCandidates(byId),
+        oppositeCount: countOppositeCandidates(byId),
+        createdAt: snapshotCreatedAt(byId)
+      });
+    }
+  }
+
+  const recent = await loadRecentTargetSnapshots(volatileRedis);
+
+  for (const item of recent) {
+    candidates.push({
+      source: `SCAN:RECENT_SEARCH:${item.key}`,
+      snapshot: item.snapshot,
+      targetCount: item.targetCount,
+      oppositeCount: item.oppositeCount,
+      createdAt: item.createdAt
+    });
+  }
+
+  const unique = new Map();
+
+  for (const item of candidates) {
+    const id = item.snapshot?.snapshotId || item.source;
+
+    if (!id) continue;
+
+    const previous = unique.get(id);
+
+    if (!previous) {
+      unique.set(id, item);
+      continue;
+    }
+
+    if (
+      item.targetCount > previous.targetCount ||
+      (
+        item.targetCount === previous.targetCount &&
+        item.createdAt > previous.createdAt
+      )
+    ) {
+      unique.set(id, item);
+    }
+  }
+
+  const sorted = [...unique.values()]
+    .filter((item) => hasFullSnapshotShape(item.snapshot))
+    .sort((a, b) => b.createdAt - a.createdAt);
+
+  const selectedTarget = sorted.find((item) => item.targetCount > 0);
+
+  if (selectedTarget) {
+    return normalizeSelectedSnapshot(selectedTarget.snapshot, {
+      source: selectedTarget.source,
+      reason: 'NEWEST_LONG_SNAPSHOT_WITH_CANDIDATES'
+    });
+  }
+
+  const selectedAny = sorted[0] || null;
+
+  if (!selectedAny) return null;
+
+  return normalizeSelectedSnapshot(selectedAny.snapshot, {
+    source: selectedAny.source,
+    reason: 'NO_LONG_SNAPSHOT_FOUND_USING_NEWEST_AVAILABLE'
+  });
 }
 
 function validateExposure(openPositions, side) {
@@ -1705,6 +1959,9 @@ export async function runTradeSystem(options = {}) {
       startedAt,
       snapshotId: snapshot.snapshotId,
       snapshotAgeSec: Math.round(snapshotAgeSec),
+      selectedSnapshotSource: snapshot.selectedSnapshotSource || null,
+      selectedSnapshotReason: snapshot.selectedSnapshotReason || null,
+      selectedTargetCandidateCount: snapshot.selectedTargetCandidateCount || 0,
       actions: [],
       realExits,
       shadowExits,
@@ -1726,6 +1983,9 @@ export async function runTradeSystem(options = {}) {
       runId,
       startedAt,
       snapshotId: snapshot.snapshotId,
+      selectedSnapshotSource: snapshot.selectedSnapshotSource || null,
+      selectedSnapshotReason: snapshot.selectedSnapshotReason || null,
+      selectedTargetCandidateCount: snapshot.selectedTargetCandidateCount || 0,
       actions: [],
       realExits,
       shadowExits,
@@ -1959,6 +2219,11 @@ export async function runTradeSystem(options = {}) {
       processedAt: now(),
       forceProcessSnapshot,
 
+      selectedSnapshotSource: snapshot.selectedSnapshotSource || null,
+      selectedSnapshotReason: snapshot.selectedSnapshotReason || null,
+      selectedTargetCandidateCount: snapshot.selectedTargetCandidateCount || 0,
+      selectedOppositeCandidateCount: snapshot.selectedOppositeCandidateCount || 0,
+
       targetTradeSide: TARGET_TRADE_SIDE,
       dashboardSide: TARGET_DASHBOARD_SIDE,
       longOnly: true,
@@ -2003,6 +2268,11 @@ export async function runTradeSystem(options = {}) {
     snapshotId: snapshot.snapshotId,
     snapshotCreatedAt: snapshot.createdAt,
     snapshotAgeSec: Math.round(snapshotAgeSec),
+
+    selectedSnapshotSource: snapshot.selectedSnapshotSource || null,
+    selectedSnapshotReason: snapshot.selectedSnapshotReason || null,
+    selectedTargetCandidateCount: snapshot.selectedTargetCandidateCount || 0,
+    selectedOppositeCandidateCount: snapshot.selectedOppositeCandidateCount || 0,
 
     targetTradeSide: TARGET_TRADE_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
