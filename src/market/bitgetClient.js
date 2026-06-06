@@ -10,36 +10,21 @@ import {
 import { parseBitgetCandle } from './indicators.js';
 
 const RETRYABLE_HTTP_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
-
-const DEFAULT_BASE_URL = 'https://api.bitget.com';
-const DEFAULT_PRODUCT_TYPE = 'USDT-FUTURES';
-const DEFAULT_TIMEOUT_MS = 6500;
 const DEFAULT_RETRIES = 2;
-const DEFAULT_STRATEGY_UA = 'CLEAN_MF_TS_V1';
 
-function bitgetConfig() {
-  return {
-    baseUrl: CONFIG.bitget?.baseUrl || DEFAULT_BASE_URL,
-    productType: CONFIG.bitget?.productType || DEFAULT_PRODUCT_TYPE,
-    timeoutMs: Math.max(500, safeNumber(CONFIG.bitget?.timeoutMs, DEFAULT_TIMEOUT_MS)),
-    retries: Math.max(0, Math.floor(safeNumber(CONFIG.bitget?.retries, DEFAULT_RETRIES))),
-    userAgent: CONFIG.strategyVersion || DEFAULT_STRATEGY_UA
-  };
-}
-
-function normalizeProductType(value = bitgetConfig().productType) {
-  return String(value || DEFAULT_PRODUCT_TYPE)
+function normalizeProductType(value = CONFIG.bitget.productType) {
+  return String(value || 'USDT-FUTURES')
     .trim()
     .toUpperCase()
     .replaceAll('_', '-');
 }
 
 function buildUrl(path, params = {}) {
-  const cfg = bitgetConfig();
-  const url = new URL(path, cfg.baseUrl);
+  const url = new URL(path, CONFIG.bitget.baseUrl);
 
   for (const [key, value] of Object.entries(params || {})) {
     if (value === undefined || value === null || value === '') continue;
+
     url.searchParams.set(key, String(value));
   }
 
@@ -61,40 +46,14 @@ function bitgetErrorMessage(prefix, details = {}) {
 }
 
 function isLikelyNetworkError(error) {
-  const message = String(error?.message || '').toLowerCase();
-
   return (
     error?.name === 'TypeError' ||
-    message.includes('fetch failed') ||
-    message.includes('network') ||
-    message.includes('socket') ||
-    message.includes('econnreset') ||
-    message.includes('etimedout')
+    String(error?.message || '').toLowerCase().includes('fetch failed') ||
+    String(error?.message || '').toLowerCase().includes('network')
   );
 }
 
-function retryAfterMs(response) {
-  const header = response.headers?.get?.('retry-after');
-  const value = Number(header);
-
-  if (!Number.isFinite(value) || value <= 0) return 0;
-
-  return Math.min(5000, value * 1000);
-}
-
-function retryDelayMs(attempt, error = null) {
-  const explicit = safeNumber(error?.retryAfterMs, 0);
-
-  if (explicit > 0) return explicit;
-
-  const base = 250 * (attempt + 1);
-  const jitter = Math.floor(Math.random() * 120);
-
-  return Math.min(2500, base + jitter);
-}
-
-async function fetchJsonOnce(path, params = {}, timeoutMs = bitgetConfig().timeoutMs) {
-  const cfg = bitgetConfig();
+async function fetchJsonOnce(path, params = {}, timeoutMs = CONFIG.bitget.timeoutMs) {
   const url = buildUrl(path, params);
 
   const controller = new AbortController();
@@ -105,7 +64,7 @@ async function fetchJsonOnce(path, params = {}, timeoutMs = bitgetConfig().timeo
       method: 'GET',
       headers: {
         accept: 'application/json',
-        'user-agent': cfg.userAgent
+        'user-agent': CONFIG.strategyVersion || 'CLEAN_MF_TS_V1'
       },
       signal: controller.signal
     });
@@ -122,7 +81,6 @@ async function fetchJsonOnce(path, params = {}, timeoutMs = bitgetConfig().timeo
 
       error.status = response.status;
       error.retryable = RETRYABLE_HTTP_STATUS.has(response.status);
-      error.retryAfterMs = retryAfterMs(response);
 
       throw error;
     }
@@ -177,10 +135,8 @@ async function fetchJsonOnce(path, params = {}, timeoutMs = bitgetConfig().timeo
 }
 
 async function fetchJson(path, params = {}, options = {}) {
-  const cfg = bitgetConfig();
-
-  const timeoutMs = options.timeoutMs ?? cfg.timeoutMs;
-  const retries = Math.max(0, Number(options.retries ?? cfg.retries) || 0);
+  const timeoutMs = options.timeoutMs ?? CONFIG.bitget.timeoutMs;
+  const retries = Math.max(0, Number(options.retries ?? DEFAULT_RETRIES) || 0);
 
   let lastError = null;
 
@@ -196,20 +152,11 @@ async function fetchJson(path, params = {}, options = {}) {
 
       if (!retryable || attempt >= retries) break;
 
-      await sleep(retryDelayMs(attempt, error));
+      await sleep(250 * (attempt + 1));
     }
   }
 
   throw lastError;
-}
-
-function asArrayData(data) {
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.list)) return data.list;
-  if (Array.isArray(data?.rows)) return data.rows;
-  if (Array.isArray(data?.data)) return data.data;
-
-  return [];
 }
 
 export async function fetchBitgetTickers() {
@@ -217,42 +164,48 @@ export async function fetchBitgetTickers() {
     productType: normalizeProductType()
   });
 
-  return asArrayData(data);
+  return Array.isArray(data) ? data : [];
 }
 
 export function parseTicker(row = {}) {
   const contractSymbol = normalizeContractSymbol(
+    row.contractSymbol ||
     row.symbol ||
     row.instId ||
     row.contractCode ||
     row.symbolName
   );
 
-  const baseSymbol = normalizeBaseSymbol(contractSymbol);
+  const baseSymbol = normalizeBaseSymbol(
+    row.baseSymbol ||
+    contractSymbol
+  );
 
   const price = safeNumber(
+    row.price ??
     row.lastPr ??
-      row.last ??
-      row.close ??
-      row.markPrice ??
-      row.indexPrice,
+    row.last ??
+    row.close ??
+    row.markPrice ??
+    row.indexPrice,
     0
   );
 
   const baseVolume = safeNumber(
     row.baseVolume ??
-      row.baseVol ??
-      row.volume ??
-      row.vol,
+    row.baseVol ??
+    row.volume ??
+    row.vol,
     0
   );
 
   const quoteVolumeRaw = safeNumber(
+    row.volume24h ??
     row.quoteVolume ??
-      row.quoteVol ??
-      row.usdtVolume ??
-      row.turnover ??
-      row.quoteTurnover,
+    row.quoteVol ??
+    row.usdtVolume ??
+    row.turnover ??
+    row.quoteTurnover,
     0
   );
 
@@ -262,10 +215,12 @@ export function parseTicker(row = {}) {
 
   const rawChange = safeNumber(
     row.change24h ??
-      row.changeUtc24h ??
-      row.priceChangePercent ??
-      row.priceChange24h ??
-      row.chgUtc,
+    row.change24hPct ??
+    row.change24hPercent ??
+    row.changeUtc24h ??
+    row.priceChangePercent ??
+    row.priceChange24h ??
+    row.chgUtc,
     0
   );
 
@@ -293,16 +248,10 @@ export function normalizeGranularity(timeframe) {
     '5m': '5m',
     '15m': '15m',
     '30m': '30m',
-
     '1h': '1H',
     '60m': '1H',
-    '2h': '2H',
     '4h': '4H',
-    '6h': '6H',
-    '12h': '12H',
-
-    '1d': '1D',
-    '1w': '1W'
+    '1d': '1D'
   };
 
   return map[tf] || timeframe;
@@ -311,7 +260,7 @@ export function normalizeGranularity(timeframe) {
 export async function fetchCandles(symbol, timeframe = '15m', limit = 100) {
   const contractSymbol = normalizeContractSymbol(symbol);
   const granularity = normalizeGranularity(timeframe);
-  const safeLimit = Math.max(1, Math.min(Math.floor(Number(limit || 100)), 1000));
+  const safeLimit = Math.max(1, Math.min(Number(limit || 100), 1000));
 
   if (!contractSymbol) return [];
 
@@ -338,7 +287,7 @@ export async function fetchCandles(symbol, timeframe = '15m', limit = 100) {
         kLineType: 'MARKET'
       });
 
-      const candles = asArrayData(raw)
+      const candles = (Array.isArray(raw) ? raw : [])
         .map(parseBitgetCandle)
         .filter(Boolean)
         .sort((a, b) => a.ts - b.ts);
@@ -420,17 +369,17 @@ function parseBookRow(row) {
   if (row && typeof row === 'object') {
     const price = safeNumber(
       row.price ??
-        row.px ??
-        row[0],
+      row.px ??
+      row[0],
       0
     );
 
     const qty = safeNumber(
       row.size ??
-        row.qty ??
-        row.quantity ??
-        row.sz ??
-        row[1],
+      row.qty ??
+      row.quantity ??
+      row.sz ??
+      row[1],
       0
     );
 
@@ -450,102 +399,53 @@ function parseBookSide(side) {
     .filter(Boolean);
 }
 
-function bookPayload(raw = {}) {
-  if (raw?.bids || raw?.asks) return raw;
-  if (raw?.data?.bids || raw?.data?.asks) return raw.data;
-  if (raw?.orderBook?.bids || raw?.orderBook?.asks) return raw.orderBook;
-
-  return raw || {};
-}
-
-function depthWithinPct(rows = [], mid, pct, side) {
-  if (mid <= 0) return 0;
-
-  const minBid = mid * (1 - pct);
-  const maxAsk = mid * (1 + pct);
-
-  return rows.reduce((sum, [price, qty]) => {
-    if (side === 'bid' && price < minBid) return sum;
-    if (side === 'ask' && price > maxAsk) return sum;
-
-    return sum + price * qty;
-  }, 0);
-}
-
-function largestWallUsd(rows = [], mid, pct, side) {
-  if (mid <= 0) return 0;
-
-  const minBid = mid * (1 - pct);
-  const maxAsk = mid * (1 + pct);
-
-  return rows.reduce((max, [price, qty]) => {
-    if (side === 'bid' && price < minBid) return max;
-    if (side === 'ask' && price > maxAsk) return max;
-
-    return Math.max(max, price * qty);
-  }, 0);
-}
-
 export function analyzeOrderBook(raw) {
-  const payload = bookPayload(raw);
-
-  const bids = parseBookSide(payload?.bids);
-  const asks = parseBookSide(payload?.asks);
+  const bids = parseBookSide(raw?.bids);
+  const asks = parseBookSide(raw?.asks);
 
   const bestBid = safeNumber(bids[0]?.[0], 0);
   const bestAsk = safeNumber(asks[0]?.[0], 0);
 
   const mid = bestBid > 0 && bestAsk > 0
     ? (bestBid + bestAsk) / 2
-    : safeNumber(payload?.mid ?? payload?.price ?? payload?.last, 0);
+    : safeNumber(raw?.mid ?? raw?.price ?? raw?.last, 0);
 
   if (mid <= 0 || bestBid <= 0 || bestAsk <= 0) {
     return {
       bias: 'NEUTRAL',
       spreadPct: CONFIG.cost?.fallbackSpreadPct ?? 0.0008,
-
       depthMinUsd1p: 0,
       bidDepthUsd1p: 0,
       askDepthUsd1p: 0,
-
-      bidDepthUsd05p: 0,
-      askDepthUsd05p: 0,
-      depthMinUsd05p: 0,
-
-      bidWallUsd1p: 0,
-      askWallUsd1p: 0,
-      wallImbalance: 0,
-
       imbalance: 0,
       mid: 0,
       bestBid: 0,
       bestAsk: 0,
-
       fetchFailed: true
     };
   }
 
   const spreadPct = Math.max(0, (bestAsk - bestBid) / mid);
 
-  const bidDepthUsd1p = depthWithinPct(bids, mid, 0.01, 'bid');
-  const askDepthUsd1p = depthWithinPct(asks, mid, 0.01, 'ask');
+  const minBidPrice = mid * 0.99;
+  const maxAskPrice = mid * 1.01;
 
-  const bidDepthUsd05p = depthWithinPct(bids, mid, 0.005, 'bid');
-  const askDepthUsd05p = depthWithinPct(asks, mid, 0.005, 'ask');
+  const bidDepth = bids.reduce((sum, [price, qty]) => {
+    if (price < minBidPrice) return sum;
 
-  const depthTotal = bidDepthUsd1p + askDepthUsd1p;
+    return sum + price * qty;
+  }, 0);
+
+  const askDepth = asks.reduce((sum, [price, qty]) => {
+    if (price > maxAskPrice) return sum;
+
+    return sum + price * qty;
+  }, 0);
+
+  const depthTotal = bidDepth + askDepth;
 
   const imbalance = depthTotal > 0
-    ? (bidDepthUsd1p - askDepthUsd1p) / depthTotal
-    : 0;
-
-  const bidWallUsd1p = largestWallUsd(bids, mid, 0.01, 'bid');
-  const askWallUsd1p = largestWallUsd(asks, mid, 0.01, 'ask');
-
-  const wallTotal = bidWallUsd1p + askWallUsd1p;
-
-  const wallImbalance = wallTotal > 0
-    ? (bidWallUsd1p - askWallUsd1p) / wallTotal
+    ? (bidDepth - askDepth) / depthTotal
     : 0;
 
   const bias =
@@ -556,24 +456,13 @@ export function analyzeOrderBook(raw) {
   return {
     bias,
     spreadPct,
-
-    depthMinUsd1p: Math.min(bidDepthUsd1p, askDepthUsd1p),
-    bidDepthUsd1p,
-    askDepthUsd1p,
-
-    depthMinUsd05p: Math.min(bidDepthUsd05p, askDepthUsd05p),
-    bidDepthUsd05p,
-    askDepthUsd05p,
-
-    bidWallUsd1p,
-    askWallUsd1p,
-    wallImbalance,
-
+    depthMinUsd1p: Math.min(bidDepth, askDepth),
+    bidDepthUsd1p: bidDepth,
+    askDepthUsd1p: askDepth,
     imbalance,
     mid,
     bestBid,
     bestAsk,
-
     fetchFailed: false
   };
 }
@@ -601,8 +490,8 @@ export async function fetchFunding(symbol) {
     return {
       rate: safeNumber(
         row?.fundingRate ??
-          row?.fundRate ??
-          row?.rate,
+        row?.fundRate ??
+        row?.rate,
         0
       ),
       fetchFailed: false
