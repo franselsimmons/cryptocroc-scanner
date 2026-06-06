@@ -58,7 +58,7 @@ const tradeSides = (value, fallback = ['LONG']) => {
 };
 
 export const CONFIG = Object.freeze({
-  strategyVersion: str(env.STRATEGY_VERSION, 'COARSE_MF_TS_LONG_ONLY_V2'),
+  strategyVersion: str(env.STRATEGY_VERSION, 'CLEAN_MF_TS_LONG_ONLY_STABLE_V2'),
 
   direction: {
     mode: str(env.DIRECTION_MODE, 'LONG_ONLY'),
@@ -73,7 +73,7 @@ export const CONFIG = Object.freeze({
   },
 
   app: {
-    name: str(env.APP_NAME, 'Micro-Family Trading Admin'),
+    name: str(env.APP_NAME, 'LONG Micro-Family Trading Admin'),
     baseUrl: str(env.APP_BASE_URL, env.VERCEL_URL ? `https://${env.VERCEL_URL}` : ''),
     adminPath: str(env.ADMIN_PATH, '/admin.html')
   },
@@ -98,7 +98,6 @@ export const CONFIG = Object.freeze({
     discardShortCandidates: bool(env.SCANNER_DISCARD_SHORT_CANDIDATES, true),
 
     maxSymbols: int(env.SCANNER_MAX_SYMBOLS, 300),
-
     maxCandidates: int(env.SCANNER_MAX_CANDIDATES, 300),
     analyzeMaxCandidates: int(env.SCANNER_ANALYZE_MAX_CANDIDATES, 300),
 
@@ -166,10 +165,7 @@ export const CONFIG = Object.freeze({
     minLiveScannerScore: num(env.TRADE_MIN_LIVE_SCANNER_SCORE, 0),
 
     allowLegacyMacroLiveEntries: bool(env.TRADE_ALLOW_LEGACY_MACRO_LIVE_ENTRIES, false),
-
-    // Belangrijk voor coarse clustering:
-    // true = live entry mag matchen op de coarse MF_V2 alias als refined XR-id niet actief is.
-    allowCoarseMicroAliasLiveEntries: bool(env.TRADE_ALLOW_COARSE_MICRO_ALIAS_LIVE_ENTRIES, true),
+    allowCoarseMicroAliasLiveEntries: bool(env.TRADE_ALLOW_COARSE_MICRO_ALIAS_LIVE_ENTRIES, false),
 
     candleTtlSec: int(env.TRADE_CANDLE_CACHE_TTL_SEC, 90),
     orderbookTtlSec: int(env.TRADE_ORDERBOOK_CACHE_TTL_SEC, 12),
@@ -190,38 +186,21 @@ export const CONFIG = Object.freeze({
     macroSchema: str(env.ANALYZE_MACRO_SCHEMA, 'MF_V1'),
     microSchema: str(env.ANALYZE_MICRO_SCHEMA, 'MF_V2'),
 
-    /*
-      BELANGRIJKE FIX:
-      false = géén _XR_ micro IDs met symbolClass/fine buckets.
-      Dit laat dezelfde LONG setup clusteren over meerdere coins.
-      Daardoor stijgt sample van 1 naar echte aggregated samples.
-    */
-    refineExecutionMicroIds: false,
-
-    /*
-      Alleen diagnostisch.
-      Als Vercel nog ANALYZE_REFINE_EXECUTION_MICRO_IDS=true heeft staan,
-      negeren we die hierboven bewust.
-    */
-    refineExecutionMicroIdsEnvRequested: bool(env.ANALYZE_REFINE_EXECUTION_MICRO_IDS, false),
-
-    /*
-      Safe flags voor analyzer-code die coarse micro clustering ondersteunt.
-      Als je analyzer deze velden nog niet leest, breken ze niets.
-    */
-    preferCoarseMicroIdsForLearning: true,
-    includeSymbolClassInMicroId: false,
-    includeFineBucketsInMicroId: false,
-    mergeRefinedExecutionMicros: true,
+    // BELANGRIJK:
+    // false = families clusteren eerst breed genoeg.
+    // true = bijna elke coin/fine bucket wordt eigen XR micro en blijft vaak op sample 1.
+    refineExecutionMicroIds: bool(env.ANALYZE_REFINE_EXECUTION_MICRO_IDS, false),
 
     shadowEnabled: bool(env.ANALYZE_SHADOW_ENABLED, true),
     shadowHorizonMin: int(env.ANALYZE_SHADOW_HORIZON_MIN, 6 * 60),
     shadowWeight: num(env.ANALYZE_SHADOW_WEIGHT, 0.35),
 
     obsDedupeTtlSec: int(env.ANALYZE_OBS_DEDUPE_TTL_SEC, 14 * 24 * 3600),
-    shadowDedupeTtlSec: int(env.ANALYZE_SHADOW_DEDUPE_TTL_SEC, 48 * 3600),
 
-    maxShadowMonitorsPerRun: int(env.ANALYZE_MAX_SHADOW_MONITORS_PER_RUN, 80),
+    // Lager dan 48h zodat dezelfde micro sneller extra completed samples mag bouwen.
+    shadowDedupeTtlSec: int(env.ANALYZE_SHADOW_DEDUPE_TTL_SEC, 3 * 3600),
+
+    maxShadowMonitorsPerRun: int(env.ANALYZE_MAX_SHADOW_MONITORS_PER_RUN, 120),
 
     freezeLockTtlSec: int(env.ANALYZE_FREEZE_LOCK_TTL_SEC, 600),
     activateLockTtlSec: int(env.ANALYZE_ACTIVATE_LOCK_TTL_SEC, 600),
