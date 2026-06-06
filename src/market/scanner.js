@@ -178,11 +178,13 @@ function isValidUsdtFuturesContractSymbol(symbol = '') {
 }
 
 function normalizeScannerTicker(rawTicker = {}) {
-  const ticker = parseTicker(rawTicker);
+  const parsed = parseTicker(rawTicker);
 
   const contractSymbol = normalizeContractSymbol(
-    ticker.contractSymbol ||
-    ticker.symbol
+    rawTicker.contractSymbol ||
+    rawTicker.symbol ||
+    parsed.contractSymbol ||
+    parsed.symbol
   );
 
   if (!isValidUsdtFuturesContractSymbol(contractSymbol)) {
@@ -192,7 +194,8 @@ function normalizeScannerTicker(rawTicker = {}) {
   const derivedBaseSymbol = stripUsdtQuote(contractSymbol);
 
   const parsedBaseSymbol = normalizeBaseSymbol(
-    ticker.baseSymbol ||
+    rawTicker.baseSymbol ||
+    parsed.baseSymbol ||
     derivedBaseSymbol
   );
 
@@ -204,14 +207,29 @@ function normalizeScannerTicker(rawTicker = {}) {
     return null;
   }
 
+  const directPrice = safeNumber(rawTicker.price, NaN);
+  const directVolume24h = safeNumber(rawTicker.volume24h, NaN);
+  const directChange24h = safeNumber(rawTicker.change24h, NaN);
+
   return {
-    ...ticker,
+    ...parsed,
+    ...rawTicker,
+
     symbol: contractSymbol,
     contractSymbol,
     baseSymbol,
-    price: safeNumber(ticker.price, 0),
-    volume24h: safeNumber(ticker.volume24h, 0),
-    change24h: safeNumber(ticker.change24h, 0)
+
+    price: Number.isFinite(directPrice) && directPrice > 0
+      ? directPrice
+      : safeNumber(parsed.price, 0),
+
+    volume24h: Number.isFinite(directVolume24h) && directVolume24h > 0
+      ? directVolume24h
+      : safeNumber(parsed.volume24h, 0),
+
+    change24h: Number.isFinite(directChange24h)
+      ? directChange24h
+      : safeNumber(parsed.change24h, 0)
   };
 }
 
@@ -263,6 +281,24 @@ function calcOneHourChange(candles15m) {
   return calcChangePct(first, last);
 }
 
+function estimateQuoteVolumeFromCandles(candles = [], lookback = 96) {
+  const rows = (Array.isArray(candles) ? candles : [])
+    .slice(-Math.max(1, Math.floor(Number(lookback) || 96)));
+
+  return rows.reduce((sum, candle) => {
+    const quoteVolume = safeNumber(candle?.quoteVolume, 0);
+
+    if (quoteVolume > 0) return sum + quoteVolume;
+
+    const close = safeNumber(candle?.close, 0);
+    const baseVolume = safeNumber(candle?.volume, 0);
+
+    if (close <= 0 || baseVolume <= 0) return sum;
+
+    return sum + close * baseVolume;
+  }, 0);
+}
+
 function calcScannerScore({
   change1h,
   change24h,
@@ -274,8 +310,7 @@ function calcScannerScore({
   sweepConfirmed,
   retestConfirmed,
   breakoutType,
-  sideConfidenceLevel,
-  passesVolumeFilter
+  sideConfidenceLevel
 }) {
   let score = 0;
 
@@ -296,7 +331,6 @@ function calcScannerScore({
   if (sideConfidenceLevel === 'MID') score += 2;
   if (sideConfidenceLevel === 'LOW') score -= 3;
 
-  if (!passesVolumeFilter) score -= 8;
   if (fakeBreakoutRisk) score -= 8;
   if (fakeBreakout) score -= 7;
 
@@ -344,6 +378,11 @@ function isTradableTicker(ticker) {
   if (safeNumber(ticker.price, 0) <= 0) return false;
 
   const volume24h = safeNumber(ticker.volume24h, 0);
+
+  if (volume24h <= 0) {
+    return !strictScannerFiltersEnabled();
+  }
+
   const hardMinVolume = strictScannerFiltersEnabled()
     ? minQuoteVolume24h()
     : softMinQuoteVolume24h();
@@ -357,9 +396,7 @@ function dedupeByBaseSymbol(tickers) {
   const byBase = new Map();
 
   for (const ticker of tickers) {
-    const normalized = ticker?.contractSymbol && ticker?.baseSymbol
-      ? ticker
-      : normalizeScannerTicker(ticker);
+    const normalized = normalizeScannerTicker(ticker);
 
     if (!normalized) continue;
 
@@ -388,7 +425,9 @@ function shortUniverseScore(ticker = {}) {
     ? Math.abs(change24h) * 100
     : 0;
 
-  const volumeScore = Math.log10(Math.max(10, volume24h));
+  const volumeScore = volume24h > 0
+    ? Math.log10(Math.max(10, volume24h))
+    : 0;
 
   return bearishPressure + volumeScore;
 }
@@ -439,8 +478,8 @@ async function buildBtcContext({ universe, getCandles }) {
     universe.find((row) => row.baseSymbol === 'BTC') ||
     normalizeScannerTicker({
       symbol: 'BTCUSDT',
-      price: 0,
-      volume24h: 0,
+      last: 0,
+      quoteVolume: 0,
       change24h: 0
     }) ||
     {
@@ -484,23 +523,6 @@ async function buildBtcContext({ universe, getCandles }) {
   };
 }
 
-function scannerGateReasonFrom({
-  hardBlockedByDirection,
-  hardBlockedByMove,
-  hardBlockedByFake,
-  passesMoveFilter,
-  passesVolumeFilter,
-  hasDirectionalSide,
-  fakeBreakout
-}) {
-  if (hardBlockedByDirection || !hasDirectionalSide) return 'NO_SHORT_DIRECTION';
-  if (hardBlockedByMove || !passesMoveFilter) return 'SHORT_MOVE_TOO_SMALL';
-  if (hardBlockedByFake || fakeBreakout) return 'SHORT_FAKE_BREAKOUT';
-  if (!passesVolumeFilter) return 'SHORT_VOLUME_FILTER_NOT_PASSED';
-
-  return 'PASSED';
-}
-
 function buildGateFlags({
   change1h,
   change24h,
@@ -539,16 +561,6 @@ function buildGateFlags({
     hasDirectionalSide &&
     !fake.fakeBreakout;
 
-  const scannerGateReason = scannerGateReasonFrom({
-    hardBlockedByDirection,
-    hardBlockedByMove,
-    hardBlockedByFake,
-    passesMoveFilter,
-    passesVolumeFilter,
-    hasDirectionalSide,
-    fakeBreakout: fake.fakeBreakout
-  });
-
   return {
     passesMoveFilter,
     passesVolumeFilter,
@@ -560,7 +572,17 @@ function buildGateFlags({
     hardBlockedByFake,
 
     scannerGatePassed,
-    scannerGateReason,
+    scannerGateReason: scannerGatePassed
+      ? null
+      : !passesVolumeFilter
+        ? 'SHORT_VOLUME_FILTER_NOT_PASSED'
+        : !passesMoveFilter
+          ? 'SHORT_MOVE_FILTER_NOT_PASSED'
+          : !hasDirectionalSide
+            ? 'SHORT_DIRECTION_FILTER_NOT_PASSED'
+            : fake.fakeBreakout
+              ? 'SHORT_FAKE_BREAKOUT'
+              : 'SHORT_SCANNER_GATE_NOT_PASSED',
 
     analyzeEligible: !hardBlocked && hasDirectionalSide,
     tradeDiscoveryOnly: !scannerGatePassed
@@ -629,6 +651,12 @@ async function analyzeTickerCandidate({
     };
   }
 
+  const tickerVolume24h = safeNumber(normalizedTicker.volume24h, 0);
+  const candleVolume24h = estimateQuoteVolumeFromCandles(candles15m, 96);
+  const volume24h = tickerVolume24h > 0
+    ? tickerVolume24h
+    : candleVolume24h;
+
   const fakeRaw = detectFakeBreakout({
     side,
     candles15m,
@@ -643,7 +671,7 @@ async function analyzeTickerCandidate({
     change24h,
     fake,
     side,
-    volume24h: normalizedTicker.volume24h
+    volume24h
   });
 
   if (gates.hardBlocked) {
@@ -667,10 +695,9 @@ async function analyzeTickerCandidate({
   const scannerScore = calcScannerScore({
     change1h,
     change24h,
-    volume24h: normalizedTicker.volume24h,
+    volume24h,
     volumeExpansion,
     sideConfidenceLevel,
-    passesVolumeFilter: gates.passesVolumeFilter,
     ...fake
   });
 
@@ -708,7 +735,10 @@ async function analyzeTickerCandidate({
 
       change1h: Number(change1h.toFixed(3)),
       change24h: Number(change24h.toFixed(3)),
-      volume24h: safeNumber(normalizedTicker.volume24h, 0),
+      volume24h: Number(volume24h.toFixed(2)),
+      tickerVolume24h: Number(tickerVolume24h.toFixed(2)),
+      candleVolume24h: Number(candleVolume24h.toFixed(2)),
+      volumeSource: tickerVolume24h > 0 ? 'TICKER' : 'CANDLES_15M_ESTIMATE',
       volumeExpansion: Number(volumeExpansion.toFixed(3)),
 
       btcState,
@@ -760,13 +790,10 @@ function sortCandidates(candidates = []) {
     const scoreDelta = safeNumber(b.scannerScore, 0) - safeNumber(a.scannerScore, 0);
     if (scoreDelta !== 0) return scoreDelta;
 
-    const volumeDelta = safeNumber(b.volume24h, 0) - safeNumber(a.volume24h, 0);
-    if (volumeDelta !== 0) return volumeDelta;
-
     const changeDelta = Math.abs(safeNumber(b.change1h, 0)) - Math.abs(safeNumber(a.change1h, 0));
     if (changeDelta !== 0) return changeDelta;
 
-    return String(a.symbol || '').localeCompare(String(b.symbol || ''));
+    return safeNumber(b.volume24h, 0) - safeNumber(a.volume24h, 0);
   });
 }
 
@@ -817,8 +844,11 @@ export async function runScanner() {
     sideMode: 'SHORT_ONLY',
     targetTradeSide: TARGET_TRADE_SIDE,
     targetScannerSide: TARGET_SCANNER_SIDE,
+    dashboardSide: TARGET_SCANNER_SIDE,
     shortOnly: true,
     longDisabled: true,
+    longOnly: false,
+    shortDisabled: false,
 
     snapshotId,
     createdAt: startedAt,
@@ -886,8 +916,11 @@ export async function runScanner() {
       sideMode: 'SHORT_ONLY',
       targetTradeSide: TARGET_TRADE_SIDE,
       targetScannerSide: TARGET_SCANNER_SIDE,
+      dashboardSide: TARGET_SCANNER_SIDE,
       shortOnly: true,
       longDisabled: true,
+      longOnly: false,
+      shortDisabled: false,
 
       snapshotId,
       createdAt: startedAt,
