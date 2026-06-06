@@ -1,24 +1,22 @@
 {
-  "name": "cryptocroc-runner",
+  "_fileTitle": "package.json",
+  "name": "clean-micro-trading-system",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Standalone runner system for Discord trade signals and telemetry-driven strategy optimization.",
   "scripts": {
-    "dev": "vercel dev",
-    "start": "vercel dev",
-    "check": "node --check api/cron.js && node --check api/scanner.js && node --check api/trade-funnel.js && node --check api/public-latest.js && node --check api/trade-history.js && node --check api/trade-stats.js",
-    "check:runner": "node --check lib/tradeSystem.js",
-    "check:all": "npm run check && npm run check:runner"
-  },
-  "engines": {
-    "node": ">=20"
+    "scanner:run": "node scripts/runScanner.js",
+    "trade:run": "node scripts/runTradeSystem.js",
+    "analyze:freeze": "node scripts/freezeWeekly.js",
+    "analyze:activate": "node scripts/activateRotation.js",
+    "trace:scanner": "node --trace-deprecation scripts/runScanner.js",
+    "trace:trade": "node --trace-deprecation scripts/runTradeSystem.js",
+    "check:node": "node -v"
   },
   "dependencies": {
-    "@vercel/kv": "^3.0.0",
-    "pg": "^8.20.0"
+    "@upstash/redis": "^1.34.3"
   },
-  "devDependencies": {
-    "vercel": "^52.0.0"
+  "engines": {
+    "node": "20.x"
   }
 }
