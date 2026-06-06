@@ -7,31 +7,12 @@ export const MS_PER_DAY = 86_400_000;
 const TRUE_VALUES = new Set(['true', '1', 'yes', 'y', 'on']);
 const FALSE_VALUES = new Set(['false', '0', 'no', 'n', 'off']);
 
-const LONG_TOKENS = new Set([
-  'LONG',
-  'BULL',
-  'BUY',
-  'BULLISH'
-]);
-
-const SHORT_TOKENS = new Set([
-  'SHORT',
-  'BEAR',
-  'SELL',
-  'BEARISH',
-  'ASK',
-  'DOWN',
-  'DOWNSIDE',
-  'RED'
-]);
-
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const safeNumber = (value, fallback = 0) => {
   if (value === undefined || value === null || value === '') return fallback;
 
   const n = Number(value);
-
   return Number.isFinite(n) ? n : fallback;
 };
 
@@ -65,101 +46,30 @@ export const envBool = (value, fallback = false) => {
   return fallback;
 };
 
-function normalizeSideText(value) {
-  return String(value || '')
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-}
-
 export const normalizeTradeSide = (side) => {
-  const raw = String(side || '').trim().toUpperCase();
+  const s = String(side || '')
+    .trim()
+    .toUpperCase();
 
-  if (!raw) return 'UNKNOWN';
-
-  if (LONG_TOKENS.has(raw)) return 'LONG';
-  if (SHORT_TOKENS.has(raw)) return 'SHORT';
-
-  const normalized = normalizeSideText(raw);
-
-  const longHit =
-    normalized === 'LONG' ||
-    normalized === 'BULL' ||
-    normalized === 'BUY' ||
-    normalized === 'BULLISH' ||
-    normalized === 'SIDE_LONG' ||
-    normalized === 'TRADE_SIDE_LONG' ||
-    normalized === 'TRADESIDE_LONG' ||
-    normalized === 'POSITION_SIDE_LONG' ||
-    normalized === 'POSITIONSIDE_LONG' ||
-    normalized === 'DIRECTION_LONG' ||
-    normalized === 'SIDE_BULL' ||
-    normalized === 'TRADE_SIDE_BULL' ||
-    normalized === 'DIRECTION_BULL' ||
-    normalized === 'SIDE_BUY' ||
-    normalized === 'DIRECTION_BUY' ||
-    normalized.startsWith('LONG_') ||
-    normalized.startsWith('BULL_') ||
-    normalized.startsWith('BUY_') ||
-    normalized.endsWith('_LONG') ||
-    normalized.endsWith('_BULL') ||
-    normalized.endsWith('_BUY') ||
-    normalized.includes('_LONG_') ||
-    normalized.includes('_BULL_') ||
-    normalized.includes('_BUY_') ||
-    normalized.includes('MICRO_LONG') ||
-    normalized.includes('FAMILY_LONG');
-
-  if (longHit) return 'LONG';
-
-  const shortHit =
-    normalized === 'SHORT' ||
-    normalized === 'BEAR' ||
-    normalized === 'SELL' ||
-    normalized === 'BEARISH' ||
-    normalized === 'ASK' ||
-    normalized === 'DOWN' ||
-    normalized === 'DOWNSIDE' ||
-    normalized === 'RED' ||
-    normalized === 'SIDE_SHORT' ||
-    normalized === 'TRADE_SIDE_SHORT' ||
-    normalized === 'TRADESIDE_SHORT' ||
-    normalized === 'POSITION_SIDE_SHORT' ||
-    normalized === 'POSITIONSIDE_SHORT' ||
-    normalized === 'DIRECTION_SHORT' ||
-    normalized === 'SIDE_BEAR' ||
-    normalized === 'TRADE_SIDE_BEAR' ||
-    normalized === 'DIRECTION_BEAR' ||
-    normalized === 'SIDE_SELL' ||
-    normalized === 'DIRECTION_SELL' ||
-    normalized.startsWith('SHORT_') ||
-    normalized.startsWith('BEAR_') ||
-    normalized.startsWith('SELL_') ||
-    normalized.endsWith('_SHORT') ||
-    normalized.endsWith('_BEAR') ||
-    normalized.endsWith('_SELL') ||
-    normalized.includes('_SHORT_') ||
-    normalized.includes('_BEAR_') ||
-    normalized.includes('_SELL_') ||
-    normalized.includes('MICRO_SHORT') ||
-    normalized.includes('FAMILY_SHORT');
-
-  if (shortHit) return 'SHORT';
+  if (['LONG', 'BULL', 'BUY', 'BULLISH'].includes(s)) return 'LONG';
+  if (['SHORT', 'BEAR', 'SELL', 'BEARISH'].includes(s)) return 'SHORT';
 
   return 'UNKNOWN';
 };
 
 function parseAllowedTradeSides(value) {
-  const raw = String(value || 'SHORT')
+  const raw = String(value || 'LONG')
     .split(/[\s,|;]+/g)
     .map((part) => normalizeTradeSide(part))
     .filter((side) => side === 'LONG' || side === 'SHORT');
 
   const unique = [...new Set(raw)];
 
-  return unique.length ? unique : ['SHORT'];
+  return unique.length ? unique : ['LONG'];
 }
+
+export const LONG_ONLY_MODE = envBool(process.env.SHORT_ENABLED, false) === false &&
+  !parseAllowedTradeSides(process.env.ALLOWED_TRADE_SIDES).includes('SHORT');
 
 export const DEFAULT_ALLOWED_TRADE_SIDES = parseAllowedTradeSides(
   process.env.ALLOWED_TRADE_SIDES ||
@@ -167,16 +77,12 @@ export const DEFAULT_ALLOWED_TRADE_SIDES = parseAllowedTradeSides(
   process.env.SCANNER_ALLOWED_TRADE_SIDES ||
   process.env.ANALYZE_ALLOWED_TRADE_SIDES ||
   process.env.ROTATION_ALLOWED_TRADE_SIDES ||
-  'SHORT'
+  'LONG'
 );
 
-export const SHORT_ONLY_MODE =
-  envBool(process.env.LONG_ENABLED, false) === false &&
-  !DEFAULT_ALLOWED_TRADE_SIDES.includes('LONG');
-
 export function getAllowedTradeSides() {
-  const longEnabled = envBool(process.env.LONG_ENABLED, false);
-  const shortEnabled = envBool(process.env.SHORT_ENABLED, true);
+  const longEnabled = envBool(process.env.LONG_ENABLED, true);
+  const shortEnabled = envBool(process.env.SHORT_ENABLED, false);
 
   const sides = DEFAULT_ALLOWED_TRADE_SIDES.filter((side) => {
     if (side === 'LONG') return longEnabled;
@@ -185,7 +91,7 @@ export function getAllowedTradeSides() {
     return false;
   });
 
-  return sides.length ? sides : ['SHORT'];
+  return sides.length ? sides : ['LONG'];
 }
 
 export function isAllowedTradeSide(side) {
@@ -200,10 +106,10 @@ export function shouldBlockTradeSide(side) {
   return !isAllowedTradeSide(side);
 }
 
-export function isShortOnlyRuntime() {
+export function isLongOnlyRuntime() {
   const allowed = getAllowedTradeSides();
 
-  return allowed.length === 1 && allowed[0] === 'SHORT';
+  return allowed.length === 1 && allowed[0] === 'LONG';
 }
 
 export function filterAllowedTradeSides(rows = [], sideGetter = (row) => row?.tradeSide || row?.side) {
@@ -212,11 +118,11 @@ export function filterAllowedTradeSides(rows = [], sideGetter = (row) => row?.tr
   return rows.filter((row) => isAllowedTradeSide(sideGetter(row)));
 }
 
-export function rejectLongSide(side, fallback = 'UNKNOWN') {
+export function rejectShortSide(side, fallback = 'UNKNOWN') {
   const tradeSide = normalizeTradeSide(side);
 
-  if (tradeSide === 'LONG') return fallback;
-  if (tradeSide === 'SHORT') return 'SHORT';
+  if (tradeSide === 'SHORT') return fallback;
+  if (tradeSide === 'LONG') return 'LONG';
 
   return fallback;
 }
@@ -242,7 +148,6 @@ function removeSeparators(symbol) {
 
 export function normalizeBaseSymbol(raw) {
   let symbol = cleanSymbolInput(raw);
-
   symbol = stripBitgetProductSuffix(symbol);
   symbol = removeSeparators(symbol);
 
@@ -374,12 +279,12 @@ export function tradeSideToDirection(side) {
 }
 
 export function isLongSide(side) {
-  if (!envBool(process.env.LONG_ENABLED, false)) return false;
-
   return sideToTradeSide(side) === 'LONG';
 }
 
 export function isShortSide(side) {
+  if (!envBool(process.env.SHORT_ENABLED, false)) return false;
+
   return sideToTradeSide(side) === 'SHORT';
 }
 
@@ -389,12 +294,12 @@ export function isTradeSide(side) {
   return tradeSide === 'LONG' || tradeSide === 'SHORT';
 }
 
-export function isShortAllowed() {
-  return isAllowedTradeSide('SHORT');
-}
-
 export function isLongAllowed() {
   return isAllowedTradeSide('LONG');
+}
+
+export function isShortAllowed() {
+  return isAllowedTradeSide('SHORT');
 }
 
 export function getObRelation(side, obBias) {
@@ -473,8 +378,6 @@ export function bucketFunding(rate) {
 
   if (!Number.isFinite(r)) return 'FUNDING_NA';
 
-  // Funding is expected as decimal ratio.
-  // 0.0001 = 0.01%.
   if (r <= -0.0015) return 'FUNDING_NEG_EXTREME';
   if (r <= -0.0006) return 'FUNDING_NEG_HIGH';
   if (r < -0.0001) return 'FUNDING_NEG';
