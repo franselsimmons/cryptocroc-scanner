@@ -187,7 +187,10 @@ export const CONFIG = Object.freeze({
     macroSchema: str(env.ANALYZE_MACRO_SCHEMA, 'MF_V1'),
     microSchema: str(env.ANALYZE_MICRO_SCHEMA, 'MF_V2'),
 
-    refineExecutionMicroIds: bool(env.ANALYZE_REFINE_EXECUTION_MICRO_IDS, true),
+    // Bootstrap-modus:
+    // false = geen extra _XR_ execution fingerprint.
+    // Dit voorkomt dat elke setup op seen=1 blijft hangen.
+    refineExecutionMicroIds: bool(env.ANALYZE_REFINE_EXECUTION_MICRO_IDS, false),
 
     shadowEnabled: bool(env.ANALYZE_SHADOW_ENABLED, true),
     shadowHorizonMin: int(env.ANALYZE_SHADOW_HORIZON_MIN, 6 * 60),
