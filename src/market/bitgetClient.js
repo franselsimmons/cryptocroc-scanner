@@ -24,7 +24,6 @@ function buildUrl(path, params = {}) {
 
   for (const [key, value] of Object.entries(params || {})) {
     if (value === undefined || value === null || value === '') continue;
-
     url.searchParams.set(key, String(value));
   }
 
@@ -51,6 +50,33 @@ function isLikelyNetworkError(error) {
     String(error?.message || '').toLowerCase().includes('fetch failed') ||
     String(error?.message || '').toLowerCase().includes('network')
   );
+}
+
+function getCaseInsensitive(row = {}, key = '') {
+  if (!row || typeof row !== 'object') return undefined;
+
+  if (Object.prototype.hasOwnProperty.call(row, key)) {
+    return row[key];
+  }
+
+  const lowerKey = String(key).toLowerCase();
+
+  const foundKey = Object.keys(row).find((candidate) => (
+    String(candidate).toLowerCase() === lowerKey
+  ));
+
+  return foundKey ? row[foundKey] : undefined;
+}
+
+function firstNumber(row = {}, keys = [], fallback = 0) {
+  for (const key of keys) {
+    const value = getCaseInsensitive(row, key);
+    const n = safeNumber(value, NaN);
+
+    if (Number.isFinite(n)) return n;
+  }
+
+  return fallback;
 }
 
 async function fetchJsonOnce(path, params = {}, timeoutMs = CONFIG.bitget.timeoutMs) {
@@ -169,60 +195,65 @@ export async function fetchBitgetTickers() {
 
 export function parseTicker(row = {}) {
   const contractSymbol = normalizeContractSymbol(
-    row.contractSymbol ||
     row.symbol ||
     row.instId ||
     row.contractCode ||
-    row.symbolName
+    row.symbolName ||
+    row.contractSymbol
   );
 
   const baseSymbol = normalizeBaseSymbol(
     row.baseSymbol ||
+    row.baseCoin ||
+    row.coin ||
     contractSymbol
   );
 
-  const price = safeNumber(
-    row.price ??
-    row.lastPr ??
-    row.last ??
-    row.close ??
-    row.markPrice ??
-    row.indexPrice,
-    0
-  );
+  const price = firstNumber(row, [
+    'price',
+    'lastPr',
+    'last',
+    'lastPrice',
+    'close',
+    'closePrice',
+    'markPrice',
+    'indexPrice'
+  ], 0);
 
-  const baseVolume = safeNumber(
-    row.baseVolume ??
-    row.baseVol ??
-    row.volume ??
-    row.vol,
-    0
-  );
+  const baseVolume = firstNumber(row, [
+    'baseVolume',
+    'baseVol',
+    'baseVolume24h',
+    'volume',
+    'vol',
+    'size'
+  ], 0);
 
-  const quoteVolumeRaw = safeNumber(
-    row.volume24h ??
-    row.quoteVolume ??
-    row.quoteVol ??
-    row.usdtVolume ??
-    row.turnover ??
-    row.quoteTurnover,
-    0
-  );
+  const quoteVolumeRaw = firstNumber(row, [
+    'volume24h',
+    'quoteVolume',
+    'quoteVol',
+    'quoteVolume24h',
+    'usdtVolume',
+    'turnover',
+    'turnover24h',
+    'quoteTurnover',
+    'quoteAmount',
+    'amount'
+  ], 0);
 
   const quoteVolume = quoteVolumeRaw > 0
     ? quoteVolumeRaw
     : baseVolume * price;
 
-  const rawChange = safeNumber(
-    row.change24h ??
-    row.change24hPct ??
-    row.change24hPercent ??
-    row.changeUtc24h ??
-    row.priceChangePercent ??
-    row.priceChange24h ??
-    row.chgUtc,
-    0
-  );
+  const rawChange = firstNumber(row, [
+    'change24h',
+    'changeUtc24h',
+    'priceChangePercent',
+    'priceChange24h',
+    'chgUtc',
+    'change'
+  ], 0);
 
   const change24h = Math.abs(rawChange) <= 1
     ? rawChange * 100
@@ -432,13 +463,11 @@ export function analyzeOrderBook(raw) {
 
   const bidDepth = bids.reduce((sum, [price, qty]) => {
     if (price < minBidPrice) return sum;
-
     return sum + price * qty;
   }, 0);
 
   const askDepth = asks.reduce((sum, [price, qty]) => {
     if (price > maxAskPrice) return sum;
-
     return sum + price * qty;
   }, 0);
 
