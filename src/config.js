@@ -58,7 +58,7 @@ const tradeSides = (value, fallback = ['LONG']) => {
 };
 
 export const CONFIG = Object.freeze({
-  strategyVersion: str(env.STRATEGY_VERSION, 'CLEAN_MF_TS_LONG_ONLY_STABLE_V2'),
+  strategyVersion: str(env.STRATEGY_VERSION, 'CLEAN_MF_TS_LONG_ONLY_STABLE_V3'),
 
   direction: {
     mode: str(env.DIRECTION_MODE, 'LONG_ONLY'),
@@ -101,6 +101,11 @@ export const CONFIG = Object.freeze({
     maxCandidates: int(env.SCANNER_MAX_CANDIDATES, 300),
     analyzeMaxCandidates: int(env.SCANNER_ANALYZE_MAX_CANDIDATES, 300),
 
+    // Scanner moet Analyze direct vullen.
+    // Hierdoor blijven micro families niet op 0 als TradeSystem live-risk afkeurt.
+    directAnalyzeEnabled: bool(env.SCANNER_DIRECT_ANALYZE_ENABLED, true),
+    directAnalyzeMaxCandidates: int(env.SCANNER_DIRECT_ANALYZE_MAX_CANDIDATES, 300),
+
     dataConcurrency: int(env.SCANNER_DATA_CONCURRENCY, 12),
 
     minQuoteVolume24h: num(env.SCANNER_MIN_QUOTE_VOLUME_24H, 1_500_000),
@@ -110,7 +115,10 @@ export const CONFIG = Object.freeze({
     minAbsChange24h: num(env.SCANNER_MIN_ABS_CHANGE_24H, 0.35),
 
     strictFilters: bool(env.SCANNER_STRICT_FILTERS, false),
-    blockFakeBreakout: bool(env.SCANNER_BLOCK_FAKE_BREAKOUT, false),
+
+    // Scanner moet fake-breakout troep vóór Analyze verwijderen.
+    blockFakeBreakout: bool(env.SCANNER_BLOCK_FAKE_BREAKOUT, true),
+
     blockNoDirection: bool(env.SCANNER_BLOCK_NO_DIRECTION, false),
     blockSmallMove: bool(env.SCANNER_BLOCK_SMALL_MOVE, false),
 
@@ -186,9 +194,9 @@ export const CONFIG = Object.freeze({
     macroSchema: str(env.ANALYZE_MACRO_SCHEMA, 'MF_V1'),
     microSchema: str(env.ANALYZE_MICRO_SCHEMA, 'MF_V2'),
 
-    // BELANGRIJK:
-    // false = families clusteren eerst breed genoeg.
-    // true = bijna elke coin/fine bucket wordt eigen XR micro en blijft vaak op sample 1.
+    // Belangrijk:
+    // false = families clusteren breed genoeg.
+    // true = XR/fine hash maakt vaak bijna elke coin eigen micro-family.
     refineExecutionMicroIds: bool(env.ANALYZE_REFINE_EXECUTION_MICRO_IDS, false),
 
     shadowEnabled: bool(env.ANALYZE_SHADOW_ENABLED, true),
