@@ -58,7 +58,7 @@ const tradeSides = (value, fallback = ['LONG']) => {
 };
 
 export const CONFIG = Object.freeze({
-  strategyVersion: str(env.STRATEGY_VERSION, 'CLEAN_MF_TS_LONG_ONLY_V1'),
+  strategyVersion: str(env.STRATEGY_VERSION, 'COARSE_MF_TS_LONG_ONLY_V2'),
 
   direction: {
     mode: str(env.DIRECTION_MODE, 'LONG_ONLY'),
@@ -166,7 +166,10 @@ export const CONFIG = Object.freeze({
     minLiveScannerScore: num(env.TRADE_MIN_LIVE_SCANNER_SCORE, 0),
 
     allowLegacyMacroLiveEntries: bool(env.TRADE_ALLOW_LEGACY_MACRO_LIVE_ENTRIES, false),
-    allowCoarseMicroAliasLiveEntries: bool(env.TRADE_ALLOW_COARSE_MICRO_ALIAS_LIVE_ENTRIES, false),
+
+    // Belangrijk voor coarse clustering:
+    // true = live entry mag matchen op de coarse MF_V2 alias als refined XR-id niet actief is.
+    allowCoarseMicroAliasLiveEntries: bool(env.TRADE_ALLOW_COARSE_MICRO_ALIAS_LIVE_ENTRIES, true),
 
     candleTtlSec: int(env.TRADE_CANDLE_CACHE_TTL_SEC, 90),
     orderbookTtlSec: int(env.TRADE_ORDERBOOK_CACHE_TTL_SEC, 12),
@@ -187,7 +190,29 @@ export const CONFIG = Object.freeze({
     macroSchema: str(env.ANALYZE_MACRO_SCHEMA, 'MF_V1'),
     microSchema: str(env.ANALYZE_MICRO_SCHEMA, 'MF_V2'),
 
-    refineExecutionMicroIds: bool(env.ANALYZE_REFINE_EXECUTION_MICRO_IDS, true),
+    /*
+      BELANGRIJKE FIX:
+      false = géén _XR_ micro IDs met symbolClass/fine buckets.
+      Dit laat dezelfde LONG setup clusteren over meerdere coins.
+      Daardoor stijgt sample van 1 naar echte aggregated samples.
+    */
+    refineExecutionMicroIds: false,
+
+    /*
+      Alleen diagnostisch.
+      Als Vercel nog ANALYZE_REFINE_EXECUTION_MICRO_IDS=true heeft staan,
+      negeren we die hierboven bewust.
+    */
+    refineExecutionMicroIdsEnvRequested: bool(env.ANALYZE_REFINE_EXECUTION_MICRO_IDS, false),
+
+    /*
+      Safe flags voor analyzer-code die coarse micro clustering ondersteunt.
+      Als je analyzer deze velden nog niet leest, breken ze niets.
+    */
+    preferCoarseMicroIdsForLearning: true,
+    includeSymbolClassInMicroId: false,
+    includeFineBucketsInMicroId: false,
+    mergeRefinedExecutionMicros: true,
 
     shadowEnabled: bool(env.ANALYZE_SHADOW_ENABLED, true),
     shadowHorizonMin: int(env.ANALYZE_SHADOW_HORIZON_MIN, 6 * 60),
