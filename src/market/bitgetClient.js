@@ -52,33 +52,6 @@ function isLikelyNetworkError(error) {
   );
 }
 
-function getCaseInsensitive(row = {}, key = '') {
-  if (!row || typeof row !== 'object') return undefined;
-
-  if (Object.prototype.hasOwnProperty.call(row, key)) {
-    return row[key];
-  }
-
-  const lowerKey = String(key).toLowerCase();
-
-  const foundKey = Object.keys(row).find((candidate) => (
-    String(candidate).toLowerCase() === lowerKey
-  ));
-
-  return foundKey ? row[foundKey] : undefined;
-}
-
-function firstNumber(row = {}, keys = [], fallback = 0) {
-  for (const key of keys) {
-    const value = getCaseInsensitive(row, key);
-    const n = safeNumber(value, NaN);
-
-    if (Number.isFinite(n)) return n;
-  }
-
-  return fallback;
-}
-
 async function fetchJsonOnce(path, params = {}, timeoutMs = CONFIG.bitget.timeoutMs) {
   const url = buildUrl(path, params);
 
@@ -90,7 +63,7 @@ async function fetchJsonOnce(path, params = {}, timeoutMs = CONFIG.bitget.timeou
       method: 'GET',
       headers: {
         accept: 'application/json',
-        'user-agent': CONFIG.strategyVersion || 'CLEAN_MF_TS_V1'
+        'user-agent': CONFIG.strategyVersion || 'CLEAN_MF_TS_LONG_ONLY_V1'
       },
       signal: controller.signal
     });
@@ -193,67 +166,68 @@ export async function fetchBitgetTickers() {
   return Array.isArray(data) ? data : [];
 }
 
+function firstNumber(row = {}, keys = [], fallback = 0) {
+  for (const key of keys) {
+    const value = safeNumber(row?.[key], NaN);
+
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+
+  return fallback;
+}
+
 export function parseTicker(row = {}) {
   const contractSymbol = normalizeContractSymbol(
     row.symbol ||
     row.instId ||
     row.contractCode ||
-    row.symbolName ||
-    row.contractSymbol
+    row.symbolName
   );
 
-  const baseSymbol = normalizeBaseSymbol(
-    row.baseSymbol ||
-    row.baseCoin ||
-    row.coin ||
-    contractSymbol
-  );
+  const baseSymbol = normalizeBaseSymbol(contractSymbol);
 
-  const price = firstNumber(row, [
-    'price',
-    'lastPr',
-    'last',
-    'lastPrice',
-    'close',
-    'closePrice',
-    'markPrice',
-    'indexPrice'
-  ], 0);
+  const price = safeNumber(
+    row.lastPr ??
+    row.last ??
+    row.close ??
+    row.markPrice ??
+    row.indexPrice,
+    0
+  );
 
   const baseVolume = firstNumber(row, [
     'baseVolume',
     'baseVol',
-    'baseVolume24h',
     'volume',
     'vol',
-    'size'
+    'size',
+    'amount'
   ], 0);
 
   const quoteVolumeRaw = firstNumber(row, [
-    'volume24h',
     'quoteVolume',
     'quoteVol',
-    'quoteVolume24h',
     'usdtVolume',
     'turnover',
-    'turnover24h',
     'quoteTurnover',
-    'quoteAmount',
-    'amount'
+    'turnover24h',
+    'quoteVolume24h',
+    'quoteVol24h'
   ], 0);
 
   const quoteVolume = quoteVolumeRaw > 0
     ? quoteVolumeRaw
     : baseVolume * price;
 
-  const rawChange = firstNumber(row, [
-    'change24h',
-    'changeUtc24h',
-    'priceChangePercent',
-    'priceChange24h',
-    'chgUtc',
-    'change'
-  ], 0);
+  const rawChange = safeNumber(
+    row.change24h ??
+    row.changeUtc24h ??
+    row.priceChangePercent ??
+    row.priceChange24h ??
+    row.chgUtc ??
+    row.changeUtc,
+    0
+  );
 
   const change24h = Math.abs(rawChange) <= 1
     ? rawChange * 100
@@ -265,6 +239,7 @@ export function parseTicker(row = {}) {
     baseSymbol,
     price,
     volume24h: quoteVolume,
+    tickerVolume24h: quoteVolume,
     change24h,
     raw: row
   };
