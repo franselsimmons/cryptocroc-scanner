@@ -77,6 +77,12 @@ function positiveInt(value, fallback, min = 1, max = Number.MAX_SAFE_INTEGER) {
   return Math.max(min, Math.min(max, n));
 }
 
+function clampNumber(value, min, max) {
+  const n = safeNumber(value, min);
+
+  return Math.max(min, Math.min(max, n));
+}
+
 function tradeConfig() {
   const configuredTradeMax = cfgNumber(CONFIG.trade?.maxCandidatesPerSnapshot, 0);
   const configuredAnalyzeMax = cfgNumber(
@@ -301,6 +307,9 @@ function inferSideFromIds(row = {}) {
     row.familyId,
     row.microFamilyId,
     row.trueMicroFamilyId,
+    row.executionMicroFamilyId,
+    row.liveMicroFamilyId,
+    row.realMicroFamilyId,
     row.coarseMicroFamilyId,
     row.baseMicroFamilyId,
     row.legacyMicroFamilyId,
@@ -374,9 +383,9 @@ function inferRowTradeSide(row = {}) {
 
   if (VALID_TRADE_SIDES.has(fromIds)) return fromIds;
 
-  const fromDefinition = inferSideFromDefinitions(row);
+  const fromDefinitions = inferSideFromDefinitions(row);
 
-  if (VALID_TRADE_SIDES.has(fromDefinition)) return fromDefinition;
+  if (VALID_TRADE_SIDES.has(fromDefinitions)) return fromDefinitions;
 
   const direct = normalizeTradeSide(
     row.tradeSide ||
@@ -872,7 +881,7 @@ function hasValidRiskShape(row = {}) {
   if (row.learningOnly === true) return false;
   if (row.observationOnly === true) return false;
 
-  return entry > 0 && sl > 0 && tp > 0 && rr > 0;
+  return entry > 0 && sl > 0 && tp > 0 && rr > 0 && sl < entry && tp > entry;
 }
 
 function isShadowEligibleRow(row = {}) {
@@ -1543,6 +1552,126 @@ async function monitorShadowPositions() {
   return results.filter(Boolean);
 }
 
+function candleHigh(candle) {
+  return safeNumber(candle?.high ?? candle?.h ?? candle?.[2], 0);
+}
+
+function candleLow(candle) {
+  return safeNumber(candle?.low ?? candle?.l ?? candle?.[3], 0);
+}
+
+function candleClose(candle) {
+  return safeNumber(candle?.close ?? candle?.c ?? candle?.[4], 0);
+}
+
+function estimateAtrPct(candles = [], lookback = 14) {
+  const rows = Array.isArray(candles) ? candles.slice(-lookback - 1) : [];
+
+  if (rows.length < 3) return 0;
+
+  const trs = [];
+
+  for (let i = 1; i < rows.length; i += 1) {
+    const high = candleHigh(rows[i]);
+    const low = candleLow(rows[i]);
+    const prevClose = candleClose(rows[i - 1]);
+
+    if (high <= 0 || low <= 0 || prevClose <= 0) continue;
+
+    trs.push(Math.max(
+      high - low,
+      Math.abs(high - prevClose),
+      Math.abs(low - prevClose)
+    ));
+  }
+
+  const close = candleClose(rows[rows.length - 1]);
+
+  if (!trs.length || close <= 0) return 0;
+
+  const atr = trs.reduce((sum, value) => sum + value, 0) / trs.length;
+
+  return atr / close;
+}
+
+function normalizeRiskMetricsOutput(raw) {
+  if (Array.isArray(raw)) return raw.filter(Boolean);
+
+  if (!raw || typeof raw !== 'object') return [];
+
+  const rows = [];
+
+  const arrayKeys = [
+    'rows',
+    'metrics',
+    'liveRows',
+    'riskRows',
+    'candidates',
+    'signals',
+    'entries'
+  ];
+
+  for (const key of arrayKeys) {
+    if (Array.isArray(raw[key])) {
+      rows.push(...raw[key].filter(Boolean));
+    }
+  }
+
+  const objectKeys = [
+    'long',
+    'LONG',
+    'bull',
+    'BULL',
+    'buy',
+    'BUY',
+    'target',
+    'selected'
+  ];
+
+  for (const key of objectKeys) {
+    const value = raw[key];
+
+    if (Array.isArray(value)) {
+      rows.push(...value.filter(Boolean));
+      continue;
+    }
+
+    if (value && typeof value === 'object') {
+      rows.push(value);
+    }
+  }
+
+  if (
+    safeNumber(raw.entry, 0) > 0 ||
+    safeNumber(raw.sl, 0) > 0 ||
+    safeNumber(raw.tp, 0) > 0 ||
+    safeNumber(raw.rr, 0) > 0
+  ) {
+    rows.push(raw);
+  }
+
+  const longEntry = safeNumber(raw.longEntry ?? raw.entryLong, 0);
+  const longSl = safeNumber(raw.longSl ?? raw.slLong ?? raw.longSL, 0);
+  const longTp = safeNumber(raw.longTp ?? raw.tpLong ?? raw.longTP, 0);
+  const longRr = safeNumber(raw.longRr ?? raw.rrLong ?? raw.longRR, 0);
+
+  if (longEntry > 0 || longSl > 0 || longTp > 0 || longRr > 0) {
+    rows.push({
+      ...raw,
+      entry: longEntry,
+      sl: longSl,
+      tp: longTp,
+      rr: longRr,
+      side: TARGET_DASHBOARD_SIDE,
+      tradeSide: TARGET_TRADE_SIDE,
+      positionSide: TARGET_TRADE_SIDE,
+      direction: TARGET_TRADE_SIDE
+    });
+  }
+
+  return rows.filter(Boolean);
+}
+
 function enrichMetricsWithScannerAndLiveGates({
   metrics,
   candidate,
@@ -1727,6 +1856,114 @@ function buildObservationMetrics({
   });
 }
 
+function buildSyntheticLongRiskMetrics({
+  normalized,
+  data = {},
+  reason = 'SYNTHETIC_LONG_RISK_FROM_LIVE_DATA'
+}) {
+  const ob = data.ob || {};
+  const mid = safeNumber(
+    ob.mid ??
+    normalized.price ??
+    normalized.markPrice ??
+    normalized.currentPrice,
+    0
+  );
+
+  if (mid <= 0) {
+    return buildObservationMetrics({
+      normalized,
+      data,
+      reason: `${reason}_NO_MID`
+    });
+  }
+
+  const spreadPct = safeNumber(
+    ob.spreadPct ??
+    normalized.spreadPct ??
+    CONFIG.cost?.fallbackSpreadPct,
+    0.0008
+  );
+
+  const atrPct = estimateAtrPct(data.candles15m, 14);
+
+  const minRiskPct = cfgNumber(CONFIG.trade?.minRiskPct, 0.004);
+  const maxRiskPct = cfgNumber(CONFIG.trade?.maxRiskPct, 0.025);
+  const fallbackRiskPct = cfgNumber(CONFIG.trade?.fallbackRiskPct, 0.005);
+  const spreadRiskPct = spreadPct * cfgNumber(CONFIG.trade?.spreadRiskMult, 5);
+  const atrRiskPct = atrPct * cfgNumber(CONFIG.trade?.atrRiskMult, 1.2);
+
+  const riskPct = clampNumber(
+    Math.max(fallbackRiskPct, spreadRiskPct, atrRiskPct),
+    minRiskPct,
+    maxRiskPct
+  );
+
+  const rr = Math.max(
+    cfgNumber(CONFIG.trade?.minRR, 0.5),
+    cfgNumber(CONFIG.trade?.defaultRR, 1.5)
+  );
+
+  const entry = mid;
+  const sl = entry * (1 - riskPct);
+  const tp = entry * (1 + riskPct * rr);
+  const rewardPct = (tp - entry) / entry;
+
+  return enrichMetricsWithScannerAndLiveGates({
+    metrics: {
+      symbol: normalized.symbol,
+      baseSymbol: normalized.baseSymbol,
+      contractSymbol: normalized.contractSymbol,
+
+      side: TARGET_DASHBOARD_SIDE,
+      tradeSide: TARGET_TRADE_SIDE,
+      positionSide: TARGET_TRADE_SIDE,
+      direction: TARGET_TRADE_SIDE,
+
+      price: mid,
+      entry,
+      sl,
+      tp,
+      rr,
+
+      riskPct,
+      rewardPct,
+
+      confluence: safeNumber(normalized.scannerScore ?? normalized.moveScore, 0),
+      sniperScore: safeNumber(normalized.scannerScore ?? normalized.moveScore, 0),
+
+      spreadPct,
+      depthMinUsd1p: safeNumber(ob.depthMinUsd1p, 0),
+      fundingRate: safeNumber(data.funding?.rate, 0),
+
+      rsiZone: normalized.rsiZone || null,
+      rsiCoarse: normalized.rsiCoarse || null,
+      flow: normalized.flow || null,
+      flowCoarse: normalized.flowCoarse || null,
+      obRelation: normalized.obRelation || null,
+      btcRelation: normalized.btcRelation || null,
+      btcState: normalized.btcState || null,
+      regime: normalized.regime || null,
+      regimeCoarse: normalized.regimeCoarse || null,
+
+      syntheticRisk: true,
+      syntheticRiskReason: reason,
+      observationOnly: false,
+      analysisInputOnly: false,
+      shadowEligible: true,
+      liveRiskValid: true,
+      learningOnly: false,
+      liveEntryBlockedReason: null
+    },
+    candidate: normalized,
+    ob: {
+      ...ob,
+      mid,
+      spreadPct
+    }
+  });
+}
+
 function buildActualRiskWaitIfNeeded({
   normalized,
   scannerSide,
@@ -1846,10 +2083,10 @@ async function processCandidate(candidate) {
     };
   }
 
-  const generatedMetricsRaw = buildRiskAndLiveMetricsForBothSides({
+  const generatedRaw = buildRiskAndLiveMetricsForBothSides({
     candidate: {
       ...normalized,
-      side: TARGET_TRADE_SIDE,
+      side: TARGET_DASHBOARD_SIDE,
       tradeSide: TARGET_TRADE_SIDE,
       positionSide: TARGET_TRADE_SIDE,
       direction: TARGET_TRADE_SIDE
@@ -1862,15 +2099,14 @@ async function processCandidate(candidate) {
     regime: normalized.regime || candidate.regime
   });
 
-  const generatedMetrics = Array.isArray(generatedMetricsRaw)
-    ? generatedMetricsRaw
-    : [];
+  const generatedMetrics = normalizeRiskMetricsOutput(generatedRaw);
 
-  const metrics = generatedMetrics
+  const riskEngineMetrics = generatedMetrics
     .map((row) => {
-      const rowSide = normalizeTradeSide(row.tradeSide || row.side);
+      const inferred = inferRowTradeSide(row);
+      const direct = normalizeTradeSide(row.tradeSide || row.side);
 
-      if (rowSide !== TARGET_TRADE_SIDE) return null;
+      if (inferred === OPPOSITE_TRADE_SIDE || direct === OPPOSITE_TRADE_SIDE) return null;
 
       const variant = buildAnalysisVariant(
         normalized,
@@ -1883,6 +2119,10 @@ async function processCandidate(candidate) {
       return enrichMetricsWithScannerAndLiveGates({
         metrics: {
           ...row,
+          side: TARGET_DASHBOARD_SIDE,
+          tradeSide: TARGET_TRADE_SIDE,
+          positionSide: TARGET_TRADE_SIDE,
+          direction: TARGET_TRADE_SIDE,
           observationOnly: false,
           analysisInputOnly: false
         },
@@ -1893,13 +2133,17 @@ async function processCandidate(candidate) {
     .filter(Boolean)
     .filter(isTargetRow);
 
-  const finalMetrics = metrics.length
-    ? metrics
+  const validRiskEngineMetrics = riskEngineMetrics.filter(hasValidRiskShape);
+
+  const finalMetrics = validRiskEngineMetrics.length
+    ? validRiskEngineMetrics
     : [
-      buildObservationMetrics({
+      buildSyntheticLongRiskMetrics({
         normalized,
         data,
-        reason: 'LONG_RISK_INVALID_OBSERVATION_ONLY'
+        reason: riskEngineMetrics.length
+          ? 'RISK_ENGINE_INVALID_SHAPE_SYNTHETIC_LONG_RISK'
+          : 'RISK_ENGINE_EMPTY_SYNTHETIC_LONG_RISK'
       })
     ];
 
@@ -2005,35 +2249,40 @@ function mergeAnalyzedWithRiskSource(row = {}, riskRowBySymbol = new Map()) {
 
   if (!source) return row;
 
-  return {
+  const entry = safeNumber(row.entry, 0) || source.entry;
+  const sl = safeNumber(row.sl, 0) || source.sl;
+  const tp = safeNumber(row.tp, 0) || source.tp;
+  const rr = safeNumber(row.rr, 0) || source.rr;
+
+  const merged = {
     ...source,
     ...row,
 
-    entry: safeNumber(row.entry, 0) || source.entry,
-    sl: safeNumber(row.sl, 0) || source.sl,
-    tp: safeNumber(row.tp, 0) || source.tp,
-    rr: safeNumber(row.rr, 0) || source.rr,
+    entry,
+    sl,
+    tp,
+    rr,
 
     riskPct: safeNumber(row.riskPct, 0) || source.riskPct,
     rewardPct: safeNumber(row.rewardPct, 0) || source.rewardPct,
 
-    liveRiskValid: hasValidRiskShape({
-      ...source,
-      ...row,
-      entry: safeNumber(row.entry, 0) || source.entry,
-      sl: safeNumber(row.sl, 0) || source.sl,
-      tp: safeNumber(row.tp, 0) || source.tp,
-      rr: safeNumber(row.rr, 0) || source.rr
-    }),
+    side: TARGET_DASHBOARD_SIDE,
+    tradeSide: TARGET_TRADE_SIDE,
+    positionSide: TARGET_TRADE_SIDE,
+    direction: TARGET_TRADE_SIDE,
 
-    shadowEligible: hasValidRiskShape({
-      ...source,
-      ...row,
-      entry: safeNumber(row.entry, 0) || source.entry,
-      sl: safeNumber(row.sl, 0) || source.sl,
-      tp: safeNumber(row.tp, 0) || source.tp,
-      rr: safeNumber(row.rr, 0) || source.rr
-    })
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false
+  };
+
+  const valid = hasValidRiskShape(merged);
+
+  return {
+    ...merged,
+    liveRiskValid: valid,
+    shadowEligible: valid
   };
 }
 
@@ -2259,6 +2508,7 @@ export async function runTradeSystem(options = {}) {
   const actualLiveRows = liveRows.filter(isLiveScannerRow).length;
   const mirrorRows = liveRows.filter(isMirrorAnalysisRow).length;
   const observationOnlyRows = liveRows.filter((row) => row.observationOnly).length;
+  const syntheticRiskRows = liveRows.filter((row) => row.syntheticRisk).length;
   const learningOnlyRows = liveRows.filter((row) => row.learningOnly).length;
   const riskValidRows = liveRows.filter(hasValidRiskShape).length;
 
@@ -2279,6 +2529,7 @@ export async function runTradeSystem(options = {}) {
   const analyzedActualRows = analyzedRows.filter(isLiveScannerRow).length;
   const analyzedMirrorRows = analyzedRows.filter(isMirrorAnalysisRow).length;
   const analyzedRiskValidRows = analyzedRows.filter(hasValidRiskShape).length;
+  const analyzedSyntheticRiskRows = analyzedRows.filter((row) => row.syntheticRisk).length;
 
   const openPositions = await getOpenPositions();
   const actions = [...earlyActions];
@@ -2507,6 +2758,7 @@ export async function runTradeSystem(options = {}) {
       actualLiveRows,
       mirrorRows,
       observationOnlyRows,
+      syntheticRiskRows,
       learningOnlyRows,
       riskValidRows,
 
@@ -2515,6 +2767,7 @@ export async function runTradeSystem(options = {}) {
       analyzedActualRows,
       analyzedMirrorRows,
       analyzedRiskValidRows,
+      analyzedSyntheticRiskRows,
       analyzeError,
 
       shadowCreatedRows,
@@ -2567,6 +2820,7 @@ export async function runTradeSystem(options = {}) {
     actualLiveRows,
     mirrorRows,
     observationOnlyRows,
+    syntheticRiskRows,
     learningOnlyRows,
     riskValidRows,
 
@@ -2575,6 +2829,7 @@ export async function runTradeSystem(options = {}) {
     analyzedActualRows,
     analyzedMirrorRows,
     analyzedRiskValidRows,
+    analyzedSyntheticRiskRows,
     analyzeError,
 
     shadowCreatedRows,
