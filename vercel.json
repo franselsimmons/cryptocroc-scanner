@@ -1,12 +1,42 @@
 {
-  "crons": [
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "functions": {
+    "api/**/*.js": {
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
     {
-      "path": "/api/cron?store=true",
-      "schedule": "*/15 * * * *"
+      "source": "/",
+      "destination": "/admin.html"
     },
     {
-      "path": "/api/trade-funnel?notify=true&store=true",
+      "source": "/admin",
+      "destination": "/admin.html"
+    },
+    {
+      "source": "/admin/micro-families",
+      "destination": "/admin.html"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/scanner/run",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/trade/run",
       "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/analyze/weekly-freeze",
+      "schedule": "0 22 * * 0"
+    },
+    {
+      "path": "/api/analyze/activate-rotation",
+      "schedule": "0 0 * * 1"
     }
   ]
 }
