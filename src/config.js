@@ -47,7 +47,7 @@ const csv = (value, fallback = []) => {
   return values.length ? values : fallback;
 };
 
-const tradeSides = (value, fallback = ['SHORT']) => {
+const tradeSides = (value, fallback = ['LONG']) => {
   const allowed = new Set(['LONG', 'SHORT']);
 
   const values = csv(value, fallback)
@@ -58,18 +58,18 @@ const tradeSides = (value, fallback = ['SHORT']) => {
 };
 
 export const CONFIG = Object.freeze({
-  strategyVersion: str(env.STRATEGY_VERSION, 'CLEAN_MF_TS_SHORT_ONLY_V1'),
+  strategyVersion: str(env.STRATEGY_VERSION, 'CLEAN_MF_TS_LONG_ONLY_V1'),
 
   direction: {
-    mode: str(env.DIRECTION_MODE, 'SHORT_ONLY'),
-    primaryTradeSide: str(env.PRIMARY_TRADE_SIDE, 'SHORT').toUpperCase(),
-    allowedTradeSides: tradeSides(env.ALLOWED_TRADE_SIDES, ['SHORT']),
+    mode: str(env.DIRECTION_MODE, 'LONG_ONLY'),
+    primaryTradeSide: str(env.PRIMARY_TRADE_SIDE, 'LONG').toUpperCase(),
+    allowedTradeSides: tradeSides(env.ALLOWED_TRADE_SIDES, ['LONG']),
 
-    shortEnabled: bool(env.SHORT_ENABLED, true),
-    longEnabled: bool(env.LONG_ENABLED, false),
+    shortEnabled: bool(env.SHORT_ENABLED, false),
+    longEnabled: bool(env.LONG_ENABLED, true),
 
-    blockLong: bool(env.BLOCK_LONG, true),
-    blockShort: bool(env.BLOCK_SHORT, false)
+    blockLong: bool(env.BLOCK_LONG, false),
+    blockShort: bool(env.BLOCK_SHORT, true)
   },
 
   app: {
@@ -89,13 +89,13 @@ export const CONFIG = Object.freeze({
   },
 
   scanner: {
-    mode: str(env.SCANNER_MODE, 'SHORT_ONLY'),
-    allowedTradeSides: tradeSides(env.SCANNER_ALLOWED_TRADE_SIDES, ['SHORT']),
-    primaryTradeSide: str(env.SCANNER_PRIMARY_TRADE_SIDE, 'SHORT').toUpperCase(),
+    mode: str(env.SCANNER_MODE, 'LONG_ONLY'),
+    allowedTradeSides: tradeSides(env.SCANNER_ALLOWED_TRADE_SIDES, ['LONG']),
+    primaryTradeSide: str(env.SCANNER_PRIMARY_TRADE_SIDE, 'LONG').toUpperCase(),
 
-    shortEnabled: bool(env.SCANNER_SHORT_ENABLED, true),
-    longEnabled: bool(env.SCANNER_LONG_ENABLED, false),
-    discardLongCandidates: bool(env.SCANNER_DISCARD_LONG_CANDIDATES, true),
+    shortEnabled: bool(env.SCANNER_SHORT_ENABLED, false),
+    longEnabled: bool(env.SCANNER_LONG_ENABLED, true),
+    discardShortCandidates: bool(env.SCANNER_DISCARD_SHORT_CANDIDATES, true),
 
     maxSymbols: int(env.SCANNER_MAX_SYMBOLS, 300),
 
@@ -123,14 +123,14 @@ export const CONFIG = Object.freeze({
   },
 
   trade: {
-    mode: str(env.TRADE_MODE, 'SHORT_ONLY'),
-    allowedTradeSides: tradeSides(env.TRADE_ALLOWED_TRADE_SIDES, ['SHORT']),
-    primaryTradeSide: str(env.TRADE_PRIMARY_TRADE_SIDE, 'SHORT').toUpperCase(),
+    mode: str(env.TRADE_MODE, 'LONG_ONLY'),
+    allowedTradeSides: tradeSides(env.TRADE_ALLOWED_TRADE_SIDES, ['LONG']),
+    primaryTradeSide: str(env.TRADE_PRIMARY_TRADE_SIDE, 'LONG').toUpperCase(),
 
-    shortEnabled: bool(env.TRADE_SHORT_ENABLED, true),
-    longEnabled: bool(env.TRADE_LONG_ENABLED, false),
-    blockLongEntries: bool(env.TRADE_BLOCK_LONG_ENTRIES, true),
-    blockShortEntries: bool(env.TRADE_BLOCK_SHORT_ENTRIES, false),
+    shortEnabled: bool(env.TRADE_SHORT_ENABLED, false),
+    longEnabled: bool(env.TRADE_LONG_ENABLED, true),
+    blockLongEntries: bool(env.TRADE_BLOCK_LONG_ENTRIES, false),
+    blockShortEntries: bool(env.TRADE_BLOCK_SHORT_ENTRIES, true),
 
     lockTtlSec: int(env.TRADE_LOCK_TTL_SEC, 180),
 
@@ -174,23 +174,20 @@ export const CONFIG = Object.freeze({
   },
 
   analyze: {
-    mode: str(env.ANALYZE_MODE, 'SHORT_ONLY'),
-    allowedTradeSides: tradeSides(env.ANALYZE_ALLOWED_TRADE_SIDES, ['SHORT']),
-    primaryTradeSide: str(env.ANALYZE_PRIMARY_TRADE_SIDE, 'SHORT').toUpperCase(),
+    mode: str(env.ANALYZE_MODE, 'LONG_ONLY'),
+    allowedTradeSides: tradeSides(env.ANALYZE_ALLOWED_TRADE_SIDES, ['LONG']),
+    primaryTradeSide: str(env.ANALYZE_PRIMARY_TRADE_SIDE, 'LONG').toUpperCase(),
 
-    shortEnabled: bool(env.ANALYZE_SHORT_ENABLED, true),
-    longEnabled: bool(env.ANALYZE_LONG_ENABLED, false),
-    discardLongObservations: bool(env.ANALYZE_DISCARD_LONG_OBSERVATIONS, true),
+    shortEnabled: bool(env.ANALYZE_SHORT_ENABLED, false),
+    longEnabled: bool(env.ANALYZE_LONG_ENABLED, true),
+    discardShortObservations: bool(env.ANALYZE_DISCARD_SHORT_OBSERVATIONS, true),
 
     schema: str(env.ANALYZE_SCHEMA || env.MICRO_FAMILY_SCHEMA, 'MF_V2'),
     legacySchema: str(env.ANALYZE_LEGACY_SCHEMA, 'MF_V1'),
     macroSchema: str(env.ANALYZE_MACRO_SCHEMA, 'MF_V1'),
     microSchema: str(env.ANALYZE_MICRO_SCHEMA, 'MF_V2'),
 
-    // Bootstrap-modus:
-    // false = geen extra _XR_ execution fingerprint.
-    // Dit voorkomt dat elke setup op seen=1 blijft hangen.
-    refineExecutionMicroIds: bool(env.ANALYZE_REFINE_EXECUTION_MICRO_IDS, false),
+    refineExecutionMicroIds: bool(env.ANALYZE_REFINE_EXECUTION_MICRO_IDS, true),
 
     shadowEnabled: bool(env.ANALYZE_SHADOW_ENABLED, true),
     shadowHorizonMin: int(env.ANALYZE_SHADOW_HORIZON_MIN, 6 * 60),
@@ -229,17 +226,17 @@ export const CONFIG = Object.freeze({
 
   rotation: {
     mode: str(env.ROTATION_MODE, 'balanced'),
-    directionMode: str(env.ROTATION_DIRECTION_MODE, 'SHORT_ONLY'),
-    allowedTradeSides: tradeSides(env.ROTATION_ALLOWED_TRADE_SIDES, ['SHORT']),
-    primaryTradeSide: str(env.ROTATION_PRIMARY_TRADE_SIDE, 'SHORT').toUpperCase(),
+    directionMode: str(env.ROTATION_DIRECTION_MODE, 'LONG_ONLY'),
+    allowedTradeSides: tradeSides(env.ROTATION_ALLOWED_TRADE_SIDES, ['LONG']),
+    primaryTradeSide: str(env.ROTATION_PRIMARY_TRADE_SIDE, 'LONG').toUpperCase(),
 
-    shortEnabled: bool(env.ROTATION_SHORT_ENABLED, true),
-    longEnabled: bool(env.ROTATION_LONG_ENABLED, false),
-    blockLongActivation: bool(env.ROTATION_BLOCK_LONG_ACTIVATION, true),
+    shortEnabled: bool(env.ROTATION_SHORT_ENABLED, false),
+    longEnabled: bool(env.ROTATION_LONG_ENABLED, true),
+    blockShortActivation: bool(env.ROTATION_BLOCK_SHORT_ACTIVATION, true),
 
     topNPerSide: int(env.ROTATION_TOP_N_PER_SIDE, 1),
-    topNShort: int(env.ROTATION_TOP_N_SHORT, 1),
-    topNLong: int(env.ROTATION_TOP_N_LONG, 0),
+    topNLong: int(env.ROTATION_TOP_N_LONG, 1),
+    topNShort: int(env.ROTATION_TOP_N_SHORT, 0),
 
     minWeightedCompleted: num(env.ROTATION_MIN_WEIGHTED_COMPLETED, 0.35),
 
@@ -272,9 +269,9 @@ export const CONFIG = Object.freeze({
     timeoutMs: int(env.DISCORD_TIMEOUT_MS, 2500),
     logLimit: int(env.DISCORD_LOG_LIMIT, 250),
 
-    allowedTradeSides: tradeSides(env.DISCORD_ALLOWED_TRADE_SIDES, ['SHORT']),
-    shortEnabled: bool(env.DISCORD_SHORT_ENABLED, true),
-    longEnabled: bool(env.DISCORD_LONG_ENABLED, false)
+    allowedTradeSides: tradeSides(env.DISCORD_ALLOWED_TRADE_SIDES, ['LONG']),
+    shortEnabled: bool(env.DISCORD_SHORT_ENABLED, false),
+    longEnabled: bool(env.DISCORD_LONG_ENABLED, true)
   },
 
   reset: {
