@@ -1,11 +1,14 @@
 // ================= FILE: api/admin/scanner.js =================
 
 import { KEYS } from '../../src/keys.js';
-import { getVolatileRedis, getJson } from '../../src/redis.js';
+import { getVolatileRedis, getJson, getKeys } from '../../src/redis.js';
 import { sideToTradeSide, safeNumber } from '../../src/utils.js';
 
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
+const OPPOSITE_TRADE_SIDE = 'SHORT';
+
+const SNAPSHOT_SEARCH_LIMIT = 80;
 
 function methodNotAllowed(res) {
   res.setHeader('Allow', 'GET');
@@ -29,9 +32,7 @@ function upper(value) {
 function extractSnapshotId(latest) {
   if (!latest) return null;
 
-  if (typeof latest === 'string') {
-    return latest;
-  }
+  if (typeof latest === 'string') return latest;
 
   if (typeof latest === 'object') {
     return (
@@ -54,6 +55,16 @@ function hasFullSnapshotShape(value) {
   );
 }
 
+function snapshotCreatedAt(snapshot = {}) {
+  return safeNumber(
+    snapshot.createdAt ||
+    snapshot.completedAt ||
+    snapshot.ts ||
+    snapshot.scannerTs,
+    0
+  );
+}
+
 function getDefinitionHaystack(row = {}) {
   return [
     row.definition,
@@ -63,7 +74,8 @@ function getDefinitionHaystack(row = {}) {
     ...(Array.isArray(row.definitionParts) ? row.definitionParts : []),
     ...(Array.isArray(row.microDefinitionParts) ? row.microDefinitionParts : []),
     ...(Array.isArray(row.macroDefinitionParts) ? row.macroDefinitionParts : []),
-    ...(Array.isArray(row.parentDefinitionParts) ? row.parentDefinitionParts : [])
+    ...(Array.isArray(row.parentDefinitionParts) ? row.parentDefinitionParts : []),
+    ...(Array.isArray(row.executionFingerprintParts) ? row.executionFingerprintParts : [])
   ]
     .map((value) => upper(value))
     .join(' | ');
@@ -83,7 +95,8 @@ function inferTradeSide(row = {}) {
       value.includes('SIDE=BULL') ||
       value.includes('DIRECTION=LONG') ||
       value.includes('DIRECTION=BULL') ||
-      value.includes('LONG')
+      value.includes('_LONG_') ||
+      value.startsWith('LONG_')
     ) {
       return 'LONG';
     }
@@ -96,7 +109,8 @@ function inferTradeSide(row = {}) {
       value.includes('SIDE=BEAR') ||
       value.includes('DIRECTION=SHORT') ||
       value.includes('DIRECTION=BEAR') ||
-      value.includes('SHORT')
+      value.includes('_SHORT_') ||
+      value.startsWith('SHORT_')
     ) {
       return 'SHORT';
     }
@@ -106,14 +120,16 @@ function inferTradeSide(row = {}) {
 
   const direct = sideToTradeSide(
     row.tradeSide ||
-    row.side ||
     row.positionSide ||
     row.direction ||
     row.signalSide ||
     row.scannerSide ||
+    row.actualScannerSide ||
+    row.analysisSide ||
     row.entrySide ||
     row.bias ||
-    row.marketBias
+    row.marketBias ||
+    row.side
   );
 
   if (direct !== 'UNKNOWN') return direct;
@@ -143,11 +159,11 @@ function inferTradeSide(row = {}) {
   if (familyId.startsWith('LONG_')) return 'LONG';
   if (familyId.startsWith('SHORT_')) return 'SHORT';
 
-  if (macroFamilyId.includes('LONG')) return 'LONG';
-  if (macroFamilyId.includes('SHORT')) return 'SHORT';
+  if (macroFamilyId.includes('MICRO_LONG_') || macroFamilyId.includes('_LONG_')) return 'LONG';
+  if (macroFamilyId.includes('MICRO_SHORT_') || macroFamilyId.includes('_SHORT_')) return 'SHORT';
 
-  if (microFamilyId.includes('MICRO_LONG_')) return 'LONG';
-  if (microFamilyId.includes('MICRO_SHORT_')) return 'SHORT';
+  if (microFamilyId.includes('MICRO_LONG_') || microFamilyId.includes('_LONG_')) return 'LONG';
+  if (microFamilyId.includes('MICRO_SHORT_') || microFamilyId.includes('_SHORT_')) return 'SHORT';
 
   if (microFamilyId.includes('TRADESIDE=LONG')) return 'LONG';
   if (microFamilyId.includes('TRADESIDE=SHORT')) return 'SHORT';
@@ -205,14 +221,7 @@ function inferTradeSide(row = {}) {
     return 'SHORT';
   }
 
-  if (microFamilyId.includes('LONG')) return 'LONG';
-  if (microFamilyId.includes('SHORT')) return 'SHORT';
-
   return 'UNKNOWN';
-}
-
-function isLongCandidate(candidate = {}) {
-  return inferTradeSide(candidate) === TARGET_TRADE_SIDE;
 }
 
 function normalizeLongCandidate(candidate = {}) {
@@ -220,7 +229,10 @@ function normalizeLongCandidate(candidate = {}) {
     ...candidate,
     side: TARGET_DASHBOARD_SIDE,
     tradeSide: TARGET_TRADE_SIDE,
+    positionSide: TARGET_TRADE_SIDE,
+    direction: TARGET_TRADE_SIDE,
     targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
     longOnly: true,
     shortDisabled: true
   };
@@ -268,9 +280,8 @@ function countCandidatesBySide(candidates = []) {
     shortCandidates: shortCandidates.length,
     unknownSideCandidates: unknownSideCandidates.length,
 
-    // Backwards-compatible namen voor admin.html.
     bullCandidates: longCandidates.length,
-    bearCandidates: 0,
+    bearCandidates: shortCandidates.length,
 
     rawLongCandidates: longCandidates.length,
     rawShortCandidates: shortCandidates.length,
@@ -288,44 +299,7 @@ function averageScannerScore(candidates = []) {
   return Number((total / candidates.length).toFixed(2));
 }
 
-function normalizeLatest(latest, snapshot = null) {
-  if (!latest || typeof latest !== 'object') return latest;
-
-  const candidates = Array.isArray(snapshot?.candidates)
-    ? snapshot.candidates
-    : [];
-
-  const scannerGateCandidates = candidates.filter((candidate) => candidate.scannerGatePassed);
-  const analyzeOnlyCandidates = candidates.filter((candidate) => candidate.tradeDiscoveryOnly);
-
-  return {
-    ...latest,
-
-    targetTradeSide: TARGET_TRADE_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-    longOnly: true,
-    shortDisabled: true,
-
-    candidatesCount: candidates.length || safeNumber(latest.longCandidatesCount, 0),
-    longCandidatesCount: candidates.length || safeNumber(latest.longCandidatesCount, 0),
-    shortCandidatesCount: 0,
-
-    scannerGateCandidatesCount: scannerGateCandidates.length,
-    analyzeOnlyCandidatesCount: analyzeOnlyCandidates.length,
-
-    topSymbols: candidates
-      .slice(0, 20)
-      .map((candidate) => candidate.symbol)
-      .filter(Boolean),
-
-    scannerGateSymbols: scannerGateCandidates
-      .slice(0, 20)
-      .map((candidate) => candidate.symbol)
-      .filter(Boolean)
-  };
-}
-
-function normalizeSnapshot(snapshot, fallbackId = null) {
+function normalizeSnapshot(snapshot, fallbackId = null, source = 'UNKNOWN') {
   if (!snapshot || typeof snapshot !== 'object') {
     return null;
   }
@@ -342,12 +316,7 @@ function normalizeSnapshot(snapshot, fallbackId = null) {
 
   const candidates = longCandidates.map(normalizeLongCandidate);
 
-  const createdAt = safeNumber(
-    snapshot.createdAt ||
-    snapshot.ts ||
-    snapshot.scannerTs,
-    0
-  );
+  const createdAt = snapshotCreatedAt(snapshot);
 
   const snapshotAgeSec = createdAt > 0
     ? Math.max(0, Math.floor((Date.now() - createdAt) / 1000))
@@ -357,9 +326,13 @@ function normalizeSnapshot(snapshot, fallbackId = null) {
   const fakeBreakouts = candidates.filter((candidate) => candidate.fakeBreakout);
   const fakeRiskCandidates = candidates.filter((candidate) => candidate.fakeBreakoutRisk);
   const scannerGateCandidates = candidates.filter((candidate) => candidate.scannerGatePassed);
-  const analyzeOnlyCandidates = candidates.filter((candidate) => candidate.tradeDiscoveryOnly);
+  const analyzeOnlyCandidates = candidates.filter((candidate) => (
+    candidate.tradeDiscoveryOnly ||
+    candidate.discoveryOnly ||
+    candidate.analyzeOnly
+  ));
 
-  const sideCounts = countCandidatesBySide(candidates);
+  const sideCounts = countCandidatesBySide(rawCandidates);
 
   const topSymbols = candidates
     .slice(0, 20)
@@ -375,11 +348,15 @@ function normalizeSnapshot(snapshot, fallbackId = null) {
     ...snapshot,
 
     targetTradeSide: TARGET_TRADE_SIDE,
+    targetScannerSide: TARGET_DASHBOARD_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
     longOnly: true,
     shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
 
     snapshotId: snapshot.snapshotId || fallbackId || null,
+    snapshotSource: source,
 
     rawCandidatesCount: rawCandidates.length,
     rawShortCandidatesIgnored: shortCandidates.length,
@@ -420,37 +397,198 @@ function normalizeSnapshot(snapshot, fallbackId = null) {
   };
 }
 
-async function loadSnapshot(redis, latest) {
-  const snapshotId = extractSnapshotId(latest);
+function normalizeLatest(latest, snapshot = null) {
+  if (!latest || typeof latest !== 'object') return latest;
 
-  if (hasFullSnapshotShape(latest)) {
-    const snapshot = normalizeSnapshot(latest, snapshotId);
+  const candidates = Array.isArray(snapshot?.candidates)
+    ? snapshot.candidates
+    : [];
 
-    return {
-      snapshot,
-      snapshotSource: 'SCAN:LATEST_FULL_SNAPSHOT',
-      snapshotId
-    };
+  const scannerGateCandidates = candidates.filter((candidate) => candidate.scannerGatePassed);
+  const analyzeOnlyCandidates = candidates.filter((candidate) => (
+    candidate.tradeDiscoveryOnly ||
+    candidate.discoveryOnly ||
+    candidate.analyzeOnly
+  ));
+
+  return {
+    ...latest,
+
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    selectedSnapshotId: snapshot?.snapshotId || latest.snapshotId || null,
+    selectedSnapshotSource: snapshot?.snapshotSource || null,
+
+    candidatesCount: candidates.length,
+    longCandidatesCount: candidates.length,
+    shortCandidatesCount: 0,
+
+    scannerGateCandidatesCount: scannerGateCandidates.length,
+    analyzeOnlyCandidatesCount: analyzeOnlyCandidates.length,
+
+    topSymbols: candidates
+      .slice(0, 20)
+      .map((candidate) => candidate.symbol)
+      .filter(Boolean),
+
+    scannerGateSymbols: scannerGateCandidates
+      .slice(0, 20)
+      .map((candidate) => candidate.symbol)
+      .filter(Boolean)
+  };
+}
+
+function snapshotPattern() {
+  try {
+    return KEYS.scan.snapshot('*');
+  } catch {
+    return 'SCAN:SNAPSHOT:*';
   }
+}
 
-  if (!snapshotId) {
-    return {
-      snapshot: null,
-      snapshotSource: 'NO_SNAPSHOT_ID',
-      snapshotId: null
-    };
-  }
+async function safeGetJson(redis, key, fallback = null) {
+  return getJson(redis, key, fallback).catch(() => fallback);
+}
 
-  const snapshot = await getJson(
+async function loadSnapshotById(redis, snapshotId) {
+  if (!snapshotId) return null;
+
+  return safeGetJson(
     redis,
     KEYS.scan.snapshot(snapshotId),
     null
   );
+}
+
+async function loadRecentSnapshots(redis) {
+  const pattern = snapshotPattern();
+
+  const keys = await getKeys(
+    redis,
+    pattern,
+    SNAPSHOT_SEARCH_LIMIT
+  ).catch(() => []);
+
+  if (!keys.length) return [];
+
+  const rows = await Promise.all(
+    keys.map(async (key) => {
+      const snapshot = await safeGetJson(redis, key, null);
+
+      if (!hasFullSnapshotShape(snapshot)) return null;
+
+      return {
+        key,
+        snapshot
+      };
+    })
+  );
+
+  return rows.filter(Boolean);
+}
+
+function targetCount(snapshot = {}) {
+  const rawCandidates = Array.isArray(snapshot.candidates)
+    ? snapshot.candidates
+    : [];
+
+  return splitCandidatesBySide(rawCandidates).longCandidates.length;
+}
+
+async function resolveTargetSnapshot(redis, latestRaw) {
+  const candidates = [];
+
+  const latestSnapshotId = extractSnapshotId(latestRaw);
+
+  if (hasFullSnapshotShape(latestRaw)) {
+    candidates.push({
+      source: 'SCAN:LATEST_FULL_SNAPSHOT',
+      snapshotId: latestSnapshotId || latestRaw.snapshotId || null,
+      snapshot: latestRaw
+    });
+  }
+
+  const latestById = await loadSnapshotById(redis, latestSnapshotId);
+
+  if (hasFullSnapshotShape(latestById)) {
+    candidates.push({
+      source: 'SCAN:SNAPSHOT_BY_LATEST_ID',
+      snapshotId: latestSnapshotId,
+      snapshot: latestById
+    });
+  }
+
+  const recent = await loadRecentSnapshots(redis);
+
+  for (const row of recent) {
+    candidates.push({
+      source: `SCAN:RECENT_SEARCH:${row.key}`,
+      snapshotId: row.snapshot.snapshotId || null,
+      snapshot: row.snapshot
+    });
+  }
+
+  const unique = new Map();
+
+  for (const item of candidates) {
+    const id = item.snapshot?.snapshotId || item.snapshotId || item.source;
+
+    if (!id) continue;
+
+    const previous = unique.get(id);
+
+    if (!previous) {
+      unique.set(id, item);
+      continue;
+    }
+
+    const previousTarget = targetCount(previous.snapshot);
+    const currentTarget = targetCount(item.snapshot);
+
+    if (currentTarget > previousTarget) {
+      unique.set(id, item);
+    }
+  }
+
+  const rows = [...unique.values()]
+    .filter((item) => hasFullSnapshotShape(item.snapshot))
+    .sort((a, b) => snapshotCreatedAt(b.snapshot) - snapshotCreatedAt(a.snapshot));
+
+  const newestTarget = rows.find((item) => targetCount(item.snapshot) > 0);
+
+  if (newestTarget) {
+    return {
+      rawSnapshot: newestTarget.snapshot,
+      snapshotId: newestTarget.snapshot.snapshotId || newestTarget.snapshotId || null,
+      snapshotSource: newestTarget.source,
+      selectedReason: 'NEWEST_LONG_SNAPSHOT_WITH_CANDIDATES',
+      searchedSnapshots: rows.length
+    };
+  }
+
+  const newestAny = rows[0] || null;
+
+  if (newestAny) {
+    return {
+      rawSnapshot: newestAny.snapshot,
+      snapshotId: newestAny.snapshot.snapshotId || newestAny.snapshotId || null,
+      snapshotSource: newestAny.source,
+      selectedReason: 'NO_LONG_SNAPSHOT_FOUND_USING_NEWEST_AVAILABLE',
+      searchedSnapshots: rows.length
+    };
+  }
 
   return {
-    snapshot: normalizeSnapshot(snapshot, snapshotId),
-    snapshotSource: 'SCAN:SNAPSHOT_BY_ID',
-    snapshotId
+    rawSnapshot: null,
+    snapshotId: latestSnapshotId || null,
+    snapshotSource: 'NO_SNAPSHOT_FOUND',
+    selectedReason: 'NO_SNAPSHOT_FOUND',
+    searchedSnapshots: rows.length
   };
 }
 
@@ -491,13 +629,15 @@ export default async function handler(req, res) {
 
   try {
     const redis = getVolatileRedis();
-    const latestRaw = await getJson(redis, KEYS.scan.latest, null);
+    const latestRaw = await safeGetJson(redis, KEYS.scan.latest, null);
 
-    const {
-      snapshot,
-      snapshotSource,
-      snapshotId
-    } = await loadSnapshot(redis, latestRaw);
+    const resolved = await resolveTargetSnapshot(redis, latestRaw);
+
+    const snapshot = normalizeSnapshot(
+      resolved.rawSnapshot,
+      resolved.snapshotId,
+      resolved.snapshotSource
+    );
 
     const candidates = Array.isArray(snapshot?.candidates)
       ? snapshot.candidates
@@ -512,19 +652,31 @@ export default async function handler(req, res) {
       dashboardSide: TARGET_DASHBOARD_SIDE,
       longOnly: true,
       shortDisabled: true,
+      shortOnly: false,
+      longDisabled: false,
 
       latest,
       snapshot,
       candidates,
 
-      snapshotId,
-      snapshotSource,
+      snapshotId: snapshot?.snapshotId || resolved.snapshotId || null,
+      snapshotSource: resolved.snapshotSource,
+      selectedReason: resolved.selectedReason,
+      searchedSnapshots: resolved.searchedSnapshots,
 
       candidatesCount: candidates.length,
       longCandidatesCount: candidates.length,
       shortCandidatesCount: 0,
 
+      rawCandidatesCount: snapshot?.rawCandidatesCount || 0,
+      rawShortCandidatesIgnored: snapshot?.rawShortCandidatesIgnored || 0,
+      rawUnknownSideCandidatesIgnored: snapshot?.rawUnknownSideCandidatesIgnored || 0,
+
       stats: snapshot?.stats || emptyStats(),
+
+      warning: candidates.length
+        ? null
+        : 'NO_LONG_CANDIDATES_IN_SELECTED_SNAPSHOT',
 
       serverTs: Date.now()
     });
@@ -533,6 +685,7 @@ export default async function handler(req, res) {
       ok: false,
 
       targetTradeSide: TARGET_TRADE_SIDE,
+      dashboardSide: TARGET_DASHBOARD_SIDE,
       longOnly: true,
       shortDisabled: true,
 
