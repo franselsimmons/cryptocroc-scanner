@@ -8,6 +8,11 @@ import { runTradeSystem } from '../../src/trade/tradeSystem.js';
 
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
+const OPPOSITE_TRADE_SIDE = 'SHORT';
+
+function now() {
+  return Date.now();
+}
 
 function methodNotAllowed(res) {
   res.setHeader('Allow', 'GET, POST');
@@ -19,8 +24,12 @@ function methodNotAllowed(res) {
 
     targetTradeSide: TARGET_TRADE_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
+
     longOnly: true,
-    shortDisabled: true
+    shortDisabled: true,
+
+    shortOnly: false,
+    longDisabled: false
   });
 }
 
@@ -137,48 +146,6 @@ function unwrapLockResult(lockResult) {
   return lockResult;
 }
 
-function responseOk(lockResult) {
-  const payload = unwrapLockResult(lockResult);
-
-  return (
-    lockResult?.ok !== false &&
-    payload?.ok !== false
-  );
-}
-
-function responseSkipped(lockResult) {
-  const payload = unwrapLockResult(lockResult);
-
-  return Boolean(
-    lockResult?.skipped ||
-    payload?.skippedNewEntries ||
-    payload?.skipped ||
-    false
-  );
-}
-
-function responseReason(lockResult) {
-  const payload = unwrapLockResult(lockResult);
-
-  return (
-    lockResult?.reason ||
-    payload?.reason ||
-    null
-  );
-}
-
-function responseRunId(lockResult) {
-  const payload = unwrapLockResult(lockResult);
-
-  return payload?.runId || null;
-}
-
-function responseSnapshotId(lockResult) {
-  const payload = unwrapLockResult(lockResult);
-
-  return payload?.snapshotId || null;
-}
-
 function normalizeTradeSide(value) {
   const raw = String(value || '').trim().toUpperCase();
 
@@ -193,7 +160,7 @@ function inferTradeSideFromText(value) {
 
   if (!text) return 'UNKNOWN';
 
-  if (
+  const longHit = (
     text.includes('MICRO_LONG_') ||
     text.includes('TRADESIDE=LONG') ||
     text.includes('TRADE_SIDE=LONG') ||
@@ -209,11 +176,9 @@ function inferTradeSideFromText(value) {
     text.includes('_BULL') ||
     text.includes('BUY_') ||
     text.includes('_BUY')
-  ) {
-    return 'LONG';
-  }
+  );
 
-  if (
+  const shortHit = (
     text.includes('MICRO_SHORT_') ||
     text.includes('TRADESIDE=SHORT') ||
     text.includes('TRADE_SIDE=SHORT') ||
@@ -229,9 +194,10 @@ function inferTradeSideFromText(value) {
     text.includes('_BEAR') ||
     text.includes('SELL_') ||
     text.includes('_SELL')
-  ) {
-    return 'SHORT';
-  }
+  );
+
+  if (longHit && !shortHit) return 'LONG';
+  if (shortHit && !longHit) return 'SHORT';
 
   return 'UNKNOWN';
 }
@@ -247,7 +213,9 @@ function inferActionTradeSide(row = {}) {
     row.positionSide ||
     row.direction ||
     row.scannerSide ||
-    row.analysisSide
+    row.actualScannerSide ||
+    row.analysisSide ||
+    row.targetTradeSide
   );
 
   if (direct !== 'UNKNOWN') return direct;
@@ -291,14 +259,32 @@ function isLongAction(row = {}) {
 }
 
 function isShortAction(row = {}) {
-  return inferActionTradeSide(row) === 'SHORT';
+  return inferActionTradeSide(row) === OPPOSITE_TRADE_SIDE;
+}
+
+function isLongContextRow(row = {}) {
+  if (!row || typeof row !== 'object') return false;
+  if (isShortAction(row)) return false;
+  if (isLongAction(row)) return true;
+
+  return Boolean(
+    row.longOnly === true ||
+    row.shortDisabled === true ||
+    row.targetTradeSide === TARGET_TRADE_SIDE ||
+    row.dashboardSide === TARGET_DASHBOARD_SIDE ||
+    row.side === TARGET_DASHBOARD_SIDE
+  );
 }
 
 function forceLongAction(row = {}) {
   return {
     ...row,
+
     side: TARGET_DASHBOARD_SIDE,
     tradeSide: TARGET_TRADE_SIDE,
+    positionSide: TARGET_TRADE_SIDE,
+    direction: TARGET_TRADE_SIDE,
+
     targetTradeSide: TARGET_TRADE_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
 
@@ -310,6 +296,14 @@ function forceLongAction(row = {}) {
   };
 }
 
+function sanitizeRows(rows) {
+  if (!Array.isArray(rows)) return rows;
+
+  return rows
+    .filter(isLongContextRow)
+    .map(forceLongAction);
+}
+
 function countActionsByType(actions = []) {
   return actions.reduce((acc, row) => {
     const key = row?.action || row?.type || 'UNKNOWN';
@@ -319,127 +313,23 @@ function countActionsByType(actions = []) {
   }, {});
 }
 
-function responseActionCounts(lockResult) {
-  const payload = unwrapLockResult(lockResult);
-
-  const rawActions = Array.isArray(payload?.actions)
-    ? payload.actions
-    : [];
-
-  if (rawActions.length > 0) {
-    const longActions = rawActions
-      .filter(isLongAction)
-      .map(forceLongAction);
-
-    return {
-      ...countActionsByType(longActions),
-
-      targetTradeSide: TARGET_TRADE_SIDE,
-      dashboardSide: TARGET_DASHBOARD_SIDE,
-      longOnly: true,
-      shortDisabled: true
-    };
-  }
-
-  return {
-    ...(payload?.actionCounts || {}),
-
-    targetTradeSide: TARGET_TRADE_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-    longOnly: true,
-    shortDisabled: true
-  };
-}
-
-function responseCounts(lockResult) {
-  const payload = unwrapLockResult(lockResult);
-
-  const actions = Array.isArray(payload?.actions)
-    ? payload.actions
-    : [];
-
-  const longActions = actions.filter(isLongAction);
-  const shortActions = actions.filter(isShortAction);
-  const unknownActions = actions.filter((row) => inferActionTradeSide(row) === 'UNKNOWN');
-
-  const realExits = Array.isArray(payload?.realExits)
-    ? payload.realExits
-    : [];
-
-  const shadowExits = Array.isArray(payload?.shadowExits)
-    ? payload.shadowExits
-    : [];
-
-  const longRealExits = realExits.filter(isLongAction);
-  const longShadowExits = shadowExits.filter(isLongAction);
-
-  return {
-    targetTradeSide: TARGET_TRADE_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-    longOnly: true,
-    shortDisabled: true,
-
-    candidates: Number(payload?.candidates || 0),
-    longCandidateCount: Number(payload?.longCandidateCount || 0),
-    nonLongCandidateCount: Number(payload?.nonLongCandidateCount || 0),
-
-    processed: Number(payload?.processed || 0),
-    earlyActions: Number(payload?.earlyActions || 0),
-
-    liveRows: Number(payload?.liveRows || 0),
-    actualLiveRows: Number(payload?.actualLiveRows || 0),
-    mirrorRows: Number(payload?.mirrorRows || 0),
-    learningOnlyRows: Number(payload?.learningOnlyRows || 0),
-    riskValidRows: Number(payload?.riskValidRows || 0),
-
-    analyzedRowsRaw: Number(payload?.analyzedRowsRaw || 0),
-    analyzedRows: Number(payload?.analyzedRows || 0),
-    analyzedActualRows: Number(payload?.analyzedActualRows || 0),
-    analyzedMirrorRows: Number(payload?.analyzedMirrorRows || 0),
-
-    actions: actions.length || Number(payload?.actionsCount || 0),
-    longActions: longActions.length,
-    shortActionsBlockedOrIgnored: shortActions.length,
-    unknownSideActionsIgnored: unknownActions.length,
-
-    entries: longActions.filter((row) => row?.action === 'ENTRY').length,
-    waits: longActions.filter((row) => row?.action === 'WAIT').length,
-
-    realExits: longRealExits.length || Number(payload?.realExitsCount || 0),
-    shadowExits: longShadowExits.length || Number(payload?.shadowExitsCount || 0),
-
-    shortRealExitsIgnored: realExits.filter(isShortAction).length,
-    shortShadowExitsIgnored: shadowExits.filter(isShortAction).length,
-
-    activeMicroFamilies: Number(payload?.activeMicroFamilies || 0),
-    activeMacroFamilies: Number(payload?.activeMacroFamilies || 0)
-  };
-}
-
 function sanitizeRunPayload(payload) {
   if (!payload || typeof payload !== 'object') return payload;
 
-  const actions = Array.isArray(payload.actions)
-    ? payload.actions.filter(isLongAction).map(forceLongAction)
-    : payload.actions;
-
-  const realExits = Array.isArray(payload.realExits)
-    ? payload.realExits.filter(isLongAction).map(forceLongAction)
-    : payload.realExits;
-
-  const shadowExits = Array.isArray(payload.shadowExits)
-    ? payload.shadowExits.filter(isLongAction).map(forceLongAction)
-    : payload.shadowExits;
+  const actions = sanitizeRows(payload.actions);
+  const realExits = sanitizeRows(payload.realExits);
+  const shadowExits = sanitizeRows(payload.shadowExits);
 
   const actionCounts = Array.isArray(actions)
     ? countActionsByType(actions)
-    : payload.actionCounts;
+    : payload.actionCounts || {};
 
   return {
     ...payload,
 
     targetTradeSide: TARGET_TRADE_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
+
     longOnly: true,
     shortDisabled: true,
 
@@ -451,9 +341,151 @@ function sanitizeRunPayload(payload) {
     shadowExits,
     actionCounts,
 
-    actionsCount: Array.isArray(actions) ? actions.length : payload.actionsCount,
-    realExitsCount: Array.isArray(realExits) ? realExits.length : payload.realExitsCount,
-    shadowExitsCount: Array.isArray(shadowExits) ? shadowExits.length : payload.shadowExitsCount
+    actionsCount: Array.isArray(actions)
+      ? actions.length
+      : Number(payload.actionsCount || 0),
+
+    realExitsCount: Array.isArray(realExits)
+      ? realExits.length
+      : Number(payload.realExitsCount || 0),
+
+    shadowExitsCount: Array.isArray(shadowExits)
+      ? shadowExits.length
+      : Number(payload.shadowExitsCount || 0)
+  };
+}
+
+function sanitizeLockResult(lockResult, payload) {
+  if (!lockResult || typeof lockResult !== 'object') return payload;
+
+  if (lockResult.result?.result) {
+    return {
+      ...lockResult,
+      result: {
+        ...lockResult.result,
+        result: payload
+      }
+    };
+  }
+
+  if (lockResult.result) {
+    return {
+      ...lockResult,
+      result: payload
+    };
+  }
+
+  return payload;
+}
+
+function responseOk(lockResult, payload) {
+  return (
+    lockResult?.ok !== false &&
+    payload?.ok !== false
+  );
+}
+
+function responseSkipped(lockResult, payload) {
+  return Boolean(
+    lockResult?.skipped ||
+    payload?.skippedNewEntries ||
+    payload?.skipped ||
+    false
+  );
+}
+
+function responseReason(lockResult, payload) {
+  return (
+    lockResult?.reason ||
+    payload?.reason ||
+    null
+  );
+}
+
+function buildActionCounts(payload = {}) {
+  const actions = Array.isArray(payload.actions)
+    ? payload.actions
+    : [];
+
+  if (actions.length > 0) {
+    return {
+      ...countActionsByType(actions),
+
+      targetTradeSide: TARGET_TRADE_SIDE,
+      dashboardSide: TARGET_DASHBOARD_SIDE,
+      longOnly: true,
+      shortDisabled: true
+    };
+  }
+
+  return {
+    ...(payload.actionCounts || {}),
+
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    longOnly: true,
+    shortDisabled: true
+  };
+}
+
+function buildCounts(payload = {}) {
+  const actions = Array.isArray(payload.actions)
+    ? payload.actions
+    : [];
+
+  const realExits = Array.isArray(payload.realExits)
+    ? payload.realExits
+    : [];
+
+  const shadowExits = Array.isArray(payload.shadowExits)
+    ? payload.shadowExits
+    : [];
+
+  const entries = actions.filter((row) => row?.action === 'ENTRY').length;
+  const waits = actions.filter((row) => row?.action === 'WAIT').length;
+
+  return {
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+
+    longOnly: true,
+    shortDisabled: true,
+
+    shortOnly: false,
+    longDisabled: false,
+
+    candidates: Number(payload.candidates || 0),
+    longCandidateCount: Number(payload.longCandidateCount || 0),
+    nonLongCandidateCount: Number(payload.nonLongCandidateCount || 0),
+
+    processed: Number(payload.processed || 0),
+    earlyActions: Number(payload.earlyActions || 0),
+
+    liveRows: Number(payload.liveRows || 0),
+    actualLiveRows: Number(payload.actualLiveRows || 0),
+    mirrorRows: Number(payload.mirrorRows || 0),
+    learningOnlyRows: Number(payload.learningOnlyRows || 0),
+    riskValidRows: Number(payload.riskValidRows || 0),
+
+    analyzedRowsRaw: Number(payload.analyzedRowsRaw || 0),
+    analyzedRows: Number(payload.analyzedRows || 0),
+    analyzedActualRows: Number(payload.analyzedActualRows || 0),
+    analyzedMirrorRows: Number(payload.analyzedMirrorRows || 0),
+
+    actions: actions.length || Number(payload.actionsCount || 0),
+    longActions: actions.length,
+
+    entries,
+    waits,
+
+    realExits: realExits.length || Number(payload.realExitsCount || 0),
+    shadowExits: shadowExits.length || Number(payload.shadowExitsCount || 0),
+
+    activeMicroFamilies: Number(payload.activeMicroFamilies || 0),
+    activeMacroFamilies: Number(payload.activeMacroFamilies || 0),
+
+    selectedTargetCandidateCount: Number(payload.selectedTargetCandidateCount || 0),
+    selectedOppositeCandidateCount: Number(payload.selectedOppositeCandidateCount || 0)
   };
 }
 
@@ -502,7 +534,7 @@ export default async function handler(req, res) {
   res.setHeader('X-Long-Only', 'true');
   res.setHeader('X-Short-Disabled', 'true');
 
-  const startedAt = Date.now();
+  const startedAt = now();
 
   try {
     if (!isAllowedMethod(req.method)) {
@@ -516,24 +548,29 @@ export default async function handler(req, res) {
     const lockKey = KEYS.trade?.lock || 'TRADE:LOCK';
     const lockTtlSec = getLockTtlSec();
 
-    const result = await withRedisLock(
+    const lockResult = await withRedisLock(
       redis,
       lockKey,
       lockTtlSec,
       async () => runTradeSystem(runOptions)
     );
 
-    const payload = sanitizeRunPayload(unwrapLockResult(result));
+    const payload = sanitizeRunPayload(
+      unwrapLockResult(lockResult)
+    );
+
+    const result = sanitizeLockResult(lockResult, payload);
 
     return res.status(200).json({
-      ok: responseOk(result),
-      skipped: responseSkipped(result),
-      reason: responseReason(result),
+      ok: responseOk(lockResult, payload),
+      skipped: responseSkipped(lockResult, payload),
+      reason: responseReason(lockResult, payload),
 
       source: getRunSource(req, body),
 
       targetTradeSide: TARGET_TRADE_SIDE,
       dashboardSide: TARGET_DASHBOARD_SIDE,
+
       longOnly: true,
       shortDisabled: true,
 
@@ -544,11 +581,11 @@ export default async function handler(req, res) {
       forceProcessSnapshot: runOptions.forceProcessSnapshot,
       monitorOnly: runOptions.monitorOnly,
 
-      runId: responseRunId(result),
-      snapshotId: responseSnapshotId(result),
+      runId: payload?.runId || null,
+      snapshotId: payload?.snapshotId || null,
 
-      actionCounts: responseActionCounts(result),
-      counts: responseCounts(result),
+      actionCounts: buildActionCounts(payload),
+      counts: buildCounts(payload),
 
       activeRotationId: payload?.activeRotationId || null,
       activeMicroFamilies: Number(payload?.activeMicroFamilies || 0),
@@ -559,7 +596,7 @@ export default async function handler(req, res) {
       selectedTargetCandidateCount: Number(payload?.selectedTargetCandidateCount || 0),
       selectedOppositeCandidateCount: Number(payload?.selectedOppositeCandidateCount || 0),
 
-      durationMs: Date.now() - startedAt,
+      durationMs: now() - startedAt,
 
       run: payload,
       result
@@ -570,6 +607,7 @@ export default async function handler(req, res) {
 
       targetTradeSide: TARGET_TRADE_SIDE,
       dashboardSide: TARGET_DASHBOARD_SIDE,
+
       longOnly: true,
       shortDisabled: true,
 
@@ -577,7 +615,7 @@ export default async function handler(req, res) {
       longDisabled: false,
 
       error: error?.message || String(error),
-      durationMs: Date.now() - startedAt,
+      durationMs: now() - startedAt,
       stack: process.env.NODE_ENV === 'production'
         ? undefined
         : error?.stack
