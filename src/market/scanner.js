@@ -208,11 +208,14 @@ function normalizeScannerTicker(rawTicker = {}) {
     ...ticker,
     symbol: contractSymbol,
     contractSymbol,
-    baseSymbol
+    baseSymbol,
+    price: safeNumber(ticker.price, 0),
+    volume24h: safeNumber(ticker.volume24h, 0),
+    change24h: safeNumber(ticker.change24h, 0)
   };
 }
 
-function inferDirectionalSide({ change1h, change24h, btcState }) {
+function inferSide({ change1h, change24h, btcState }) {
   const ch1 = safeNumber(change1h, 0);
   const ch24 = safeNumber(change24h, 0);
   const min24 = minAbsChange24h();
@@ -228,8 +231,8 @@ function inferDirectionalSide({ change1h, change24h, btcState }) {
   return 'neutral';
 }
 
-function sideConfidence({ directionalSide, change1h, change24h }) {
-  if (directionalSide !== TARGET_SCANNER_SIDE) return 'LOW';
+function sideConfidence({ side, change1h, change24h }) {
+  if (side !== TARGET_SCANNER_SIDE) return 'LOW';
 
   const ch1 = Math.abs(safeNumber(change1h, 0));
   const ch24 = Math.abs(safeNumber(change24h, 0));
@@ -272,7 +275,6 @@ function calcScannerScore({
   retestConfirmed,
   breakoutType,
   sideConfidenceLevel,
-  hasDirectionalSide,
   passesVolumeFilter
 }) {
   let score = 0;
@@ -294,9 +296,7 @@ function calcScannerScore({
   if (sideConfidenceLevel === 'MID') score += 2;
   if (sideConfidenceLevel === 'LOW') score -= 3;
 
-  if (!hasDirectionalSide) score -= 10;
-  if (!passesVolumeFilter) score -= 5;
-
+  if (!passesVolumeFilter) score -= 8;
   if (fakeBreakoutRisk) score -= 8;
   if (fakeBreakout) score -= 7;
 
@@ -308,12 +308,9 @@ function scannerReasonFrom({
   volumeExpansion,
   passesMoveFilter,
   passesVolumeFilter,
-  hasDirectionalSide,
   sideConfidenceLevel
 }) {
-  if (!hasDirectionalSide) return 'SHORT_NEUTRAL_DISCOVERY_ANALYZE_ONLY';
   if (!passesVolumeFilter) return 'SHORT_LOW_VOLUME_ANALYZE_ONLY';
-
   if (fake?.pullbackConfirmed && fake?.retestConfirmed) return 'SHORT_MOMENTUM_PULLBACK_RETEST';
   if (fake?.pullbackConfirmed) return 'SHORT_MOMENTUM_PULLBACK';
   if (fake?.breakoutType === 'VALID_BREAKOUT') return 'SHORT_VALID_BREAKOUT';
@@ -356,22 +353,13 @@ function isTradableTicker(ticker) {
   return true;
 }
 
-function isFallbackTradableTicker(ticker) {
-  if (!ticker?.symbol) return false;
-  if (!ticker?.contractSymbol) return false;
-  if (!ticker?.baseSymbol) return false;
-
-  if (!isValidUsdtFuturesContractSymbol(ticker.contractSymbol)) return false;
-  if (isBlockedBaseSymbol(ticker.baseSymbol)) return false;
-
-  return safeNumber(ticker.price, 0) > 0;
-}
-
 function dedupeByBaseSymbol(tickers) {
   const byBase = new Map();
 
   for (const ticker of tickers) {
-    const normalized = normalizeScannerTicker(ticker);
+    const normalized = ticker?.contractSymbol && ticker?.baseSymbol
+      ? ticker
+      : normalizeScannerTicker(ticker);
 
     if (!normalized) continue;
 
@@ -416,21 +404,10 @@ function sortShortUniverse(a, b) {
 function buildTickerUniverse(rawTickers) {
   const normalized = (Array.isArray(rawTickers) ? rawTickers : [])
     .map(normalizeScannerTicker)
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(isTradableTicker);
 
-  const tradable = dedupeByBaseSymbol(
-    normalized.filter(isTradableTicker)
-  );
-
-  if (tradable.length > 0) {
-    return tradable
-      .sort(sortShortUniverse)
-      .slice(0, scannerMaxSymbols());
-  }
-
-  return dedupeByBaseSymbol(
-    normalized.filter(isFallbackTradableTicker)
-  )
+  return dedupeByBaseSymbol(normalized)
     .sort(sortShortUniverse)
     .slice(0, scannerMaxSymbols());
 }
@@ -462,8 +439,8 @@ async function buildBtcContext({ universe, getCandles }) {
     universe.find((row) => row.baseSymbol === 'BTC') ||
     normalizeScannerTicker({
       symbol: 'BTCUSDT',
-      last: 0,
-      quoteVolume: 0,
+      price: 0,
+      volume24h: 0,
       change24h: 0
     }) ||
     {
@@ -507,23 +484,19 @@ async function buildBtcContext({ universe, getCandles }) {
   };
 }
 
-function buildScannerGateReason({
+function scannerGateReasonFrom({
   hardBlockedByDirection,
   hardBlockedByMove,
   hardBlockedByFake,
   passesMoveFilter,
   passesVolumeFilter,
   hasDirectionalSide,
-  fake
+  fakeBreakout
 }) {
-  if (hardBlockedByDirection) return 'NO_SHORT_DIRECTION';
-  if (hardBlockedByMove) return 'SHORT_MOVE_TOO_SMALL';
-  if (hardBlockedByFake) return 'SHORT_FAKE_BREAKOUT';
-
-  if (!hasDirectionalSide) return 'SHORT_DIRECTION_NOT_CONFIRMED';
-  if (!passesMoveFilter) return 'SHORT_MOVE_FILTER_NOT_PASSED';
+  if (hardBlockedByDirection || !hasDirectionalSide) return 'NO_SHORT_DIRECTION';
+  if (hardBlockedByMove || !passesMoveFilter) return 'SHORT_MOVE_TOO_SMALL';
+  if (hardBlockedByFake || fakeBreakout) return 'SHORT_FAKE_BREAKOUT';
   if (!passesVolumeFilter) return 'SHORT_VOLUME_FILTER_NOT_PASSED';
-  if (fake.fakeBreakout) return 'SHORT_FAKE_BREAKOUT';
 
   return 'PASSED';
 }
@@ -532,7 +505,7 @@ function buildGateFlags({
   change1h,
   change24h,
   fake,
-  directionalSide,
+  side,
   volume24h
 }) {
   const passesMoveFilter =
@@ -540,7 +513,7 @@ function buildGateFlags({
     Math.abs(change24h) >= minAbsChange24h();
 
   const passesVolumeFilter = safeNumber(volume24h, 0) >= minQuoteVolume24h();
-  const hasDirectionalSide = directionalSide === TARGET_SCANNER_SIDE;
+  const hasDirectionalSide = side === TARGET_SCANNER_SIDE;
 
   const hardBlockedByDirection =
     blockNoDirectionEnabled() &&
@@ -566,7 +539,15 @@ function buildGateFlags({
     hasDirectionalSide &&
     !fake.fakeBreakout;
 
-  const tradeDiscoveryOnly = !scannerGatePassed;
+  const scannerGateReason = scannerGateReasonFrom({
+    hardBlockedByDirection,
+    hardBlockedByMove,
+    hardBlockedByFake,
+    passesMoveFilter,
+    passesVolumeFilter,
+    hasDirectionalSide,
+    fakeBreakout: fake.fakeBreakout
+  });
 
   return {
     passesMoveFilter,
@@ -579,18 +560,10 @@ function buildGateFlags({
     hardBlockedByFake,
 
     scannerGatePassed,
-    scannerGateReason: buildScannerGateReason({
-      hardBlockedByDirection,
-      hardBlockedByMove,
-      hardBlockedByFake,
-      passesMoveFilter,
-      passesVolumeFilter,
-      hasDirectionalSide,
-      fake
-    }),
+    scannerGateReason,
 
-    analyzeEligible: !hardBlocked,
-    tradeDiscoveryOnly
+    analyzeEligible: !hardBlocked && hasDirectionalSide,
+    tradeDiscoveryOnly: !scannerGatePassed
   };
 }
 
@@ -643,15 +616,21 @@ async function analyzeTickerCandidate({
 
   const change1h = calcOneHourChange(candles15m);
   const change24h = safeNumber(normalizedTicker.change24h, 0);
-
-  const directionalSide = inferDirectionalSide({
+  const side = inferSide({
     change1h,
     change24h,
     btcState
   });
 
+  if (side !== TARGET_SCANNER_SIDE) {
+    return {
+      candidate: null,
+      skippedReason: 'SHORT_ONLY_NOT_BEARISH'
+    };
+  }
+
   const fakeRaw = detectFakeBreakout({
-    side: TARGET_SCANNER_SIDE,
+    side,
     candles15m,
     btcState,
     lookback: CONFIG.scanner.fakeBreakoutLookback
@@ -663,20 +642,24 @@ async function analyzeTickerCandidate({
     change1h,
     change24h,
     fake,
-    directionalSide,
+    side,
     volume24h: normalizedTicker.volume24h
   });
 
   if (gates.hardBlocked) {
     return {
       candidate: null,
-      skippedReason: gates.scannerGateReason
+      skippedReason: gates.hardBlockedByDirection
+        ? 'NO_SHORT_DIRECTION'
+        : gates.hardBlockedByMove
+          ? 'SHORT_MOVE_TOO_SMALL'
+          : 'SHORT_FAKE_BREAKOUT'
     };
   }
 
   const volumeExpansion = calcVolumeExpansion(candles15m, 20);
   const sideConfidenceLevel = sideConfidence({
-    directionalSide,
+    side,
     change1h,
     change24h
   });
@@ -687,7 +670,6 @@ async function analyzeTickerCandidate({
     volume24h: normalizedTicker.volume24h,
     volumeExpansion,
     sideConfidenceLevel,
-    hasDirectionalSide: gates.hasDirectionalSide,
     passesVolumeFilter: gates.passesVolumeFilter,
     ...fake
   });
@@ -712,9 +694,9 @@ async function analyzeTickerCandidate({
       actualScannerSide: TARGET_TRADE_SIDE,
       analysisSide: TARGET_TRADE_SIDE,
 
-      directionalSide,
-      inferredDirectionalSide: directionalSide,
-      marketSide: directionalSide,
+      directionalSide: TARGET_SCANNER_SIDE,
+      inferredDirectionalSide: TARGET_SCANNER_SIDE,
+      marketSide: TARGET_SCANNER_SIDE,
 
       shortOnly: true,
       longDisabled: true,
@@ -742,7 +724,6 @@ async function analyzeTickerCandidate({
         volumeExpansion,
         passesMoveFilter: gates.passesMoveFilter,
         passesVolumeFilter: gates.passesVolumeFilter,
-        hasDirectionalSide: gates.hasDirectionalSide,
         sideConfidenceLevel
       }),
 
@@ -776,16 +757,16 @@ function sortCandidates(candidates = []) {
     const gateDelta = Number(Boolean(b.scannerGatePassed)) - Number(Boolean(a.scannerGatePassed));
     if (gateDelta !== 0) return gateDelta;
 
-    const directionalDelta = Number(Boolean(b.hasDirectionalSide)) - Number(Boolean(a.hasDirectionalSide));
-    if (directionalDelta !== 0) return directionalDelta;
-
     const scoreDelta = safeNumber(b.scannerScore, 0) - safeNumber(a.scannerScore, 0);
     if (scoreDelta !== 0) return scoreDelta;
+
+    const volumeDelta = safeNumber(b.volume24h, 0) - safeNumber(a.volume24h, 0);
+    if (volumeDelta !== 0) return volumeDelta;
 
     const changeDelta = Math.abs(safeNumber(b.change1h, 0)) - Math.abs(safeNumber(a.change1h, 0));
     if (changeDelta !== 0) return changeDelta;
 
-    return safeNumber(b.volume24h, 0) - safeNumber(a.volume24h, 0);
+    return String(a.symbol || '').localeCompare(String(b.symbol || ''));
   });
 }
 
@@ -926,6 +907,15 @@ export async function runScanner() {
       maxCandidates: snapshot.maxCandidates,
 
       strictFilters: snapshot.strictFilters,
+      blockFakeBreakout: snapshot.blockFakeBreakout,
+      blockNoDirection: snapshot.blockNoDirection,
+      blockSmallMove: snapshot.blockSmallMove,
+
+      minQuoteVolume24h: snapshot.minQuoteVolume24h,
+      softMinQuoteVolume24h: snapshot.softMinQuoteVolume24h,
+      minAbsChange1h: snapshot.minAbsChange1h,
+      minAbsChange24h: snapshot.minAbsChange24h,
+
       skippedCounts: snapshot.skippedCounts,
 
       topSymbols: snapshot.topSymbols,
