@@ -69,15 +69,11 @@ function firstValue(value, fallback = null) {
 }
 
 function isTrue(value) {
-  return (
-    value === true ||
-    value === 'true' ||
-    value === 'TRUE' ||
-    value === 1 ||
-    value === '1' ||
-    value === 'yes' ||
-    value === 'YES'
-  );
+  if (value === true || value === 1) return true;
+
+  const raw = String(value ?? '').trim().toLowerCase();
+
+  return ['true', '1', 'yes', 'y', 'on', 'force'].includes(raw);
 }
 
 function getLockTtlSec() {
@@ -91,9 +87,24 @@ function getLockTtlSec() {
 function shouldForceProcessSnapshot(req, body = {}) {
   return (
     isTrue(firstValue(req.query?.force, false)) ||
+    isTrue(firstValue(req.query?.forced, false)) ||
     isTrue(firstValue(req.query?.forceProcessSnapshot, false)) ||
+    isTrue(firstValue(req.query?.force_process_snapshot, false)) ||
+
     isTrue(body.force) ||
-    isTrue(body.forceProcessSnapshot)
+    isTrue(body.forced) ||
+    isTrue(body.forceProcessSnapshot) ||
+    isTrue(body.force_process_snapshot)
+  );
+}
+
+function shouldMonitorOnly(req, body = {}) {
+  return (
+    isTrue(firstValue(req.query?.monitorOnly, false)) ||
+    isTrue(firstValue(req.query?.monitor_only, false)) ||
+
+    isTrue(body.monitorOnly) ||
+    isTrue(body.monitor_only)
   );
 }
 
@@ -101,10 +112,15 @@ function getRunSource(req, body = {}) {
   const manual = (
     isTrue(firstValue(req.query?.manual, false)) ||
     isTrue(firstValue(req.query?.force, false)) ||
+    isTrue(firstValue(req.query?.forced, false)) ||
     isTrue(firstValue(req.query?.forceProcessSnapshot, false)) ||
+    isTrue(firstValue(req.query?.force_process_snapshot, false)) ||
+
     isTrue(body.manual) ||
     isTrue(body.force) ||
-    isTrue(body.forceProcessSnapshot)
+    isTrue(body.forced) ||
+    isTrue(body.forceProcessSnapshot) ||
+    isTrue(body.force_process_snapshot)
   );
 
   return manual
@@ -113,7 +129,12 @@ function getRunSource(req, body = {}) {
 }
 
 function unwrapLockResult(lockResult) {
-  return lockResult?.result || lockResult || null;
+  if (!lockResult) return null;
+
+  if (lockResult.result?.result) return lockResult.result.result;
+  if (lockResult.result) return lockResult.result;
+
+  return lockResult;
 }
 
 function responseOk(lockResult) {
@@ -255,7 +276,8 @@ function inferActionTradeSide(row = {}) {
     ...(Array.isArray(row.definitionParts) ? row.definitionParts : []),
     ...(Array.isArray(row.microDefinitionParts) ? row.microDefinitionParts : []),
     ...(Array.isArray(row.macroDefinitionParts) ? row.macroDefinitionParts : []),
-    ...(Array.isArray(row.parentDefinitionParts) ? row.parentDefinitionParts : [])
+    ...(Array.isArray(row.parentDefinitionParts) ? row.parentDefinitionParts : []),
+    ...(Array.isArray(row.executionFingerprintParts) ? row.executionFingerprintParts : [])
   ]
     .map((value) => String(value || '').toUpperCase())
     .filter(Boolean)
@@ -278,8 +300,13 @@ function forceLongAction(row = {}) {
     side: TARGET_DASHBOARD_SIDE,
     tradeSide: TARGET_TRADE_SIDE,
     targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+
     longOnly: true,
-    shortDisabled: true
+    shortDisabled: true,
+
+    shortOnly: false,
+    longDisabled: false
   };
 }
 
@@ -299,16 +326,23 @@ function responseActionCounts(lockResult) {
     ? payload.actions
     : [];
 
-  const longActions = rawActions
-    .filter(isLongAction)
-    .map(forceLongAction);
+  if (rawActions.length > 0) {
+    const longActions = rawActions
+      .filter(isLongAction)
+      .map(forceLongAction);
 
-  const targetCounts = longActions.length > 0
-    ? countActionsByType(longActions)
-    : payload?.actionCounts || {};
+    return {
+      ...countActionsByType(longActions),
+
+      targetTradeSide: TARGET_TRADE_SIDE,
+      dashboardSide: TARGET_DASHBOARD_SIDE,
+      longOnly: true,
+      shortDisabled: true
+    };
+  }
 
   return {
-    ...targetCounts,
+    ...(payload?.actionCounts || {}),
 
     targetTradeSide: TARGET_TRADE_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
@@ -346,7 +380,22 @@ function responseCounts(lockResult) {
     shortDisabled: true,
 
     candidates: Number(payload?.candidates || 0),
+    longCandidateCount: Number(payload?.longCandidateCount || 0),
+    nonLongCandidateCount: Number(payload?.nonLongCandidateCount || 0),
+
+    processed: Number(payload?.processed || 0),
+    earlyActions: Number(payload?.earlyActions || 0),
+
     liveRows: Number(payload?.liveRows || 0),
+    actualLiveRows: Number(payload?.actualLiveRows || 0),
+    mirrorRows: Number(payload?.mirrorRows || 0),
+    learningOnlyRows: Number(payload?.learningOnlyRows || 0),
+    riskValidRows: Number(payload?.riskValidRows || 0),
+
+    analyzedRowsRaw: Number(payload?.analyzedRowsRaw || 0),
+    analyzedRows: Number(payload?.analyzedRows || 0),
+    analyzedActualRows: Number(payload?.analyzedActualRows || 0),
+    analyzedMirrorRows: Number(payload?.analyzedMirrorRows || 0),
 
     actions: actions.length || Number(payload?.actionsCount || 0),
     longActions: longActions.length,
@@ -382,6 +431,10 @@ function sanitizeRunPayload(payload) {
     ? payload.shadowExits.filter(isLongAction).map(forceLongAction)
     : payload.shadowExits;
 
+  const actionCounts = Array.isArray(actions)
+    ? countActionsByType(actions)
+    : payload.actionCounts;
+
   return {
     ...payload,
 
@@ -396,6 +449,7 @@ function sanitizeRunPayload(payload) {
     actions,
     realExits,
     shadowExits,
+    actionCounts,
 
     actionsCount: Array.isArray(actions) ? actions.length : payload.actionsCount,
     realExitsCount: Array.isArray(realExits) ? realExits.length : payload.realExitsCount,
@@ -420,8 +474,13 @@ function resolveStatus(error) {
 }
 
 function buildRunOptions(req, body = {}) {
+  const forceProcessSnapshot = shouldForceProcessSnapshot(req, body);
+  const monitorOnly = shouldMonitorOnly(req, body);
+
   return {
-    forceProcessSnapshot: shouldForceProcessSnapshot(req, body),
+    force: forceProcessSnapshot,
+    forceProcessSnapshot,
+    monitorOnly,
 
     targetTradeSide: TARGET_TRADE_SIDE,
     tradeSide: TARGET_TRADE_SIDE,
@@ -429,13 +488,18 @@ function buildRunOptions(req, body = {}) {
 
     longOnly: true,
     shortDisabled: true,
-    disableShort: true
+    disableShort: true,
+
+    shortOnly: false,
+    longDisabled: false
   };
 }
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   res.setHeader('X-Trade-Target-Side', TARGET_TRADE_SIDE);
+  res.setHeader('X-Dashboard-Side', TARGET_DASHBOARD_SIDE);
+  res.setHeader('X-Long-Only', 'true');
   res.setHeader('X-Short-Disabled', 'true');
 
   const startedAt = Date.now();
@@ -473,7 +537,12 @@ export default async function handler(req, res) {
       longOnly: true,
       shortDisabled: true,
 
+      shortOnly: false,
+      longDisabled: false,
+
+      force: runOptions.force,
       forceProcessSnapshot: runOptions.forceProcessSnapshot,
+      monitorOnly: runOptions.monitorOnly,
 
       runId: responseRunId(result),
       snapshotId: responseSnapshotId(result),
@@ -484,6 +553,11 @@ export default async function handler(req, res) {
       activeRotationId: payload?.activeRotationId || null,
       activeMicroFamilies: Number(payload?.activeMicroFamilies || 0),
       activeMacroFamilies: Number(payload?.activeMacroFamilies || 0),
+
+      selectedSnapshotSource: payload?.selectedSnapshotSource || null,
+      selectedSnapshotReason: payload?.selectedSnapshotReason || null,
+      selectedTargetCandidateCount: Number(payload?.selectedTargetCandidateCount || 0),
+      selectedOppositeCandidateCount: Number(payload?.selectedOppositeCandidateCount || 0),
 
       durationMs: Date.now() - startedAt,
 
@@ -498,6 +572,9 @@ export default async function handler(req, res) {
       dashboardSide: TARGET_DASHBOARD_SIDE,
       longOnly: true,
       shortDisabled: true,
+
+      shortOnly: false,
+      longDisabled: false,
 
       error: error?.message || String(error),
       durationMs: Date.now() - startedAt,
