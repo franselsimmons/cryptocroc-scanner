@@ -261,6 +261,7 @@
       color: var(--muted);
       font-size: 12px;
       margin-top: 5px;
+      line-height: 1.45;
     }
 
     .section-title {
@@ -533,7 +534,7 @@
         <div class="brand-logo">MF</div>
         <div>
           <strong>LONG Micro-Family Trading Admin</strong>
-          <div class="brand-subtitle">Scanner → TradeSystem → Analyze → LONG Micro Rotation → Discord</div>
+          <div class="brand-subtitle">Scanner → Analyze → Shadow Outcomes → LONG Micro Rotation → Discord</div>
         </div>
       </div>
 
@@ -579,7 +580,7 @@
       micros: null,
       rotation: null,
       discord: null,
-      microMode: "balanced",
+      microMode: "observed",
       microSearch: "",
       apiTimeoutMs: 24000
     };
@@ -600,7 +601,6 @@
     };
 
     const tabs = ["overview", "scanner", "trade", "micros", "rotation", "discord", "reset"];
-
     const $ = (id) => document.getElementById(id);
 
     class ApiError extends Error {
@@ -684,7 +684,6 @@
 
       if (longHit && !shortHit) return "LONG";
       if (shortHit && !longHit) return "SHORT";
-
       if (longHit) return "LONG";
       if (shortHit) return "SHORT";
 
@@ -693,7 +692,6 @@
 
     function inferTradeSide(row = {}) {
       if (typeof row === "string") return inferTradeSideFromText(row);
-
       if (!row || typeof row !== "object") return "UNKNOWN";
 
       const direct = normalizeSide(
@@ -737,7 +735,8 @@
         ...(Array.isArray(row.definitionParts) ? row.definitionParts : []),
         ...(Array.isArray(row.microDefinitionParts) ? row.microDefinitionParts : []),
         ...(Array.isArray(row.macroDefinitionParts) ? row.macroDefinitionParts : []),
-        ...(Array.isArray(row.parentDefinitionParts) ? row.parentDefinitionParts : [])
+        ...(Array.isArray(row.parentDefinitionParts) ? row.parentDefinitionParts : []),
+        ...(Array.isArray(row.executionFingerprintParts) ? row.executionFingerprintParts : [])
       ]
         .map(upper)
         .filter(Boolean)
@@ -866,7 +865,6 @@
         });
 
         const rawText = await response.text();
-
         let data = {};
 
         try {
@@ -1060,6 +1058,15 @@
       return [];
     }
 
+    function unwrapDeep(data = {}) {
+      if (data?.result?.result?.result && typeof data.result.result.result === "object") return data.result.result.result;
+      if (data?.result?.result && typeof data.result.result === "object") return data.result.result;
+      if (data?.result && typeof data.result === "object") return data.result;
+      if (data?.payload && typeof data.payload === "object") return data.payload;
+
+      return data;
+    }
+
     function deepCandidateArrays(value, depth = 0, out = []) {
       if (!value || depth > 7) return out;
 
@@ -1128,27 +1135,214 @@
       return Array.isArray(targetFirst?.rows) ? targetFirst.rows : [];
     }
 
-    function extractMicroRows(data = {}) {
-      const keys = [
-        "best25MicroFamilies",
-        "topMicroFamilies",
-        "bestMicroFamilies",
-        "longRows",
-        "bullRows",
-        "rows",
-        "microFamilies",
-        "micros",
-        "items",
-        "data"
+    function isMicroLikeRow(row = {}) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) return false;
+
+      const id = microId(row);
+      const hasMicroId = Boolean(id && inferTradeSideFromText(id) === TARGET_TRADE_SIDE);
+
+      return Boolean(
+        hasMicroId ||
+        row.microFamilyId ||
+        row.trueMicroFamilyId ||
+        row.familyId ||
+        row.parentMacroFamilyId ||
+        row.macroFamilyId ||
+        row.definition ||
+        Array.isArray(row.definitionParts) ||
+        row.seen !== undefined ||
+        row.observations !== undefined ||
+        row.completed !== undefined ||
+        row.totalR !== undefined ||
+        row.avgR !== undefined ||
+        row.balancedScore !== undefined ||
+        row.dashboardBalancedScore !== undefined
+      );
+    }
+
+    function forceLongMicroRow(row = {}) {
+      const id = microId(row);
+
+      return {
+        ...row,
+        microFamilyId: row.microFamilyId || row.trueMicroFamilyId || id,
+        trueMicroFamilyId: row.trueMicroFamilyId || row.microFamilyId || id,
+
+        side: TARGET_DASHBOARD_SIDE,
+        tradeSide: TARGET_TRADE_SIDE,
+        positionSide: TARGET_TRADE_SIDE,
+        direction: TARGET_TRADE_SIDE,
+
+        targetTradeSide: TARGET_TRADE_SIDE,
+        dashboardSide: TARGET_DASHBOARD_SIDE,
+
+        longOnly: true,
+        shortDisabled: true,
+        shortOnly: false,
+        longDisabled: false,
+
+        seen: Number(row.seen ?? row.observations ?? 0),
+        observations: Number(row.observations ?? row.seen ?? 0),
+        completed: Number(row.completed ?? row.winrateSample ?? 0),
+        wins: Number(row.wins ?? 0),
+        losses: Number(row.losses ?? 0),
+        totalR: Number(row.totalR ?? 0),
+        avgR: Number(row.avgR ?? 0),
+        balancedScore: Number(row.dashboardBalancedScore ?? row.balancedScore ?? 0)
+      };
+    }
+
+    function collectMicroRows(value, depth = 0, out = []) {
+      if (!value || depth > 8) return out;
+
+      if (Array.isArray(value)) {
+        const microRows = value
+          .filter(isMicroLikeRow)
+          .filter((row) => inferTradeSide(row) === TARGET_TRADE_SIDE || inferTradeSideFromText(microId(row)) === TARGET_TRADE_SIDE)
+          .map(forceLongMicroRow);
+
+        if (microRows.length) {
+          out.push(...microRows);
+          return out;
+        }
+
+        for (const child of value) {
+          collectMicroRows(child, depth + 1, out);
+        }
+
+        return out;
+      }
+
+      if (typeof value !== "object") return out;
+
+      const entries = Object.entries(value);
+
+      const objectMapRows = entries
+        .filter(([key, row]) => (
+          inferTradeSideFromText(key) === TARGET_TRADE_SIDE &&
+          row &&
+          typeof row === "object" &&
+          !Array.isArray(row)
+        ))
+        .map(([key, row]) => forceLongMicroRow({
+          id: key,
+          microFamilyId: row.microFamilyId || key,
+          trueMicroFamilyId: row.trueMicroFamilyId || row.microFamilyId || key,
+          ...row
+        }));
+
+      if (objectMapRows.length >= 1) {
+        out.push(...objectMapRows);
+      }
+
+      for (const [key, child] of entries) {
+        if (["raw", "payloadRaw", "stack"].includes(key)) continue;
+
+        collectMicroRows(child, depth + 1, out);
+      }
+
+      return out;
+    }
+
+    function scannerAnalyzeMicroRows(scannerData = {}) {
+      const payload = unwrapDeep(scannerData);
+      const scanPayload = unwrapScanPayload(scannerData);
+
+      const ids = [
+        ...(Array.isArray(scannerData?.analyze?.microFamilyIds) ? scannerData.analyze.microFamilyIds : []),
+        ...(Array.isArray(payload?.analyze?.microFamilyIds) ? payload.analyze.microFamilyIds : []),
+        ...(Array.isArray(scanPayload?.analyze?.microFamilyIds) ? scanPayload.analyze.microFamilyIds : []),
+        ...(Array.isArray(scannerData?.result?.analyze?.microFamilyIds) ? scannerData.result.analyze.microFamilyIds : []),
+        ...(Array.isArray(scannerData?.result?.result?.analyze?.microFamilyIds) ? scannerData.result.result.analyze.microFamilyIds : [])
       ];
 
-      for (const key of keys) {
-        if (Array.isArray(data?.[key]) && data[key].length) {
-          return targetRows(data[key]);
+      return [...new Set(ids)]
+        .filter((id) => inferTradeSideFromText(id) === TARGET_TRADE_SIDE)
+        .map((id, index) => forceLongMicroRow({
+          rank: index + 1,
+          microFamilyId: id,
+          trueMicroFamilyId: id,
+          familyId: id.includes("LONG_") ? "LONG_FALLBACK" : "",
+          source: "SCANNER_ANALYZE_FALLBACK",
+          seen: Number(scannerData?.analyze?.inputRows || payload?.analyze?.inputRows || scanPayload?.analyze?.inputRows || 0),
+          observations: Number(scannerData?.analyze?.analyzedRows || payload?.analyze?.analyzedRows || scanPayload?.analyze?.analyzedRows || 0),
+          completed: 0,
+          totalR: 0,
+          avgR: 0,
+          balancedScore: 0
+        }));
+    }
+
+    function dedupeMicroRows(rows = []) {
+      const map = new Map();
+
+      for (const raw of Array.isArray(rows) ? rows : []) {
+        const row = forceLongMicroRow(raw);
+        const id = microId(row);
+
+        if (!id) continue;
+        if (inferTradeSide(row) !== TARGET_TRADE_SIDE && inferTradeSideFromText(id) !== TARGET_TRADE_SIDE) continue;
+
+        const previous = map.get(id);
+
+        if (!previous) {
+          map.set(id, row);
+          continue;
+        }
+
+        const previousScore =
+          Number(previous.completed || 0) * 1000000 +
+          Number(previous.seen || previous.observations || 0) * 1000 +
+          Number(previous.updatedAt || previous.createdAt || 0);
+
+        const rowScore =
+          Number(row.completed || 0) * 1000000 +
+          Number(row.seen || row.observations || 0) * 1000 +
+          Number(row.updatedAt || row.createdAt || 0);
+
+        if (rowScore >= previousScore) {
+          map.set(id, {
+            ...previous,
+            ...row,
+            seen: Math.max(Number(previous.seen || 0), Number(row.seen || 0)),
+            observations: Math.max(Number(previous.observations || 0), Number(row.observations || 0)),
+            completed: Math.max(Number(previous.completed || 0), Number(row.completed || 0))
+          });
         }
       }
 
-      return [];
+      return [...map.values()];
+    }
+
+    function scoreMicroForMode(row = {}, mode = state.microMode) {
+      if (mode === "winrate") return Number(row.fairWinrate ?? row.bayesianWinrate ?? row.wilsonLowerBound ?? row.winrate ?? 0);
+      if (mode === "totalR") return Number(row.totalR ?? 0);
+      if (mode === "avgR") return Number(row.avgR ?? 0);
+      if (mode === "directSL") return -Number(row.directSLPct ?? 0);
+      if (mode === "observed") return Number(row.completed ?? 0) * 100000 + Number(row.seen ?? row.observations ?? 0);
+
+      return Number(row.dashboardBalancedScore ?? row.balancedScore ?? 0);
+    }
+
+    function sortMicroRows(rows = []) {
+      return [...rows].sort((a, b) => (
+        scoreMicroForMode(b) - scoreMicroForMode(a) ||
+        Number(b.completed || 0) - Number(a.completed || 0) ||
+        Number(b.seen || b.observations || 0) - Number(a.seen || a.observations || 0) ||
+        String(microId(a)).localeCompare(String(microId(b)))
+      ));
+    }
+
+    function extractMicroRows(data = {}, scannerFallback = null) {
+      const collected = collectMicroRows(data);
+
+      let rows = dedupeMicroRows(collected);
+
+      if (!rows.length && scannerFallback) {
+        rows = scannerAnalyzeMicroRows(scannerFallback);
+      }
+
+      return sortMicroRows(rows);
     }
 
     function extractRotationIds(rotation = {}) {
@@ -1295,13 +1489,16 @@
       const overview = await safeApi(endpoints.overview, {});
       const scanner = await safeApi(endpoints.scanner, {});
       const trade = await safeApi(endpoints.trade, {});
+      const micros = await safeApi(`${endpoints.micros}?mode=observed&side=LONG&tradeSide=LONG&limit=25&compact=1&fast=1`, {});
 
       state.overview = overview;
       state.scanner = scanner;
       state.trade = trade;
+      state.micros = micros;
 
       const scanPayload = unwrapScanPayload(scanner || overview?.latestScan || {});
       const scanRows = targetRows(scannerCandidates(scanner || overview?.latestScan || {}));
+      const microRows = extractMicroRows(micros, scanner);
 
       const activeRotation = overview?.activeRotation || trade?.activeRotation || {};
       const activeMicroCount =
@@ -1322,10 +1519,10 @@
 
       $("overview").innerHTML = `
         <div class="grid">
-          ${metricCard("Current week", overview?.weekKey || overview?.currentWeek || "-")}
+          ${metricCard("Current week", overview?.weekKey || overview?.currentWeek || micros?.weekKey || "-")}
           ${metricCard("Previous week", overview?.previousWeekKey || "-")}
+          ${metricCard("Analyze LONG micros", fmtInt(microRows.length))}
           ${metricCard("Active LONG true micro", activeMicroCount)}
-          ${metricCard("Active LONG macro", activeMacroCount)}
           ${metricCard("Open positions", fmtInt(overview?.openPositions || getRows(trade, ["positions", "openPositions"]).length))}
           ${metricCard("Scanner LONG candidates", fmtInt(scanRows.length || scanPayload?.longCandidatesCount || 0))}
           ${metricCard("Gate passed", fmtInt(scanPayload?.scannerGateCandidatesCount || scanRows.filter((row) => row.scannerGatePassed).length))}
@@ -1337,22 +1534,35 @@
           <div class="toolbar">
             <span class="pill long">LONG ONLY</span>
             <span class="pill danger">SHORT DISABLED</span>
-            <span class="pill info">Scanner → Analyze → Rotation → TradeSystem</span>
+            <span class="pill info">Scanner Analyze: ${escapeHtml(scanPayload?.analyze?.analyzedRows || scanner?.analyze?.analyzedRows || 0)} rows</span>
+            <span class="pill purple">Micro rows: ${escapeHtml(microRows.length)}</span>
           </div>
           <div class="metric-extra">
-            Deze admin filtert uitsluitend op LONG. Als /api/scanner/run LONG candidates geeft, worden ze hier zichtbaar.
+            Als Scanner Analyze 300 rows geeft maar Micro rows 0, dan leest /api/admin/micro-families de opslag nog verkeerd. Deze UI probeert nested rows en scanner fallback te tonen.
           </div>
         </div>
 
         <div class="section-title">
           <div>
             <h2>Laatste LONG scanner feed</h2>
-            <p>Snelle preview van de candidates die Analyze moeten gaan voeden.</p>
+            <p>Snelle preview van de candidates die Analyze voeden.</p>
           </div>
         </div>
 
         <div class="coin-grid">
-          ${scanRows.slice(0, 8).length ? scanRows.slice(0, 8).map(coinCard).join("") : '<div class="empty">Nog geen LONG candidates zichtbaar in admin snapshot. Open Scanner tab en klik Run Scanner now.</div>'}
+          ${scanRows.slice(0, 8).length ? scanRows.slice(0, 8).map(coinCard).join("") : '<div class="empty">Nog geen LONG candidates zichtbaar. Open Scanner tab en klik Run Scanner now.</div>'}
+        </div>
+
+        <div class="card">
+          <h3>Analyze micro preview</h3>
+          ${table(microRows.slice(0, 12), [
+            { label: "True Micro", render: (row) => `<code>${escapeHtml(microId(row))}</code>` },
+            { label: "Side", render: (row) => `<span class="pill long">${escapeHtml(inferTradeSide(row))}</span>` },
+            { label: "Seen", render: (row) => fmtInt(row.seen ?? row.observations) },
+            { label: "Completed", render: (row) => fmt(row.completed, 2) },
+            { label: "TotalR", render: (row) => fmt(row.totalR, 3) },
+            { label: "Source", render: (row) => escapeHtml(row.source || "analyze") }
+          ], "Nog geen micro rows zichtbaar.")}
         </div>
 
         <div class="card">
@@ -1384,6 +1594,7 @@
       const analyzeOnly = candidates.filter((candidate) => candidate.tradeDiscoveryOnly || !candidate.scannerGatePassed);
       const ignoredShort = rawCandidates.filter(isOppositeSide).length;
       const topCandidates = candidates.slice(0, 16);
+      const analyze = data?.analyze || payload?.analyze || data?.result?.analyze || data?.result?.result?.analyze || null;
 
       const avgScore = candidates.reduce((sum, candidate) => (
         sum + Number(candidate.scannerScore ?? candidate.moveScore ?? 0)
@@ -1404,28 +1615,26 @@
           ${metricCard("Gate passed", fmtInt(gateCandidates.length))}
           ${metricCard("Analyze only", fmtInt(analyzeOnly.length))}
           ${metricCard("SHORT ignored", fmtInt(ignoredShort))}
-          ${metricCard("Avg score", fmt(avgScore, 1))}
+          ${metricCard("Scanner analyze rows", fmtInt(analyze?.analyzedRows || 0))}
+          ${metricCard("Scanner micro IDs", fmtInt(analyze?.microFamilyIds?.length || 0))}
           ${metricCard("Raw count", fmtInt(payload.rawCount))}
-          ${metricCard("Filtered universe", fmtInt(payload.filteredUniverse))}
           ${metricCard("Duration", `${fmtInt(payload.durationMs || data.durationMs)} ms`)}
+        </div>
+
+        <div class="card">
+          <h3>Scanner inline analyze</h3>
+          ${analyze ? jsonBlock(analyze) : '<div class="empty">Geen analyze object in admin scanner response. Run /api/scanner/run?force=true om scanner analyze direct te zien.</div>'}
         </div>
 
         <div class="section-title">
           <div>
             <h2>Scanner LONG candidates</h2>
-            <p>Coins die de LONG scannerfilter hebben overleefd. Deze feed bouwt Analyze micro-family data op via TradeSystem.</p>
+            <p>Coins die de LONG scannerfilter hebben overleefd.</p>
           </div>
         </div>
 
         <div class="coin-grid">
-          ${topCandidates.length ? topCandidates.map(coinCard).join("") : '<div class="empty">Geen LONG scanner candidates zichtbaar. Klik Run Scanner now of check /api/scanner/run.</div>'}
-        </div>
-
-        <div class="section-title">
-          <div>
-            <h2>Detailed scanner table</h2>
-            <p>Gebruik deze tabel voor filtercontrole: volume, gate, fake breakout en scannerReason.</p>
-          </div>
+          ${topCandidates.length ? topCandidates.map(coinCard).join("") : '<div class="empty">Geen LONG scanner candidates zichtbaar. Klik Run Scanner now.</div>'}
         </div>
 
         ${table(candidates, [
@@ -1437,7 +1646,6 @@
           { label: "1h", render: (row) => fmtPctRaw(row.change1h) },
           { label: "24h", render: (row) => fmtPctRaw(row.change24h) },
           { label: "Vol24h", render: (row) => fmtMoneyLike(row.volume24h) },
-          { label: "Vol source", render: (row) => escapeHtml(row.volumeSource || "-") },
           { label: "Gate", render: (row) => row.scannerGatePassed ? '<span class="pill active">PASS</span>' : '<span class="pill warn">ANALYZE</span>' },
           { label: "FakeBO", render: (row) => row.fakeBreakout ? '<span class="pill danger">YES</span>' : '<span class="pill active">NO</span>' },
           { label: "FakeRisk", render: (row) => row.fakeBreakoutRisk ? '<span class="pill warn">RISK</span>' : '<span class="pill active">OK</span>' },
@@ -1449,7 +1657,7 @@
         try {
           const result = await api(endpoints.runScanner, { timeoutMs: 32000 });
           state.scanner = result;
-          setMessage("Scanner handmatig gestart. LONG candidates zijn opnieuw geladen.", "ok");
+          setMessage("Scanner gestart. LONG candidates en scanner-analyze opnieuw geladen.", "ok");
           renderScannerData(result);
         } catch (error) {
           setMessage(friendlyApiMessage(error), "warn");
@@ -1469,6 +1677,7 @@
 
       const positions = targetRows(getRows(data, ["positions", "openPositions"]));
       const topPositions = positions.slice(0, 12);
+      const runMeta = data.runMeta || data.run || data.result?.run || data.result || {};
 
       $("trade").innerHTML = `
         <div class="toolbar">
@@ -1481,17 +1690,16 @@
           ${metricCard("In sync", data.scannerAndTradeInSync ? "YES" : "NO")}
           ${metricCard("Last processed", data.lastProcessed?.snapshotId || data.lastProcessedSnapshot || data.lastProcessedSnapshotId || "-")}
           ${metricCard("Latest scanner", data.latestScannerSnapshotId || "-")}
-          ${metricCard("Active true micro", fmtInt(data.runMeta?.activeMicroFamilies || data.activeMicroFamilies || 0))}
-          ${metricCard("Active macro", fmtInt(data.runMeta?.activeMacroFamilies || data.activeMacroFamilies || 0))}
-          ${metricCard("Last run", fmtTs(data.runMeta?.completedAt || data.runMeta?.startedAt || data.lastRunAt))}
-          ${metricCard("Actions", data.runMeta?.actionCounts ? Object.entries(data.runMeta.actionCounts).map(([key, value]) => `${key}:${value}`).join(" ") : "NA")}
+          ${metricCard("Live rows", fmtInt(runMeta.liveRows))}
+          ${metricCard("Analyzed rows", fmtInt(runMeta.analyzedRows))}
+          ${metricCard("Risk valid rows", fmtInt(runMeta.riskValidRows))}
+          ${metricCard("Learning rows", fmtInt(runMeta.learningOnlyRows))}
         </div>
 
         <div class="card">
           <h3>Analyze trigger</h3>
           <div class="metric-extra">
-            Iedere TradeSystem run verwerkt scanner candidates via analyzeCandidatesBatch, maakt shadow positions en schrijft observations naar Analyze.
-            Als scanner candidates > 0 maar micro-families blijven 0: run TradeSystem na Scanner.
+            TradeSystem verwerkt scanner candidates door live-data/risk heen en roept analyzeCandidatesBatch aan. Als scanner-analyze al 300 is maar micro stats leeg blijven, zit het in /api/admin/micro-families read-path.
           </div>
         </div>
 
@@ -1523,15 +1731,15 @@
 
         <div class="card">
           <h3>Run meta</h3>
-          ${jsonBlock(data.runMeta)}
+          ${jsonBlock(runMeta)}
         </div>
       `;
 
       $("runTradeBtn")?.addEventListener("click", async () => {
         try {
           const result = await api(endpoints.runTrade, { timeoutMs: 32000 });
-          const counts = result.counts || result.actionCounts || result.result?.actionCounts || {};
-          setMessage(`TradeSystem run klaar. ENTRY=${counts.ENTRY || counts.entries || 0}, WAIT=${counts.WAIT || counts.waits || 0}. Analyze is gevoed.`, "ok");
+          const counts = result.counts || result.actionCounts || result.run?.actionCounts || result.result?.actionCounts || {};
+          setMessage(`TradeSystem run klaar. ENTRY=${counts.ENTRY || counts.entries || 0}, WAIT=${counts.WAIT || counts.waits || 0}.`, "ok");
           await renderTrade();
         } catch (error) {
           setMessage(friendlyApiMessage(error), "warn");
@@ -1550,31 +1758,43 @@
       params.set("mode", state.microMode);
       params.set("side", TARGET_TRADE_SIDE);
       params.set("tradeSide", TARGET_TRADE_SIDE);
-      params.set("limit", "100");
-      params.set("bestLimit", "25");
-      params.set("sideLimit", "25");
+      params.set("limit", "500");
+      params.set("bestLimit", "100");
+      params.set("sideLimit", "100");
       params.set("compact", "1");
       params.set("fast", "1");
+      params.set("includeObserved", "1");
+      params.set("includeZeroCompleted", "1");
 
-      const data = await api(`${endpoints.micros}?${params.toString()}`, {
-        timeoutMs: 24000
-      });
+      const [data, scannerData, tradeData] = await Promise.all([
+        api(`${endpoints.micros}?${params.toString()}`, { timeoutMs: 24000 }),
+        safeApi(endpoints.scanner, state.scanner || {}),
+        safeApi(endpoints.trade, state.trade || {})
+      ]);
 
       state.micros = data;
+      state.scanner = scannerData || state.scanner;
+      state.trade = tradeData || state.trade;
 
-      const rowsRaw = extractMicroRows(data);
+      const rowsRaw = extractMicroRows(data, state.scanner);
       const search = state.microSearch.trim().toLowerCase();
 
       const rows = search
         ? rowsRaw.filter((row) => JSON.stringify(row).toLowerCase().includes(search))
         : rowsRaw;
 
+      const scannerAnalyze = state.scanner?.analyze || unwrapScanPayload(state.scanner || {})?.analyze || null;
+      const tradeRun = state.trade?.runMeta || state.trade?.run || state.trade?.result || {};
       const best = rows[0] || null;
+
+      const sourceHint = rows.some((row) => row.source === "SCANNER_ANALYZE_FALLBACK")
+        ? "SCANNER_ANALYZE_FALLBACK"
+        : (data.source || data.storageMode || data.mode || "admin-micro-families");
 
       $("micros").innerHTML = `
         <div class="toolbar">
           <select id="microMode">
-            ${["balanced", "winrate", "totalR", "avgR", "directSL", "observed"].map((mode) => `
+            ${["observed", "balanced", "winrate", "totalR", "avgR", "directSL"].map((mode) => `
               <option value="${escapeAttr(mode)}" ${mode === state.microMode ? "selected" : ""}>${escapeHtml(mode)}</option>
             `).join("")}
           </select>
@@ -1583,25 +1803,32 @@
 
           <button type="button" class="long-action" id="copyMicroIdsBtn">Copy LONG micro IDs</button>
           <button type="button" id="downloadMicrosBtn">Export JSON</button>
+          <button type="button" class="primary" id="runScannerFromMicrosBtn">Run Scanner</button>
+          <button type="button" class="primary" id="runTradeFromMicrosBtn">Run TradeSystem</button>
         </div>
 
         <div class="grid">
           ${metricCard("LONG micro rows", fmtInt(rows.length))}
-          ${metricCard("Best balanced", best ? fmt(best.dashboardBalancedScore ?? best.balancedScore, 2) : "-")}
+          ${metricCard("Source", sourceHint)}
+          ${metricCard("Scanner analyze rows", fmtInt(scannerAnalyze?.analyzedRows || 0))}
+          ${metricCard("Scanner micro IDs", fmtInt(scannerAnalyze?.microFamilyIds?.length || 0))}
+          ${metricCard("Trade live rows", fmtInt(tradeRun.liveRows || 0))}
+          ${metricCard("Trade analyzed rows", fmtInt(tradeRun.analyzedRows || 0))}
           ${metricCard("Best completed", best ? fmt(best.completed ?? best.winrateSample, 2) : "-")}
-          ${metricCard("Best totalR", best ? fmt(best.totalR, 2) : "-")}
-          ${metricCard("Mode", state.microMode)}
-          ${metricCard("Source", data.source || data.storageMode || "admin")}
-          ${metricCard("Analyze status", rows.length ? "BUILDING" : "NO ROWS YET")}
-          ${metricCard("Action", rows.length ? "Rotate when ready" : "Run TradeSystem")}
+          ${metricCard("Best seen", best ? fmtInt(best.seen ?? best.observations) : "-")}
         </div>
 
         <div class="card">
-          <h3>Analyze pipeline</h3>
+          <h3>Analyze read status</h3>
+          <div class="toolbar">
+            <span class="pill long">LONG ONLY</span>
+            <span class="pill info">Rows extracted: ${escapeHtml(rows.length)}</span>
+            <span class="pill purple">Mode: ${escapeHtml(state.microMode)}</span>
+            <span class="pill ${rows.length ? "active" : "warn"}">${rows.length ? "VISIBLE" : "EMPTY"}</span>
+          </div>
           <div class="metric-extra">
-            MicroFamilies worden niet door Scanner zelf gebouwd. Scanner maakt candidates.
-            TradeSystem verrijkt candidates met orderbook/RSI/RR en roept Analyze aan.
-            Shadow outcomes maken daarna completed/winrate/avgR groter.
+            Deze UI leest nu alle nested micro-family vormen: arrays, object maps, result.result wrappers, weekMicros/topSnapshot, en scanner analyze fallback.
+            Completed blijft 0 totdat shadow/real outcomes sluiten. Seen/observations hoort direct te stijgen na scanner/analyze.
           </div>
         </div>
 
@@ -1611,9 +1838,9 @@
           { label: "Macro", render: (row) => `<code>${escapeHtml(macroId(row) || "NO_MACRO")}</code>` },
           { label: "Family", render: (row) => `<code>${escapeHtml(familyId(row) || "NO_FAMILY")}</code>` },
           { label: "Side", render: (row) => `<span class="pill ${escapeAttr(sideClass(row))}">${escapeHtml(inferTradeSide(row))}</span>` },
-          { label: "Seen", render: (row) => fmtInt(row.seen) },
+          { label: "Seen", render: (row) => fmtInt(row.seen ?? row.observations) },
+          { label: "Obs", render: (row) => fmtInt(row.observations ?? row.seen) },
           { label: "Completed", render: (row) => fmt(row.completed, 2) },
-          { label: "Sample", render: (row) => fmt(row.winrateSample ?? row.completed, 2) },
           { label: "Winrate", render: (row) => fmtPctRatio(row.winrate) },
           { label: "Fair WR", render: (row) => fmtPctRatio(row.fairWinrate ?? row.bayesianWinrate ?? row.wilsonLowerBound) },
           { label: "AvgR", render: (row) => fmt(row.avgR, 3) },
@@ -1621,7 +1848,12 @@
           { label: "PF", render: (row) => fmt(row.profitFactor, 2) },
           { label: "DirectSL", render: (row) => fmtPctRatio(row.directSLPct) },
           { label: "Balanced", render: (row) => `<strong>${fmt(row.dashboardBalancedScore ?? row.balancedScore, 2)}</strong>` }
-        ], "Nog geen LONG micro-family data. Run Scanner en daarna TradeSystem.")}
+        ], "Nog geen LONG micro-family data. Run Scanner. Als scanner analyze rows > 0 maar deze tabel leeg blijft: fix /api/admin/micro-families read-path.")}
+
+        <div class="card">
+          <h3>Raw micro endpoint</h3>
+          ${jsonBlock(data)}
+        </div>
       `;
 
       $("microMode")?.addEventListener("change", (event) => {
@@ -1640,6 +1872,28 @@
       });
 
       $("downloadMicrosBtn")?.addEventListener("click", () => downloadJson("long-micro-families.json", data));
+
+      $("runScannerFromMicrosBtn")?.addEventListener("click", async () => {
+        try {
+          const result = await api(endpoints.runScanner, { timeoutMs: 32000 });
+          state.scanner = result;
+          setMessage("Scanner klaar. MicroFamilies opnieuw laden.", "ok");
+          await renderMicros();
+        } catch (error) {
+          setMessage(friendlyApiMessage(error), "warn");
+        }
+      });
+
+      $("runTradeFromMicrosBtn")?.addEventListener("click", async () => {
+        try {
+          const result = await api(endpoints.runTrade, { timeoutMs: 32000 });
+          state.trade = result;
+          setMessage("TradeSystem klaar. MicroFamilies opnieuw laden.", "ok");
+          await renderMicros();
+        } catch (error) {
+          setMessage(friendlyApiMessage(error), "warn");
+        }
+      });
     }
 
     async function renderRotation() {
