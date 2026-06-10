@@ -1,25 +1,25 @@
-<!-- ================= FILE: public/admin.html ================= -->
+<!-- FILE: public/admin.html -->
 <!doctype html>
 <html lang="nl">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>LONG Micro-Family Trading Admin</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Long-Only Micro-Family Learning Admin</title>
 
   <style>
     :root {
       --bg: #f3f5f9;
       --panel: #ffffff;
-      --soft: #f8fafc;
+      --panel-soft: #f8fafc;
       --text: #0f172a;
       --muted: #64748b;
       --border: #e2e8f0;
-      --border2: #cbd5e1;
+      --border-strong: #cbd5e1;
       --dark: #0f172a;
-      --red: #dc2626;
       --green: #16a34a;
-      --blue: #2563eb;
+      --red: #dc2626;
       --amber: #d97706;
+      --blue: #2563eb;
       --purple: #7c3aed;
       --shadow: 0 2px 12px rgba(15, 23, 42, 0.07);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -29,30 +29,34 @@
 
     body {
       margin: 0;
-      background:
-        radial-gradient(circle at top left, rgba(22, 163, 74, 0.13), transparent 26%),
-        radial-gradient(circle at top right, rgba(37, 99, 235, 0.10), transparent 30%),
-        var(--bg);
       color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(22, 163, 74, 0.12), transparent 30%),
+        radial-gradient(circle at top right, rgba(15, 23, 42, 0.12), transparent 32%),
+        var(--bg);
     }
 
     button,
     select,
-    input { font: inherit; }
+    input,
+    textarea {
+      font: inherit;
+    }
 
     button {
-      border: 1px solid var(--border2);
+      border: 1px solid var(--border-strong);
       border-radius: 12px;
       padding: 10px 14px;
       background: white;
       color: var(--text);
       cursor: pointer;
+      transition: 0.14s ease;
       box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
     }
 
     button:hover:not(:disabled) {
       transform: translateY(-1px);
-      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+      box-shadow: 0 8px 22px rgba(15, 23, 42, 0.12);
     }
 
     button:disabled {
@@ -62,15 +66,16 @@
     }
 
     button.primary { background: var(--dark); color: white; border-color: var(--dark); }
-    button.long-action,
     button.success { background: var(--green); color: white; border-color: var(--green); }
-    button.danger { background: var(--red); color: white; border-color: var(--red); }
     button.warn { background: var(--amber); color: white; border-color: var(--amber); }
-    button.small { padding: 6px 9px; font-size: 12px; border-radius: 9px; }
+    button.danger { background: var(--red); color: white; border-color: var(--red); }
+    button.long-action { background: var(--green); color: white; border-color: var(--green); }
+    button.small { padding: 6px 9px; border-radius: 9px; font-size: 12px; }
 
+    select,
     input,
-    select {
-      border: 1px solid var(--border2);
+    textarea {
+      border: 1px solid var(--border-strong);
       border-radius: 12px;
       padding: 10px 12px;
       background: white;
@@ -78,12 +83,20 @@
       min-height: 42px;
     }
 
-    input[type="search"] { min-width: 320px; }
+    input[type="search"] { min-width: 340px; }
+
+    textarea {
+      width: 100%;
+      min-height: 110px;
+      resize: vertical;
+      line-height: 1.45;
+    }
 
     header {
-      background: linear-gradient(135deg, #052e16 0%, #065f46 45%, #0f172a 100%);
+      background: linear-gradient(135deg, #0f172a 0%, #111827 46%, #064e3b 100%);
       color: white;
       padding: 24px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     }
 
     .header-inner {
@@ -107,9 +120,10 @@
       border-radius: 16px;
       display: grid;
       place-items: center;
-      background: linear-gradient(135deg, #16a34a, #22c55e);
+      background: linear-gradient(135deg, #16a34a, #86efac);
+      box-shadow: 0 12px 32px rgba(22, 163, 74, 0.30);
       font-weight: 900;
-      box-shadow: 0 12px 32px rgba(22, 163, 74, 0.35);
+      letter-spacing: -0.04em;
     }
 
     .brand-title strong {
@@ -120,7 +134,7 @@
     }
 
     .brand-subtitle {
-      color: #bbf7d0;
+      color: #cbd5e1;
       margin-top: 6px;
       font-size: 14px;
       line-height: 1.45;
@@ -142,7 +156,7 @@
       border-radius: 999px;
       background: rgba(255, 255, 255, 0.08);
       border: 1px solid rgba(255, 255, 255, 0.12);
-      color: #dcfce7;
+      color: #cbd5e1;
       font-size: 13px;
     }
 
@@ -150,8 +164,8 @@
       width: 8px;
       height: 8px;
       border-radius: 999px;
-      background: #22c55e;
-      box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.16);
+      background: #86efac;
+      box-shadow: 0 0 0 4px rgba(134, 239, 172, 0.18);
     }
 
     main {
@@ -168,14 +182,15 @@
       position: sticky;
       top: 0;
       z-index: 5;
-      background: rgba(243, 245, 249, 0.86);
+      background: rgba(243, 245, 249, 0.88);
       backdrop-filter: blur(14px);
       padding: 10px 0;
     }
 
     .tab {
       border-radius: 999px;
-      background: rgba(255, 255, 255, 0.82);
+      background: rgba(255, 255, 255, 0.80);
+      border-color: rgba(203, 213, 225, 0.90);
     }
 
     .tab.active {
@@ -184,7 +199,8 @@
       border-color: var(--dark);
     }
 
-    .hidden { display: none !important; }
+    .hidden,
+    .panel.hidden { display: none; }
 
     .message {
       border-radius: 16px;
@@ -250,9 +266,9 @@
     }
 
     .metric-value {
-      font-size: 27px;
+      font-size: 26px;
       line-height: 1.1;
-      font-weight: 900;
+      font-weight: 850;
       letter-spacing: -0.04em;
       word-break: break-word;
     }
@@ -261,6 +277,7 @@
       color: var(--muted);
       font-size: 12px;
       margin-top: 5px;
+      line-height: 1.45;
     }
 
     .section-title {
@@ -273,8 +290,8 @@
 
     .section-title h2 {
       margin: 0;
-      font-size: 19px;
-      letter-spacing: -0.03em;
+      font-size: 18px;
+      letter-spacing: -0.02em;
     }
 
     .section-title p {
@@ -300,126 +317,22 @@
       background: #e2e8f0;
       color: #334155;
       font-size: 11px;
-      font-weight: 850;
+      font-weight: 800;
       text-transform: uppercase;
       letter-spacing: 0.02em;
       white-space: nowrap;
     }
 
-    .pill.long,
-    .pill.bull,
     .pill.active { background: #dcfce7; color: #166534; }
-
-    .pill.short,
-    .pill.bear,
+    .pill.long { background: #dcfce7; color: #166534; }
     .pill.danger { background: #fee2e2; color: #991b1b; }
-
     .pill.warn { background: #fef3c7; color: #92400e; }
     .pill.info { background: #dbeafe; color: #1d4ed8; }
     .pill.purple { background: #ede9fe; color: #5b21b6; }
     .pill.dark { background: #0f172a; color: white; }
-
-    .coin-card {
-      position: relative;
-      overflow: hidden;
-      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-      border: 1px solid var(--border);
-      border-radius: 22px;
-      padding: 16px;
-      box-shadow: var(--shadow);
-    }
-
-    .coin-card::before {
-      content: "";
-      position: absolute;
-      inset: 0 0 auto 0;
-      height: 4px;
-      background: #94a3b8;
-    }
-
-    .coin-card.long::before,
-    .coin-card.bull::before { background: linear-gradient(90deg, #16a34a, #22c55e); }
-
-    .coin-card.short::before,
-    .coin-card.bear::before { background: linear-gradient(90deg, #dc2626, #fb7185); }
-
-    .coin-head {
-      display: flex;
-      gap: 12px;
-      align-items: center;
-      margin-bottom: 14px;
-    }
-
-    .coin-logo {
-      width: 42px;
-      height: 42px;
-      border-radius: 999px;
-      background: #e2e8f0;
-      border: 1px solid var(--border);
-      display: grid;
-      place-items: center;
-      font-weight: 900;
-      color: #334155;
-      flex: 0 0 auto;
-    }
-
-    .coin-main { min-width: 0; }
-
-    .coin-symbol {
-      font-weight: 900;
-      font-size: 16px;
-      letter-spacing: -0.02em;
-    }
-
-    .coin-name {
-      color: var(--muted);
-      font-size: 12px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      max-width: 180px;
-    }
-
-    .coin-price {
-      margin-left: auto;
-      text-align: right;
-    }
-
-    .coin-price strong { display: block; font-size: 15px; }
-    .coin-price span { display: block; font-size: 12px; color: var(--muted); }
-
-    .coin-stats {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 8px;
-      margin-top: 10px;
-    }
-
-    .coin-stat {
-      background: #f8fafc;
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 9px;
-    }
-
-    .coin-stat span {
-      display: block;
-      color: var(--muted);
-      font-size: 11px;
-      margin-bottom: 3px;
-    }
-
-    .coin-stat strong { font-size: 13px; }
-
-    .coin-foot {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      margin-top: 12px;
-      overflow: hidden;
-    }
+    .pill.soft { background: #e0f2fe; color: #075985; }
+    .pill.observation { background: #fef9c3; color: #854d0e; }
+    .pill.raw { background: #f1f5f9; color: #475569; }
 
     .score-bar {
       height: 8px;
@@ -433,7 +346,7 @@
       display: block;
       height: 100%;
       width: var(--w);
-      background: linear-gradient(90deg, #16a34a, #22c55e);
+      background: linear-gradient(90deg, #16a34a, #86efac);
       border-radius: inherit;
     }
 
@@ -450,7 +363,7 @@
     table {
       border-collapse: collapse;
       width: 100%;
-      min-width: 1200px;
+      min-width: 1280px;
       background: white;
     }
 
@@ -467,7 +380,7 @@
     th {
       background: #f8fafc;
       color: #334155;
-      font-weight: 850;
+      font-weight: 800;
       position: sticky;
       top: 0;
       z-index: 1;
@@ -502,9 +415,170 @@
       padding: 22px;
       text-align: center;
       color: var(--muted);
-      border: 1px dashed var(--border2);
+      border: 1px dashed var(--border-strong);
       border-radius: 18px;
-      background: rgba(255, 255, 255, 0.72);
+      background: rgba(255, 255, 255, 0.70);
+    }
+
+    .coin-card {
+      position: relative;
+      overflow: hidden;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .coin-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto 0;
+      height: 4px;
+      background: linear-gradient(90deg, #16a34a, #86efac);
+    }
+
+    .coin-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+      margin-bottom: 14px;
+    }
+
+    .coin-symbol {
+      font-weight: 850;
+      font-size: 16px;
+      letter-spacing: -0.02em;
+    }
+
+    .coin-name {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 3px;
+    }
+
+    .coin-price {
+      text-align: right;
+    }
+
+    .coin-price strong {
+      display: block;
+      font-size: 16px;
+    }
+
+    .coin-price span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 3px;
+    }
+
+    .coin-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .coin-stat {
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 9px;
+    }
+
+    .coin-stat span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 3px;
+    }
+
+    .coin-stat strong { font-size: 13px; }
+
+    .coin-foot {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+      align-items: center;
+    }
+
+    .manual-card {
+      position: relative;
+      overflow: hidden;
+      border-radius: 22px;
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96));
+      box-shadow: var(--shadow);
+      padding: 16px;
+      max-width: 920px;
+    }
+
+    .manual-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto 0;
+      height: 5px;
+      background: linear-gradient(90deg, #16a34a, #86efac);
+    }
+
+    .manual-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(110px, 1fr));
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .manual-stat {
+      border: 1px solid var(--border);
+      border-radius: 15px;
+      padding: 10px;
+      background: #ffffff;
+    }
+
+    .manual-stat span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 4px;
+      font-weight: 700;
+    }
+
+    .manual-stat strong {
+      display: block;
+      font-size: 15px;
+      letter-spacing: -0.02em;
+    }
+
+    .drawer {
+      position: fixed;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: min(860px, 94vw);
+      background: white;
+      border-left: 1px solid var(--border);
+      box-shadow: -12px 0 42px rgba(15, 23, 42, 0.18);
+      padding: 20px;
+      overflow: auto;
+      z-index: 30;
+    }
+
+    .drawer-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .drawer h2 {
+      margin: 0;
+      font-size: 20px;
+      letter-spacing: -0.03em;
+      word-break: break-word;
     }
 
     @media (max-width: 1180px) {
@@ -521,6 +595,7 @@
       .coin-grid { grid-template-columns: 1fr; }
       .tab { flex: 1 1 auto; padding: 9px 10px; }
       input[type="search"] { min-width: 100%; }
+      .manual-grid,
       .coin-stats { grid-template-columns: repeat(2, 1fr); }
     }
   </style>
@@ -532,13 +607,15 @@
       <div class="brand-title">
         <div class="brand-logo">MF</div>
         <div>
-          <strong>LONG Micro-Family Trading Admin</strong>
-          <div class="brand-subtitle">Scanner → TradeSystem → Analyze → LONG Micro Rotation → Discord</div>
+          <strong>Long-Only Micro-Family Learning Admin</strong>
+          <div class="brand-subtitle">
+            Scanner → TradeSystem → Analyze → Virtual PositionEngine → Net-R outcomes → Manual Discord selection
+          </div>
         </div>
       </div>
 
       <div class="header-actions">
-        <div class="live-pill"><span class="live-dot"></span><span id="liveLabel">Live dashboard</span></div>
+        <div class="live-pill"><span class="live-dot"></span><span id="liveLabel">LONG-only · virtual learning</span></div>
         <button id="refreshBtn" type="button">Refresh</button>
       </div>
     </div>
@@ -550,7 +627,7 @@
       <button type="button" class="tab" data-tab="scanner">Scanner</button>
       <button type="button" class="tab" data-tab="trade">TradeSystem</button>
       <button type="button" class="tab" data-tab="micros">MicroFamilies</button>
-      <button type="button" class="tab" data-tab="rotation">Rotation</button>
+      <button type="button" class="tab" data-tab="rotation">Manual Discord Selection</button>
       <button type="button" class="tab" data-tab="discord">Discord Logs</button>
       <button type="button" class="tab" data-tab="reset">Reset</button>
     </div>
@@ -566,10 +643,13 @@
     <section id="reset" class="panel hidden"></section>
   </main>
 
+  <div id="drawer" class="drawer hidden"></div>
+
   <script>
-    const TARGET_TRADE_SIDE = "LONG";
-    const TARGET_DASHBOARD_SIDE = "bull";
-    const OPPOSITE_TRADE_SIDE = "SHORT";
+    const ONLY_SIDE = "LONG";
+    const OPPOSITE_SIDE = "SHORT";
+    const DASHBOARD_SIDE = "bull";
+    const MIN_COMPLETED_ACTIVE_LEARNING = 20;
 
     const state = {
       activeTab: "overview",
@@ -581,7 +661,9 @@
       discord: null,
       microMode: "balanced",
       microSearch: "",
-      apiTimeoutMs: 24000
+      apiTimeoutMs: 22000,
+      microLimit: 120,
+      bestLimit: 100
     };
 
     const endpoints = {
@@ -591,15 +673,16 @@
       micros: "/api/admin/micro-families",
       rotation: "/api/admin/rotation",
       discord: "/api/admin/discord-logs",
+      microDetail: "/api/admin/micro-family",
       runScanner: "/api/scanner/run?force=true",
-      runTrade: "/api/trade/run?force=true",
-      weeklyFreeze: "/api/analyze/weekly-freeze?force=true",
+      runTrade: "/api/trade/run?force=true&forceProcessSnapshot=true",
       resetLearning: "/api/admin/reset-learning",
       resetRotation: "/api/admin/reset-rotation",
       factoryReset: "/api/admin/factory-reset"
     };
 
     const tabs = ["overview", "scanner", "trade", "micros", "rotation", "discord", "reset"];
+    const validMicroModes = ["balanced", "winrate", "totalR", "avgR", "directSL", "observed"];
 
     const $ = (id) => document.getElementById(id);
 
@@ -610,7 +693,6 @@
         this.status = details.status || 0;
         this.url = details.url || "";
         this.data = details.data || null;
-        this.raw = details.raw || "";
         this.timeout = Boolean(details.timeout);
       }
     }
@@ -632,324 +714,316 @@
       return String(value || "").trim().toUpperCase();
     }
 
-    function normalizeSide(value) {
-      const raw = upper(value);
-
-      if (["LONG", "BULL", "BULLISH", "BUY"].includes(raw)) return "LONG";
-      if (["SHORT", "BEAR", "BEARISH", "SELL"].includes(raw)) return "SHORT";
-
-      return raw || "UNKNOWN";
+    function cleanSideText(value = "") {
+      return upper(value)
+        .replaceAll("SHORT_DISABLED", "")
+        .replaceAll("SHORTDISABLED", "")
+        .replaceAll("BLOCK_SHORT", "")
+        .replaceAll("SHORT_ENABLED_FALSE", "")
+        .replaceAll("SHORT_ONLY_FALSE", "")
+        .replaceAll("LONG_DISABLED_FALSE", "")
+        .replaceAll("LONG_ENABLED_FALSE", "")
+        .replaceAll("LONG_ONLY_FALSE", "")
+        .replaceAll("LONG_ONLY_MODE", "LONG")
+        .replaceAll("LONG_ONLY", "LONG")
+        .replaceAll("LONG-ONLY", "LONG");
     }
 
-    function inferTradeSideFromText(value) {
-      const text = upper(value);
+    function normalizeSide(value) {
+      const raw = cleanSideText(value);
 
-      if (!text) return "UNKNOWN";
-
-      const shortHit = (
-        text.includes("MICRO_SHORT_") ||
-        text.includes("TRADESIDE=SHORT") ||
-        text.includes("TRADE_SIDE=SHORT") ||
-        text.includes("SIDE=SHORT") ||
-        text.includes("SIDE=BEAR") ||
-        text.includes("DIRECTION=SHORT") ||
-        text.includes("DIRECTION=BEAR") ||
-        text.includes("SIDE=SELL") ||
-        text.includes("DIRECTION=SELL") ||
-        text.includes("SHORT_") ||
-        text.includes("_SHORT") ||
-        text.includes("BEAR_") ||
-        text.includes("_BEAR") ||
-        text.includes("SELL_") ||
-        text.includes("_SELL")
-      );
-
-      const longHit = (
-        text.includes("MICRO_LONG_") ||
-        text.includes("TRADESIDE=LONG") ||
-        text.includes("TRADE_SIDE=LONG") ||
-        text.includes("SIDE=LONG") ||
-        text.includes("SIDE=BULL") ||
-        text.includes("DIRECTION=LONG") ||
-        text.includes("DIRECTION=BULL") ||
-        text.includes("SIDE=BUY") ||
-        text.includes("DIRECTION=BUY") ||
-        text.includes("LONG_") ||
-        text.includes("_LONG") ||
-        text.includes("BULL_") ||
-        text.includes("_BULL") ||
-        text.includes("BUY_") ||
-        text.includes("_BUY")
-      );
-
-      if (shortHit && !longHit) return "SHORT";
-      if (longHit && !shortHit) return "LONG";
-
-      if (shortHit) return "SHORT";
-      if (longHit) return "LONG";
+      if (["LONG", "BULL", "BULLISH", "BUY", "UP", "UPSIDE"].includes(raw)) return ONLY_SIDE;
+      if (["SHORT", "BEAR", "BEARISH", "SELL", "DOWN", "DOWNSIDE"].includes(raw)) return OPPOSITE_SIDE;
 
       return "UNKNOWN";
     }
 
-    function inferTradeSideFromIds(row = {}) {
-      if (typeof row === "string") return inferTradeSideFromText(row);
-      if (!row || typeof row !== "object") return "UNKNOWN";
+    function hasShortSignal(value = "") {
+      const text = ` ${cleanSideText(value)} `;
 
-      const haystack = [
-        row.familyId,
-        row.family,
-        row.baseFamilyId,
-
-        row.microFamilyId,
-        row.trueMicroFamilyId,
-        row.liveMicroFamilyId,
-        row.realMicroFamilyId,
-        row.executionMicroFamilyId,
-        row.id,
-        row.key,
-
-        row.macroFamilyId,
-        row.parentMacroFamilyId,
-        row.parentMicroFamilyId,
-        row.parentFamilyId,
-        row.macroId
-      ]
-        .map(upper)
-        .filter(Boolean)
-        .join("|");
-
-      return inferTradeSideFromText(haystack);
-    }
-
-    function inferTradeSide(row = {}) {
-      if (typeof row === "string") return inferTradeSideFromText(row);
-      if (!row || typeof row !== "object") return "UNKNOWN";
-
-      const fromIds = inferTradeSideFromIds(row);
-
-      if (fromIds === "LONG" || fromIds === "SHORT") {
-        return fromIds;
-      }
-
-      const direct = normalizeSide(
-        row.tradeSide ||
-        row.positionSide ||
-        row.direction ||
-        row.signalSide ||
-        row.scannerSide ||
-        row.analysisSide ||
-        row.actualScannerSide ||
-        row.entrySide ||
-        row.side
+      return (
+        text.includes("MICRO_SHORT_") ||
+        text.includes("TRADESIDE=SHORT") ||
+        text.includes("TRADE_SIDE=SHORT") ||
+        text.includes("POSITION_SIDE=SHORT") ||
+        text.includes("POSITIONSIDE=SHORT") ||
+        text.includes("SIDE=SHORT") ||
+        text.includes("SIDE=BEAR") ||
+        text.includes("SIDE=SELL") ||
+        text.includes("DIRECTION=SHORT") ||
+        text.includes("DIRECTION=BEAR") ||
+        text.includes("DIRECTION=SELL") ||
+        text.includes(" SHORT ") ||
+        text.includes(" SHORT_") ||
+        text.includes("_SHORT ") ||
+        text.includes("_SHORT_") ||
+        text.includes("|SHORT|") ||
+        text.includes(":SHORT") ||
+        text.includes("=SHORT") ||
+        text.includes(" BEAR ") ||
+        text.includes("_BEAR") ||
+        text.includes("BEAR_") ||
+        text.includes("|BEAR|") ||
+        text.includes(":BEAR") ||
+        text.includes("=BEAR") ||
+        text.includes(" SELL ") ||
+        text.includes("_SELL") ||
+        text.includes("SELL_") ||
+        text.includes("|SELL|") ||
+        text.includes(":SELL") ||
+        text.includes("=SELL")
       );
-
-      if (direct === "LONG" || direct === "SHORT") return direct;
-
-      const haystack = [
-        row.definition,
-        row.microDefinition,
-        row.macroDefinition,
-        row.parentDefinition,
-
-        ...(Array.isArray(row.definitionParts) ? row.definitionParts : []),
-        ...(Array.isArray(row.microDefinitionParts) ? row.microDefinitionParts : []),
-        ...(Array.isArray(row.macroDefinitionParts) ? row.macroDefinitionParts : []),
-        ...(Array.isArray(row.parentDefinitionParts) ? row.parentDefinitionParts : []),
-        ...(Array.isArray(row.executionFingerprintParts) ? row.executionFingerprintParts : [])
-      ]
-        .map(upper)
-        .filter(Boolean)
-        .join("|");
-
-      return inferTradeSideFromText(haystack);
     }
 
-    function isTargetSide(row = {}) {
-      return inferTradeSide(row) === TARGET_TRADE_SIDE &&
-        inferTradeSideFromIds(row) !== OPPOSITE_TRADE_SIDE;
+    function hasLongSignal(value = "") {
+      const text = ` ${cleanSideText(value)} `;
+
+      return (
+        text.includes("MICRO_LONG_") ||
+        text.includes("TRADESIDE=LONG") ||
+        text.includes("TRADE_SIDE=LONG") ||
+        text.includes("POSITION_SIDE=LONG") ||
+        text.includes("POSITIONSIDE=LONG") ||
+        text.includes("SIDE=LONG") ||
+        text.includes("SIDE=BULL") ||
+        text.includes("SIDE=BUY") ||
+        text.includes("DIRECTION=LONG") ||
+        text.includes("DIRECTION=BULL") ||
+        text.includes("DIRECTION=BUY") ||
+        text.includes(" LONG ") ||
+        text.includes(" LONG_") ||
+        text.includes("_LONG ") ||
+        text.includes("_LONG_") ||
+        text.includes("|LONG|") ||
+        text.includes(":LONG") ||
+        text.includes("=LONG") ||
+        text.includes(" BULL ") ||
+        text.includes("_BULL") ||
+        text.includes("BULL_") ||
+        text.includes("|BULL|") ||
+        text.includes(":BULL") ||
+        text.includes("=BULL") ||
+        text.includes(" BUY ") ||
+        text.includes("_BUY") ||
+        text.includes("BUY_") ||
+        text.includes("|BUY|") ||
+        text.includes(":BUY") ||
+        text.includes("=BUY")
+      );
     }
 
-    function isOppositeSide(row = {}) {
-      return inferTradeSide(row) === OPPOSITE_TRADE_SIDE ||
-        inferTradeSideFromIds(row) === OPPOSITE_TRADE_SIDE;
+    function isScannerMicroFamilyId(id = "") {
+      const value = upper(id);
+
+      return (
+        value.startsWith("MICRO_LONG_SCANNER__") ||
+        value.includes("MICRO_LONG_SCANNER__") ||
+        value.startsWith("LONG_SCANNER_") ||
+        value.startsWith("MICRO_SHORT_SCANNER__") ||
+        value.includes("MICRO_SHORT_SCANNER__") ||
+        value.startsWith("SHORT_SCANNER_") ||
+        value.includes("__SCANNER__") ||
+        value.includes("SCANNER_GATE_PASS") ||
+        value.includes("SCANNER_GATE_FAIL")
+      );
     }
 
-    function targetRows(rows = []) {
-      return (Array.isArray(rows) ? rows : []).filter(isTargetSide);
-    }
+    function inferSide(input = {}) {
+      if (typeof input === "string") {
+        const direct = normalizeSide(input);
+        if (direct !== "UNKNOWN") return direct;
 
-    function sideClass(row = {}) {
-      const side = inferTradeSide(row);
+        const text = cleanSideText(input);
+        const longSignal = hasLongSignal(text);
+        const shortSignal = hasShortSignal(text);
 
-      if (side === "LONG") return "long";
-      if (side === "SHORT") return "short";
+        if (longSignal && !shortSignal) return ONLY_SIDE;
+        if (shortSignal) return OPPOSITE_SIDE;
 
-      return "neutral";
-    }
-
-    function baseSymbol(input) {
-      const raw = typeof input === "string"
-        ? input
-        : input?.symbol || input?.baseSymbol || input?.coin || input?.contractSymbol || "";
-
-      let symbol = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, "");
-
-      for (const suffix of ["USDTUMCBL", "USDCUMCBL", "USDTPERP", "USDCPERP", "USDT", "USDC", "BUSD", "PERP", "SWAP", "USD"]) {
-        if (symbol.endsWith(suffix) && symbol.length > suffix.length) {
-          symbol = symbol.slice(0, -suffix.length);
-          break;
-        }
+        return "UNKNOWN";
       }
 
-      return symbol || "COIN";
+      if (!input || typeof input !== "object") return "UNKNOWN";
+
+      const directFields = [
+        input.tradeSide,
+        input.targetTradeSide,
+        input.positionSide,
+        input.direction,
+        input.scannerSide,
+        input.actualScannerSide,
+        input.analysisSide,
+        input.signalSide,
+        input.entrySide,
+        input.dashboardSide,
+        input.side,
+        input.bias,
+        input.marketBias
+      ];
+
+      for (const field of directFields) {
+        const direct = normalizeSide(field);
+        if (direct !== "UNKNOWN") return direct;
+      }
+
+      const haystack = [
+        input.familyId,
+        input.family,
+        input.baseFamilyId,
+
+        input.microFamilyId,
+        input.trueMicroFamilyId,
+        input.coarseMicroFamilyId,
+        input.liveMicroFamilyId,
+        input.realMicroFamilyId,
+        input.executionMicroFamilyId,
+        input.analyzeMicroFamilyId,
+        input.id,
+        input.key,
+
+        input.macroFamilyId,
+        input.parentMacroFamilyId,
+        input.parentMicroFamilyId,
+        input.parentFamilyId,
+        input.macroId,
+
+        input.definition,
+        input.microDefinition,
+        input.macroDefinition,
+        input.parentDefinition,
+
+        input.scannerReason,
+        input.reason,
+        input.signalReason,
+        input.actionReason,
+        input.exitReason,
+        input.rejectionReason,
+
+        Array.isArray(input.definitionParts) ? input.definitionParts.join("|") : "",
+        Array.isArray(input.microDefinitionParts) ? input.microDefinitionParts.join("|") : "",
+        Array.isArray(input.macroDefinitionParts) ? input.macroDefinitionParts.join("|") : "",
+        Array.isArray(input.parentDefinitionParts) ? input.parentDefinitionParts.join("|") : "",
+        Array.isArray(input.executionFingerprintParts) ? input.executionFingerprintParts.join("|") : ""
+      ].join(" | ");
+
+      const longSignal = hasLongSignal(haystack);
+      const shortSignal = hasShortSignal(haystack);
+
+      if (longSignal && !shortSignal) return ONLY_SIDE;
+      if (shortSignal) return OPPOSITE_SIDE;
+
+      if (
+        input.longOnly === true ||
+        input.shortDisabled === true ||
+        input.targetTradeSide === ONLY_SIDE ||
+        input.tradeSide === ONLY_SIDE ||
+        input.dashboardSide === DASHBOARD_SIDE
+      ) {
+        return ONLY_SIDE;
+      }
+
+      if (input.shortOnly === true || input.longDisabled === true) {
+        return OPPOSITE_SIDE;
+      }
+
+      return "UNKNOWN";
     }
 
     function microId(row = {}) {
-      return row.trueMicroFamilyId ||
+      return String(
+        row.trueMicroFamilyId ||
         row.microFamilyId ||
+        row.analyzeMicroFamilyId ||
         row.liveMicroFamilyId ||
         row.realMicroFamilyId ||
         row.executionMicroFamilyId ||
         row.id ||
         row.key ||
-        "";
+        ""
+      ).trim();
+    }
+
+    function coarseMicroId(row = {}) {
+      return String(
+        row.coarseMicroFamilyId ||
+        row.baseMicroFamilyId ||
+        row.legacyMicroFamilyId ||
+        row.trueMicroFamilyId ||
+        row.microFamilyId ||
+        row.id ||
+        row.key ||
+        ""
+      ).trim();
     }
 
     function macroId(row = {}) {
-      return (
-        row.parentMacroFamilyId ||
+      return String(
         row.macroFamilyId ||
+        row.parentMacroFamilyId ||
         row.parentMicroFamilyId ||
-        row.legacyMicroFamilyId ||
-        row.coarseMicroFamilyId ||
-        row.familyMacroId ||
+        row.parentFamilyId ||
+        row.macroId ||
         row.familyId ||
         ""
-      );
+      ).trim();
     }
 
     function familyId(row = {}) {
-      return row.familyId || row.family || "";
+      return String(row.familyId || row.family || row.baseFamilyId || "").trim();
     }
 
-    function setMessage(message = "", type = "") {
-      if (!message) {
-        $("message").innerHTML = "";
-        return;
-      }
+    function isAnalyzeMicroFamilyId(id = "") {
+      const value = String(id || "").trim();
 
-      $("message").innerHTML = `<div class="message ${escapeAttr(type)}">${escapeHtml(message)}</div>`;
+      if (!value) return false;
+      if (isScannerMicroFamilyId(value)) return false;
+
+      const side = inferSide(value);
+
+      return side !== OPPOSITE_SIDE;
     }
 
-    function timeoutSignal(timeoutMs = state.apiTimeoutMs) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+    function isRealAnalyzeMicroRow(row = {}) {
+      const id = microId(row);
+      const coarseId = coarseMicroId(row);
 
-      return {
-        signal: controller.signal,
-        clear: () => clearTimeout(timer)
-      };
+      if (!id) return false;
+      if (!isAnalyzeMicroFamilyId(id)) return false;
+      if (isScannerMicroFamilyId(id)) return false;
+      if (isScannerMicroFamilyId(coarseId)) return false;
+      if (row.legacyScannerFamilyFallback === true) return false;
+
+      const side = inferSide(row);
+
+      if (side === OPPOSITE_SIDE) return false;
+
+      return true;
     }
 
-    function errorReason(data, fallback = "REQUEST_FAILED") {
-      const raw = data?.error || data?.reason || data?.message || fallback;
-
-      if (typeof raw === "string") return raw;
-      if (raw && typeof raw === "object") return JSON.stringify(raw);
-
-      return String(raw || fallback);
+    function idAllowedInLongOnly(id = "") {
+      return isAnalyzeMicroFamilyId(id);
     }
 
-    function friendlyApiMessage(error) {
-      const status = Number(error?.status || 0);
-      const raw = String(error?.message || error || "");
-
-      if (error?.timeout) return "API-timeout: request is afgebroken door de admin UI.";
-      if (status === 504 || raw.includes("504")) return "Backend timeout op deze route.";
-      if (status === 500) return "Backend error op deze route. Check server logs.";
-      if (status === 404) return "Admin endpoint niet gevonden. Controleer routepad/deploy.";
-
-      return raw || "Onbekende API fout.";
+    function uniqueStrings(values = []) {
+      return [...new Set(
+        (Array.isArray(values) ? values : [values])
+          .flatMap((value) => Array.isArray(value) ? value : [value])
+          .flatMap((value) => String(value || "").split(/[\s,;\n\r]+/g))
+          .map((value) => value.trim())
+          .filter(Boolean)
+      )];
     }
 
-    async function api(url, options = {}) {
-      const headers = {
-        accept: "application/json",
-        ...(options.headers || {})
-      };
+    function asArray(value) {
+      if (Array.isArray(value)) return value;
+      if (value && typeof value === "object") return Object.values(value);
 
-      if (options.body !== undefined && options.body !== null && !headers["content-type"]) {
-        headers["content-type"] = "application/json";
-      }
-
-      const timeout = timeoutSignal(options.timeoutMs || state.apiTimeoutMs);
-
-      try {
-        const response = await fetch(url, {
-          cache: "no-store",
-          ...options,
-          headers,
-          signal: options.signal || timeout.signal
-        });
-
-        const rawText = await response.text();
-
-        let data = {};
-
-        try {
-          data = rawText ? JSON.parse(rawText) : {};
-        } catch {
-          data = { raw: rawText };
-        }
-
-        if (!response.ok) {
-          throw new ApiError(
-            `${response.status} ${errorReason(data, response.statusText)}`,
-            {
-              status: response.status,
-              url,
-              data,
-              raw: rawText
-            }
-          );
-        }
-
-        return data;
-      } catch (error) {
-        if (error?.name === "AbortError") {
-          throw new ApiError("REQUEST_ABORTED_TIMEOUT", {
-            status: 0,
-            url,
-            timeout: true
-          });
-        }
-
-        if (error instanceof ApiError) throw error;
-
-        throw new ApiError(error?.message || String(error), {
-          status: 0,
-          url
-        });
-      } finally {
-        timeout.clear();
-      }
+      return [];
     }
 
-    async function safeApi(url, fallback = null, options = {}) {
-      try {
-        return await api(url, options);
-      } catch {
-        return fallback;
-      }
-    }
-
-    function showLoading(tabId, label = "Laden...") {
-      $(tabId).innerHTML = `
-        <div class="card">
-          <h3>${escapeHtml(label)}</h3>
-          <div class="empty">Data ophalen...</div>
-        </div>
-      `;
+    function num(value, fallback = 0) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
     }
 
     function fmt(value, decimals = 3) {
@@ -964,13 +1038,13 @@
       return Math.round(n).toLocaleString();
     }
 
-    function fmtPctRatio(value) {
+    function fmtPct(value) {
       const n = Number(value);
       if (!Number.isFinite(n)) return "-";
       return `${(n * 100).toFixed(1)}%`;
     }
 
-    function fmtPctRaw(value) {
+    function fmtRawPct(value) {
       const n = Number(value);
       if (!Number.isFinite(n)) return "-";
       return `${n.toFixed(2)}%`;
@@ -986,7 +1060,7 @@
       return n.toLocaleString(undefined, { maximumFractionDigits: 8 });
     }
 
-    function fmtMoneyLike(value) {
+    function fmtMoney(value) {
       const n = Number(value);
 
       if (!Number.isFinite(n)) return "-";
@@ -1013,16 +1087,217 @@
 
       if (!Number.isFinite(n) || n <= 0) return "-";
 
-      const sec = Math.max(0, Math.floor((Date.now() - n) / 1000));
+      const seconds = Math.max(0, Math.floor((Date.now() - n) / 1000));
 
-      if (sec < 60) return `${sec}s geleden`;
-      if (sec < 3600) return `${Math.floor(sec / 60)}m geleden`;
+      if (seconds < 60) return `${seconds}s geleden`;
+      if (seconds < 3600) return `${Math.floor(seconds / 60)}m geleden`;
 
-      return `${Math.floor(sec / 3600)}u geleden`;
+      return `${Math.floor(seconds / 3600)}u geleden`;
+    }
+
+    function baseSymbol(row = {}) {
+      const raw = typeof row === "string"
+        ? row
+        : row.symbol || row.baseSymbol || row.coin || row.contractSymbol || row.instId || row.instrumentId || "";
+
+      let symbol = String(raw).toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+      for (const suffix of ["USDTUMCBL", "USDCUMCBL", "USDTPERP", "USDCPERP", "USDT", "USDC", "BUSD", "PERP", "SWAP", "USD"]) {
+        if (symbol.endsWith(suffix) && symbol.length > suffix.length) {
+          symbol = symbol.slice(0, -suffix.length);
+          break;
+        }
+      }
+
+      return symbol || "COIN";
+    }
+
+    function completed(row = {}) {
+      const outcome = Number(row.outcomeSample);
+      if (Number.isFinite(outcome)) return outcome;
+
+      const explicit = Number(row.completed);
+      if (Number.isFinite(explicit) && explicit > 0) return explicit;
+
+      const virtualCompleted = num(row.virtualCompleted, 0);
+      const shadowCompleted = num(row.shadowCompleted, 0);
+      if (virtualCompleted + shadowCompleted > 0) return virtualCompleted + shadowCompleted;
+
+      const wins = num(row.wins, 0);
+      const losses = num(row.losses, 0);
+      const flats = num(row.flats, 0);
+      const sum = wins + losses + flats;
+
+      return sum > 0 ? sum : 0;
+    }
+
+    function observationSample(row = {}) {
+      return Math.max(
+        num(row.observationSample, 0),
+        num(row.winrateSample, 0),
+        num(row.seen, 0),
+        num(row.observations, 0),
+        completed(row),
+        0
+      );
+    }
+
+    function learningStatus(row = {}) {
+      const done = completed(row);
+
+      if (done >= MIN_COMPLETED_ACTIVE_LEARNING) return "ACTIVE_LEARNING";
+      if (done > 0) return "EARLY_OUTCOMES";
+
+      return "OBSERVING";
+    }
+
+    function tooEarly(row = {}) {
+      return completed(row) < MIN_COMPLETED_ACTIVE_LEARNING;
+    }
+
+    function tier(row = {}) {
+      const done = completed(row);
+      const obs = observationSample(row);
+
+      if (done >= MIN_COMPLETED_ACTIVE_LEARNING) return "HARD";
+      if (done > 0) return "SOFT";
+      if (obs > 0) return "OBSERVATION";
+
+      return String(row.selectedTier || row.rotationEligibilityTier || row.eligibilityTier || row.tier || "RAW").toUpperCase();
+    }
+
+    function tierPill(value) {
+      const t = String(value || "NA").toUpperCase();
+
+      if (t === "HARD") return '<span class="pill active">ACTIVE</span>';
+      if (t === "SOFT") return '<span class="pill soft">EARLY</span>';
+      if (t === "OBSERVATION") return '<span class="pill observation">OBS</span>';
+      if (t === "RAW") return '<span class="pill raw">RAW</span>';
+      if (t === "MANUAL") return '<span class="pill purple">MANUAL</span>';
+
+      return `<span class="pill">${escapeHtml(t)}</span>`;
+    }
+
+    function statusPill(row = {}) {
+      const status = learningStatus(row);
+      const done = completed(row);
+
+      if (status === "ACTIVE_LEARNING") {
+        return '<span class="pill active">ACTIVE_LEARNING</span>';
+      }
+
+      if (status === "EARLY_OUTCOMES") {
+        return `<span class="pill soft">EARLY_OUTCOMES · te vroeg ${escapeHtml(fmt(done, 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>`;
+      }
+
+      return '<span class="pill observation">OBSERVING</span>';
     }
 
     function jsonBlock(data) {
       return `<pre>${escapeHtml(JSON.stringify(data ?? null, null, 2))}</pre>`;
+    }
+
+    function setMessage(message = "", type = "") {
+      $("message").innerHTML = message
+        ? `<div class="message ${escapeAttr(type)}">${escapeHtml(message)}</div>`
+        : "";
+    }
+
+    function showLoading(tabId, label = "Laden...") {
+      $(tabId).innerHTML = `
+        <div class="card">
+          <h3>${escapeHtml(label)}</h3>
+          <div class="empty">Data ophalen voor ${escapeHtml(tabId)}...</div>
+        </div>
+      `;
+    }
+
+    function friendlyApiMessage(error) {
+      if (error?.timeout) return "API-timeout: request is afgebroken door de admin UI.";
+
+      const status = Number(error?.status || 0);
+      const raw = String(error?.message || error || "");
+
+      if (status === 409 || raw.includes("LOCK")) return "Lock actief. Vorige run is nog bezig.";
+      if (status === 504 || raw.includes("504")) return "Backend timeout op deze admin-route.";
+      if (status === 500) return "Backend error op deze admin-route. Check server logs.";
+      if (status === 404) return "Endpoint of micro-family detail niet gevonden.";
+
+      return raw || "Onbekende API fout.";
+    }
+
+    function timeoutSignal(timeoutMs = state.apiTimeoutMs) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      return {
+        signal: controller.signal,
+        clear: () => clearTimeout(timer)
+      };
+    }
+
+    function noCacheUrl(url) {
+      const join = String(url).includes("?") ? "&" : "?";
+      return `${url}${join}_ts=${Date.now()}`;
+    }
+
+    async function api(url, options = {}) {
+      const timeout = timeoutSignal(options.timeoutMs || state.apiTimeoutMs);
+
+      const headers = {
+        accept: "application/json",
+        ...(options.headers || {})
+      };
+
+      if (options.body !== undefined && !headers["content-type"]) {
+        headers["content-type"] = "application/json";
+      }
+
+      try {
+        const response = await fetch(noCacheUrl(url), {
+          cache: "no-store",
+          ...options,
+          headers,
+          signal: options.signal || timeout.signal
+        });
+
+        const rawText = await response.text();
+
+        let data = {};
+
+        try {
+          data = rawText ? JSON.parse(rawText) : {};
+        } catch {
+          data = { raw: rawText };
+        }
+
+        if (!response.ok) {
+          throw new ApiError(`${response.status} ${data.error || data.reason || response.statusText}`, {
+            status: response.status,
+            url,
+            data
+          });
+        }
+
+        return data;
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          throw new ApiError("REQUEST_ABORTED_TIMEOUT", {
+            status: 0,
+            url,
+            timeout: true
+          });
+        }
+
+        if (error instanceof ApiError) throw error;
+
+        throw new ApiError(error?.message || String(error), {
+          status: 0,
+          url
+        });
+      } finally {
+        timeout.clear();
+      }
     }
 
     function metricCard(label, value, extra = "") {
@@ -1038,8 +1313,9 @@
     }
 
     function scoreBar(value, max = 100) {
-      const n = Math.max(0, Math.min(100, (Number(value) / max) * 100 || 0));
-      return `<div class="score-bar"><span style="--w:${n.toFixed(1)}%"></span></div>`;
+      const width = Math.max(0, Math.min(100, (Number(value) / max) * 100 || 0));
+
+      return `<div class="score-bar"><span style="--w:${width.toFixed(1)}%"></span></div>`;
     }
 
     function table(rows, cols, emptyText = "Geen data.") {
@@ -1047,15 +1323,13 @@
         return `<div class="empty">${escapeHtml(emptyText)}</div>`;
       }
 
-      const head = cols
-        .map((column) => `<th>${escapeHtml(column.label)}</th>`)
-        .join("");
+      const head = cols.map((col) => `<th>${escapeHtml(col.label)}</th>`).join("");
 
       const body = rows.map((row, index) => {
-        const cells = cols.map((column) => {
-          const value = column.render
-            ? column.render(row, index)
-            : escapeHtml(row?.[column.key]);
+        const cells = cols.map((col) => {
+          const value = col.render
+            ? col.render(row, index)
+            : escapeHtml(row?.[col.key]);
 
           return `<td>${value}</td>`;
         }).join("");
@@ -1073,247 +1347,408 @@
       `;
     }
 
-    function getRows(data, keys = []) {
-      if (Array.isArray(data)) return data;
+    function extractObjectArrays(data, keys = []) {
+      const rows = [];
 
       for (const key of keys) {
-        if (Array.isArray(data?.[key])) return data[key];
+        const value = data?.[key];
+
+        if (Array.isArray(value)) {
+          rows.push(...value);
+        } else if (value && typeof value === "object") {
+          rows.push(...Object.values(value));
+        }
       }
 
-      if (Array.isArray(data?.rows)) return data.rows;
-      if (Array.isArray(data?.items)) return data.items;
-      if (Array.isArray(data?.data)) return data.data;
-
-      return [];
+      return rows;
     }
 
-    function deepCandidateArrays(value, depth = 0, out = []) {
-      if (!value || depth > 7) return out;
+    function extractDeepMicroRows(data) {
+      const output = [];
+      const seenObjects = new Set();
+      const seenIds = new Set();
 
-      if (Array.isArray(value)) {
-        const candidateLike = value.some((row) => (
-          row &&
-          typeof row === "object" &&
-          (
-            row.symbol ||
-            row.baseSymbol ||
-            row.contractSymbol ||
-            row.scannerScore !== undefined ||
-            row.moveScore !== undefined ||
-            row.scannerReason
-          )
-        ));
+      function add(row) {
+        if (!row || typeof row !== "object") return;
 
-        if (candidateLike) out.push(value);
+        const id = microId(row);
 
-        return out;
+        if (!id || seenIds.has(id)) return;
+        if (!isRealAnalyzeMicroRow(row)) return;
+
+        seenIds.add(id);
+        output.push(row);
       }
 
-      if (typeof value !== "object") return out;
+      function walk(value, depth = 0) {
+        if (!value || typeof value !== "object" || depth > 6) return;
+        if (seenObjects.has(value)) return;
 
-      for (const [key, child] of Object.entries(value)) {
-        if (key === "candidates" && Array.isArray(child)) {
-          out.push(child);
-          continue;
+        seenObjects.add(value);
+
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            if (item && typeof item === "object" && microId(item)) add(item);
+            walk(item, depth + 1);
+          }
+          return;
         }
 
-        deepCandidateArrays(child, depth + 1, out);
+        if (microId(value)) add(value);
+
+        for (const key of [
+          "best25MicroFamilies",
+          "topMicroFamilies",
+          "bestMicroFamilies",
+          "longRows",
+          "rows",
+          "microFamilies",
+          "micros",
+          "items",
+          "data",
+          "result",
+          "payload",
+          "response",
+          "activeRotation",
+          "active",
+          "balanced",
+          "winrate",
+          "totalR",
+          "avgR",
+          "directSL",
+          "observed"
+        ]) {
+          walk(value[key], depth + 1);
+        }
       }
 
-      return out;
+      walk(data, 0);
+
+      return output;
     }
 
-    function deepMicroArrays(value, depth = 0, out = []) {
-      if (!value || depth > 8) return out;
-
-      if (Array.isArray(value)) {
-        const microLike = value.some((row) => (
-          row &&
-          typeof row === "object" &&
-          (
-            row.microFamilyId ||
-            row.trueMicroFamilyId ||
-            row.parentMacroFamilyId ||
-            row.macroFamilyId ||
-            row.familyId ||
-            row.definition ||
-            Array.isArray(row.definitionParts)
-          )
-        ));
-
-        if (microLike) out.push(value);
-
-        return out;
-      }
-
-      if (typeof value !== "object") return out;
-
-      for (const child of Object.values(value)) {
-        deepMicroArrays(child, depth + 1, out);
-      }
-
-      return out;
-    }
-
-    function unwrapScanPayload(data = {}) {
-      if (data?.result?.result?.candidates) return data.result.result;
-      if (data?.result?.result?.result?.candidates) return data.result.result.result;
-      if (data?.result?.candidates) return data.result;
-      if (data?.snapshot?.candidates) return data.snapshot;
-      if (data?.latestSnapshot?.candidates) return data.latestSnapshot;
-      if (data?.latest?.candidates) return data.latest;
-      if (data?.candidates) return data;
-
-      return data;
-    }
-
-    function scannerCandidates(data = {}) {
-      const payload = unwrapScanPayload(data);
-
-      if (Array.isArray(payload.candidates)) return payload.candidates;
-
-      const arrays = deepCandidateArrays(data);
-      const targetFirst = arrays
-        .map((rows) => ({
-          rows,
-          targetCount: targetRows(rows).length,
-          length: rows.length
-        }))
-        .sort((a, b) => {
-          if (b.targetCount !== a.targetCount) return b.targetCount - a.targetCount;
-          return b.length - a.length;
-        })[0];
-
-      return Array.isArray(targetFirst?.rows) ? targetFirst.rows : [];
-    }
-
-    function uniqueRowsByMicroId(rows = []) {
-      const seen = new Set();
-      const out = [];
-
-      for (const row of rows) {
-        const id = microId(row) || JSON.stringify(row);
-
-        if (seen.has(id)) continue;
-
-        seen.add(id);
-        out.push(row);
-      }
-
-      return out;
-    }
-
-    function extractMicroRows(data = {}) {
-      const preferredKeys = [
+    function extractMicroRowsFromApiPayload(data = {}) {
+      const preferred = extractObjectArrays(data, [
         "best25MicroFamilies",
         "topMicroFamilies",
-        "bestMicroFamilies",
+        "bestMicroFamilies"
+      ]);
+
+      const direct = extractObjectArrays(data, [
         "longRows",
-        "bullRows",
         "rows",
         "microFamilies",
         "micros",
-        "items",
-        "data"
+        "items"
+      ]);
+
+      const nestedPreferred = [
+        ...extractObjectArrays(data.result || {}, ["best25MicroFamilies", "topMicroFamilies", "bestMicroFamilies"]),
+        ...extractObjectArrays(data.payload || {}, ["best25MicroFamilies", "topMicroFamilies", "bestMicroFamilies"])
       ];
 
-      const collected = [];
+      const deep = extractDeepMicroRows(data);
 
-      for (const key of preferredKeys) {
-        if (!Array.isArray(data?.[key]) || !data[key].length) continue;
-        collected.push(...data[key]);
+      const source = preferred.length
+        ? preferred
+        : nestedPreferred.length
+          ? nestedPreferred
+          : direct.length
+            ? direct
+            : deep;
+
+      const byId = new Map();
+
+      for (const row of source) {
+        if (!row || typeof row !== "object") continue;
+        if (!isRealAnalyzeMicroRow(row)) continue;
+
+        const id = microId(row);
+        if (!id || byId.has(id)) continue;
+
+        byId.set(id, row);
       }
 
-      if (!collected.length) {
-        const arrays = deepMicroArrays(data);
+      if (byId.size === 0) {
+        for (const row of deep) {
+          const id = microId(row);
+          if (!id || byId.has(id)) continue;
 
-        for (const rows of arrays) {
-          collected.push(...rows);
+          byId.set(id, row);
         }
       }
 
-      return uniqueRowsByMicroId(collected)
-        .filter((row) => inferTradeSideFromIds(row) !== OPPOSITE_TRADE_SIDE)
-        .filter((row) => inferTradeSide(row) === TARGET_TRADE_SIDE);
+      return [...byId.values()];
     }
 
-    function extractRotationIds(rotation = {}) {
-      return [
-        ...(Array.isArray(rotation.microFamilyIds) ? rotation.microFamilyIds : []),
-        ...(Array.isArray(rotation.activeMicroFamilyIds) ? rotation.activeMicroFamilyIds : []),
-        ...(Array.isArray(rotation.trueMicroFamilyIds) ? rotation.trueMicroFamilyIds : []),
-        ...(Array.isArray(rotation.ids) ? rotation.ids : [])
-      ].filter(Boolean);
+    function fairWinrate(row = {}) {
+      return num(
+        row.fairWinrate ??
+        row.sampleAdjustedWinrate ??
+        row.sampleWilsonLowerBound ??
+        row.wilsonLowerBound ??
+        row.bayesianWinrate,
+        0
+      );
     }
 
-    function symbolCell(row) {
+    function balancedScore(row = {}) {
+      return num(row.learningQualityRank ?? row.dashboardBalancedScore ?? row.balancedScore, 0);
+    }
+
+    function netTotalR(row = {}) {
+      return num(row.totalR ?? row.netTotalR ?? row.totalNetR, 0);
+    }
+
+    function netAvgR(row = {}) {
+      return num(row.avgR ?? row.avgNetR ?? row.netAvgR, 0);
+    }
+
+    function sampleReliability(row = {}) {
+      return num(row.sampleReliability, 0);
+    }
+
+    function compareNumberDesc(a, b) {
+      return num(b, 0) - num(a, 0);
+    }
+
+    function compareNumberAsc(a, b) {
+      return num(a, 0) - num(b, 0);
+    }
+
+    function compareMicroIds(a = {}, b = {}) {
+      return String(microId(a) || "").localeCompare(String(microId(b) || ""));
+    }
+
+    function compareBestDataFirst(a, b) {
+      return (
+        compareNumberDesc(balancedScore(a), balancedScore(b)) ||
+        compareNumberDesc(netTotalR(a), netTotalR(b)) ||
+        compareNumberDesc(netAvgR(a), netAvgR(b)) ||
+        compareNumberDesc(sampleReliability(a), sampleReliability(b)) ||
+        compareNumberDesc(fairWinrate(a), fairWinrate(b)) ||
+        compareNumberDesc(observationSample(a), observationSample(b)) ||
+        compareNumberDesc(completed(a), completed(b)) ||
+        compareMicroIds(a, b)
+      );
+    }
+
+    function compareMicroRows(a, b, mode = state.microMode) {
+      if (mode === "observed") {
+        return (
+          compareNumberDesc(observationSample(a), observationSample(b)) ||
+          compareBestDataFirst(a, b)
+        );
+      }
+
+      if (mode === "directSL") {
+        return (
+          compareNumberAsc(a.directSLPct, b.directSLPct) ||
+          compareBestDataFirst(a, b)
+        );
+      }
+
+      if (mode === "totalR") {
+        return (
+          compareNumberDesc(netTotalR(a), netTotalR(b)) ||
+          compareBestDataFirst(a, b)
+        );
+      }
+
+      if (mode === "avgR") {
+        return (
+          compareNumberDesc(netAvgR(a), netAvgR(b)) ||
+          compareBestDataFirst(a, b)
+        );
+      }
+
+      if (mode === "winrate") {
+        return (
+          compareNumberDesc(fairWinrate(a), fairWinrate(b)) ||
+          compareNumberDesc(a.sampleWilsonLowerBound ?? a.wilsonLowerBound, b.sampleWilsonLowerBound ?? b.wilsonLowerBound) ||
+          compareNumberDesc(a.sampleBayesianWinrate ?? a.bayesianWinrate, b.sampleBayesianWinrate ?? b.bayesianWinrate) ||
+          compareNumberDesc(completed(a), completed(b)) ||
+          compareBestDataFirst(a, b)
+        );
+      }
+
+      return compareBestDataFirst(a, b);
+    }
+
+    function normalizeMicroRowForUi(row = {}) {
+      const id = microId(row);
+      const coarseId = coarseMicroId(row) || id;
+      const done = completed(row);
+      const obs = observationSample(row);
+      const status = learningStatus(row);
+      const rowTier = tier(row);
+
+      return {
+        ...row,
+        microFamilyId: id,
+        trueMicroFamilyId: id,
+        coarseMicroFamilyId: coarseId,
+        side: DASHBOARD_SIDE,
+        dashboardSide: DASHBOARD_SIDE,
+        tradeSide: ONLY_SIDE,
+        targetTradeSide: ONLY_SIDE,
+        positionSide: ONLY_SIDE,
+        direction: ONLY_SIDE,
+        longOnly: true,
+        shortDisabled: true,
+        shortOnly: false,
+        longDisabled: false,
+        completed: done,
+        outcomeSample: done,
+        observationSample: obs,
+        learningStatus: status,
+        status,
+        tooEarly: done < MIN_COMPLETED_ACTIVE_LEARNING,
+        tooEarlyReason: done < MIN_COMPLETED_ACTIVE_LEARNING
+          ? `completed ${done}/${MIN_COMPLETED_ACTIVE_LEARNING}`
+          : null,
+        tier: rowTier,
+        selectedTier: rowTier,
+        rotationEligibilityTier: rowTier,
+        dashboardBalancedScore: balancedScore(row),
+        balancedScore: num(row.balancedScore ?? row.dashboardBalancedScore ?? row.learningQualityRank, 0),
+        fairWinrate: fairWinrate(row),
+        scannerFingerprintRole: row.scannerFingerprintRole || "METADATA_ONLY",
+        scannerFingerprintOnlyMetadata: false,
+        legacyScannerFamilyFallback: false,
+        scannerFingerprintLegacy: false,
+        learningIdentitySource: row.learningIdentitySource || "ANALYZE_TRUE_MICRO_FAMILY",
+        symbolExcludedFromFamilyId: row.symbolExcludedFromFamilyId !== false
+      };
+    }
+
+    function rankMicroRows(rows = [], mode = state.microMode) {
+      return rows
+        .filter(isRealAnalyzeMicroRow)
+        .map(normalizeMicroRowForUi)
+        .sort((a, b) => compareMicroRows(a, b, mode))
+        .map((row, index) => ({
+          ...row,
+          rank: index + 1
+        }));
+    }
+
+    function microApiUrl() {
+      const params = new URLSearchParams();
+
+      params.set("mode", validMicroModes.includes(state.microMode) ? state.microMode : "balanced");
+      params.set("side", ONLY_SIDE);
+      params.set("tradeSide", ONLY_SIDE);
+      params.set("targetTradeSide", ONLY_SIDE);
+      params.set("dashboardSide", DASHBOARD_SIDE);
+      params.set("limit", String(state.microLimit));
+      params.set("bestLimit", String(state.bestLimit));
+      params.set("sideLimit", String(state.bestLimit));
+      params.set("sideEnsureLimit", String(state.bestLimit));
+      params.set("includeActiveRotation", "1");
+      params.set("compact", "1");
+
+      if (state.microSearch.trim()) params.set("q", state.microSearch.trim());
+
+      return `${endpoints.micros}?${params.toString()}`;
+    }
+
+    function rotationApiUrl() {
+      const params = new URLSearchParams();
+
+      params.set("side", ONLY_SIDE);
+      params.set("tradeSide", ONLY_SIDE);
+      params.set("targetTradeSide", ONLY_SIDE);
+      params.set("dashboardSide", DASHBOARD_SIDE);
+      params.set("includeAvailable", "1");
+      params.set("activeRowsLimit", "160");
+      params.set("availableLimit", "240");
+
+      return `${endpoints.rotation}?${params.toString()}`;
+    }
+
+    function activeMicroIds() {
+      return uniqueStrings([
+        state.rotation?.activeMicroFamilyIds || [],
+        state.rotation?.activeRotation?.activeMicroFamilyIds || [],
+        state.rotation?.activeRotation?.microFamilyIds || [],
+        state.rotation?.active?.activeMicroFamilyIds || [],
+        state.rotation?.active?.microFamilyIds || [],
+        state.micros?.activeMicroFamilyIds || [],
+        state.micros?.activeRotation?.activeMicroFamilyIds || [],
+        state.micros?.activeRotation?.microFamilyIds || [],
+        state.overview?.activeMicroFamilyIds || [],
+        state.trade?.activeMicroFamilyIds || []
+      ]).filter(idAllowedInLongOnly);
+    }
+
+    function activeMacroIds() {
+      return uniqueStrings([
+        state.rotation?.activeMacroFamilyIds || [],
+        state.rotation?.activeRotation?.activeMacroFamilyIds || [],
+        state.rotation?.activeRotation?.macroFamilyIds || [],
+        state.rotation?.active?.activeMacroFamilyIds || [],
+        state.rotation?.active?.macroFamilyIds || [],
+        state.micros?.activeMacroFamilyIds || [],
+        state.micros?.activeRotation?.activeMacroFamilyIds || [],
+        state.micros?.activeRotation?.macroFamilyIds || [],
+        state.overview?.activeMacroFamilyIds || [],
+        state.trade?.activeMacroFamilyIds || []
+      ]).filter(idAllowedInLongOnly);
+    }
+
+    function longRows(rows = []) {
+      return (Array.isArray(rows) ? rows : [])
+        .filter(Boolean)
+        .filter((row) => inferSide(row) !== OPPOSITE_SIDE);
+    }
+
+    function coinCard(row = {}) {
       const symbol = baseSymbol(row);
-
-      return `
-        <div style="display:flex;align-items:center;gap:9px;">
-          <div class="coin-logo">${escapeHtml(symbol.slice(0, 1))}</div>
-          <div>
-            <div class="coin-symbol">${escapeHtml(symbol)}</div>
-            <div class="coin-name">${escapeHtml(row.contractSymbol || `${symbol}USDT`)}</div>
-          </div>
-        </div>
-      `;
-    }
-
-    function coinCard(row) {
-      const side = sideClass(row);
-      const symbol = baseSymbol(row);
-      const price = row.price ?? row.entry ?? row.currentPrice ?? row.markPrice;
       const score = row.scannerScore ?? row.moveScore ?? row.sniperScore ?? row.confluence ?? 0;
+      const price = row.price ?? row.currentPrice ?? row.markPrice ?? row.entry;
 
       return `
-        <article class="coin-card ${escapeAttr(side)}">
+        <article class="coin-card">
           <div class="coin-head">
-            <div class="coin-logo">${escapeHtml(symbol.slice(0, 1))}</div>
-            <div class="coin-main">
+            <div>
               <div class="coin-symbol">${escapeHtml(symbol)}</div>
-              <div class="coin-name">${escapeHtml(row.contractSymbol || `${symbol}USDT`)}</div>
+              <div class="coin-name">${escapeHtml(row.name || row.coinName || row.contractSymbol || `${symbol}USDT`)}</div>
             </div>
             <div class="coin-price">
               <strong>$${escapeHtml(fmtPrice(price))}</strong>
-              <span>${escapeHtml(inferTradeSide(row))}</span>
+              <span>${escapeHtml(row.contractSymbol || `${symbol}USDT`)}</span>
             </div>
           </div>
 
           <div class="coin-foot">
-            <span class="pill ${escapeAttr(side)}">${escapeHtml(inferTradeSide(row))}</span>
+            <span class="pill long">LONG</span>
+            <span class="pill purple">${escapeHtml(row.source || "SCANNER")}</span>
             <span class="pill info">Score ${escapeHtml(fmt(score, 1))}</span>
           </div>
 
           ${scoreBar(score)}
 
           <div class="coin-stats">
-            <div class="coin-stat"><span>1h</span><strong>${escapeHtml(fmtPctRaw(row.change1h))}</strong></div>
-            <div class="coin-stat"><span>24h</span><strong>${escapeHtml(fmtPctRaw(row.change24h))}</strong></div>
-            <div class="coin-stat"><span>Volume</span><strong>${escapeHtml(fmtMoneyLike(row.volume24h))}</strong></div>
-            <div class="coin-stat"><span>Gate</span><strong>${row.scannerGatePassed ? "PASS" : "ANALYZE"}</strong></div>
-            <div class="coin-stat"><span>Pullback</span><strong>${row.pullbackConfirmed ? "YES" : "NO"}</strong></div>
-            <div class="coin-stat"><span>Fake risk</span><strong>${row.fakeBreakoutRisk ? "RISK" : "OK"}</strong></div>
-          </div>
-
-          <div class="coin-foot">
-            <span class="pill purple">${escapeHtml(row.scannerReason || "scanner")}</span>
+            <div class="coin-stat"><span>1h</span><strong>${escapeHtml(fmtRawPct(row.change1h))}</strong></div>
+            <div class="coin-stat"><span>24h</span><strong>${escapeHtml(fmtRawPct(row.change24h))}</strong></div>
+            <div class="coin-stat"><span>Volume</span><strong>${escapeHtml(fmtMoney(row.volume24h || row.quoteVolume24h))}</strong></div>
+            <div class="coin-stat"><span>BTC</span><strong>${escapeHtml(row.btcState || "-")}</strong></div>
+            <div class="coin-stat"><span>Regime</span><strong>${escapeHtml(row.regime || "-")}</strong></div>
+            <div class="coin-stat"><span>FakeBO</span><strong>${row.fakeBreakout ? "YES" : "NO"}</strong></div>
           </div>
         </article>
       `;
     }
 
-    function positionCard(row) {
-      const side = sideClass(row);
+    function positionCard(row = {}) {
       const symbol = baseSymbol(row);
-      const currentR = Number(row.currentR || 0);
-      const rClass = currentR >= 0 ? "active" : "danger";
+      const currentR = num(row.currentR, 0);
 
       return `
-        <article class="coin-card ${escapeAttr(side)}">
+        <article class="coin-card">
           <div class="coin-head">
-            <div class="coin-logo">${escapeHtml(symbol.slice(0, 1))}</div>
-            <div class="coin-main">
+            <div>
               <div class="coin-symbol">${escapeHtml(symbol)}</div>
               <div class="coin-name">${escapeHtml(row.contractSymbol || `${symbol}USDT`)}</div>
             </div>
@@ -1324,14 +1759,15 @@
           </div>
 
           <div class="coin-foot">
-            <span class="pill ${escapeAttr(side)}">${escapeHtml(inferTradeSide(row))}</span>
-            <span class="pill ${escapeAttr(rClass)}">${escapeHtml(fmt(currentR, 2))}R</span>
+            <span class="pill long">LONG</span>
+            <span class="pill purple">VIRTUAL</span>
+            <span class="pill ${currentR >= 0 ? "active" : "danger"}">${escapeHtml(fmt(currentR, 2))}R</span>
           </div>
 
           <div class="coin-stats">
             <div class="coin-stat"><span>Entry</span><strong>${escapeHtml(fmtPrice(row.entry))}</strong></div>
-            <div class="coin-stat"><span>SL</span><strong>${escapeHtml(fmtPrice(row.sl))}</strong></div>
-            <div class="coin-stat"><span>TP</span><strong>${escapeHtml(fmtPrice(row.tp))}</strong></div>
+            <div class="coin-stat"><span>SL</span><strong>${escapeHtml(fmtPrice(row.sl || row.stopLoss))}</strong></div>
+            <div class="coin-stat"><span>TP</span><strong>${escapeHtml(fmtPrice(row.tp || row.takeProfit))}</strong></div>
             <div class="coin-stat"><span>RR</span><strong>${escapeHtml(fmt(row.rr, 2))}</strong></div>
             <div class="coin-stat"><span>MFE</span><strong>${escapeHtml(fmt(row.mfeR, 2))}R</strong></div>
             <div class="coin-stat"><span>MAE</span><strong>${escapeHtml(fmt(row.maeR, 2))}R</strong></div>
@@ -1344,19 +1780,71 @@
       `;
     }
 
-    async function copyText(text, label = "Gekopieerd.") {
+    function microTable(rows = []) {
+      const activeSet = new Set(activeMicroIds());
+      const activeMacroSet = new Set(activeMacroIds());
+
+      return table(rows, [
+        { label: "Rank", render: (row, index) => escapeHtml(row.rank ?? index + 1) },
+        { label: "Discord", render: (row) => {
+          const active = activeSet.has(microId(row)) || activeMacroSet.has(macroId(row)) || row.active === true;
+          return `<span class="pill ${active ? "active" : ""}">${active ? "ACTIVE" : "OFF"}</span>`;
+        }},
+        { label: "True micro", render: (row) => `<button class="small" type="button" data-open-micro="${escapeAttr(microId(row))}"><code>${escapeHtml(microId(row) || "NO_MICRO")}</code></button>` },
+        { label: "Macro", render: (row) => `<code>${escapeHtml(macroId(row) || "NO_MACRO")}</code>` },
+        { label: "Family", render: (row) => `<code>${escapeHtml(familyId(row) || "NO_FAMILY")}</code>` },
+        { label: "Side", render: () => '<span class="pill long">LONG</span>' },
+        { label: "Tier", render: (row) => tierPill(tier(row)) },
+        { label: "Status", render: (row) => statusPill(row) },
+        { label: "Te vroeg", render: (row) => tooEarly(row)
+          ? `<span class="pill warn">${escapeHtml(fmt(completed(row), 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>`
+          : '<span class="pill active">OK</span>'
+        },
+        { label: "Seen", render: (row) => fmtInt(row.seen ?? row.observations) },
+        { label: "Obs", render: (row) => fmtInt(row.observations ?? row.seen) },
+        { label: "Obs sample", render: (row) => fmt(observationSample(row), 2) },
+        { label: "Completed", render: (row) => fmt(completed(row), 2) },
+        { label: "Winrate raw", render: (row) => fmtPct(row.winrate) },
+        { label: "Fair WR", render: (row) => fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate ?? row.bayesianWinrate ?? row.wilsonLowerBound) },
+        { label: "AvgR net", render: (row) => fmt(row.avgR, 3) },
+        { label: "TotalR net", render: (row) => fmt(row.totalR, 3) },
+        { label: "PF", render: (row) => fmt(row.profitFactor, 2) },
+        { label: "AvgCostR", render: (row) => fmt(row.avgCostR, 3) },
+        { label: "DirectSL", render: (row) => fmtPct(row.directSLPct) },
+        { label: "Balanced", render: (row) => `<strong>${escapeHtml(fmt(row.dashboardBalancedScore ?? row.balancedScore, 2))}</strong>` },
+        { label: "Actie", render: (row) => `
+          <button type="button" class="small long-action" data-activate-one="${escapeAttr(microId(row))}" ${microId(row) ? "" : "disabled"}>Select exact</button>
+          <button type="button" class="small" data-copy="${escapeAttr(microId(row))}" ${microId(row) ? "" : "disabled"}>Copy</button>
+        ` }
+      ], "Geen LONG Analyze micro-families.");
+    }
+
+    function bindMicroEvents() {
+      document.querySelectorAll("[data-activate-one]").forEach((btn) => {
+        btn.addEventListener("click", () => activateSelectedMicroFamilies([btn.dataset.activateOne]));
+      });
+
+      document.querySelectorAll("[data-copy]").forEach((btn) => {
+        btn.addEventListener("click", () => copyText(btn.dataset.copy, "MicroFamilyId gekopieerd."));
+      });
+
+      document.querySelectorAll("[data-open-micro]").forEach((btn) => {
+        btn.addEventListener("click", () => openMicro(btn.dataset.openMicro));
+      });
+    }
+
+    async function copyText(text, message = "Gekopieerd.") {
       try {
-        await navigator.clipboard.writeText(text);
-        setMessage(label, "ok");
-        return;
+        await navigator.clipboard.writeText(String(text || ""));
+        setMessage(message, "ok");
       } catch {
         const area = document.createElement("textarea");
-        area.value = text;
+        area.value = String(text || "");
         document.body.appendChild(area);
         area.select();
         document.execCommand("copy");
         area.remove();
-        setMessage(label, "ok");
+        setMessage(message, "ok");
       }
     }
 
@@ -1366,89 +1854,140 @@
       });
 
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
+      const link = document.createElement("a");
 
-      a.href = url;
-      a.download = filename;
-      a.click();
+      link.href = url;
+      link.download = filename;
+      link.click();
 
       URL.revokeObjectURL(url);
+    }
+
+    async function fetchMicros() {
+      const data = await api(microApiUrl(), {
+        timeoutMs: 22000
+      });
+
+      const rawRows = extractMicroRowsFromApiPayload(data);
+      const rows = rankMicroRows(rawRows, state.microMode);
+
+      return {
+        ...data,
+        rows,
+        rawExtractedRows: rawRows.length,
+        activeMicroFamilyIds: uniqueStrings([
+          data.activeMicroFamilyIds || [],
+          data.selectedMicroFamilyIds || [],
+          data.activeRotation?.activeMicroFamilyIds || [],
+          data.activeRotation?.microFamilyIds || [],
+          data.activeRotation?.trueMicroFamilyIds || []
+        ]).filter(idAllowedInLongOnly),
+        activeMacroFamilyIds: uniqueStrings([
+          data.activeMacroFamilyIds || [],
+          data.selectedMacroFamilyIds || [],
+          data.activeRotation?.activeMacroFamilyIds || [],
+          data.activeRotation?.macroFamilyIds || []
+        ]).filter(idAllowedInLongOnly)
+      };
+    }
+
+    function currentMicroRows() {
+      const rows = state.micros?.rows || [];
+      const search = state.microSearch.trim().toLowerCase();
+
+      const filtered = search
+        ? rows.filter((row) => JSON.stringify(row).toLowerCase().includes(search))
+        : rows;
+
+      return rankMicroRows(filtered, state.microMode);
+    }
+
+    async function ensureMicrosLoaded() {
+      if (state.micros?.rows?.length) return state.micros;
+
+      try {
+        state.micros = await fetchMicros();
+      } catch {
+        state.micros = state.micros || { rows: [] };
+      }
+
+      return state.micros;
     }
 
     async function renderOverview() {
       showLoading("overview");
 
-      const overview = await safeApi(endpoints.overview, {});
-      const scanner = await safeApi(endpoints.scanner, {});
-      const trade = await safeApi(endpoints.trade, {});
+      const [data, microData] = await Promise.all([
+        api(endpoints.overview).catch((error) => ({
+          ok: false,
+          error: friendlyApiMessage(error)
+        })),
+        ensureMicrosLoaded()
+      ]);
 
-      state.overview = overview;
-      state.scanner = scanner;
-      state.trade = trade;
+      state.overview = data;
 
-      const scanPayload = unwrapScanPayload(scanner || overview?.latestScan || {});
-      const scanRows = targetRows(scannerCandidates(scanner || overview?.latestScan || {}));
+      const microRows = microData?.rows || [];
+      const activeCount = uniqueStrings([
+        data.activeMicroFamilyIds || [],
+        data.activeRotation?.activeMicroFamilyIds || [],
+        data.activeRotation?.microFamilyIds || [],
+        microData?.activeMicroFamilyIds || []
+      ]).filter(idAllowedInLongOnly).length;
 
-      const activeRotation = overview?.activeRotation || trade?.activeRotation || {};
-      const activeMicroCount =
-        activeRotation.microFamilyIds?.length ||
-        activeRotation.activeMicroFamilyIds?.length ||
-        activeRotation.trueMicroFamilyIds?.length ||
-        overview?.activeRotationCount ||
-        overview?.activeMicroFamilies ||
-        trade?.runMeta?.activeMicroFamilies ||
-        0;
-
-      const activeMacroCount =
-        activeRotation.macroFamilyIds?.length ||
-        activeRotation.activeMacroFamilyIds?.length ||
-        overview?.activeMacroFamilies ||
-        trade?.runMeta?.activeMacroFamilies ||
-        0;
+      const observing = microRows.filter((row) => learningStatus(row) === "OBSERVING").length;
+      const completedCount = microRows.filter((row) => completed(row) > 0).length;
 
       $("overview").innerHTML = `
         <div class="grid">
-          ${metricCard("Current week", overview?.weekKey || overview?.currentWeek || "-")}
-          ${metricCard("Previous week", overview?.previousWeekKey || "-")}
-          ${metricCard("Active LONG true micro", activeMicroCount)}
-          ${metricCard("Active LONG macro", activeMacroCount)}
-          ${metricCard("Open positions", fmtInt(overview?.openPositions || getRows(trade, ["positions", "openPositions"]).length))}
-          ${metricCard("Scanner LONG candidates", fmtInt(scanRows.length || scanPayload?.longCandidatesCount || 0))}
-          ${metricCard("Gate passed", fmtInt(scanPayload?.scannerGateCandidatesCount || scanRows.filter((row) => row.scannerGatePassed).length))}
-          ${metricCard("Analyze only", fmtInt(scanPayload?.analyzeOnlyCandidatesCount || scanRows.filter((row) => row.tradeDiscoveryOnly || !row.scannerGatePassed).length))}
+          ${metricCard("Current week", data.weekKey || data.currentWeekKey || microData?.weekKey || "-")}
+          ${metricCard("Previous week", data.previousWeekKey || microData?.previousWeekKey || "-")}
+          ${metricCard("Discord selected micros", fmtInt(activeCount))}
+          ${metricCard("Open virtual positions", fmtInt(data.openPositions || data.positionsCount))}
+          ${metricCard("Scanner LONG candidates", fmtInt(data.longScannerCandidates || data.scannerCandidates || data.latestScan?.longCandidatesCount))}
+          ${metricCard("Current micro families", fmtInt(microRows.length || data.currentWeekMicroFamilies))}
+          ${metricCard("Observing families", fmtInt(observing || data.observingMicroFamilies))}
+          ${metricCard("Completed families", fmtInt(completedCount || data.completedMicroFamilies))}
+        </div>
+
+        <div class="grid-3">
+          <div class="card">
+            <h3>Mode</h3>
+            <div class="toolbar">
+              <span class="pill long">LONG ONLY</span>
+              <span class="pill purple">VIRTUAL</span>
+              <span class="pill info">NET OUTCOMES</span>
+              <span class="pill dark">MANUAL DISCORD</span>
+            </div>
+            <div class="metric-extra">
+              Scanner fingerprint is metadata-only. Dashboard telt alleen echte Analyze true micro-family IDs.
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>MicroFamilies backend check</h3>
+            ${jsonBlock({
+              rows: microRows.length,
+              best25Count: microData?.best25Count ?? null,
+              totalAvailable: microData?.totalAvailable ?? null,
+              primaryWeekRows: microData?.primaryWeekRows ?? null,
+              source: microData?.source ?? null,
+              rankingPolicy: microData?.rankingPolicy ?? null
+            })}
+          </div>
+
+          <div class="card">
+            <h3>Warnings</h3>
+            ${jsonBlock([
+              ...(Array.isArray(data.warnings) ? data.warnings : []),
+              ...(Array.isArray(microData?.warnings) ? microData.warnings : [])
+            ])}
+          </div>
         </div>
 
         <div class="card">
-          <h3>System status</h3>
-          <div class="toolbar">
-            <span class="pill long">LONG ONLY</span>
-            <span class="pill danger">SHORT DISABLED</span>
-            <span class="pill info">Scanner → Analyze → Rotation → TradeSystem</span>
-          </div>
-          <div class="metric-extra">
-            Scanner bouwt candidates. TradeSystem verrijkt ze, maakt shadow trades en voedt Analyze. Closed shadow outcomes vullen Completed/AvgR/TotalR.
-          </div>
-        </div>
-
-        <div class="section-title">
-          <div>
-            <h2>Laatste LONG scanner feed</h2>
-            <p>Snelle preview van de candidates die Analyze voeden via TradeSystem.</p>
-          </div>
-        </div>
-
-        <div class="coin-grid">
-          ${scanRows.slice(0, 8).length ? scanRows.slice(0, 8).map(coinCard).join("") : '<div class="empty">Nog geen LONG candidates zichtbaar in admin snapshot. Open Scanner tab en klik Run Scanner now.</div>'}
-        </div>
-
-        <div class="card">
-          <h3>Active Rotation</h3>
-          ${jsonBlock(activeRotation)}
-        </div>
-
-        <div class="card">
-          <h3>Trade meta</h3>
-          ${jsonBlock(trade?.runMeta || overview?.tradeMeta || overview?.runMeta || null)}
+          <h3>Overview raw</h3>
+          ${jsonBlock(data)}
         </div>
       `;
     }
@@ -1459,92 +1998,87 @@
       const data = await api(endpoints.scanner);
       state.scanner = data;
 
-      renderScannerData(data);
-    }
-
-    function renderScannerData(data) {
-      const payload = unwrapScanPayload(data);
-      const rawCandidates = scannerCandidates(data);
-      const candidates = targetRows(rawCandidates);
-      const gateCandidates = candidates.filter((candidate) => candidate.scannerGatePassed);
-      const analyzeOnly = candidates.filter((candidate) => candidate.tradeDiscoveryOnly || !candidate.scannerGatePassed);
-      const ignoredShort = rawCandidates.filter(isOppositeSide).length;
-      const topCandidates = candidates.slice(0, 16);
-
-      const avgScore = candidates.reduce((sum, candidate) => (
-        sum + Number(candidate.scannerScore ?? candidate.moveScore ?? 0)
-      ), 0) / Math.max(1, candidates.length);
+      const snapshot = data.snapshot || data.latest || {};
+      const candidates = longRows(snapshot.candidates || data.candidates || []);
 
       $("scanner").innerHTML = `
         <div class="toolbar">
           <button type="button" class="primary" id="runScannerBtn">Run Scanner now</button>
-          <button type="button" id="copyScannerJsonBtn">Copy scanner JSON</button>
+          <button type="button" id="copyScannerBtn">Copy JSON</button>
         </div>
 
         <div class="grid">
-          ${metricCard("Snapshot ID", payload.snapshotId || data.snapshotId || "-")}
-          ${metricCard("Snapshot age", ageText(payload.createdAt), fmtTs(payload.createdAt))}
-          ${metricCard("BTC state", payload.btcState || "-")}
-          ${metricCard("Regime", payload.regime || "-")}
+          ${metricCard("Snapshot ID", snapshot.snapshotId || data.snapshotId || "-")}
+          ${metricCard("Age", ageText(snapshot.createdAt), fmtTs(snapshot.createdAt))}
           ${metricCard("LONG candidates", fmtInt(candidates.length))}
-          ${metricCard("Gate passed", fmtInt(gateCandidates.length))}
-          ${metricCard("Analyze only", fmtInt(analyzeOnly.length))}
-          ${metricCard("SHORT ignored", fmtInt(ignoredShort))}
-          ${metricCard("Avg score", fmt(avgScore, 1))}
-          ${metricCard("Raw count", fmtInt(payload.rawCount))}
-          ${metricCard("Filtered universe", fmtInt(payload.filteredUniverse))}
-          ${metricCard("Duration", `${fmtInt(payload.durationMs || data.durationMs)} ms`)}
+          ${metricCard("Scanner gate", fmtInt(candidates.filter((row) => row.scannerGatePassed).length))}
+          ${metricCard("Analyze-only", fmtInt(candidates.filter((row) => row.analyzeOnly || row.discoveryOnly || row.tradeDiscoveryOnly).length))}
+          ${metricCard("Fake breakout", fmtInt(candidates.filter((row) => row.fakeBreakout).length))}
+          ${metricCard("Ignored SHORT", fmtInt(snapshot.rawShortCandidatesIgnored || data.rawOppositeCount || 0))}
+          ${metricCard("Unknown ignored", fmtInt(snapshot.rawUnknownSideCandidatesIgnored || 0))}
         </div>
 
         <div class="section-title">
           <div>
             <h2>Scanner LONG candidates</h2>
-            <p>Coins die de LONG scannerfilter hebben overleefd. Deze feed bouwt Analyze micro-family data op via TradeSystem.</p>
+            <p>Scanner schrijft alleen snapshots. Geen trades, geen Discord, geen micro-selectie.</p>
           </div>
         </div>
 
         <div class="coin-grid">
-          ${topCandidates.length ? topCandidates.map(coinCard).join("") : '<div class="empty">Geen LONG scanner candidates zichtbaar. Klik Run Scanner now of check /api/scanner/run.</div>'}
-        </div>
-
-        <div class="section-title">
-          <div>
-            <h2>Detailed scanner table</h2>
-            <p>Filtercontrole: volume, gate, fake breakout en scannerReason.</p>
-          </div>
+          ${candidates.slice(0, 12).map(coinCard).join("") || '<div class="empty">Geen LONG scanner candidates.</div>'}
         </div>
 
         ${table(candidates, [
-          { label: "Coin", render: symbolCell },
-          { label: "Contract", render: (row) => escapeHtml(row.contractSymbol || "") },
-          { label: "Side", render: (row) => `<span class="pill ${escapeAttr(sideClass(row))}">${escapeHtml(inferTradeSide(row))}</span>` },
-          { label: "Price", render: (row) => `$${escapeHtml(fmtPrice(row.price))}` },
-          { label: "Score", render: (row) => `${escapeHtml(fmt(row.scannerScore ?? row.moveScore, 1))}${scoreBar(row.scannerScore ?? row.moveScore, 100)}` },
-          { label: "1h", render: (row) => fmtPctRaw(row.change1h) },
-          { label: "24h", render: (row) => fmtPctRaw(row.change24h) },
-          { label: "Vol24h", render: (row) => fmtMoneyLike(row.volume24h) },
-          { label: "Vol source", render: (row) => escapeHtml(row.volumeSource || "-") },
-          { label: "Gate", render: (row) => row.scannerGatePassed ? '<span class="pill active">PASS</span>' : '<span class="pill warn">ANALYZE</span>' },
-          { label: "FakeBO", render: (row) => row.fakeBreakout ? '<span class="pill danger">YES</span>' : '<span class="pill active">NO</span>' },
-          { label: "FakeRisk", render: (row) => row.fakeBreakoutRisk ? '<span class="pill warn">RISK</span>' : '<span class="pill active">OK</span>' },
-          { label: "Reason", render: (row) => escapeHtml(row.scannerReason || "") }
-        ], "Geen LONG candidates in deze response.")}
+          { label: "Symbol", render: (row) => escapeHtml(baseSymbol(row)) },
+          { label: "Contract", render: (row) => escapeHtml(row.contractSymbol || `${baseSymbol(row)}USDT`) },
+          { label: "Side", render: () => '<span class="pill long">LONG</span>' },
+          { label: "Price", render: (row) => fmtPrice(row.price) },
+          { label: "Score", render: (row) => fmt(row.scannerScore ?? row.moveScore, 2) },
+          { label: "1h", render: (row) => fmtRawPct(row.change1h) },
+          { label: "24h", render: (row) => fmtRawPct(row.change24h) },
+          { label: "Vol24h", render: (row) => fmtMoney(row.volume24h || row.quoteVolume24h) },
+          { label: "BTC", render: (row) => escapeHtml(row.btcState || "-") },
+          { label: "Regime", render: (row) => escapeHtml(row.regime || "-") },
+          { label: "Reason", render: (row) => escapeHtml(row.scannerReason || row.reason || "-") }
+        ], "Geen LONG scanner candidates.")}
       `;
 
-      $("runScannerBtn")?.addEventListener("click", async () => {
-        try {
-          const result = await api(endpoints.runScanner, { timeoutMs: 32000 });
-          state.scanner = result;
-          setMessage("Scanner handmatig gestart. LONG candidates zijn opnieuw geladen.", "ok");
-          renderScannerData(result);
-        } catch (error) {
-          setMessage(friendlyApiMessage(error), "warn");
-        }
-      });
+      $("runScannerBtn")?.addEventListener("click", runScannerNow);
+      $("copyScannerBtn")?.addEventListener("click", () => copyText(JSON.stringify(data, null, 2), "Scanner JSON gekopieerd."));
+    }
 
-      $("copyScannerJsonBtn")?.addEventListener("click", () => {
-        copyText(JSON.stringify(data, null, 2), "Scanner JSON gekopieerd.");
-      });
+    async function runScannerNow() {
+      try {
+        const data = await api(endpoints.runScanner, {
+          method: "POST",
+          timeoutMs: 30000,
+          body: JSON.stringify({
+            force: true,
+            forced: true,
+
+            targetTradeSide: ONLY_SIDE,
+            tradeSide: ONLY_SIDE,
+            side: DASHBOARD_SIDE,
+            scannerSide: DASHBOARD_SIDE,
+            direction: ONLY_SIDE,
+
+            longOnly: true,
+            shortDisabled: true,
+            disableShort: true,
+
+            scannerOnly: true,
+            noTradeExecution: true,
+            noDiscord: true,
+            noMicroFamilySelection: true
+          })
+        });
+
+        setMessage(`Scanner klaar. LONG candidates=${data.longCandidatesCount || data.candidatesCount || 0}`, "ok");
+        await renderScanner();
+      } catch (error) {
+        setMessage(friendlyApiMessage(error), "warn");
+      }
     }
 
     async function renderTrade() {
@@ -1553,162 +2087,276 @@
       const data = await api(endpoints.trade);
       state.trade = data;
 
-      const positions = targetRows(getRows(data, ["positions", "openPositions"]));
-      const topPositions = positions.slice(0, 12);
+      const positions = longRows(data.positions || data.openPositions || data.virtualPositions || []);
+      const runMeta = data.runMeta || data.lastRunMeta || data.tradeMeta || {};
 
       $("trade").innerHTML = `
         <div class="toolbar">
           <button type="button" class="primary" id="runTradeBtn">Run TradeSystem now</button>
-          <button type="button" id="copyTradeJsonBtn">Copy trade JSON</button>
+          <button type="button" id="copyTradeBtn">Copy JSON</button>
         </div>
 
         <div class="grid">
-          ${metricCard("Open LONG positions", fmtInt(positions.length))}
-          ${metricCard("In sync", data.scannerAndTradeInSync ? "YES" : "NO")}
-          ${metricCard("Last processed", data.lastProcessed?.snapshotId || data.lastProcessedSnapshot || data.lastProcessedSnapshotId || "-")}
+          ${metricCard("Open virtual LONG", fmtInt(positions.length))}
+          ${metricCard("Scanner/trade sync", data.scannerAndTradeInSync ? "YES" : "NO")}
+          ${metricCard("Last processed", data.lastProcessedSnapshotId || data.lastProcessed?.snapshotId || "-")}
           ${metricCard("Latest scanner", data.latestScannerSnapshotId || "-")}
-          ${metricCard("Active true micro", fmtInt(data.runMeta?.activeMicroFamilies || data.activeMicroFamilies || 0))}
-          ${metricCard("Active macro", fmtInt(data.runMeta?.activeMacroFamilies || data.activeMacroFamilies || 0))}
-          ${metricCard("Last run", fmtTs(data.runMeta?.completedAt || data.runMeta?.startedAt || data.lastRunAt))}
-          ${metricCard("Actions", data.runMeta?.actionCounts ? Object.entries(data.runMeta.actionCounts).map(([key, value]) => `${key}:${value}`).join(" ") : "NA")}
-        </div>
-
-        <div class="card">
-          <h3>Analyze trigger</h3>
-          <div class="metric-extra">
-            TradeSystem verwerkt scanner candidates via analyzeCandidatesBatch, maakt shadow positions en schrijft observations naar Analyze.
-            Completed/AvgR/TotalR worden pas groter nadat shadow trades sluiten via TP, SL of TIME_STOP.
-          </div>
+          ${metricCard("Active micro IDs", fmtInt((data.activeMicroFamilyIds || []).length))}
+          ${metricCard("Active macro IDs", fmtInt((data.activeMacroFamilyIds || []).length))}
+          ${metricCard("Last run", fmtTs(runMeta.completedAt || runMeta.startedAt))}
+          ${metricCard("Orders", "0", "exchange disabled")}
         </div>
 
         <div class="section-title">
           <div>
-            <h2>Open LONG positions</h2>
-            <p>Live positie-overzicht met R, MFE, MAE en gekoppelde true micro-family.</p>
+            <h2>Open virtual LONG positions</h2>
+            <p>Iedere risk-valide LONG trade-vorm wordt virtual positie. Max één per coin tegelijk.</p>
           </div>
         </div>
 
         <div class="coin-grid">
-          ${topPositions.length ? topPositions.map(positionCard).join("") : '<div class="empty">Geen open LONG posities.</div>'}
+          ${positions.slice(0, 12).map(positionCard).join("") || '<div class="empty">Geen open virtual LONG posities.</div>'}
         </div>
 
         ${table(positions, [
-          { label: "Coin", render: symbolCell },
-          { label: "Side", render: (row) => `<span class="pill ${escapeAttr(sideClass(row))}">${escapeHtml(inferTradeSide(row))}</span>` },
+          { label: "Symbol", render: (row) => escapeHtml(baseSymbol(row)) },
+          { label: "Source", render: () => '<span class="pill purple">VIRTUAL</span>' },
+          { label: "Side", render: () => '<span class="pill long">LONG</span>' },
           { label: "Entry", render: (row) => fmtPrice(row.entry) },
-          { label: "SL", render: (row) => fmtPrice(row.sl) },
-          { label: "TP", render: (row) => fmtPrice(row.tp) },
+          { label: "SL", render: (row) => fmtPrice(row.sl || row.stopLoss) },
+          { label: "TP", render: (row) => fmtPrice(row.tp || row.takeProfit) },
           { label: "RR", render: (row) => fmt(row.rr, 2) },
-          { label: "CurR", render: (row) => fmt(row.currentR, 3) },
+          { label: "CurrentR", render: (row) => fmt(row.currentR, 3) },
           { label: "MFE", render: (row) => fmt(row.mfeR, 3) },
           { label: "MAE", render: (row) => fmt(row.maeR, 3) },
-          { label: "True Micro", render: (row) => `<code>${escapeHtml(microId(row))}</code>` },
-          { label: "Macro", render: (row) => `<code>${escapeHtml(macroId(row))}</code>` },
+          { label: "Exit flags", render: (row) => `
+            ${row.tpHitNow || row.tpExitArmed ? '<span class="pill active">TP</span>' : ""}
+            ${row.slHitNow || row.slExitArmed ? '<span class="pill danger">SL</span>' : ""}
+            ${row.timeStopHitNow || row.timeStopExitArmed ? '<span class="pill warn">TIME</span>' : ""}
+          ` || "-" },
+          { label: "True micro", render: (row) => `<code>${escapeHtml(microId(row) || "NO_MICRO")}</code>` },
+          { label: "Macro", render: (row) => `<code>${escapeHtml(macroId(row) || "NO_MACRO")}</code>` },
           { label: "Opened", render: (row) => fmtTs(row.openedAt || row.createdAt) }
-        ], "Geen open LONG posities.")}
+        ], "Geen open virtual LONG posities.")}
 
         <div class="card">
           <h3>Run meta</h3>
-          ${jsonBlock(data.runMeta)}
+          ${jsonBlock(runMeta)}
         </div>
       `;
 
-      $("runTradeBtn")?.addEventListener("click", async () => {
-        try {
-          const result = await api(endpoints.runTrade, { timeoutMs: 32000 });
-          const counts = result.counts || result.actionCounts || result.result?.actionCounts || {};
-          setMessage(`TradeSystem run klaar. ENTRY=${counts.ENTRY || counts.entries || 0}, WAIT=${counts.WAIT || counts.waits || 0}. Analyze/shadow is gevoed.`, "ok");
-          await renderTrade();
-        } catch (error) {
-          setMessage(friendlyApiMessage(error), "warn");
-        }
-      });
+      $("runTradeBtn")?.addEventListener("click", runTradeNow);
+      $("copyTradeBtn")?.addEventListener("click", () => copyText(JSON.stringify(data, null, 2), "Trade JSON gekopieerd."));
+    }
 
-      $("copyTradeJsonBtn")?.addEventListener("click", () => {
-        copyText(JSON.stringify(data, null, 2), "Trade JSON gekopieerd.");
-      });
+    async function runTradeNow() {
+      try {
+        const data = await api(endpoints.runTrade, {
+          method: "POST",
+          timeoutMs: 30000,
+          body: JSON.stringify({
+            force: true,
+            forced: true,
+            forceProcessSnapshot: true,
+
+            monitorOpenPositionsFirst: true,
+            monitorOpenPositions: true,
+            processScannerSnapshot: true,
+
+            targetTradeSide: ONLY_SIDE,
+            tradeSide: ONLY_SIDE,
+            side: DASHBOARD_SIDE,
+            positionSide: ONLY_SIDE,
+            direction: ONLY_SIDE,
+
+            longOnly: true,
+            shortDisabled: true,
+            disableShort: true,
+
+            virtualOnly: true,
+            virtualTracked: true,
+            shadowOnly: true,
+            source: "VIRTUAL",
+            outcomeSource: "VIRTUAL",
+
+            realOrdersDisabled: true,
+            exchangeOrdersDisabled: true,
+            bitgetOrdersDisabled: true,
+            noExchangeOrders: true,
+            noRealOrders: true,
+
+            allowLearningWithoutActiveRotation: true,
+            ignoreMaxOpenPositionsForLearning: true,
+            ignoreGlobalMaxOpenPositions: true,
+            oneOpenPositionPerSymbol: true,
+            maxOneOpenPositionPerSymbol: true,
+
+            discordOnlyForSelectedMicroFamilies: true,
+            discordOnlyForExactTrueMicroMatch: true
+          })
+        });
+
+        const counts = data.counts || {};
+        setMessage(
+          `TradeSystem klaar.\nEntries=${counts.entries || data.entryRows || 0}, waits=${counts.waits || data.waitRows || 0}, virtualExits=${counts.virtualExits || data.virtualExitRows || 0}.`,
+          "ok"
+        );
+
+        await renderTrade();
+      } catch (error) {
+        setMessage(friendlyApiMessage(error), "warn");
+      }
+    }
+
+    function manualCard(row) {
+      if (!row) {
+        return `
+          <div class="manual-card">
+            <h3>Manual Discord selection</h3>
+            <div class="empty">Geen LONG Analyze micro-family beschikbaar. Laat scanner + TradeSystem eerst observations schrijven.</div>
+          </div>
+        `;
+      }
+
+      const id = microId(row);
+      const isActive = activeMicroIds().includes(id);
+
+      return `
+        <div class="manual-card">
+          <h3>Beste zichtbare LONG true micro</h3>
+
+          <div class="toolbar">
+            <span class="pill long">LONG</span>
+            ${isActive ? '<span class="pill active">DISCORD ACTIVE</span>' : '<span class="pill info">NOT SELECTED</span>'}
+            ${tierPill(tier(row))}
+            ${statusPill(row)}
+            ${tooEarly(row) ? `<span class="pill warn">te vroeg ${escapeHtml(fmt(completed(row), 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>` : ""}
+          </div>
+
+          <div>
+            <div class="metric-extra">True micro</div>
+            <code>${escapeHtml(id || "NO_MICRO_ID")}</code>
+          </div>
+
+          <div style="margin-top:8px">
+            <div class="metric-extra">Macro</div>
+            <code>${escapeHtml(macroId(row) || "NO_MACRO_ID")}</code>
+          </div>
+
+          <div class="manual-grid">
+            <div class="manual-stat"><span>Seen</span><strong>${escapeHtml(fmt(observationSample(row), 2))}</strong></div>
+            <div class="manual-stat"><span>Completed</span><strong>${escapeHtml(fmt(completed(row), 2))}</strong></div>
+            <div class="manual-stat"><span>Status</span><strong>${escapeHtml(learningStatus(row))}</strong></div>
+            <div class="manual-stat"><span>Sample</span><strong>${tooEarly(row) ? `TE VROEG ${fmt(completed(row), 0)}/${MIN_COMPLETED_ACTIVE_LEARNING}` : "OK"}</strong></div>
+            <div class="manual-stat"><span>Winrate raw</span><strong>${escapeHtml(fmtPct(row.winrate))}</strong></div>
+            <div class="manual-stat"><span>Fair WR</span><strong>${escapeHtml(fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate))}</strong></div>
+            <div class="manual-stat"><span>Net TotalR</span><strong>${escapeHtml(fmt(row.totalR, 3))}</strong></div>
+            <div class="manual-stat"><span>Balanced</span><strong>${escapeHtml(fmt(row.dashboardBalancedScore ?? row.balancedScore, 2))}</strong></div>
+          </div>
+
+          <div class="metric-extra">
+            Ranking gebruikt beste data eerst: balanced score, netR, avgR, sample reliability en fair winrate.
+            Discord wordt alleen actief voor deze exacte true micro. Virtual learning blijft alle risk-valide LONG candidates volgen.
+          </div>
+
+          <div class="toolbar">
+            <button type="button" class="long-action" data-activate-one="${escapeAttr(id)}" ${id ? "" : "disabled"}>Select exact</button>
+            <button type="button" data-copy="${escapeAttr(id)}" ${id ? "" : "disabled"}>Copy</button>
+          </div>
+        </div>
+      `;
     }
 
     async function renderMicros() {
       showLoading("micros");
 
-      const params = new URLSearchParams();
-      params.set("mode", state.microMode);
-      params.set("side", TARGET_TRADE_SIDE);
-      params.set("tradeSide", TARGET_TRADE_SIDE);
-      params.set("limit", "150");
-      params.set("bestLimit", "100");
-      params.set("sideLimit", "100");
-      params.set("compact", "1");
-      params.set("fast", "1");
+      try {
+        state.micros = await fetchMicros();
+      } catch (error) {
+        state.micros = {
+          rows: [],
+          error: friendlyApiMessage(error)
+        };
 
-      const data = await api(`${endpoints.micros}?${params.toString()}`, {
-        timeoutMs: 24000
-      });
+        setMessage(state.micros.error, "warn");
+      }
 
-      state.micros = data;
+      const rows = currentMicroRows();
+      const top = rows[0] || null;
 
-      const rowsRaw = extractMicroRows(data);
-      const search = state.microSearch.trim().toLowerCase();
-
-      const rows = search
-        ? rowsRaw.filter((row) => JSON.stringify(row).toLowerCase().includes(search))
-        : rowsRaw;
-
-      const best = rows[0] || null;
-      const completedRows = rows.filter((row) => Number(row.completed) > 0);
-      const observedRows = rows.filter((row) => Number(row.observations ?? row.obs ?? row.seen) > 0);
+      const observingRows = rows.filter((row) => learningStatus(row) === "OBSERVING");
+      const earlyRows = rows.filter((row) => learningStatus(row) === "EARLY_OUTCOMES");
+      const activeRows = rows.filter((row) => learningStatus(row) === "ACTIVE_LEARNING");
+      const tooEarlyRows = rows.filter(tooEarly);
 
       $("micros").innerHTML = `
         <div class="toolbar">
           <select id="microMode">
-            ${["balanced", "winrate", "totalR", "avgR", "directSL", "observed"].map((mode) => `
+            ${validMicroModes.map((mode) => `
               <option value="${escapeAttr(mode)}" ${mode === state.microMode ? "selected" : ""}>${escapeHtml(mode)}</option>
             `).join("")}
           </select>
 
-          <input id="microSearch" type="search" placeholder="Zoek micro, macro, family, bucket..." value="${escapeAttr(state.microSearch)}" />
+          <input id="microSearch" type="search" placeholder="Zoek true micro, macro, family, bucket..." value="${escapeAttr(state.microSearch)}" />
 
-          <button type="button" class="long-action" id="copyMicroIdsBtn">Copy LONG micro IDs</button>
-          <button type="button" id="downloadMicrosBtn">Export JSON</button>
-        </div>
-
-        <div class="grid">
-          ${metricCard("LONG micro rows", fmtInt(rows.length))}
-          ${metricCard("Observed rows", fmtInt(observedRows.length))}
-          ${metricCard("Closed shadow samples", fmtInt(completedRows.length))}
-          ${metricCard("Best balanced", best ? fmt(best.dashboardBalancedScore ?? best.balancedScore, 2) : "-")}
-          ${metricCard("Best completed", best ? fmt(best.completed, 2) : "-")}
-          ${metricCard("Best totalR", best ? fmt(best.totalR, 2) : "-")}
-          ${metricCard("Mode", state.microMode)}
-          ${metricCard("Source", data.source || data.storageMode || "admin")}
+          <button type="button" class="success" id="copyVisibleIdsBtn">Copy visible micro IDs</button>
+          <button type="button" class="success" id="activateVisibleIdsBtn">Activate visible IDs for Discord</button>
+          <button type="button" id="exportMicrosBtn">Export JSON</button>
         </div>
 
         <div class="card">
-          <h3>Analyze pipeline</h3>
+          <h3>MicroFamilies ranking policy</h3>
+          <div class="toolbar">
+            <span class="pill dark">best data first</span>
+            <span class="pill dark">default sort: balanced/fair/netR</span>
+            <span class="pill observation">OBSERVING = completed 0</span>
+            <span class="pill soft">EARLY_OUTCOMES = completed 1-19 · te vroeg</span>
+            <span class="pill active">ACTIVE_LEARNING = completed ≥ ${MIN_COMPLETED_ACTIVE_LEARNING}</span>
+            <span class="pill long">scanner fingerprints hidden</span>
+          </div>
           <div class="metric-extra">
-            Deze tabel toont alleen LONG micro-families. SHORT families worden hier hard gefilterd op micro/macro/family ID.
-            0 betekent: echte 0, meestal omdat shadow trades nog niet gesloten zijn. Zodra TP/SL/TIME_STOP sluit, vullen Completed, AvgR en TotalR.
+            Dashboard toont alleen echte Analyze true micro-family IDs. Scanner fingerprint IDs zoals MICRO_LONG_SCANNER__... blijven metadata en worden niet als aparte dashboard families getoond.
           </div>
         </div>
 
-        ${table(rows, [
-          { label: "Rank", render: (row, index) => escapeHtml(row.rank ?? index + 1) },
-          { label: "True Micro", render: (row) => `<code>${escapeHtml(microId(row) || "NO_MICRO")}</code>` },
-          { label: "Macro", render: (row) => `<code>${escapeHtml(macroId(row) || "NO_MACRO")}</code>` },
-          { label: "Family", render: (row) => `<code>${escapeHtml(familyId(row) || "NO_FAMILY")}</code>` },
-          { label: "Side", render: (row) => `<span class="pill ${escapeAttr(sideClass(row))}">${escapeHtml(inferTradeSide(row))}</span>` },
-          { label: "Seen", render: (row) => fmtInt(row.seen) },
-          { label: "Obs", render: (row) => fmtInt(row.observations ?? row.obs ?? row.seen) },
-          { label: "Completed", render: (row) => fmt(row.completed, 2) },
-          { label: "Winrate", render: (row) => fmtPctRatio(row.winrate) },
-          { label: "Fair WR", render: (row) => fmtPctRatio(row.fairWinrate ?? row.bayesianWinrate ?? row.wilsonLowerBound) },
-          { label: "AvgR", render: (row) => fmt(row.avgR, 3) },
-          { label: "TotalR", render: (row) => fmt(row.totalR, 3) },
-          { label: "PF", render: (row) => fmt(row.profitFactor, 2) },
-          { label: "DirectSL", render: (row) => fmtPctRatio(row.directSLPct) },
-          { label: "Balanced", render: (row) => `<strong>${fmt(row.dashboardBalancedScore ?? row.balancedScore, 2)}</strong>` }
-        ], "Nog geen LONG micro-family data. Run Scanner en daarna TradeSystem.")}
+        <div class="section-title">
+          <div>
+            <h2>Manual Discord selection candidate</h2>
+            <p>Alleen exacte LONG true micro IDs worden actief gezet.</p>
+          </div>
+        </div>
+
+        ${manualCard(top)}
+
+        <div class="grid">
+          ${metricCard("Analyze LONG rows", fmtInt(rows.length), `API totalAvailable=${fmtInt(state.micros?.totalAvailable || rows.length)}`)}
+          ${metricCard("OBSERVING", fmtInt(observingRows.length), "completed = 0")}
+          ${metricCard("EARLY_OUTCOMES", fmtInt(earlyRows.length), `completed 1-${MIN_COMPLETED_ACTIVE_LEARNING - 1} · te vroeg`)}
+          ${metricCard("ACTIVE_LEARNING", fmtInt(activeRows.length), `completed ≥ ${MIN_COMPLETED_ACTIVE_LEARNING}`)}
+          ${metricCard("Te vroeg", fmtInt(tooEarlyRows.length), `completed < ${MIN_COMPLETED_ACTIVE_LEARNING}`)}
+          ${metricCard("Discord active micros", fmtInt(activeMicroIds().length))}
+          ${metricCard("Mode", state.microMode, "default best data first")}
+          ${metricCard("Outcomes", "NET R", "virtual/shadow closed outcomes")}
+        </div>
+
+        ${microTable(rows.slice(0, state.bestLimit))}
+
+        <div class="card">
+          <h3>Micro API status</h3>
+          ${jsonBlock({
+            ok: state.micros?.ok,
+            rowsRendered: rows.length,
+            rawExtractedRows: state.micros?.rawExtractedRows || 0,
+            best25Count: state.micros?.best25Count ?? null,
+            totalAvailable: state.micros?.totalAvailable ?? null,
+            weekRows: state.micros?.weekRows ?? null,
+            primaryWeekRows: state.micros?.primaryWeekRows ?? null,
+            rawScannerFingerprintRowsHidden: state.micros?.rawScannerFingerprintRowsHidden ?? null,
+            rankingPolicy: state.micros?.rankingPolicy ?? null,
+            warnings: state.micros?.warnings || [],
+            error: state.micros?.error || null
+          })}
+        </div>
       `;
 
       $("microMode")?.addEventListener("change", (event) => {
@@ -1721,134 +2369,335 @@
         renderMicros();
       });
 
-      $("copyMicroIdsBtn")?.addEventListener("click", () => {
-        const ids = [...new Set(rows.map(microId).filter(Boolean))];
-        copyText(JSON.stringify(ids, null, 2), `${ids.length} LONG micro IDs gekopieerd.`);
+      $("microSearch")?.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          state.microSearch = event.target.value;
+          renderMicros();
+        }
       });
 
-      $("downloadMicrosBtn")?.addEventListener("click", () => downloadJson("long-micro-families.json", data));
+      $("copyVisibleIdsBtn")?.addEventListener("click", () => {
+        const ids = uniqueStrings(rows.map(microId)).filter(idAllowedInLongOnly);
+        copyText(JSON.stringify(ids, null, 2), `Visible ${ids.length} LONG true micro IDs gekopieerd.`);
+      });
+
+      $("activateVisibleIdsBtn")?.addEventListener("click", () => {
+        const ids = uniqueStrings(rows.map(microId)).filter(idAllowedInLongOnly);
+        activateSelectedMicroFamilies(ids);
+      });
+
+      $("exportMicrosBtn")?.addEventListener("click", () => {
+        downloadJson("long-micro-families.json", state.micros);
+      });
+
+      bindMicroEvents();
     }
 
     async function renderRotation() {
       showLoading("rotation");
 
-      const params = new URLSearchParams();
-      params.set("activeRowsLimit", "100");
-      params.set("nextRowsLimit", "100");
-      params.set("compact", "1");
-
-      const data = await api(`${endpoints.rotation}?${params.toString()}`, {
-        timeoutMs: 24000
+      const data = await api(rotationApiUrl(), {
+        timeoutMs: 22000
       });
 
       state.rotation = data;
 
       const active = data.active || data.activeRotation || {};
-      const next = data.next || data.nextRotation || {};
+      const activeIds = uniqueStrings([
+        active.activeMicroFamilyIds || [],
+        active.microFamilyIds || [],
+        active.trueMicroFamilyIds || [],
+        data.activeMicroFamilyIds || []
+      ]).filter(idAllowedInLongOnly);
 
-      const activeRowsRaw = getRows(data, ["activeRows", "rows", "activeMicroFamilies"]);
-      const activeRows = targetRows(activeRowsRaw.length ? activeRowsRaw : active.microFamilies || []);
-      const activeIds = extractRotationIds(active).filter((id) => inferTradeSide(id) === TARGET_TRADE_SIDE);
-      const nextIds = extractRotationIds(next).filter((id) => inferTradeSide(id) === TARGET_TRADE_SIDE);
+      const activeMacros = uniqueStrings([
+        active.activeMacroFamilyIds || [],
+        active.macroFamilyIds || [],
+        data.activeMacroFamilyIds || []
+      ]).filter(idAllowedInLongOnly);
+
+      const rows = rankMicroRows(data.activeRows || active.microFamilies || [])
+        .concat(
+          activeIds.map((id, index) => ({
+            rank: index + 1,
+            microFamilyId: id,
+            trueMicroFamilyId: id,
+            tradeSide: ONLY_SIDE,
+            side: DASHBOARD_SIDE,
+            selectedTier: "MANUAL",
+            longOnly: true,
+            shortDisabled: true
+          }))
+        )
+        .filter((row, index, arr) => arr.findIndex((candidate) => microId(candidate) === microId(row)) === index);
 
       $("rotation").innerHTML = `
-        <div class="toolbar">
-          <button type="button" class="warn" id="freezeWeeklyBtn">Freeze weekly rotation</button>
-          <button type="button" id="copyRotationJsonBtn">Copy rotation JSON</button>
+        <div class="section-title">
+          <div>
+            <h2>Manual Discord selection</h2>
+            <p>Geen auto-rotatie. Geen next activation. Alleen exact geselecteerde LONG true micro IDs.</p>
+          </div>
         </div>
 
         <div class="grid">
-          ${metricCard("Active LONG true micro", fmtInt(activeIds.length || activeRows.length))}
-          ${metricCard("Next true micro", fmtInt(nextIds.length))}
+          ${metricCard("Active true micro IDs", fmtInt(activeIds.length))}
+          ${metricCard("Active macro IDs", fmtInt(activeMacros.length))}
           ${metricCard("Rotation ID", active.rotationId || "-")}
-          ${metricCard("Mode", active.mode || data.mode || "-")}
-          ${metricCard("Source week", active.sourceWeekKey || data.sourceWeekKey || "-")}
-          ${metricCard("Eligible", fmtInt(active.eligibleCount || data.eligibleCount))}
-          ${metricCard("LONG only", "YES")}
-          ${metricCard("SHORT disabled", "YES")}
+          ${metricCard("Mode", active.mode || "manual")}
+          ${metricCard("Source", active.source || "-")}
+          ${metricCard("Discord alerts", activeIds.length > 0 ? "ENABLED" : "OFF")}
+          ${metricCard("Virtual learning", "UNCHANGED")}
+          ${metricCard("Auto rotation", "DISABLED")}
         </div>
 
-        ${table(activeRows.length ? activeRows : activeIds.map((id, index) => ({ rank: index + 1, microFamilyId: id, tradeSide: TARGET_TRADE_SIDE })), [
-          { label: "Rank", render: (row, index) => escapeHtml(row.rank ?? index + 1) },
-          { label: "True Micro", render: (row) => `<code>${escapeHtml(microId(row) || row.microFamilyId || "")}</code>` },
-          { label: "Macro", render: (row) => `<code>${escapeHtml(macroId(row))}</code>` },
-          { label: "Side", render: (row) => `<span class="pill ${escapeAttr(sideClass(row))}">${escapeHtml(inferTradeSide(row))}</span>` },
-          { label: "Completed", render: (row) => fmt(row.completed, 2) },
-          { label: "Fair WR", render: (row) => fmtPctRatio(row.fairWinrate ?? row.bayesianWinrate ?? row.wilsonLowerBound) },
-          { label: "AvgR", render: (row) => fmt(row.avgR, 3) },
-          { label: "TotalR", render: (row) => fmt(row.totalR, 3) },
-          { label: "Balanced", render: (row) => fmt(row.dashboardBalancedScore ?? row.balancedScore, 2) }
-        ], "Geen actieve LONG rotation gevonden.")}
+        <div class="card">
+          <h3>Manual exact micro IDs</h3>
+          <p class="metric-extra">
+            Plak één of meer true microFamilyIds. Deze selectie activeert alleen Discord alerts.
+          </p>
+
+          <textarea id="manualMicroIds" placeholder="MICRO_LONG_...">${escapeHtml(activeIds.join("\n"))}</textarea>
+
+          <div class="toolbar">
+            <button type="button" class="long-action" id="activateManualBtn">Save manual Discord selection</button>
+            <button type="button" id="clearManualBtn">Clear input</button>
+            <button type="button" class="success" id="copyActiveBtn">Copy active micro IDs</button>
+            <button type="button" id="exportRotationBtn">Export JSON</button>
+          </div>
+        </div>
+
+        <div class="section-title">
+          <div>
+            <h2>Active selected LONG micro-families</h2>
+            <p>Deze IDs bepalen Discord eligibility. Niet-geselecteerde setups blijven stil leren.</p>
+          </div>
+        </div>
+
+        ${microTable(rows)}
 
         <div class="card">
-          <h3>Raw active rotation</h3>
-          ${jsonBlock(active)}
+          <h3>Raw rotation dashboard</h3>
+          ${jsonBlock(data)}
         </div>
       `;
 
-      $("freezeWeeklyBtn")?.addEventListener("click", async () => {
-        try {
-          const result = await api(endpoints.weeklyFreeze, {
-            method: "POST",
-            timeoutMs: 32000,
-            body: JSON.stringify({
-              force: true,
-              mode: "balanced",
-              side: TARGET_TRADE_SIDE,
-              tradeSide: TARGET_TRADE_SIDE
-            })
-          });
-
-          setMessage(`Weekly freeze klaar. rotationId=${result.rotationId || result.result?.result?.rotationId || "NA"}`, "ok");
-          await renderRotation();
-        } catch (error) {
-          setMessage(friendlyApiMessage(error), "warn");
-        }
+      $("activateManualBtn")?.addEventListener("click", () => {
+        const ids = uniqueStrings(($("manualMicroIds")?.value || "").split(/[\n,;\r]+/g));
+        activateSelectedMicroFamilies(ids);
       });
 
-      $("copyRotationJsonBtn")?.addEventListener("click", () => {
-        copyText(JSON.stringify(data, null, 2), "Rotation JSON gekopieerd.");
+      $("clearManualBtn")?.addEventListener("click", () => {
+        $("manualMicroIds").value = "";
       });
+
+      $("copyActiveBtn")?.addEventListener("click", () => {
+        copyText(JSON.stringify(activeIds, null, 2), "Active micro IDs gekopieerd.");
+      });
+
+      $("exportRotationBtn")?.addEventListener("click", () => {
+        downloadJson("manual-discord-selection-long.json", data);
+      });
+
+      bindMicroEvents();
+    }
+
+    async function activateSelectedMicroFamilies(ids = []) {
+      const microFamilyIds = uniqueStrings(ids).filter(idAllowedInLongOnly);
+
+      if (!microFamilyIds.length) {
+        setMessage("Geen geldige LONG Analyze true microFamilyId geselecteerd.", "warn");
+        return;
+      }
+
+      if (!confirm(
+        `Activeer Discord alerts voor ${microFamilyIds.length} exacte LONG true micro-family ID(s)?\n\n` +
+        `${microFamilyIds.slice(0, 8).join("\n")}` +
+        `${microFamilyIds.length > 8 ? "\n..." : ""}\n\n` +
+        "Virtual learning blijft alle risk-valide LONG candidates volgen."
+      )) {
+        return;
+      }
+
+      const data = await api(endpoints.rotation, {
+        method: "POST",
+        timeoutMs: 28000,
+        body: JSON.stringify({
+          action: "activateSelectedMicroFamilies",
+
+          microFamilyIds,
+          activeMicroFamilyIds: microFamilyIds,
+          trueMicroFamilyIds: microFamilyIds,
+
+          side: DASHBOARD_SIDE,
+          tradeSide: ONLY_SIDE,
+          positionSide: ONLY_SIDE,
+          direction: ONLY_SIDE,
+          targetTradeSide: ONLY_SIDE,
+          dashboardSide: DASHBOARD_SIDE,
+
+          longOnly: true,
+          shortDisabled: true,
+          disableShort: true,
+
+          manualOnly: true,
+          adminSelected: true,
+          autoRotation: false,
+          discordOnlyForSelectedMicroFamilies: true,
+          discordOnlyForExactTrueMicroMatch: true
+        })
+      });
+
+      const active = data.active || data.activeRotation || {};
+      const activeIds = uniqueStrings([
+        active.activeMicroFamilyIds || [],
+        active.microFamilyIds || [],
+        active.trueMicroFamilyIds || [],
+        data.activeMicroFamilyIds || []
+      ]).filter(idAllowedInLongOnly);
+
+      state.rotation = {
+        ...(state.rotation || {}),
+        ...data,
+        active,
+        activeRotation: active,
+        activeMicroFamilyIds: activeIds
+      };
+
+      setMessage(
+        `Manual Discord selection opgeslagen.\nActive true micro IDs: ${activeIds.length}\nVirtual learning blijft breed doorlopen.`,
+        "ok"
+      );
+
+      if (state.activeTab === "rotation") await renderRotation();
+      if (state.activeTab === "micros") await renderMicros();
+    }
+
+    async function openMicro(id) {
+      if (!id) return;
+
+      const drawer = $("drawer");
+
+      drawer.classList.remove("hidden");
+      drawer.innerHTML = `
+        <div class="drawer-head">
+          <div>
+            <h2>${escapeHtml(id)}</h2>
+            <div class="metric-extra">Detail wordt geladen...</div>
+          </div>
+          <button type="button" id="closeDrawerBtn">Close</button>
+        </div>
+      `;
+
+      $("closeDrawerBtn")?.addEventListener("click", closeDrawer);
+
+      try {
+        const data = await api(`${endpoints.microDetail}/${encodeURIComponent(id)}`, {
+          timeoutMs: 18000
+        });
+
+        const row = normalizeMicroRowForUi(data.row || data.microFamily || data);
+
+        drawer.innerHTML = `
+          <div class="drawer-head">
+            <div>
+              <h2>${escapeHtml(id)}</h2>
+              <div class="metric-extra">true micro=${escapeHtml(microId(row))} · macro=${escapeHtml(macroId(row))}</div>
+            </div>
+            <button type="button" id="closeDrawerBtn">Close</button>
+          </div>
+
+          <div class="toolbar">
+            <span class="pill long">LONG</span>
+            ${statusPill(row)}
+            ${tooEarly(row) ? `<span class="pill warn">te vroeg ${escapeHtml(fmt(completed(row), 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>` : ""}
+            <button type="button" class="long-action" id="activateDrawerBtn">Select exact</button>
+            <button type="button" id="copyDrawerBtn">Copy</button>
+          </div>
+
+          <div class="grid">
+            ${metricCard("Seen", fmtInt(row.seen ?? row.observations))}
+            ${metricCard("Observations", fmtInt(row.observations ?? row.seen))}
+            ${metricCard("Completed", fmt(completed(row), 2), tooEarly(row) ? `te vroeg: minimum ${MIN_COMPLETED_ACTIVE_LEARNING}` : "active learning")}
+            ${metricCard("Status", learningStatus(row))}
+            ${metricCard("Winrate raw", fmtPct(row.winrate))}
+            ${metricCard("Fair WR", fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate))}
+            ${metricCard("AvgR net", fmt(row.avgR, 3))}
+            ${metricCard("TotalR net", fmt(row.totalR, 3))}
+          </div>
+
+          <div class="card">
+            <h3>Raw detail JSON</h3>
+            ${jsonBlock(data)}
+          </div>
+        `;
+
+        $("closeDrawerBtn")?.addEventListener("click", closeDrawer);
+        $("activateDrawerBtn")?.addEventListener("click", () => activateSelectedMicroFamilies([microId(row)]));
+        $("copyDrawerBtn")?.addEventListener("click", () => copyText(microId(row), "MicroFamilyId gekopieerd."));
+      } catch (error) {
+        drawer.innerHTML = `
+          <div class="drawer-head">
+            <div>
+              <h2>${escapeHtml(id)}</h2>
+              <div class="metric-extra">Detail API niet geladen.</div>
+            </div>
+            <button type="button" id="closeDrawerBtn">Close</button>
+          </div>
+
+          <div class="message warn">${escapeHtml(friendlyApiMessage(error))}</div>
+        `;
+
+        $("closeDrawerBtn")?.addEventListener("click", closeDrawer);
+      }
+    }
+
+    function closeDrawer() {
+      $("drawer").classList.add("hidden");
+      $("drawer").innerHTML = "";
     }
 
     async function renderDiscord() {
       showLoading("discord");
 
-      const data = await api(`${endpoints.discord}?limit=80`, {
+      const data = await api(`${endpoints.discord}?limit=60`, {
         timeoutMs: 18000
       });
 
       state.discord = data;
 
-      const logs = getRows(data, ["logs", "items"]);
-      const longLogs = logs.filter((row) => isTargetSide(row.payload || row));
+      const logs = asArray(data.logs || data.items || data.data);
 
       $("discord").innerHTML = `
         <div class="toolbar">
-          <button type="button" id="copyDiscordJsonBtn">Copy Discord JSON</button>
-          <button type="button" id="downloadDiscordBtn">Export JSON</button>
+          <button type="button" id="copyDiscordBtn">Copy JSON</button>
+          <button type="button" id="exportDiscordBtn">Export JSON</button>
         </div>
 
         <div class="grid">
-          ${metricCard("LONG logs", fmtInt(longLogs.length))}
-          ${metricCard("Raw logs", fmtInt(logs.length))}
+          ${metricCard("Logs", fmtInt(logs.length))}
           ${metricCard("Last log", fmtTs(logs[0]?.ts || logs[0]?.createdAt))}
-          ${metricCard("SHORT ignored", fmtInt(logs.filter((row) => isOppositeSide(row.payload || row)).length))}
+          ${metricCard("Entry alerts", fmtInt(logs.filter((row) => upper(row.type || row.event).includes("ENTRY")).length))}
+          ${metricCard("Exit alerts", fmtInt(logs.filter((row) => upper(row.type || row.event).includes("EXIT")).length))}
         </div>
 
-        ${table(longLogs, [
+        ${table(logs, [
           { label: "TS", render: (row) => fmtTs(row.ts || row.createdAt) },
-          { label: "Type", render: (row) => escapeHtml(row.type || row.level || "-") },
-          { label: "Coin", render: (row) => symbolCell(row.payload || row) },
-          { label: "Side", render: (row) => `<span class="pill ${escapeAttr(sideClass(row.payload || row))}">${escapeHtml(inferTradeSide(row.payload || row))}</span>` },
-          { label: "True Micro", render: (row) => `<code>${escapeHtml(microId(row.payload || row))}</code>` },
-          { label: "Macro", render: (row) => `<code>${escapeHtml(macroId(row.payload || row))}</code>` },
-          { label: "Result", render: (row) => escapeHtml(row.result ? JSON.stringify(row.result) : row.message || row.content || "") }
-        ], "Geen LONG Discord logs.")}
+          { label: "Type", render: (row) => escapeHtml(row.type || row.level || row.event || "-") },
+          { label: "Symbol", render: (row) => escapeHtml(baseSymbol(row.payload || row)) },
+          { label: "Side", render: () => '<span class="pill long">LONG</span>' },
+          { label: "Selected", render: (row) => {
+            const payload = row.payload || row;
+            const selected = Boolean(payload.discordAlertEligible || payload.selectedForDiscord || payload.wasSelected || row.selectedOnly);
+            return `<span class="pill ${selected ? "active" : ""}">${selected ? "YES" : "NO"}</span>`;
+          }},
+          { label: "True micro", render: (row) => `<code>${escapeHtml(microId(row.payload || row) || "-")}</code>` },
+          { label: "Macro", render: (row) => `<code>${escapeHtml(macroId(row.payload || row) || "-")}</code>` },
+          { label: "Message", render: (row) => escapeHtml(row.message || row.content || row.result || "") }
+        ], "Geen Discord logs.")}
       `;
 
-      $("copyDiscordJsonBtn")?.addEventListener("click", () => copyText(JSON.stringify(data, null, 2), "Discord JSON gekopieerd."));
-      $("downloadDiscordBtn")?.addEventListener("click", () => downloadJson("discord-logs.json", data));
+      $("copyDiscordBtn")?.addEventListener("click", () => copyText(JSON.stringify(data, null, 2), "Discord JSON gekopieerd."));
+      $("exportDiscordBtn")?.addEventListener("click", () => downloadJson("discord-logs-long.json", data));
     }
 
     function renderReset() {
@@ -1856,20 +2705,26 @@
         <div class="grid-3">
           <div class="card">
             <h3>Reset learning only</h3>
-            <p class="metric-extra">Wist observations, outcomes, weekly micro stats en shadow data. Open positions blijven staan.</p>
+            <p class="metric-extra">
+              Wist LONG learning. Active manual Discord selection, open virtual positions en scanner snapshots blijven staan.
+            </p>
             <button type="button" class="warn" id="resetLearningBtn">Reset learning</button>
           </div>
 
           <div class="card">
-            <h3>Reset rotation only</h3>
-            <p class="metric-extra">Wist active/next rotation. Learning blijft staan.</p>
+            <h3>Reset manual selection</h3>
+            <p class="metric-extra">
+              Wist active/next LONG rotation. Learning en virtual positions blijven staan.
+            </p>
             <button type="button" class="warn" id="resetRotationBtn">Reset rotation</button>
           </div>
 
           <div class="card">
             <h3>Factory reset</h3>
-            <p class="metric-extra">Wist scanner snapshots, trade memory, open positions, analyze stats, rotations en live cache.</p>
-            <input id="factoryConfirm" style="width: 100%; margin-bottom: 8px;" placeholder="FACTORY_RESET_CONFIRMED" />
+            <p class="metric-extra">
+              Wist LONG scanner snapshots, trade memory, open positions, analyze stats en rotations.
+            </p>
+            <input id="factoryConfirm" style="width: 100%; margin-bottom: 8px;" placeholder="LONG_FACTORY_RESET_CONFIRMED" />
             <label style="display: block; margin-bottom: 8px;">
               <input id="factoryForce" type="checkbox" />
               force even with open positions
@@ -1890,42 +2745,56 @@
     }
 
     async function postResetLearning() {
-      const confirmValue = prompt("Typ RESET_LEARNING om learning te wissen.");
+      const confirmValue = prompt("Typ RESET_LEARNING_LONG om LONG learning te wissen.");
 
-      if (confirmValue !== "RESET_LEARNING") return;
+      if (confirmValue !== "RESET_LEARNING_LONG") return;
 
       try {
         const data = await api(endpoints.resetLearning, {
           method: "POST",
-          timeoutMs: 25000,
+          timeoutMs: 30000,
           body: JSON.stringify({
-            confirm: "RESET_LEARNING",
-            confirmed: "RESET_LEARNING"
+            confirm: "RESET_LEARNING_LONG",
+            confirmed: "RESET_LEARNING_LONG",
+            confirmation: "RESET_LEARNING_LONG",
+            side: DASHBOARD_SIDE,
+            tradeSide: ONLY_SIDE,
+            targetTradeSide: ONLY_SIDE,
+            longOnly: true,
+            shortDisabled: true
           })
         });
 
         $("resetResult").textContent = JSON.stringify(data, null, 2);
-        setMessage("Learning reset uitgevoerd.", "ok");
+        setMessage("LONG learning reset uitgevoerd.", "ok");
       } catch (error) {
         setMessage(friendlyApiMessage(error), "warn");
       }
     }
 
     async function postResetRotation() {
-      if (!confirm("Reset active/next rotation?")) return;
+      const confirmValue = prompt("Typ RESET_ROTATION_LONG om manual Discord selection te wissen.");
+
+      if (confirmValue !== "RESET_ROTATION_LONG") return;
 
       try {
         const data = await api(endpoints.resetRotation, {
           method: "POST",
-          timeoutMs: 25000,
+          timeoutMs: 30000,
           body: JSON.stringify({
-            confirm: true,
-            confirmed: true
+            confirm: "RESET_ROTATION_LONG",
+            confirmed: "RESET_ROTATION_LONG",
+            confirmation: "RESET_ROTATION_LONG",
+            side: DASHBOARD_SIDE,
+            tradeSide: ONLY_SIDE,
+            targetTradeSide: ONLY_SIDE,
+            longOnly: true,
+            shortDisabled: true
           })
         });
 
         $("resetResult").textContent = JSON.stringify(data, null, 2);
-        setMessage("Rotation reset uitgevoerd.", "ok");
+        setMessage("LONG rotation reset uitgevoerd.", "ok");
       } catch (error) {
         setMessage(friendlyApiMessage(error), "warn");
       }
@@ -1933,32 +2802,55 @@
 
     async function postFactoryReset() {
       const confirmValue = $("factoryConfirm").value.trim();
-      const forceValue = $("factoryForce").checked;
+      const force = $("factoryForce").checked;
 
-      if (confirmValue !== "FACTORY_RESET_CONFIRMED") {
-        setMessage("Factory reset geblokkeerd: bevestiging is niet exact FACTORY_RESET_CONFIRMED.", "error");
+      if (confirmValue !== "LONG_FACTORY_RESET_CONFIRMED") {
+        setMessage("Factory reset geblokkeerd: bevestiging is niet exact LONG_FACTORY_RESET_CONFIRMED.", "error");
         return;
       }
 
-      if (!confirm("FACTORY RESET wist alles. Doorgaan?")) return;
+      if (!confirm("LONG FACTORY RESET wist alles in de LONG namespace. Doorgaan?")) return;
 
       try {
         const data = await api(endpoints.factoryReset, {
           method: "POST",
           timeoutMs: 30000,
           body: JSON.stringify({
-            confirm: "FACTORY_RESET_CONFIRMED",
-            confirmed: "FACTORY_RESET_CONFIRMED",
-            force: forceValue,
-            forceClosePositions: forceValue
+            confirm: "LONG_FACTORY_RESET_CONFIRMED",
+            confirmed: "LONG_FACTORY_RESET_CONFIRMED",
+            confirmation: "LONG_FACTORY_RESET_CONFIRMED",
+            force,
+            forceClosePositions: force,
+
+            side: DASHBOARD_SIDE,
+            tradeSide: ONLY_SIDE,
+            targetTradeSide: ONLY_SIDE,
+
+            longOnly: true,
+            shortDisabled: true
           })
         });
 
         $("resetResult").textContent = JSON.stringify(data, null, 2);
-        setMessage("Factory reset uitgevoerd.", "ok");
+        setMessage("LONG factory reset uitgevoerd.", "ok");
       } catch (error) {
         setMessage(friendlyApiMessage(error), "warn");
       }
+    }
+
+    function showTab(id) {
+      const next = tabs.includes(id) ? id : "overview";
+
+      state.activeTab = next;
+
+      document.querySelectorAll(".panel").forEach((panel) => panel.classList.add("hidden"));
+      document.querySelectorAll(".tab").forEach((tab) => tab.classList.remove("active"));
+
+      $(next).classList.remove("hidden");
+      document.querySelector(`[data-tab="${next}"]`)?.classList.add("active");
+
+      location.hash = next;
+      refresh(next);
     }
 
     function renderSoftError(tab, error) {
@@ -1976,7 +2868,7 @@
 
     async function refresh(tab = state.activeTab) {
       setMessage("");
-      $("liveLabel").textContent = `Last refresh ${new Date().toLocaleTimeString()}`;
+      $("liveLabel").textContent = `LONG-only virtual learning · ${new Date().toLocaleTimeString()}`;
 
       try {
         if (tab === "overview") return await renderOverview();
@@ -1989,21 +2881,6 @@
       } catch (error) {
         renderSoftError(tab, error);
       }
-    }
-
-    function showTab(id) {
-      if (!tabs.includes(id)) id = "overview";
-
-      state.activeTab = id;
-
-      document.querySelectorAll(".panel").forEach((panel) => panel.classList.add("hidden"));
-      document.querySelectorAll(".tab").forEach((tab) => tab.classList.remove("active"));
-
-      $(id).classList.remove("hidden");
-      document.querySelector(`[data-tab="${id}"]`)?.classList.add("active");
-
-      location.hash = id;
-      refresh(id);
     }
 
     document.querySelectorAll(".tab").forEach((button) => {
