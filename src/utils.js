@@ -4,8 +4,47 @@ import { createHash, randomUUID } from 'node:crypto';
 
 export const MS_PER_DAY = 86_400_000;
 
+const TARGET_TRADE_SIDE = 'LONG';
+const TARGET_DASHBOARD_SIDE = 'bull';
+const OPPOSITE_TRADE_SIDE = 'SHORT';
+
+const LONG_NAMESPACE = 'LONG';
+const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
+const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
+
 const TRUE_VALUES = new Set(['true', '1', 'yes', 'y', 'on']);
 const FALSE_VALUES = new Set(['false', '0', 'no', 'n', 'off']);
+
+const LONG_TOKENS = new Set([
+  'LONG',
+  'BULL',
+  'BULLISH',
+  'BUY',
+  'BID',
+  'UP',
+  'UPSIDE',
+  'GREEN'
+]);
+
+const SHORT_TOKENS = new Set([
+  'SHORT',
+  'BEAR',
+  'BEARISH',
+  'SELL',
+  'ASK',
+  'DOWN',
+  'DOWNSIDE',
+  'RED'
+]);
+
+const QUOTE_SUFFIXES = [
+  'USDT',
+  'USDC',
+  'BUSD',
+  'FDUSD',
+  'TUSD',
+  'USD'
+];
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -13,26 +52,32 @@ export const safeNumber = (value, fallback = 0) => {
   if (value === undefined || value === null || value === '') return fallback;
 
   const n = Number(value);
+
   return Number.isFinite(n) ? n : fallback;
 };
 
 export const clamp = (value, min, max) => {
-  const n = safeNumber(value, min);
   const lo = safeNumber(min, 0);
   const hi = safeNumber(max, lo);
+  const n = safeNumber(value, lo);
+
+  if (hi < lo) return lo;
 
   return Math.max(lo, Math.min(hi, n));
 };
 
 export const round = (value, decimals = 4) => {
   const n = safeNumber(value, 0);
-  const factor = 10 ** Math.max(0, Number(decimals) || 0);
+  const d = Math.max(0, Math.floor(Number(decimals) || 0));
+  const factor = 10 ** d;
 
   return Math.round(n * factor) / factor;
 };
 
 export const pct = (value, decimals = 1) => {
-  return `${(safeNumber(value) * 100).toFixed(decimals)}%`;
+  const d = Math.max(0, Math.floor(Number(decimals) || 1));
+
+  return `${(safeNumber(value) * 100).toFixed(d)}%`;
 };
 
 export const envBool = (value, fallback = false) => {
@@ -46,70 +91,170 @@ export const envBool = (value, fallback = false) => {
   return fallback;
 };
 
-export const normalizeTradeSide = (side) => {
-  const s = String(side || '')
-    .trim()
-    .toUpperCase();
+function upper(value, fallback = '') {
+  const text = String(value ?? '').trim();
 
-  if (['LONG', 'BULL', 'BUY', 'BULLISH'].includes(s)) return 'LONG';
-  if (['SHORT', 'BEAR', 'SELL', 'BEARISH'].includes(s)) return 'SHORT';
+  return text ? text.toUpperCase() : fallback;
+}
+
+function cleanSideText(value = '') {
+  return upper(value)
+    .replaceAll('SHORT_DISABLED', '')
+    .replaceAll('SHORTDISABLED', '')
+    .replaceAll('BLOCK_SHORT', '')
+    .replaceAll('SHORT_ENABLED_FALSE', '')
+    .replaceAll('SHORT_ONLY_FALSE', '')
+    .replaceAll('LONG_DISABLED_FALSE', '')
+    .replaceAll('LONG_ONLY_MODE', 'LONG')
+    .replaceAll('LONG_ONLY', 'LONG')
+    .replaceAll('LONG-ONLY', 'LONG');
+}
+
+function normalizeTokenText(value) {
+  return cleanSideText(value)
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function tokenHit(normalized, token) {
+  return (
+    normalized === token ||
+    normalized.startsWith(`${token}_`) ||
+    normalized.endsWith(`_${token}`) ||
+    normalized.includes(`_${token}_`)
+  );
+}
+
+function hasLongSignal(value) {
+  const normalized = normalizeTokenText(value);
+
+  if (!normalized) return false;
+
+  for (const token of LONG_TOKENS) {
+    if (tokenHit(normalized, token)) return true;
+  }
+
+  return (
+    normalized.includes('MICRO_LONG_') ||
+    normalized.includes('TRADESIDE_LONG') ||
+    normalized.includes('TRADE_SIDE_LONG') ||
+    normalized.includes('SIDE_LONG') ||
+    normalized.includes('SIDE_BULL') ||
+    normalized.includes('DIRECTION_LONG') ||
+    normalized.includes('DIRECTION_BULL') ||
+    normalized.includes('POSITION_SIDE_LONG') ||
+    normalized.includes('POSITIONSIDE_LONG')
+  );
+}
+
+function hasShortSignal(value) {
+  const normalized = normalizeTokenText(value);
+
+  if (!normalized) return false;
+
+  for (const token of SHORT_TOKENS) {
+    if (tokenHit(normalized, token)) return true;
+  }
+
+  return (
+    normalized.includes('MICRO_SHORT_') ||
+    normalized.includes('TRADESIDE_SHORT') ||
+    normalized.includes('TRADE_SIDE_SHORT') ||
+    normalized.includes('SIDE_SHORT') ||
+    normalized.includes('SIDE_BEAR') ||
+    normalized.includes('DIRECTION_SHORT') ||
+    normalized.includes('DIRECTION_BEAR') ||
+    normalized.includes('POSITION_SIDE_SHORT') ||
+    normalized.includes('POSITIONSIDE_SHORT')
+  );
+}
+
+export const normalizeTradeSide = (side) => {
+  const raw = cleanSideText(side);
+
+  if (!raw) return 'UNKNOWN';
+
+  if (LONG_TOKENS.has(raw)) return TARGET_TRADE_SIDE;
+  if (SHORT_TOKENS.has(raw)) return OPPOSITE_TRADE_SIDE;
+
+  const longHit = hasLongSignal(raw);
+  const shortHit = hasShortSignal(raw);
+
+  if (longHit && !shortHit) return TARGET_TRADE_SIDE;
+  if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
+
+  if (longHit && shortHit) {
+    const normalized = normalizeTokenText(raw);
+
+    if (
+      normalized.includes('MICRO_LONG_') ||
+      normalized.includes('TRADESIDE_LONG') ||
+      normalized.includes('TRADE_SIDE_LONG') ||
+      normalized.includes('POSITION_SIDE_LONG') ||
+      normalized.includes('POSITIONSIDE_LONG') ||
+      normalized.includes('SIDE_LONG') ||
+      normalized.includes('SIDE_BULL') ||
+      normalized.includes('DIRECTION_LONG') ||
+      normalized.includes('DIRECTION_BULL') ||
+      normalized.includes('SIDE_BUY') ||
+      normalized.includes('DIRECTION_BUY')
+    ) {
+      return TARGET_TRADE_SIDE;
+    }
+
+    if (
+      normalized.includes('MICRO_SHORT_') ||
+      normalized.includes('TRADESIDE_SHORT') ||
+      normalized.includes('TRADE_SIDE_SHORT') ||
+      normalized.includes('POSITION_SIDE_SHORT') ||
+      normalized.includes('POSITIONSIDE_SHORT') ||
+      normalized.includes('SIDE_SHORT') ||
+      normalized.includes('SIDE_BEAR') ||
+      normalized.includes('DIRECTION_SHORT') ||
+      normalized.includes('DIRECTION_BEAR') ||
+      normalized.includes('SIDE_SELL') ||
+      normalized.includes('DIRECTION_SELL')
+    ) {
+      return OPPOSITE_TRADE_SIDE;
+    }
+  }
+
+  if (longHit) return TARGET_TRADE_SIDE;
+  if (shortHit) return OPPOSITE_TRADE_SIDE;
 
   return 'UNKNOWN';
 };
 
-function parseAllowedTradeSides(value) {
-  const raw = String(value || 'LONG')
-    .split(/[\s,|;]+/g)
-    .map((part) => normalizeTradeSide(part))
-    .filter((side) => side === 'LONG' || side === 'SHORT');
-
-  const unique = [...new Set(raw)];
-
-  return unique.length ? unique : ['LONG'];
+function parseAllowedTradeSides() {
+  return [TARGET_TRADE_SIDE];
 }
 
-export const LONG_ONLY_MODE = envBool(process.env.SHORT_ENABLED, false) === false &&
-  !parseAllowedTradeSides(process.env.ALLOWED_TRADE_SIDES).includes('SHORT');
+export const LONG_ONLY_MODE = true;
 
-export const DEFAULT_ALLOWED_TRADE_SIDES = parseAllowedTradeSides(
-  process.env.ALLOWED_TRADE_SIDES ||
-  process.env.TRADE_ALLOWED_TRADE_SIDES ||
-  process.env.SCANNER_ALLOWED_TRADE_SIDES ||
-  process.env.ANALYZE_ALLOWED_TRADE_SIDES ||
-  process.env.ROTATION_ALLOWED_TRADE_SIDES ||
-  'LONG'
-);
+// Backward-compatible export for older modules.
+// In de LONG-root is SHORT-only expliciet uit.
+export const SHORT_ONLY_MODE = false;
+
+export const DEFAULT_ALLOWED_TRADE_SIDES = parseAllowedTradeSides();
 
 export function getAllowedTradeSides() {
-  const longEnabled = envBool(process.env.LONG_ENABLED, true);
-  const shortEnabled = envBool(process.env.SHORT_ENABLED, false);
-
-  const sides = DEFAULT_ALLOWED_TRADE_SIDES.filter((side) => {
-    if (side === 'LONG') return longEnabled;
-    if (side === 'SHORT') return shortEnabled;
-
-    return false;
-  });
-
-  return sides.length ? sides : ['LONG'];
+  return [TARGET_TRADE_SIDE];
 }
 
 export function isAllowedTradeSide(side) {
-  const tradeSide = normalizeTradeSide(side);
-
-  if (tradeSide === 'UNKNOWN') return false;
-
-  return getAllowedTradeSides().includes(tradeSide);
+  return normalizeTradeSide(side) === TARGET_TRADE_SIDE;
 }
 
 export function shouldBlockTradeSide(side) {
-  return !isAllowedTradeSide(side);
+  return normalizeTradeSide(side) !== TARGET_TRADE_SIDE;
 }
 
 export function isLongOnlyRuntime() {
-  const allowed = getAllowedTradeSides();
+  return true;
+}
 
-  return allowed.length === 1 && allowed[0] === 'LONG';
+export function isShortOnlyRuntime() {
+  return false;
 }
 
 export function filterAllowedTradeSides(rows = [], sideGetter = (row) => row?.tradeSide || row?.side) {
@@ -121,10 +266,90 @@ export function filterAllowedTradeSides(rows = [], sideGetter = (row) => row?.tr
 export function rejectShortSide(side, fallback = 'UNKNOWN') {
   const tradeSide = normalizeTradeSide(side);
 
-  if (tradeSide === 'SHORT') return fallback;
-  if (tradeSide === 'LONG') return 'LONG';
+  if (tradeSide === TARGET_TRADE_SIDE) return TARGET_TRADE_SIDE;
 
   return fallback;
+}
+
+// Backward-compatible alias voor oudere imports.
+// In deze root betekent dit: non-LONG blokkeren.
+export function rejectLongSide(side, fallback = 'UNKNOWN') {
+  return rejectShortSide(side, fallback);
+}
+
+export function rootModeFlags() {
+  return {
+    namespace: LONG_NAMESPACE,
+    redisNamespace: LONG_NAMESPACE,
+    keyPrefix: LONG_KEY_PREFIX,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    persistentLearningKey: PERSISTENT_LEARNING_KEY,
+
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    scannerSide: TARGET_DASHBOARD_SIDE,
+    targetScannerSide: TARGET_DASHBOARD_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+    side: TARGET_DASHBOARD_SIDE,
+    tradeSide: TARGET_TRADE_SIDE,
+    positionSide: TARGET_TRADE_SIDE,
+    direction: TARGET_TRADE_SIDE,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    virtualOnly: true,
+    virtualLearning: true,
+    source: 'VIRTUAL',
+    outcomeSource: 'VIRTUAL',
+
+    noRealOrders: true,
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true,
+
+    noGlobalMaxOpenPositionsBlock: true,
+    oneOpenPositionPerSymbol: true,
+
+    manualDiscordSelectionExactTrueMicroOnly: true,
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+
+    completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
+    scoringRSource: 'netR',
+    winrateDefinition: 'netR > 0',
+    avgRSource: 'netR',
+    totalRSource: 'netR',
+    avgCostRShown: true,
+
+    defaultRanking: 'dashboardBalancedScore',
+    defaultRankingNeverBareWinrate: true,
+
+    learningStatusRules: {
+      observing: 'completed = 0',
+      earlyOutcomes: 'completed > 0 && completed < 20',
+      activeLearning: 'completed >= 20'
+    },
+
+    noResetCron: true,
+    noActivateCron: true,
+    noFreezeCron: true,
+    manualSelectionPreserved: true,
+
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    validLongRiskShape: {
+      entryGtZero: true,
+      slBelowEntry: true,
+      tpAboveEntry: true
+    },
+    longExitPriority: ['TP', 'SL', 'TIME_STOP'],
+
+    shortRootTouched: false
+  };
 }
 
 function cleanSymbolInput(raw) {
@@ -146,25 +371,27 @@ function removeSeparators(symbol) {
   return String(symbol || '').replace(/[_-]/g, '');
 }
 
-export function normalizeBaseSymbol(raw) {
-  let symbol = cleanSymbolInput(raw);
-  symbol = stripBitgetProductSuffix(symbol);
-  symbol = removeSeparators(symbol);
+function stripKnownQuote(symbol) {
+  const value = String(symbol || '');
 
-  const quoteSuffixes = [
-    'USDT',
-    'USDC',
-    'BUSD',
-    'USD'
-  ];
-
-  for (const suffix of quoteSuffixes) {
-    if (symbol.endsWith(suffix) && symbol.length > suffix.length) {
-      return symbol.slice(0, -suffix.length);
+  for (const suffix of QUOTE_SUFFIXES) {
+    if (value.endsWith(suffix) && value.length > suffix.length) {
+      return value.slice(0, -suffix.length);
     }
   }
 
-  return symbol;
+  return value;
+}
+
+export function normalizeBaseSymbol(raw) {
+  let symbol = cleanSymbolInput(raw);
+
+  if (!symbol) return '';
+
+  symbol = stripBitgetProductSuffix(symbol);
+  symbol = removeSeparators(symbol);
+
+  return stripKnownQuote(symbol);
 }
 
 export function normalizeContractSymbol(raw) {
@@ -175,13 +402,12 @@ export function normalizeContractSymbol(raw) {
   symbol = stripBitgetProductSuffix(symbol);
   symbol = removeSeparators(symbol);
 
-  if (
-    symbol.endsWith('USDT') ||
-    symbol.endsWith('USDC') ||
-    symbol.endsWith('BUSD') ||
-    symbol.endsWith('USD')
-  ) {
-    return symbol;
+  for (const suffix of QUOTE_SUFFIXES) {
+    if (symbol.endsWith(suffix) && symbol.length > suffix.length) {
+      return suffix === 'USDT'
+        ? symbol
+        : `${stripKnownQuote(symbol)}USDT`;
+    }
   }
 
   return `${symbol}USDT`;
@@ -245,7 +471,8 @@ export function getPreviousIsoWeekKey(ts = Date.now()) {
 }
 
 export function stableHash(value, length = 8) {
-  const safeLength = Math.max(4, Math.min(64, Number(length) || 8));
+  const safeLength = Math.max(4, Math.min(64, Math.floor(Number(length) || 8)));
+
   const text = typeof value === 'string'
     ? value
     : JSON.stringify(value ?? null);
@@ -270,53 +497,50 @@ export function sideToTradeSide(side) {
 }
 
 export function tradeSideToDirection(side) {
-  const s = normalizeTradeSide(side);
+  const tradeSide = normalizeTradeSide(side);
 
-  if (s === 'LONG') return 'bull';
-  if (s === 'SHORT') return 'bear';
+  if (tradeSide === TARGET_TRADE_SIDE) return TARGET_DASHBOARD_SIDE;
+  if (tradeSide === OPPOSITE_TRADE_SIDE) return 'bear';
 
   return 'neutral';
 }
 
 export function isLongSide(side) {
-  return sideToTradeSide(side) === 'LONG';
+  return normalizeTradeSide(side) === TARGET_TRADE_SIDE;
 }
 
 export function isShortSide(side) {
-  if (!envBool(process.env.SHORT_ENABLED, false)) return false;
-
-  return sideToTradeSide(side) === 'SHORT';
+  return normalizeTradeSide(side) === OPPOSITE_TRADE_SIDE;
 }
 
 export function isTradeSide(side) {
-  const tradeSide = sideToTradeSide(side);
+  const tradeSide = normalizeTradeSide(side);
 
-  return tradeSide === 'LONG' || tradeSide === 'SHORT';
+  return tradeSide === TARGET_TRADE_SIDE || tradeSide === OPPOSITE_TRADE_SIDE;
 }
 
 export function isLongAllowed() {
-  return isAllowedTradeSide('LONG');
+  return true;
 }
 
 export function isShortAllowed() {
-  return isAllowedTradeSide('SHORT');
+  return false;
 }
 
 export function getObRelation(side, obBias) {
-  const tradeSide = sideToTradeSide(side);
-  const ob = String(obBias || 'NEUTRAL').toUpperCase();
+  const tradeSide = normalizeTradeSide(side);
+  const ob = upper(obBias, 'NEUTRAL');
 
-  if (shouldBlockTradeSide(tradeSide)) return 'BLOCKED';
+  if (tradeSide !== TARGET_TRADE_SIDE) return 'BLOCKED';
   if (!['BULLISH', 'BEARISH'].includes(ob)) return 'NEUTRAL';
 
-  if (tradeSide === 'LONG' && ob === 'BULLISH') return 'WITH';
-  if (tradeSide === 'SHORT' && ob === 'BEARISH') return 'WITH';
-
-  return 'AGAINST';
+  return ob === 'BULLISH' ? 'WITH' : 'AGAINST';
 }
 
 function bucketClean(value, decimals = 0) {
-  return String(value.toFixed(decimals))
+  const d = Math.max(0, Math.floor(Number(decimals) || 0));
+
+  return String(Number(value).toFixed(d))
     .replace('-', 'M')
     .replace('.', 'P');
 }
@@ -324,68 +548,56 @@ function bucketClean(value, decimals = 0) {
 export function bucketStep(value, step, prefix, decimals = 0) {
   const n = Number(value);
   const s = Number(step);
+  const p = String(prefix || 'BUCKET').toUpperCase();
 
-  if (!Number.isFinite(n)) return `${prefix}_NA`;
-  if (!Number.isFinite(s) || s <= 0) return `${prefix}_NA`;
+  if (!Number.isFinite(n)) return `${p}_NA`;
+  if (!Number.isFinite(s) || s <= 0) return `${p}_NA`;
 
   const lower = Math.floor(n / s) * s;
-  const upper = lower + s;
+  const upperBound = lower + s;
 
-  return `${prefix}_${bucketClean(lower, decimals)}_${bucketClean(upper, decimals)}`.toUpperCase();
+  return `${p}_${bucketClean(lower, decimals)}_${bucketClean(upperBound, decimals)}`.toUpperCase();
 }
 
 export function bucketScore(value, prefix = 'SCORE') {
   const n = safeNumber(value, NaN);
+  const p = String(prefix || 'SCORE').toUpperCase();
 
-  if (!Number.isFinite(n)) return `${prefix}_NA`;
-  if (n < 40) return `${prefix}_LT_40`;
-  if (n < 55) return `${prefix}_40_55`;
-  if (n < 70) return `${prefix}_55_70`;
-  if (n < 80) return `${prefix}_70_80`;
-  if (n < 90) return `${prefix}_80_90`;
+  if (!Number.isFinite(n)) return `${p}_NA`;
+  if (n < 40) return `${p}_LOW`;
+  if (n < 70) return `${p}_MID`;
 
-  return `${prefix}_GT_90`;
+  return `${p}_HIGH`;
 }
 
 export function bucketSpread(spreadPct) {
   const bps = safeNumber(spreadPct, NaN) * 10_000;
 
   if (!Number.isFinite(bps)) return 'SPREAD_NA';
-  if (bps < 4) return 'SPREAD_LT_4BPS';
-  if (bps < 8) return 'SPREAD_4_8BPS';
-  if (bps < 12) return 'SPREAD_8_12BPS';
-  if (bps < 20) return 'SPREAD_12_20BPS';
-  if (bps < 35) return 'SPREAD_20_35BPS';
+  if (bps < 6) return 'SPREAD_LOW';
+  if (bps < 15) return 'SPREAD_MID';
 
-  return 'SPREAD_GT_35BPS';
+  return 'SPREAD_HIGH';
 }
 
 export function bucketDepth(depthUsd) {
   const d = safeNumber(depthUsd, NaN);
 
   if (!Number.isFinite(d) || d <= 0) return 'DEPTH_NA';
-  if (d < 10_000) return 'DEPTH_LT_10K';
-  if (d < 50_000) return 'DEPTH_10K_50K';
-  if (d < 100_000) return 'DEPTH_50K_100K';
-  if (d < 250_000) return 'DEPTH_100K_250K';
-  if (d < 500_000) return 'DEPTH_250K_500K';
+  if (d < 100_000) return 'DEPTH_LOW';
+  if (d < 500_000) return 'DEPTH_MID';
 
-  return 'DEPTH_GT_500K';
+  return 'DEPTH_HIGH';
 }
 
 export function bucketFunding(rate) {
   const r = safeNumber(rate, NaN);
 
   if (!Number.isFinite(r)) return 'FUNDING_NA';
-
-  if (r <= -0.0015) return 'FUNDING_NEG_EXTREME';
-  if (r <= -0.0006) return 'FUNDING_NEG_HIGH';
   if (r < -0.0001) return 'FUNDING_NEG';
-  if (r <= 0.0001) return 'FUNDING_NEUTRAL';
-  if (r < 0.0006) return 'FUNDING_POS';
-  if (r < 0.0015) return 'FUNDING_POS_HIGH';
+  if (r > 0.0001) return 'FUNDING_POS';
 
-  return 'FUNDING_POS_EXTREME';
+  return 'FUNDING_NEUTRAL';
 }
 
 export function classifyBtcState({ change24 = 0, change1h = 0 } = {}) {
@@ -407,6 +619,8 @@ export async function mapConcurrent(items, concurrency, mapper) {
   if (typeof mapper !== 'function') {
     throw new Error('MAP_CONCURRENT_MAPPER_MUST_BE_FUNCTION');
   }
+
+  if (!rows.length) return [];
 
   const out = new Array(rows.length);
   let cursor = 0;
