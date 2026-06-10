@@ -15,19 +15,9 @@ import {
   sideToTradeSide
 } from '../utils.js';
 
-const TARGET_TRADE_SIDE = 'SHORT';
-const TARGET_DASHBOARD_SIDE = 'bear';
-
-const SHORT_TOKENS = new Set([
-  'SHORT',
-  'BEAR',
-  'BEARISH',
-  'SELL',
-  'ASK',
-  'DOWN',
-  'DOWNSIDE',
-  'RED'
-]);
+const TARGET_TRADE_SIDE = 'LONG';
+const TARGET_DASHBOARD_SIDE = 'bull';
+const OPPOSITE_TRADE_SIDE = 'SHORT';
 
 const LONG_TOKENS = new Set([
   'LONG',
@@ -38,6 +28,17 @@ const LONG_TOKENS = new Set([
   'UP',
   'UPSIDE',
   'GREEN'
+]);
+
+const SHORT_TOKENS = new Set([
+  'SHORT',
+  'BEAR',
+  'BEARISH',
+  'SELL',
+  'ASK',
+  'DOWN',
+  'DOWNSIDE',
+  'RED'
 ]);
 
 function now() {
@@ -55,7 +56,9 @@ function tradeConfig() {
     fallbackRiskPct: safeNumber(CONFIG.trade?.fallbackRiskPct, 0.005),
 
     atrRiskMult: safeNumber(CONFIG.trade?.atrRiskMult, 1.2),
-    spreadRiskMult: safeNumber(CONFIG.trade?.spreadRiskMult, 5)
+    spreadRiskMult: safeNumber(CONFIG.trade?.spreadRiskMult, 5),
+
+    positionTimeStopMin: safeNumber(CONFIG.trade?.positionTimeStopMin, 720)
   };
 }
 
@@ -108,74 +111,205 @@ function upper(value, fallback = 'UNKNOWN') {
     : fallback;
 }
 
+function cleanSideText(value = '') {
+  return upper(value, '')
+    .replaceAll('SHORT_DISABLED', '')
+    .replaceAll('SHORTDISABLED', '')
+    .replaceAll('BLOCK_SHORT', '')
+    .replaceAll('SHORT_ENABLED_FALSE', '')
+    .replaceAll('SHORT_ONLY_FALSE', '')
+    .replaceAll('LONG_DISABLED_FALSE', '')
+    .replaceAll('LONG_ONLY_MODE', 'LONG')
+    .replaceAll('LONG_ONLY', 'LONG')
+    .replaceAll('LONG-ONLY', 'LONG');
+}
+
 function normalizeTradeSideValue(value) {
-  const direct = sideToTradeSide(value);
-
-  if (direct === 'SHORT') return 'SHORT';
-  if (direct === 'LONG') return 'LONG';
-
-  const raw = upper(value, '');
+  const raw = cleanSideText(value);
 
   if (!raw) return 'UNKNOWN';
-  if (SHORT_TOKENS.has(raw)) return 'SHORT';
-  if (LONG_TOKENS.has(raw)) return 'LONG';
+
+  const direct = sideToTradeSide(raw);
+
+  if (direct === TARGET_TRADE_SIDE) return TARGET_TRADE_SIDE;
+  if (direct === OPPOSITE_TRADE_SIDE) return OPPOSITE_TRADE_SIDE;
+
+  if (LONG_TOKENS.has(raw)) return TARGET_TRADE_SIDE;
+  if (SHORT_TOKENS.has(raw)) return OPPOSITE_TRADE_SIDE;
+
+  const normalized = raw
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  const longHit =
+    normalized === 'LONG' ||
+    normalized === 'BULL' ||
+    normalized === 'BUY' ||
+    normalized.includes('MICRO_LONG_') ||
+    normalized.includes('TRADESIDE_LONG') ||
+    normalized.includes('TRADE_SIDE_LONG') ||
+    normalized.includes('POSITION_SIDE_LONG') ||
+    normalized.includes('POSITIONSIDE_LONG') ||
+    normalized.includes('SIDE_LONG') ||
+    normalized.includes('SIDE_BULL') ||
+    normalized.includes('DIRECTION_LONG') ||
+    normalized.includes('DIRECTION_BULL') ||
+    normalized.includes('SIDE_BUY') ||
+    normalized.includes('DIRECTION_BUY') ||
+    normalized.startsWith('LONG_') ||
+    normalized.includes('_LONG_') ||
+    normalized.endsWith('_LONG') ||
+    normalized.startsWith('BULL_') ||
+    normalized.includes('_BULL_') ||
+    normalized.endsWith('_BULL') ||
+    normalized.startsWith('BUY_') ||
+    normalized.includes('_BUY_') ||
+    normalized.endsWith('_BUY');
+
+  const shortHit =
+    normalized === 'SHORT' ||
+    normalized === 'BEAR' ||
+    normalized === 'SELL' ||
+    normalized.includes('MICRO_SHORT_') ||
+    normalized.includes('TRADESIDE_SHORT') ||
+    normalized.includes('TRADE_SIDE_SHORT') ||
+    normalized.includes('POSITION_SIDE_SHORT') ||
+    normalized.includes('POSITIONSIDE_SHORT') ||
+    normalized.includes('SIDE_SHORT') ||
+    normalized.includes('SIDE_BEAR') ||
+    normalized.includes('DIRECTION_SHORT') ||
+    normalized.includes('DIRECTION_BEAR') ||
+    normalized.includes('SIDE_SELL') ||
+    normalized.includes('DIRECTION_SELL') ||
+    normalized.startsWith('SHORT_') ||
+    normalized.includes('_SHORT_') ||
+    normalized.endsWith('_SHORT') ||
+    normalized.startsWith('BEAR_') ||
+    normalized.includes('_BEAR_') ||
+    normalized.endsWith('_BEAR') ||
+    normalized.startsWith('SELL_') ||
+    normalized.includes('_SELL_') ||
+    normalized.endsWith('_SELL');
+
+  if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
+  if (longHit && !shortHit) return TARGET_TRADE_SIDE;
+
+  if (longHit && shortHit) {
+    if (normalized.includes('TRADE_SIDE_LONG') || normalized.includes('TRADESIDE_LONG')) {
+      return TARGET_TRADE_SIDE;
+    }
+
+    if (normalized.includes('TRADE_SIDE_SHORT') || normalized.includes('TRADESIDE_SHORT')) {
+      return OPPOSITE_TRADE_SIDE;
+    }
+
+    if (normalized.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
+    if (normalized.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
+  }
+
+  if (longHit) return TARGET_TRADE_SIDE;
+  if (shortHit) return OPPOSITE_TRADE_SIDE;
 
   return 'UNKNOWN';
 }
 
-function idLooksLikeShort(value = '') {
-  const raw = String(value || '').toUpperCase();
-
-  return (
-    raw.includes('MICRO_SHORT_') ||
-    raw.includes('TRADESIDE=SHORT') ||
-    raw.includes('TRADE_SIDE=SHORT') ||
-    raw.includes('SIDE=SHORT') ||
-    raw.includes('SIDE=BEAR') ||
-    raw.includes('DIRECTION=SHORT') ||
-    raw.includes('DIRECTION=BEAR') ||
-    raw.includes('SHORT') ||
-    raw.includes('BEAR') ||
-    raw.includes('SELL')
-  );
-}
-
 function idLooksLikeLong(value = '') {
-  const raw = String(value || '').toUpperCase();
+  const raw = cleanSideText(value);
+
+  if (!raw) return false;
 
   return (
     raw.includes('MICRO_LONG_') ||
     raw.includes('TRADESIDE=LONG') ||
     raw.includes('TRADE_SIDE=LONG') ||
+    raw.includes('POSITION_SIDE=LONG') ||
+    raw.includes('POSITIONSIDE=LONG') ||
     raw.includes('SIDE=LONG') ||
     raw.includes('SIDE=BULL') ||
     raw.includes('DIRECTION=LONG') ||
     raw.includes('DIRECTION=BULL') ||
-    raw.includes('LONG') ||
-    raw.includes('BULL') ||
-    raw.includes('BUY')
+    raw.includes('SIDE=BUY') ||
+    raw.includes('DIRECTION=BUY') ||
+    raw.startsWith('LONG_') ||
+    raw.includes('_LONG_') ||
+    raw.endsWith('_LONG') ||
+    raw.startsWith('BULL_') ||
+    raw.includes('_BULL_') ||
+    raw.endsWith('_BULL') ||
+    raw.startsWith('BUY_') ||
+    raw.includes('_BUY_') ||
+    raw.endsWith('_BUY')
+  );
+}
+
+function idLooksLikeShort(value = '') {
+  const raw = cleanSideText(value);
+
+  if (!raw) return false;
+
+  return (
+    raw.includes('MICRO_SHORT_') ||
+    raw.includes('TRADESIDE=SHORT') ||
+    raw.includes('TRADE_SIDE=SHORT') ||
+    raw.includes('POSITION_SIDE=SHORT') ||
+    raw.includes('POSITIONSIDE=SHORT') ||
+    raw.includes('SIDE=SHORT') ||
+    raw.includes('SIDE=BEAR') ||
+    raw.includes('DIRECTION=SHORT') ||
+    raw.includes('DIRECTION=BEAR') ||
+    raw.includes('SIDE=SELL') ||
+    raw.includes('DIRECTION=SELL') ||
+    raw.startsWith('SHORT_') ||
+    raw.includes('_SHORT_') ||
+    raw.endsWith('_SHORT') ||
+    raw.startsWith('BEAR_') ||
+    raw.includes('_BEAR_') ||
+    raw.endsWith('_BEAR') ||
+    raw.startsWith('SELL_') ||
+    raw.includes('_SELL_') ||
+    raw.endsWith('_SELL')
   );
 }
 
 function inferTradeSideFromIds(row = {}) {
   const haystack = [
     row.familyId,
+    row.family,
+    row.baseFamilyId,
+
     row.microFamilyId,
     row.trueMicroFamilyId,
+    row.liveMicroFamilyId,
+    row.realMicroFamilyId,
+    row.executionMicroFamilyId,
+
     row.macroFamilyId,
     row.parentMacroFamilyId,
     row.parentMicroFamilyId,
+    row.parentFamilyId,
+    row.macroId,
+
     row.id,
     row.key
   ]
-    .map((value) => String(value || '').toUpperCase())
+    .map((value) => cleanSideText(value))
     .filter(Boolean)
     .join('|');
 
   if (!haystack) return 'UNKNOWN';
 
-  if (idLooksLikeLong(haystack)) return 'LONG';
-  if (idLooksLikeShort(haystack)) return 'SHORT';
+  const longHit = idLooksLikeLong(haystack);
+  const shortHit = idLooksLikeShort(haystack);
+
+  if (longHit && !shortHit) return TARGET_TRADE_SIDE;
+  if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
+
+  if (longHit && shortHit) {
+    if (haystack.includes('TRADESIDE=LONG') || haystack.includes('TRADE_SIDE=LONG')) return TARGET_TRADE_SIDE;
+    if (haystack.includes('TRADESIDE=SHORT') || haystack.includes('TRADE_SIDE=SHORT')) return OPPOSITE_TRADE_SIDE;
+    if (haystack.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
+    if (haystack.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
+  }
 
   return 'UNKNOWN';
 }
@@ -186,12 +320,14 @@ function inferTradeSideFromDefinition(row = {}) {
     row.microDefinition,
     row.macroDefinition,
     row.parentDefinition,
+
     ...(Array.isArray(row.definitionParts) ? row.definitionParts : []),
     ...(Array.isArray(row.microDefinitionParts) ? row.microDefinitionParts : []),
     ...(Array.isArray(row.macroDefinitionParts) ? row.macroDefinitionParts : []),
-    ...(Array.isArray(row.parentDefinitionParts) ? row.parentDefinitionParts : [])
+    ...(Array.isArray(row.parentDefinitionParts) ? row.parentDefinitionParts : []),
+    ...(Array.isArray(row.executionFingerprintParts) ? row.executionFingerprintParts : [])
   ]
-    .map((value) => String(value || '').toUpperCase())
+    .map((value) => cleanSideText(value))
     .filter(Boolean)
     .join('|');
 
@@ -200,6 +336,8 @@ function inferTradeSideFromDefinition(row = {}) {
   if (
     haystack.includes('TRADESIDE=LONG') ||
     haystack.includes('TRADE_SIDE=LONG') ||
+    haystack.includes('POSITION_SIDE=LONG') ||
+    haystack.includes('POSITIONSIDE=LONG') ||
     haystack.includes('SIDE=LONG') ||
     haystack.includes('SIDE=BULL') ||
     haystack.includes('DIRECTION=LONG') ||
@@ -207,12 +345,14 @@ function inferTradeSideFromDefinition(row = {}) {
     haystack.includes('SIDE=BUY') ||
     haystack.includes('DIRECTION=BUY')
   ) {
-    return 'LONG';
+    return TARGET_TRADE_SIDE;
   }
 
   if (
     haystack.includes('TRADESIDE=SHORT') ||
     haystack.includes('TRADE_SIDE=SHORT') ||
+    haystack.includes('POSITION_SIDE=SHORT') ||
+    haystack.includes('POSITIONSIDE=SHORT') ||
     haystack.includes('SIDE=SHORT') ||
     haystack.includes('SIDE=BEAR') ||
     haystack.includes('DIRECTION=SHORT') ||
@@ -220,29 +360,28 @@ function inferTradeSideFromDefinition(row = {}) {
     haystack.includes('SIDE=SELL') ||
     haystack.includes('DIRECTION=SELL')
   ) {
-    return 'SHORT';
+    return OPPOSITE_TRADE_SIDE;
   }
 
-  if (idLooksLikeLong(haystack)) return 'LONG';
-  if (idLooksLikeShort(haystack)) return 'SHORT';
+  if (idLooksLikeLong(haystack)) return TARGET_TRADE_SIDE;
+  if (idLooksLikeShort(haystack)) return OPPOSITE_TRADE_SIDE;
 
   return 'UNKNOWN';
 }
 
 function inferTradeSideFromReason(row = {}) {
-  const reason = upper(
+  const reason = cleanSideText(
     row.scannerReason ||
     row.reason ||
     row.signalReason ||
     row.actionReason ||
-    '',
     ''
   );
 
   if (!reason) return 'UNKNOWN';
 
-  if (idLooksLikeLong(reason)) return 'LONG';
-  if (idLooksLikeShort(reason)) return 'SHORT';
+  if (idLooksLikeLong(reason)) return TARGET_TRADE_SIDE;
+  if (idLooksLikeShort(reason)) return OPPOSITE_TRADE_SIDE;
 
   return 'UNKNOWN';
 }
@@ -258,6 +397,8 @@ function inferTradeSide(row = {}) {
     row.direction,
     row.signalSide,
     row.scannerSide,
+    row.actualScannerSide,
+    row.analysisSide,
     row.expectedSide,
     row.predictedSide,
     row.intentSide,
@@ -283,16 +424,20 @@ function inferTradeSide(row = {}) {
 
   if (fromReason !== 'UNKNOWN') return fromReason;
 
-  if (row.shortOnly === true || row.longDisabled === true) {
+  if (row.longOnly === true || row.shortDisabled === true) {
     return TARGET_TRADE_SIDE;
+  }
+
+  if (row.shortOnly === true || row.longDisabled === true) {
+    return OPPOSITE_TRADE_SIDE;
   }
 
   return 'UNKNOWN';
 }
 
-function hasExplicitLongSide(row = {}) {
+function hasExplicitShortSide(row = {}) {
   if (typeof row !== 'object' || row === null) {
-    return normalizeTradeSideValue(row) === 'LONG';
+    return normalizeTradeSideValue(row) === OPPOSITE_TRADE_SIDE;
   }
 
   const directCandidates = [
@@ -301,6 +446,8 @@ function hasExplicitLongSide(row = {}) {
     row.direction,
     row.signalSide,
     row.scannerSide,
+    row.actualScannerSide,
+    row.analysisSide,
     row.expectedSide,
     row.predictedSide,
     row.intentSide,
@@ -309,13 +456,13 @@ function hasExplicitLongSide(row = {}) {
   ];
 
   for (const value of directCandidates) {
-    if (normalizeTradeSideValue(value) === 'LONG') return true;
+    if (normalizeTradeSideValue(value) === OPPOSITE_TRADE_SIDE) return true;
   }
 
   return (
-    inferTradeSideFromIds(row) === 'LONG' ||
-    inferTradeSideFromDefinition(row) === 'LONG' ||
-    inferTradeSideFromReason(row) === 'LONG'
+    inferTradeSideFromIds(row) === OPPOSITE_TRADE_SIDE ||
+    inferTradeSideFromDefinition(row) === OPPOSITE_TRADE_SIDE ||
+    inferTradeSideFromReason(row) === OPPOSITE_TRADE_SIDE
   );
 }
 
@@ -325,23 +472,23 @@ function sideLabel(sideOrRow) {
     : normalizeTradeSideValue(sideOrRow);
 }
 
-function isShort(side) {
+function isLong(side) {
   return sideLabel(side) === TARGET_TRADE_SIDE;
 }
 
 function dashboardSideFromTradeSide(side) {
-  return isShort(side) ? TARGET_DASHBOARD_SIDE : 'unknown';
+  return isLong(side) ? TARGET_DASHBOARD_SIDE : 'unknown';
 }
 
 function withTradeSide(candidate = {}, side = TARGET_TRADE_SIDE) {
   const requestedTradeSide = normalizeTradeSideValue(side);
 
   if (requestedTradeSide !== TARGET_TRADE_SIDE) return null;
-  if (hasExplicitLongSide(candidate)) return null;
+  if (hasExplicitShortSide(candidate)) return null;
 
   const inferredSide = inferTradeSide(candidate);
 
-  if (inferredSide === 'LONG') return null;
+  if (inferredSide === OPPOSITE_TRADE_SIDE) return null;
 
   return {
     ...candidate,
@@ -354,11 +501,23 @@ function withTradeSide(candidate = {}, side = TARGET_TRADE_SIDE) {
     direction: TARGET_TRADE_SIDE,
 
     scannerSide: TARGET_TRADE_SIDE,
-    analysisSide: TARGET_TRADE_SIDE,
     actualScannerSide: TARGET_TRADE_SIDE,
+    analysisSide: TARGET_TRADE_SIDE,
 
-    shortOnly: true,
-    longDisabled: true
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    virtualOnly: true,
+    virtualLearning: true,
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true
   };
 }
 
@@ -368,11 +527,11 @@ function btcRelation(side, btcState) {
 
   if (btc === 'NEUTRAL' || btc === 'UNKNOWN') return 'BTC_NEUTRAL';
 
-  if (tradeSide === 'SHORT' && ['BEARISH', 'STRONG_BEAR'].includes(btc)) {
+  if (tradeSide === TARGET_TRADE_SIDE && ['BULLISH', 'STRONG_BULL'].includes(btc)) {
     return 'BTC_WITH';
   }
 
-  if (tradeSide === 'SHORT') return 'BTC_AGAINST';
+  if (tradeSide === TARGET_TRADE_SIDE) return 'BTC_AGAINST';
 
   return 'BTC_UNKNOWN';
 }
@@ -382,9 +541,9 @@ function directionalReward({
   tp,
   side
 } = {}) {
-  if (!isShort(side)) return 0;
+  if (!isLong(side)) return 0;
 
-  return entry - tp;
+  return tp - entry;
 }
 
 function directionalChange({
@@ -393,9 +552,9 @@ function directionalChange({
 } = {}) {
   const value = safeNumber(change, 0);
 
-  if (!isShort(side)) return 0;
+  if (!isLong(side)) return 0;
 
-  return -value;
+  return value;
 }
 
 function rsiBucket(value) {
@@ -435,14 +594,14 @@ function rsiAlignment({
   rsiHTF,
   rsiSlope
 } = {}) {
-  if (!isShort(side)) return 'RSI_UNKNOWN';
+  if (!isLong(side)) return 'RSI_UNKNOWN';
 
   const slope = safeNumber(rsiSlope, 0);
   const local = safeNumber(rsi, 50);
   const htf = safeNumber(rsiHTF, 50);
 
-  if (slope < -0.5 && htf <= 55 && local >= 28) return 'RSI_WITH';
-  if (slope > 0.5 || htf > 62 || local < 22) return 'RSI_AGAINST';
+  if (slope > 0.5 && htf >= 45 && local <= 72) return 'RSI_WITH';
+  if (slope < -0.5 || htf < 38 || local > 78) return 'RSI_AGAINST';
 
   return 'RSI_NEUTRAL';
 }
@@ -538,9 +697,9 @@ function fundingAlignment({
   const rate = safeNumber(fundingRate, 0);
 
   if (Math.abs(rate) < 0.00005) return 'FUNDING_NEUTRAL';
-  if (!isShort(side)) return 'FUNDING_UNKNOWN';
+  if (!isLong(side)) return 'FUNDING_UNKNOWN';
 
-  return rate > 0 ? 'FUNDING_WITH' : 'FUNDING_AGAINST';
+  return rate < 0 ? 'FUNDING_WITH' : 'FUNDING_AGAINST';
 }
 
 function obDepthValue(ob = {}) {
@@ -653,7 +812,7 @@ function directionalMoveScore({
   rsiHTF,
   rsiAlign
 } = {}) {
-  if (!isShort(side)) return -20;
+  if (!isLong(side)) return -20;
 
   const zone = upper(rsiZone, 'MID');
   const slope = safeNumber(rsiSlope, 0);
@@ -661,11 +820,11 @@ function directionalMoveScore({
 
   let score = 0;
 
-  if (zone.startsWith('UPPER')) score += 10;
+  if (zone.startsWith('LOWER')) score += 10;
   if (zone === 'MID') score += 5;
-  if (slope < 0) score += 5;
-  if (htf >= 32 && htf <= 55) score += 5;
-  if (htf < 26) score -= 6;
+  if (slope > 0) score += 5;
+  if (htf >= 45 && htf <= 68) score += 5;
+  if (htf > 74) score -= 6;
 
   if (rsiAlign === 'RSI_WITH') score += 4;
   if (rsiAlign === 'RSI_AGAINST') score -= 6;
@@ -798,24 +957,31 @@ function buildMicroSignalParts({
     `side=${TARGET_DASHBOARD_SIDE}`,
     `positionSide=${TARGET_TRADE_SIDE}`,
     `direction=${TARGET_TRADE_SIDE}`,
-    `shortOnly=true`,
-    `longDisabled=true`,
+    `longOnly=true`,
+    `shortDisabled=true`,
+
     `rsiZone=${rsiZone}`,
     `rsiBucket=${rsiLocalBucket}`,
     `rsiHTFBucket=${rsiHtfBucket}`,
     `rsiSlopeBucket=${rsiSlopeGroup}`,
     `rsiAlignment=${rsiAlign}`,
+
     `flow=${flow}`,
     `momentum=${momentum}`,
+
     `obRelation=${obRelation}`,
     `obImbalance=${obImbalanceGroup}`,
+
     `btcRelation=${btcRel}`,
     `regime=${upper(regime, 'UNKNOWN')}`,
+
     `atrBucket=${atrGroup}`,
     `spreadBucket=${spreadGroup}`,
     `depthBucket=${depthGroup}`,
+
     `fundingBucket=${fundingGroup}`,
     `fundingAlignment=${fundingAlign}`,
+
     `riskBucket=${riskGroup}`,
     `entryQuality=${entryQuality}`,
     `fakeBreakout=${Boolean(fakeBreakout)}`
@@ -849,6 +1015,42 @@ export function calculateRR({
     : 0;
 }
 
+export function isValidRiskGeometry(risk, side = TARGET_TRADE_SIDE) {
+  if (!risk) return false;
+
+  const cfg = tradeConfig();
+  const tradeSide = sideLabel(side || risk.side || risk.tradeSide);
+
+  if (tradeSide !== TARGET_TRADE_SIDE) return false;
+
+  const entry = safeNumber(risk.entry, 0);
+  const sl = safeNumber(risk.sl, 0);
+  const tp = safeNumber(risk.tp, 0);
+
+  if (entry <= 0 || sl <= 0 || tp <= 0) return false;
+  if (!(sl < entry && tp > entry)) return false;
+
+  const rr = calculateRR({
+    entry,
+    sl,
+    tp,
+    side: TARGET_TRADE_SIDE
+  });
+
+  if (rr < cfg.minRR) return false;
+
+  const riskPct = safeNumber(risk.riskPct, 0);
+
+  if (riskPct <= 0) return false;
+  if (riskPct > cfg.maxRiskPct * 1.05) return false;
+
+  // Spread is GEEN gate meer: elke geldige long-geometry wordt virtueel gevolgd.
+  // De spread wordt als KOSTEN verrekend in het cost-model (netto R), niet vooraf geblokkeerd.
+  // Zo krijgt elke binnenkomende long-coin een TP/SL en leert elke micro-family.
+
+  return true;
+}
+
 export function buildRiskGeometry({
   candidate,
   ob,
@@ -857,12 +1059,12 @@ export function buildRiskGeometry({
 } = {}) {
   const cfg = tradeConfig();
 
-  if (hasExplicitLongSide(candidate)) return null;
+  if (hasExplicitShortSide(candidate)) return null;
 
   const overrideSide = normalizeTradeSideValue(sideOverride);
   const inferredSide = inferTradeSide(candidate);
 
-  if (inferredSide === 'LONG') return null;
+  if (inferredSide === OPPOSITE_TRADE_SIDE) return null;
 
   const tradeSide = overrideSide !== 'UNKNOWN'
     ? overrideSide
@@ -889,35 +1091,46 @@ export function buildRiskGeometry({
     cfg.maxRiskPct
   );
 
-  const rewardPct = riskPct * cfg.defaultRR;
+  const effectiveRR = Math.max(
+    cfg.minRR,
+    cfg.defaultRR
+  );
 
-  const sl = entry * (1 + riskPct);
-  const tp = entry * (1 - rewardPct);
+  const rewardPct = riskPct * effectiveRR;
+
+  const sl = entry * (1 - riskPct);
+  const tp = entry * (1 + rewardPct);
+
+  const roundedEntry = roundPrice(entry);
+  const roundedSl = roundPrice(sl);
+  const roundedTp = roundPrice(tp);
 
   const rr = calculateRR({
-    entry,
-    sl,
-    tp,
+    entry: roundedEntry,
+    sl: roundedSl,
+    tp: roundedTp,
     side: TARGET_TRADE_SIDE
   });
 
-  if (rr <= 0) return null;
-
-  return {
+  const risk = {
     side: TARGET_DASHBOARD_SIDE,
     tradeSide: TARGET_TRADE_SIDE,
     positionSide: TARGET_TRADE_SIDE,
     direction: TARGET_TRADE_SIDE,
 
-    entry: roundPrice(entry),
-    sl: roundPrice(sl),
-    tp: roundPrice(tp),
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+    entry: roundedEntry,
+    sl: roundedSl,
+    tp: roundedTp,
 
     rr: round4(rr),
 
-    slSource: 'SHORT_ATR_SPREAD_FALLBACK',
-    tpSource: 'SHORT_DEFAULT_RR_TARGET',
-    riskRewardSource: 'SHORT_ATR_SPREAD_DEFAULT_RR',
+    slSource: 'LONG_ATR_SPREAD_FALLBACK',
+    tpSource: 'LONG_DEFAULT_RR_TARGET',
+    riskRewardSource: 'LONG_ATR_SPREAD_DEFAULT_RR',
 
     atrPct: round6(atrPct),
     spreadPct: round6(spreadPct),
@@ -928,9 +1141,27 @@ export function buildRiskGeometry({
     riskBucket: riskPctBucket(riskPct),
     spreadBucket: spreadBucket(spreadPct),
 
-    shortOnly: true,
-    longDisabled: true
+    positionTimeStopMin: cfg.positionTimeStopMin,
+
+    validLongRiskShape: true,
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    virtualOnly: true,
+    virtualLearning: true,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true
   };
+
+  return isValidRiskGeometry(risk, TARGET_TRADE_SIDE)
+    ? risk
+    : null;
 }
 
 export function buildRiskGeometryForSide({
@@ -963,18 +1194,19 @@ export function buildLiveMetrics({
   sideOverride = TARGET_TRADE_SIDE
 } = {}) {
   if (!candidate || !risk) return null;
-  if (hasExplicitLongSide(candidate)) return null;
+  if (hasExplicitShortSide(candidate)) return null;
 
   const overrideSide = normalizeTradeSideValue(sideOverride);
   const inferredSide = inferTradeSide(candidate);
 
-  if (inferredSide === 'LONG') return null;
+  if (inferredSide === OPPOSITE_TRADE_SIDE) return null;
 
   const tradeSide = overrideSide !== 'UNKNOWN'
     ? overrideSide
     : inferredSide;
 
   if (tradeSide !== TARGET_TRADE_SIDE) return null;
+  if (!isValidRiskGeometry(risk, TARGET_TRADE_SIDE)) return null;
 
   const sideCandidate = withTradeSide(candidate, TARGET_TRADE_SIDE);
 
@@ -997,7 +1229,7 @@ export function buildLiveMetrics({
   const relationToBtc = btcRelation(TARGET_TRADE_SIDE, btcState);
 
   const depthMinUsd1p = obDepthValue(ob);
-  const spreadPct = safeNumber(ob?.spreadPct, fallbackSpreadPct());
+  const spreadPct = safeNumber(ob?.spreadPct, risk.spreadPct ?? 0);
   const fundingRate = safeNumber(funding?.rate, 0);
   const imbalance = obImbalance(ob);
 
@@ -1107,8 +1339,12 @@ export function buildLiveMetrics({
     direction: TARGET_TRADE_SIDE,
 
     scannerSide: TARGET_TRADE_SIDE,
-    analysisSide: TARGET_TRADE_SIDE,
     actualScannerSide: TARGET_TRADE_SIDE,
+    analysisSide: TARGET_TRADE_SIDE,
+
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
 
     confluence,
     sniperScore,
@@ -1172,9 +1408,29 @@ export function buildLiveMetrics({
     riskRewardSource: risk.riskRewardSource,
 
     microSignalParts,
+    executionFingerprintParts: microSignalParts,
 
-    shortOnly: true,
-    longDisabled: true,
+    validLongRiskShape: true,
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    virtualOnly: true,
+    virtualLearning: true,
+
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true,
+
+    scoringRSource: 'netR',
+    winsLossesFlatsSource: 'netR',
+    winrateDefinition: 'netR > 0',
+    avgRSource: 'netR',
+    totalRSource: 'netR',
+    avgCostRShown: true,
+
+    positionTimeStopMin: tradeConfig().positionTimeStopMin,
 
     ts: now()
   };
@@ -1201,11 +1457,11 @@ export function buildRiskAndLiveMetricsForBothSides({
   regime
 } = {}) {
   if (!candidate) return [];
-  if (hasExplicitLongSide(candidate)) return [];
+  if (hasExplicitShortSide(candidate)) return [];
 
   const inferredSide = inferTradeSide(candidate);
 
-  if (inferredSide === 'LONG') return [];
+  if (inferredSide === OPPOSITE_TRADE_SIDE) return [];
 
   const sideCandidate = withTradeSide(candidate, TARGET_TRADE_SIDE);
 
@@ -1243,52 +1499,32 @@ export function buildRiskAndLiveMetricsForBothSides({
   return [
     {
       ...metrics,
+
       side: TARGET_DASHBOARD_SIDE,
       tradeSide: TARGET_TRADE_SIDE,
       positionSide: TARGET_TRADE_SIDE,
       direction: TARGET_TRADE_SIDE,
+
       scannerSide: TARGET_TRADE_SIDE,
-      analysisSide: TARGET_TRADE_SIDE,
       actualScannerSide: TARGET_TRADE_SIDE,
-      shortOnly: true,
-      longDisabled: true
+      analysisSide: TARGET_TRADE_SIDE,
+
+      targetTradeSide: TARGET_TRADE_SIDE,
+      dashboardSide: TARGET_DASHBOARD_SIDE,
+      oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+      validLongRiskShape: true,
+      longOnly: true,
+      shortDisabled: true,
+      shortOnly: false,
+      longDisabled: false,
+
+      virtualOnly: true,
+      virtualLearning: true,
+
+      realOrdersDisabled: true,
+      bitgetOrdersDisabled: true,
+      exchangeOrdersDisabled: true
     }
   ];
-}
-
-export function isValidRiskGeometry(risk, side = TARGET_TRADE_SIDE) {
-  if (!risk) return false;
-
-  const cfg = tradeConfig();
-  const tradeSide = sideLabel(side || risk.side || risk.tradeSide);
-
-  if (tradeSide !== TARGET_TRADE_SIDE) return false;
-
-  const entry = safeNumber(risk.entry, 0);
-  const sl = safeNumber(risk.sl, 0);
-  const tp = safeNumber(risk.tp, 0);
-
-  if (entry <= 0 || sl <= 0 || tp <= 0) return false;
-
-  if (!(sl > entry && tp < entry)) return false;
-
-  const rr = calculateRR({
-    entry,
-    sl,
-    tp,
-    side: TARGET_TRADE_SIDE
-  });
-
-  if (rr < cfg.minRR) return false;
-
-  const riskPct = safeNumber(risk.riskPct, 0);
-
-  if (riskPct <= 0) return false;
-  if (riskPct > cfg.maxRiskPct * 1.05) return false;
-
-  const spreadPct = safeNumber(risk.spreadPct, 0);
-
-  if (spreadPct > cfg.maxSpreadPct) return false;
-
-  return true;
 }
