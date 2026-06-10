@@ -11,44 +11,13 @@ const OPPOSITE_TRADE_SIDE = 'SHORT';
 const TRUE_VALUES = new Set(['true', '1', 'yes', 'y', 'on']);
 const FALSE_VALUES = new Set(['false', '0', 'no', 'n', 'off']);
 
-function baseModePayload() {
-  return {
-    targetTradeSide: TARGET_TRADE_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-
-    side: TARGET_DASHBOARD_SIDE,
-    tradeSide: TARGET_TRADE_SIDE,
-    positionSide: TARGET_TRADE_SIDE,
-    direction: TARGET_TRADE_SIDE,
-
-    longOnly: true,
-    shortDisabled: true,
-    shortOnly: false,
-    longDisabled: false,
-
-    manualSelectionRequired: true,
-    discordOnlyForSelectedMicroFamilies: true,
-    discordOnlyForExactTrueMicroMatch: true,
-
-    virtualPositionsOnly: true,
-    virtualLearning: true,
-    virtualOnly: true,
-    realOrdersDisabled: true,
-    bitgetOrdersDisabled: true,
-
-    netOutcomesOnly: true,
-    learningOutcomesOnly: true
-  };
-}
-
 function methodNotAllowed(res) {
   res.setHeader('Allow', 'GET');
 
   return res.status(405).json({
     ok: false,
     error: 'METHOD_NOT_ALLOWED',
-    allowed: ['GET'],
-    ...baseModePayload()
+    allowed: ['GET']
   });
 }
 
@@ -57,6 +26,10 @@ function firstQueryValue(value, fallback = null) {
   if (value === undefined || value === null || value === '') return fallback;
 
   return value;
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null);
 }
 
 function bool(value, fallback = false) {
@@ -83,6 +56,8 @@ function cleanText(value = '') {
     .replaceAll('SHORT_ENABLED_FALSE', '')
     .replaceAll('SHORT_ONLY_FALSE', '')
     .replaceAll('LONG_DISABLED_FALSE', '')
+    .replaceAll('LONG_ENABLED_FALSE', '')
+    .replaceAll('LONG_ONLY_FALSE', '')
     .replaceAll('LONG_ONLY_MODE', 'LONG')
     .replaceAll('LONG_ONLY', 'LONG')
     .replaceAll('LONG-ONLY', 'LONG');
@@ -118,11 +93,11 @@ function normalizeSideToken(value) {
   if (direct === TARGET_TRADE_SIDE) return TARGET_TRADE_SIDE;
   if (direct === OPPOSITE_TRADE_SIDE) return OPPOSITE_TRADE_SIDE;
 
-  if (['LONG', 'BULL', 'BULLISH', 'BUY', 'UP', 'UPSIDE', 'GREEN', 'BID'].includes(raw)) {
+  if (['LONG', 'BULL', 'BULLISH', 'BUY', 'UP', 'UPSIDE'].includes(raw)) {
     return TARGET_TRADE_SIDE;
   }
 
-  if (['SHORT', 'BEAR', 'BEARISH', 'SELL', 'DOWN', 'DOWNSIDE', 'RED', 'ASK'].includes(raw)) {
+  if (['SHORT', 'BEAR', 'BEARISH', 'SELL', 'DOWN', 'DOWNSIDE'].includes(raw)) {
     return OPPOSITE_TRADE_SIDE;
   }
 
@@ -161,8 +136,7 @@ function hasLongSignal(text = '') {
     raw.includes('BUY_') ||
     raw.includes('|BUY|') ||
     raw.includes(':BUY') ||
-    raw.includes('=BUY') ||
-    raw.includes('UPSIDE')
+    raw.includes('=BUY')
   );
 }
 
@@ -198,8 +172,7 @@ function hasShortSignal(text = '') {
     raw.includes('SELL_') ||
     raw.includes('|SELL|') ||
     raw.includes(':SELL') ||
-    raw.includes('=SELL') ||
-    raw.includes('DOWNSIDE')
+    raw.includes('=SELL')
   );
 }
 
@@ -234,21 +207,18 @@ function sideHaystack(row = {}) {
     row.parentMacroFamilyId,
     row.microFamilyId,
     row.trueMicroFamilyId,
-    row.coarseMicroFamilyId,
 
     payload.familyId,
     payload.macroFamilyId,
     payload.parentMacroFamilyId,
     payload.microFamilyId,
     payload.trueMicroFamilyId,
-    payload.coarseMicroFamilyId,
 
     result.familyId,
     result.macroFamilyId,
     result.parentMacroFamilyId,
     result.microFamilyId,
     result.trueMicroFamilyId,
-    result.coarseMicroFamilyId,
 
     row.type,
     row.reason,
@@ -265,10 +235,6 @@ function sideHaystack(row = {}) {
     ...safeArray(row.definitionParts),
     ...safeArray(payload.definitionParts),
     ...safeArray(result.definitionParts),
-
-    ...safeArray(row.scannerDefinitionParts),
-    ...safeArray(payload.scannerDefinitionParts),
-    ...safeArray(result.scannerDefinitionParts),
 
     ...safeArray(row.executionFingerprintParts),
     ...safeArray(payload.executionFingerprintParts),
@@ -318,10 +284,10 @@ function inferTradeSide(row = {}) {
   const longSignal = hasLongSignal(text);
   const shortSignal = hasShortSignal(text);
 
-  if (shortSignal && !longSignal) return OPPOSITE_TRADE_SIDE;
   if (longSignal && !shortSignal) return TARGET_TRADE_SIDE;
+  if (shortSignal && !longSignal) return OPPOSITE_TRADE_SIDE;
 
-  if (shortSignal && longSignal) {
+  if (longSignal && shortSignal) {
     const microId = cleanText(
       row.trueMicroFamilyId ||
       row.microFamilyId ||
@@ -333,9 +299,6 @@ function inferTradeSide(row = {}) {
 
     if (microId.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
     if (microId.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
-
-    if (text.includes('TRADE_SIDE=LONG') || text.includes('TRADESIDE=LONG')) return TARGET_TRADE_SIDE;
-    if (text.includes('TRADE_SIDE=SHORT') || text.includes('TRADESIDE=SHORT')) return OPPOSITE_TRADE_SIDE;
   }
 
   if (row.longOnly === true || payload.longOnly === true || result.longOnly === true) {
@@ -357,15 +320,18 @@ function inferTradeSide(row = {}) {
   return 'UNKNOWN';
 }
 
+function isLongLog(row = {}) {
+  if (row.rawInferredTradeSide === TARGET_TRADE_SIDE) return true;
+  if (row.inferredTradeSide === TARGET_TRADE_SIDE) return true;
+
+  return inferTradeSide(row) === TARGET_TRADE_SIDE;
+}
+
 function isShortLog(row = {}) {
   if (row.rawInferredTradeSide === OPPOSITE_TRADE_SIDE) return true;
   if (row.inferredTradeSide === OPPOSITE_TRADE_SIDE) return true;
 
   return inferTradeSide(row) === OPPOSITE_TRADE_SIDE;
-}
-
-function isLongLog(row = {}) {
-  return inferTradeSide(row) === TARGET_TRADE_SIDE;
 }
 
 function normalizeType(row = {}) {
@@ -451,14 +417,16 @@ function normalizeLog(row = {}) {
     resultObject.contractSymbol ||
     null;
 
-  const microFamilyId =
+  const trueMicroFamilyId =
     row.trueMicroFamilyId ||
-    row.microFamilyId ||
     payload.trueMicroFamilyId ||
-    payload.microFamilyId ||
     resultObject.trueMicroFamilyId ||
+    row.microFamilyId ||
+    payload.microFamilyId ||
     resultObject.microFamilyId ||
     null;
+
+  const microFamilyId = trueMicroFamilyId;
 
   const familyId =
     row.familyId ||
@@ -475,64 +443,66 @@ function normalizeLog(row = {}) {
     resultObject.parentMacroFamilyId ||
     null;
 
-  const discordAlertEligible = Boolean(
-    row.discordAlertEligible ??
-    payload.discordAlertEligible ??
-    resultObject.discordAlertEligible ??
+  const discordAlertEligible = Boolean(firstDefined(
+    row.discordAlertEligible,
+    payload.discordAlertEligible,
+    resultObject.discordAlertEligible,
     false
-  );
+  ));
 
-  const selectedMicroFamilyAlert = Boolean(
-    row.selectedMicroFamilyAlert ??
-    payload.selectedMicroFamilyAlert ??
-    resultObject.selectedMicroFamilyAlert ??
+  const selectedMicroFamilyAlert = Boolean(firstDefined(
+    row.selectedMicroFamilyAlert,
+    payload.selectedMicroFamilyAlert,
+    resultObject.selectedMicroFamilyAlert,
     false
-  );
+  ));
 
-  const virtualOnly = Boolean(
-    source === 'VIRTUAL' ||
-    (
-      row.virtualOnly ??
-      payload.virtualOnly ??
-      resultObject.virtualOnly ??
-      row.virtualTracked ??
-      payload.virtualTracked ??
-      resultObject.virtualTracked ??
-      row.shadowOnly ??
-      payload.shadowOnly ??
-      resultObject.shadowOnly ??
-      false
-    )
-  );
-
-  const skipped = Boolean(
-    row.skipped ??
-    payload.skipped ??
-    resultObject.skipped ??
+  const virtualOnlyFlag = Boolean(firstDefined(
+    row.virtualOnly,
+    payload.virtualOnly,
+    resultObject.virtualOnly,
+    row.virtualTracked,
+    payload.virtualTracked,
+    resultObject.virtualTracked,
+    row.shadowOnly,
+    payload.shadowOnly,
+    resultObject.shadowOnly,
     false
-  );
+  ));
 
-  const failed = Boolean(
-    row.failed ??
-    payload.failed ??
-    resultObject.failed ??
-    (resultObject.ok === false) ??
+  const virtualOnly = Boolean(source === 'VIRTUAL' || virtualOnlyFlag);
+
+  const skipped = Boolean(firstDefined(
+    row.skipped,
+    payload.skipped,
+    resultObject.skipped,
     false
+  ));
+
+  const failed = Boolean(firstDefined(
+    row.failed,
+    payload.failed,
+    resultObject.failed,
+    resultObject.ok === false ? true : undefined,
+    false
+  ));
+
+  const explicitSent = firstDefined(
+    row.sent,
+    payload.sent,
+    resultObject.sent
   );
 
-  const sent = Boolean(
-    row.sent ??
-    payload.sent ??
-    resultObject.sent ??
-    (
+  const sent = explicitSent !== undefined
+    ? Boolean(explicitSent)
+    : Boolean(
       !skipped &&
       !failed &&
       (
         type.includes('SENT') ||
         resultObject.ok === true
       )
-    )
-  );
+    );
 
   const entryAlert = (
     type.includes('ENTRY') ||
@@ -568,17 +538,28 @@ function normalizeLog(row = {}) {
 
     targetTradeSide: TARGET_TRADE_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
 
     longOnly: true,
     shortDisabled: true,
     shortOnly: false,
     longDisabled: false,
 
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeCallsDisabled: true,
+    virtualLearningForced: true,
+
+    scannerFingerprintRole: 'METADATA_ONLY',
+    scannerFingerprintsUsedAsLearningFamily: false,
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+    symbolExcludedFromFamilyId: true,
+
     rawInferredTradeSide,
     inferredTradeSide: rawInferredTradeSide,
 
     microFamilyId,
-    trueMicroFamilyId: microFamilyId,
+    trueMicroFamilyId,
     familyId,
     macroFamilyId,
 
@@ -586,14 +567,11 @@ function normalizeLog(row = {}) {
     virtualTracked: virtualOnly,
     shadowOnly: virtualOnly,
 
-    realOrdersDisabled: true,
-    bitgetOrdersDisabled: true,
-
     discordAlertEligible,
     selectedMicroFamilyAlert,
 
     manualSelectionRequired: true,
-    exactTrueMicroMatchRequired: true,
+    manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
     alertAllowed,
     blockedByManualSelection,
     policyViolation,
@@ -645,12 +623,9 @@ function filterByMicroFamilyId(logs = [], microFamilyId = null) {
   const wanted = String(microFamilyId).trim();
 
   return logs.filter((log) => (
-    log.microFamilyId === wanted ||
-    log.trueMicroFamilyId === wanted ||
-    log.payload?.microFamilyId === wanted ||
-    log.payload?.trueMicroFamilyId === wanted ||
-    log.result?.microFamilyId === wanted ||
-    log.result?.trueMicroFamilyId === wanted
+    String(log.trueMicroFamilyId || '').trim() === wanted ||
+    String(log.payload?.trueMicroFamilyId || '').trim() === wanted ||
+    String(log.result?.trueMicroFamilyId || '').trim() === wanted
   ));
 }
 
@@ -688,8 +663,12 @@ function buildSummary(logs = []) {
       acc.eligible += 1;
     }
 
-    if (log.selectedMicroFamilyAlert || log.alertAllowed) {
+    if (log.selectedMicroFamilyAlert) {
       acc.selected += 1;
+    }
+
+    if (log.alertAllowed) {
+      acc.alertAllowed += 1;
     }
 
     if (log.blockedByManualSelection) {
@@ -715,6 +694,7 @@ function buildSummary(logs = []) {
     virtual: 0,
     eligible: 0,
     selected: 0,
+    alertAllowed: 0,
     blockedByManualSelection: 0,
     policyViolations: 0,
     shortFilteredLeaks: 0,
@@ -723,24 +703,63 @@ function buildSummary(logs = []) {
   });
 }
 
-function getDiscordLogListKey() {
+function getLongDiscordLogKey() {
   return (
-    KEYS.long?.discord?.logList ||
-    KEYS.discordLong?.logList ||
     KEYS.discord?.longLogList ||
-    KEYS.discord?.logListLong ||
-    KEYS.discord?.logList
+    KEYS.discordLong?.logList ||
+    KEYS.long?.discord?.logList ||
+    `LONG:${KEYS.discord.logList}`
   );
+}
+
+function baseModePayload() {
+  return {
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeCallsDisabled: true,
+
+    virtualLearningForced: true,
+    virtualPositionsOnly: true,
+    shadowPositionsVisible: true,
+
+    maxOneOpenPositionPerSymbol: true,
+    globalMaxOpenPositionsBlockDisabled: true,
+
+    manualSelectionRequired: true,
+    discordOnlyForSelectedMicroFamilies: true,
+    manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
+
+    scannerSide: TARGET_DASHBOARD_SIDE,
+    scannerFingerprintRole: 'METADATA_ONLY',
+    scannerFingerprintsUsedAsLearningFamily: false,
+
+    redisNamespace: 'LONG',
+    discordLogKeyNamespace: 'LONG',
+    redisKeysSeparatedFromShortRoot: true
+  };
 }
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
-  res.setHeader('X-Admin-Discord-Logs-Mode', 'long-only-selected-virtual-v1');
+  res.setHeader('X-Admin-Discord-Logs-Mode', 'long-only-selected-virtual-v3');
   res.setHeader('X-Target-Trade-Side', TARGET_TRADE_SIDE);
+  res.setHeader('X-Long-Only', 'true');
   res.setHeader('X-Short-Disabled', 'true');
   res.setHeader('X-Manual-Selection-Required', 'true');
+  res.setHeader('X-Manual-Selection-Match-Mode', 'EXACT_TRUE_MICRO_FAMILY_ID');
   res.setHeader('X-Real-Orders-Disabled', 'true');
   res.setHeader('X-Bitget-Orders-Disabled', 'true');
+  res.setHeader('X-Virtual-Learning-Forced', 'true');
+  res.setHeader('X-Redis-Namespace', 'LONG');
 
   try {
     if (req.method !== 'GET') {
@@ -752,7 +771,7 @@ export default async function handler(req, res) {
     const symbol = firstQueryValue(req.query?.symbol, null);
     const microFamilyId = firstQueryValue(req.query?.microFamilyId, null);
     const selectedOnly = bool(firstQueryValue(req.query?.selectedOnly, false), false);
-    const includeShort = bool(firstQueryValue(req.query?.includeShort, false), false);
+    const includeShortRequested = bool(firstQueryValue(req.query?.includeShort, false), false);
 
     const hasPostFilters = Boolean(type || symbol || microFamilyId || selectedOnly);
     const fetchLimit = hasPostFilters
@@ -760,23 +779,25 @@ export default async function handler(req, res) {
       : limit;
 
     const redis = getDurableRedis();
-    const logListKey = getDiscordLogListKey();
+    const discordLogKey = getLongDiscordLogKey();
 
     const rawLogs = await readJsonLogs(
       redis,
-      logListKey,
+      discordLogKey,
       fetchLimit
     );
 
     const normalized = (Array.isArray(rawLogs) ? rawLogs : [])
-      .map(normalizeLog)
-      .filter((log) => includeShort || !isShortLog(log))
-      .filter((log) => includeShort || isLongLog(log));
+      .map(normalizeLog);
+
+    const longOnlyLogs = normalized.filter(isLongLog);
+    const shortBlockedCount = normalized.filter(isShortLog).length;
+    const unknownBlockedCount = normalized.length - longOnlyLogs.length - shortBlockedCount;
 
     const filteredLogs = filterSelectedOnly(
       filterByMicroFamilyId(
         filterBySymbol(
-          filterByType(normalized, type),
+          filterByType(longOnlyLogs, type),
           symbol
         ),
         microFamilyId
@@ -797,17 +818,19 @@ export default async function handler(req, res) {
       symbol,
       microFamilyId,
       selectedOnly,
-      includeShort,
+
+      includeShortRequested,
+      includeShortIgnored: includeShortRequested,
+      shortHardBlocked: true,
+
+      discordLogKey,
 
       count: logs.length,
       totalMatched: filteredLogs.length,
       totalFetched: Array.isArray(rawLogs) ? rawLogs.length : 0,
-      totalAfterLongFilter: normalized.length,
-
-      redis: {
-        logListKey,
-        namespace: 'LONG'
-      },
+      totalAfterLongFilter: longOnlyLogs.length,
+      shortBlockedCount,
+      unknownBlockedCount,
 
       summary: buildSummary(logs),
 
