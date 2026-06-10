@@ -4,13 +4,99 @@ import { Redis } from '@upstash/redis';
 
 const DEFAULT_SCAN_COUNT = 100;
 const DEFAULT_DELETE_BATCH_SIZE = 100;
+const DEFAULT_LOG_LIMIT = 250;
+
+const TARGET_TRADE_SIDE = 'LONG';
+const TARGET_DASHBOARD_SIDE = 'bull';
+const TARGET_SCANNER_SIDE = 'bull';
+const OPPOSITE_TRADE_SIDE = 'SHORT';
+
+const LONG_NAMESPACE = 'LONG';
+const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
+const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
+
+const ROOT_KEY_PREFIXES = [
+  'SCAN:',
+  'LIVE:',
+  'TRADE:',
+  'ANALYZE:',
+  'CIRCUIT:',
+  'DISCORD:',
+  'RESET:'
+];
+
+const BLOCKED_KEY_PREFIXES = [
+  `${OPPOSITE_TRADE_SIDE}:`,
+  'SHORT:',
+  'SHORT_SCAN:',
+  'SHORT_TRADE:',
+  'SHORT_ANALYZE:',
+  'SHORT_DISCORD:',
+  'SHORT_RESET:'
+];
+
+function modeFlags() {
+  return {
+    namespace: LONG_NAMESPACE,
+    redisNamespace: LONG_NAMESPACE,
+    keyPrefix: LONG_KEY_PREFIX,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    persistentLearningKey: PERSISTENT_LEARNING_KEY,
+
+    targetTradeSide: TARGET_TRADE_SIDE,
+    targetScannerSide: TARGET_SCANNER_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+    side: TARGET_DASHBOARD_SIDE,
+    tradeSide: TARGET_TRADE_SIDE,
+    positionSide: TARGET_TRADE_SIDE,
+    direction: TARGET_TRADE_SIDE,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    virtualOnly: true,
+    virtualLearning: true,
+    source: 'VIRTUAL',
+    outcomeSource: 'VIRTUAL',
+
+    noRealOrders: true,
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true,
+
+    noGlobalMaxOpenPositionsBlock: true,
+    oneOpenPositionPerSymbol: true,
+
+    manualDiscordSelectionExactTrueMicroOnly: true,
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+
+    completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
+    scoringRSource: 'netR',
+    winrateDefinition: 'netR > 0',
+    avgRSource: 'netR',
+    totalRSource: 'netR',
+    avgCostRShown: true,
+
+    noResetCron: true,
+    noActivateCron: true,
+    noFreezeCron: true,
+    manualSelectionPreserved: true,
+
+    shortRootTouched: false
+  };
+}
 
 function envValue(...names) {
   for (const name of names) {
     const value = process.env[name];
 
     if (value !== undefined && value !== null && String(value).trim() !== '') {
-      return value;
+      return String(value).trim();
     }
   }
 
@@ -26,9 +112,8 @@ function makeRedis(url, token, label) {
     url,
     token,
 
-    // Belangrijk:
-    // Wij serializen JSON zelf met JSON.stringify/JSON.parse.
-    // Daardoor zijn locks, logs en stats voorspelbaar.
+    // Wij serializen JSON zelf.
+    // Dit houdt locks, logs, stats en nested objects voorspelbaar.
     automaticDeserialization: false
   });
 }
@@ -66,6 +151,172 @@ function getDurableEnv() {
 let volatileRedis = null;
 let durableRedis = null;
 
+function isBlockedShortKey(key = '') {
+  const value = String(key || '').trim().toUpperCase();
+
+  return BLOCKED_KEY_PREFIXES.some((prefix) => value.startsWith(prefix));
+}
+
+function isRootAppKey(key = '') {
+  const value = String(key || '').trim();
+
+  return ROOT_KEY_PREFIXES.some((prefix) => value.startsWith(prefix));
+}
+
+function isLongKey(key = '') {
+  return String(key || '').trim().startsWith(LONG_KEY_PREFIX);
+}
+
+function normalizeKey(key) {
+  const raw = String(key || '').trim();
+
+  if (!raw) return '';
+
+  if (isBlockedShortKey(raw)) {
+    const error = new Error('LONG_REDIS_REFUSED_SHORT_NAMESPACE_KEY');
+
+    error.details = {
+      key: raw,
+      ...modeFlags()
+    };
+
+    throw error;
+  }
+
+  if (isLongKey(raw)) return raw;
+
+  if (isRootAppKey(raw)) return `${LONG_KEY_PREFIX}${raw}`;
+
+  return `${LONG_KEY_PREFIX}${raw}`;
+}
+
+function normalizePattern(pattern) {
+  const raw = String(pattern || '').trim();
+
+  if (!raw) return '';
+
+  if (isBlockedShortKey(raw)) {
+    const error = new Error('LONG_REDIS_REFUSED_SHORT_NAMESPACE_PATTERN');
+
+    error.details = {
+      pattern: raw,
+      ...modeFlags()
+    };
+
+    throw error;
+  }
+
+  if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
+
+  if (isRootAppKey(raw)) return `${LONG_KEY_PREFIX}${raw}`;
+
+  return `${LONG_KEY_PREFIX}${raw}`;
+}
+
+function normalizeLimit(value, fallback = DEFAULT_LOG_LIMIT) {
+  const n = Math.floor(Number(value));
+
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+
+  return n;
+}
+
+function normalizeScanCount(value = DEFAULT_SCAN_COUNT) {
+  const n = Math.floor(Number(value));
+
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_SCAN_COUNT;
+
+  return Math.max(1, Math.min(1000, n));
+}
+
+function normalizeMax(value, fallback = 1000) {
+  const n = Math.floor(Number(value));
+
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+
+  return n;
+}
+
+function parseJsonValue(value, fallback = null) {
+  if (value === null || value === undefined) return fallback;
+
+  if (typeof value !== 'string') return value;
+
+  const text = value.trim();
+
+  if (!text) return fallback;
+  if (text === 'null') return null;
+  if (text === 'undefined') return fallback;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return fallback;
+  }
+}
+
+function stringifyJsonValue(value, keyForError = 'UNKNOWN_KEY') {
+  if (value === undefined) {
+    throw new Error(`JSON_UNDEFINED_VALUE:${keyForError}`);
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch (error) {
+    throw new Error(`JSON_STRINGIFY_FAILED:${keyForError}:${error?.message || String(error)}`);
+  }
+}
+
+function normalizeScanResult(result) {
+  if (!Array.isArray(result)) {
+    return {
+      cursor: 0,
+      keys: []
+    };
+  }
+
+  const [nextCursor, keys] = result;
+
+  return {
+    cursor: Number(nextCursor) || 0,
+    keys: Array.isArray(keys) ? keys.filter(Boolean) : []
+  };
+}
+
+function withLongMeta(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+
+  return {
+    ...value,
+    ...modeFlags()
+  };
+}
+
+async function deleteKeys(redis, keys = []) {
+  const rows = Array.isArray(keys)
+    ? keys.filter(Boolean).map(normalizeKey)
+    : [];
+
+  if (!rows.length) return 0;
+
+  let deleted = 0;
+
+  for (let i = 0; i < rows.length; i += DEFAULT_DELETE_BATCH_SIZE) {
+    const batch = rows.slice(i, i + DEFAULT_DELETE_BATCH_SIZE);
+
+    if (!batch.length) continue;
+
+    const result = await redis.del(...batch);
+    const count = Number(result);
+
+    deleted += Number.isFinite(count) ? count : batch.length;
+  }
+
+  return deleted;
+}
+
 export function getVolatileRedis() {
   if (!volatileRedis) {
     const { url, token } = getVolatileEnv();
@@ -101,143 +352,156 @@ export function hasRedisEnv() {
 }
 
 export async function getJson(redis, key, fallback = null) {
-  if (!redis || !key) return fallback;
+  const redisKey = normalizeKey(key);
 
-  const value = await redis.get(key);
+  if (!redis || !redisKey) return fallback;
 
-  if (value === null || value === undefined) return fallback;
+  const value = await redis.get(redisKey);
 
-  if (typeof value !== 'string') return value;
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
+  return parseJsonValue(value, fallback);
 }
 
 export async function setJson(redis, key, value, options = undefined) {
-  if (!redis || !key) {
-    throw new Error('SET_JSON_INVALID_REDIS_OR_KEY');
+  const redisKey = normalizeKey(key);
+
+  if (!redis || !redisKey) {
+    throw new Error('SET_LONG_JSON_INVALID_REDIS_OR_KEY');
   }
 
-  if (value === undefined) {
-    throw new Error(`SET_JSON_UNDEFINED_VALUE:${key}`);
-  }
+  const payload = stringifyJsonValue(withLongMeta(value), redisKey);
 
-  return redis.set(key, JSON.stringify(value), options);
+  return redis.set(redisKey, payload, options);
 }
 
 export async function setNxJson(redis, key, value, options = {}) {
-  if (!redis || !key) {
-    throw new Error('SET_NX_JSON_INVALID_REDIS_OR_KEY');
+  const redisKey = normalizeKey(key);
+
+  if (!redis || !redisKey) {
+    throw new Error('SET_NX_LONG_JSON_INVALID_REDIS_OR_KEY');
   }
 
-  if (value === undefined) {
-    throw new Error(`SET_NX_JSON_UNDEFINED_VALUE:${key}`);
-  }
+  const payload = stringifyJsonValue(withLongMeta(value), redisKey);
 
-  return redis.set(key, JSON.stringify(value), {
+  return redis.set(redisKey, payload, {
     ...options,
     nx: true
   });
 }
 
 export async function delPattern(redis, pattern, max = 5000) {
-  if (!redis || !pattern) return 0;
+  const redisPattern = normalizePattern(pattern);
+
+  if (!redis || !redisPattern) return 0;
+
+  const maxDelete = normalizeMax(max, 5000);
 
   let cursor = 0;
   let deleted = 0;
 
   do {
-    const [nextCursor, keys = []] = await redis.scan(cursor, {
-      match: pattern,
-      count: DEFAULT_SCAN_COUNT
+    const scanResult = await redis.scan(cursor, {
+      match: redisPattern,
+      count: normalizeScanCount()
     });
 
-    cursor = Number(nextCursor);
+    const normalized = normalizeScanResult(scanResult);
 
-    if (!Array.isArray(keys) || keys.length === 0) {
-      continue;
-    }
+    cursor = normalized.cursor;
 
-    const remaining = Math.max(0, max - deleted);
-    const limitedKeys = keys.slice(0, remaining);
+    if (!normalized.keys.length) continue;
 
-    for (let i = 0; i < limitedKeys.length; i += DEFAULT_DELETE_BATCH_SIZE) {
-      const batch = limitedKeys.slice(i, i + DEFAULT_DELETE_BATCH_SIZE);
+    const longOnlyKeys = normalized.keys
+      .filter((key) => String(key || '').startsWith(LONG_KEY_PREFIX));
 
-      if (batch.length > 0) {
-        await redis.del(...batch);
-        deleted += batch.length;
-      }
+    const remaining = Math.max(0, maxDelete - deleted);
+    const limitedKeys = longOnlyKeys.slice(0, remaining);
 
-      if (deleted >= max) break;
-    }
+    deleted += await deleteKeys(redis, limitedKeys);
 
-    if (deleted >= max) break;
+    if (deleted >= maxDelete) break;
   } while (cursor !== 0);
 
   return deleted;
 }
 
 export async function getKeys(redis, pattern, max = 1000) {
-  if (!redis || !pattern) return [];
+  const redisPattern = normalizePattern(pattern);
+
+  if (!redis || !redisPattern) return [];
+
+  const maxKeys = normalizeMax(max, 1000);
 
   let cursor = 0;
   const out = [];
+  const seen = new Set();
 
   do {
-    const [nextCursor, keys = []] = await redis.scan(cursor, {
-      match: pattern,
-      count: DEFAULT_SCAN_COUNT
+    const scanResult = await redis.scan(cursor, {
+      match: redisPattern,
+      count: normalizeScanCount()
     });
 
-    cursor = Number(nextCursor);
+    const normalized = normalizeScanResult(scanResult);
 
-    if (Array.isArray(keys) && keys.length > 0) {
-      out.push(...keys);
+    cursor = normalized.cursor;
+
+    for (const key of normalized.keys) {
+      if (!key || seen.has(key)) continue;
+      if (!String(key).startsWith(LONG_KEY_PREFIX)) continue;
+
+      seen.add(key);
+      out.push(key);
+
+      if (out.length >= maxKeys) break;
     }
 
-    if (out.length >= max) break;
+    if (out.length >= maxKeys) break;
   } while (cursor !== 0);
 
-  return out.slice(0, max);
+  return out;
 }
 
-export async function pushJsonLog(redis, key, value, limit = 250) {
-  if (!redis || !key) {
-    throw new Error('PUSH_JSON_LOG_INVALID_REDIS_OR_KEY');
+export async function pushJsonLog(redis, key, value, limit = DEFAULT_LOG_LIMIT) {
+  const redisKey = normalizeKey(key);
+
+  if (!redis || !redisKey) {
+    throw new Error('PUSH_LONG_JSON_LOG_INVALID_REDIS_OR_KEY');
   }
 
-  if (value === undefined) {
-    throw new Error(`PUSH_JSON_LOG_UNDEFINED_VALUE:${key}`);
-  }
+  const safeLimit = normalizeLimit(limit, DEFAULT_LOG_LIMIT);
+  const payload = stringifyJsonValue(withLongMeta(value), redisKey);
 
-  const safeLimit = Math.max(1, Number(limit) || 250);
-
-  await redis.lpush(key, JSON.stringify(value));
-  await redis.ltrim(key, 0, safeLimit - 1);
+  await redis.lpush(redisKey, payload);
+  await redis.ltrim(redisKey, 0, safeLimit - 1);
 
   return true;
 }
 
 export async function readJsonLogs(redis, key, limit = 100) {
-  if (!redis || !key) return [];
+  const redisKey = normalizeKey(key);
 
-  const safeLimit = Math.max(1, Number(limit) || 100);
-  const rows = await redis.lrange(key, 0, safeLimit - 1);
+  if (!redis || !redisKey) return [];
+
+  const safeLimit = normalizeLimit(limit, 100);
+  const rows = await redis.lrange(redisKey, 0, safeLimit - 1);
 
   return (Array.isArray(rows) ? rows : [])
     .map((row) => {
       if (row === null || row === undefined) return null;
+
       if (typeof row !== 'string') return row;
 
-      try {
-        return JSON.parse(row);
-      } catch {
-        return { raw: row };
-      }
+      const parsed = parseJsonValue(row, null);
+
+      return parsed === null
+        ? {
+          raw: row,
+          ...modeFlags()
+        }
+        : {
+          ...parsed,
+          ...modeFlags()
+        };
     })
     .filter(Boolean);
 }
