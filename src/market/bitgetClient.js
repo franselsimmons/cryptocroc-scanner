@@ -12,15 +12,138 @@ import { parseBitgetCandle } from './indicators.js';
 const RETRYABLE_HTTP_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 const DEFAULT_RETRIES = 2;
 
-function normalizeProductType(value = CONFIG.bitget.productType) {
+const TARGET_TRADE_SIDE = 'LONG';
+const TARGET_DASHBOARD_SIDE = 'bull';
+const OPPOSITE_TRADE_SIDE = 'SHORT';
+
+const LONG_NAMESPACE = 'LONG';
+const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
+
+const DEFAULT_TIMEOUT_MS = 2500;
+const DEFAULT_MIN_REQUEST_INTERVAL_MS = 80;
+
+const CACHE_TTL_MS = {
+  tickers: 20_000,
+  candles: 45_000,
+  orderBook: 4_000,
+  funding: 60_000
+};
+
+const MARKET_PATH_PREFIXES = [
+  '/api/v2/mix/market/'
+];
+
+const memoryCache = new Map();
+
+let lastRequestAt = 0;
+
+function now() {
+  return Date.now();
+}
+
+function bitgetConfig() {
+  return {
+    baseUrl: CONFIG.bitget?.baseUrl || 'https://api.bitget.com',
+    productType: CONFIG.bitget?.productType || 'USDT-FUTURES',
+    timeoutMs: Math.max(500, safeNumber(CONFIG.bitget?.timeoutMs, DEFAULT_TIMEOUT_MS)),
+    minRequestIntervalMs: Math.max(
+      0,
+      safeNumber(CONFIG.bitget?.minRequestIntervalMs, DEFAULT_MIN_REQUEST_INTERVAL_MS)
+    ),
+    cacheEnabled: CONFIG.bitget?.cacheEnabled !== false,
+
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    namespace: LONG_NAMESPACE,
+    keyPrefix: LONG_KEY_PREFIX,
+
+    marketDataOnly: true,
+    noRealOrders: true,
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true
+  };
+}
+
+function normalizeProductType(value = bitgetConfig().productType) {
   return String(value || 'USDT-FUTURES')
     .trim()
     .toUpperCase()
     .replaceAll('_', '-');
 }
 
+function assertMarketDataPath(path) {
+  const value = String(path || '');
+
+  const allowed = MARKET_PATH_PREFIXES.some((prefix) => value.startsWith(prefix));
+
+  if (!allowed) {
+    throw new Error(`BITGET_MARKET_DATA_PATH_ONLY_${value}`);
+  }
+}
+
+function stableParams(params = {}) {
+  return Object.fromEntries(
+    Object.entries(params || {})
+      .filter(([, value]) => value !== undefined && value !== null && value !== '')
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => [key, String(value)])
+  );
+}
+
+function cacheKey(path, params = {}) {
+  return JSON.stringify({
+    namespace: LONG_NAMESPACE,
+    path,
+    params: stableParams(params)
+  });
+}
+
+function getCache(key) {
+  const cfg = bitgetConfig();
+
+  if (!cfg.cacheEnabled) return null;
+
+  const row = memoryCache.get(key);
+
+  if (!row) return null;
+
+  if (row.expiresAt <= now()) {
+    memoryCache.delete(key);
+    return null;
+  }
+
+  return row.value;
+}
+
+function setCache(key, value, ttlMs) {
+  const cfg = bitgetConfig();
+
+  if (!cfg.cacheEnabled || ttlMs <= 0) return value;
+
+  memoryCache.set(key, {
+    value,
+    expiresAt: now() + ttlMs
+  });
+
+  return value;
+}
+
+async function withCache(key, ttlMs, loader) {
+  const cached = getCache(key);
+
+  if (cached !== null && cached !== undefined) return cached;
+
+  const value = await loader();
+
+  return setCache(key, value, ttlMs);
+}
+
 function buildUrl(path, params = {}) {
-  const url = new URL(path, CONFIG.bitget.baseUrl);
+  assertMarketDataPath(path);
+
+  const cfg = bitgetConfig();
+  const url = new URL(path, cfg.baseUrl);
 
   for (const [key, value] of Object.entries(params || {})) {
     if (value === undefined || value === null || value === '') continue;
@@ -45,14 +168,37 @@ function bitgetErrorMessage(prefix, details = {}) {
 }
 
 function isLikelyNetworkError(error) {
+  const message = String(error?.message || '').toLowerCase();
+
   return (
     error?.name === 'TypeError' ||
-    String(error?.message || '').toLowerCase().includes('fetch failed') ||
-    String(error?.message || '').toLowerCase().includes('network')
+    message.includes('fetch failed') ||
+    message.includes('network') ||
+    message.includes('econnreset') ||
+    message.includes('etimedout')
   );
 }
 
-async function fetchJsonOnce(path, params = {}, timeoutMs = CONFIG.bitget.timeoutMs) {
+async function paceRequest() {
+  const minIntervalMs = bitgetConfig().minRequestIntervalMs;
+
+  if (minIntervalMs <= 0) return;
+
+  const elapsed = now() - lastRequestAt;
+  const waitMs = Math.max(0, minIntervalMs - elapsed);
+
+  if (waitMs > 0) {
+    await sleep(waitMs);
+  }
+
+  lastRequestAt = now();
+}
+
+async function fetchJsonOnce(path, params = {}, timeoutMs = bitgetConfig().timeoutMs) {
+  assertMarketDataPath(path);
+
+  await paceRequest();
+
   const url = buildUrl(path, params);
 
   const controller = new AbortController();
@@ -63,7 +209,7 @@ async function fetchJsonOnce(path, params = {}, timeoutMs = CONFIG.bitget.timeou
       method: 'GET',
       headers: {
         accept: 'application/json',
-        'user-agent': CONFIG.strategyVersion || 'CLEAN_MF_TS_LONG_ONLY_V1'
+        'user-agent': CONFIG.strategyVersion || 'LONG_ONLY_VIRTUAL_MF_TS_V1'
       },
       signal: controller.signal
     });
@@ -134,7 +280,11 @@ async function fetchJsonOnce(path, params = {}, timeoutMs = CONFIG.bitget.timeou
 }
 
 async function fetchJson(path, params = {}, options = {}) {
-  const timeoutMs = options.timeoutMs ?? CONFIG.bitget.timeoutMs;
+  const timeoutMs = Math.max(
+    500,
+    options.timeoutMs ?? bitgetConfig().timeoutMs
+  );
+
   const retries = Math.max(0, Number(options.retries ?? DEFAULT_RETRIES) || 0);
 
   let lastError = null;
@@ -151,29 +301,81 @@ async function fetchJson(path, params = {}, options = {}) {
 
       if (!retryable || attempt >= retries) break;
 
-      await sleep(250 * (attempt + 1));
+      const baseDelayMs = safeNumber(CONFIG.bitget?.retryDelayMs, 250);
+      const jitterMs = Math.floor(Math.random() * 80);
+      const delayMs = baseDelayMs * (attempt + 1) + jitterMs;
+
+      await sleep(delayMs);
     }
   }
 
   throw lastError;
 }
 
-export async function fetchBitgetTickers() {
-  const data = await fetchJson('/api/v2/mix/market/tickers', {
-    productType: normalizeProductType()
-  });
-
-  return Array.isArray(data) ? data : [];
+function isRisingTicker(change24h) {
+  return safeNumber(change24h, 0) > 0;
 }
 
-function firstNumber(row = {}, keys = [], fallback = 0) {
-  for (const key of keys) {
-    const value = safeNumber(row?.[key], NaN);
+function longCandidateMeta(change24h) {
+  const rising = isRisingTicker(change24h);
 
-    if (Number.isFinite(value) && value > 0) return value;
-  }
+  return {
+    side: rising ? TARGET_DASHBOARD_SIDE : 'rejected',
+    tradeSide: rising ? TARGET_TRADE_SIDE : 'UNKNOWN',
+    scannerSide: rising ? TARGET_DASHBOARD_SIDE : 'UNKNOWN',
+    actualScannerSide: rising ? TARGET_DASHBOARD_SIDE : 'UNKNOWN',
+    positionSide: rising ? TARGET_TRADE_SIDE : 'UNKNOWN',
+    direction: rising ? TARGET_TRADE_SIDE : 'UNKNOWN',
 
-  return fallback;
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    virtualLearning: true,
+    virtualOnly: true,
+    virtualTracked: true,
+
+    noRealOrders: true,
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true,
+    exchangeCallsDisabled: true,
+
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+    analyzeMicroFamiliesOnly: true,
+    learningIdentitySource: 'ANALYZE_MICRO_FAMILY',
+    symbolExcludedFromFamilyId: true,
+
+    redisNamespace: LONG_NAMESPACE,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    shortRootTouched: false,
+
+    isRising: rising,
+    eligibleLongCandidate: rising,
+    rejectReason: rising ? null : 'NOT_RISING_LONG_ONLY'
+  };
+}
+
+export async function fetchBitgetTickers() {
+  const params = {
+    productType: normalizeProductType()
+  };
+
+  return withCache(
+    cacheKey('/api/v2/mix/market/tickers', params),
+    CACHE_TTL_MS.tickers,
+    async () => {
+      const data = await fetchJson('/api/v2/mix/market/tickers', params);
+
+      return Array.isArray(data) ? data : [];
+    }
+  );
 }
 
 export function parseTicker(row = {}) {
@@ -195,25 +397,22 @@ export function parseTicker(row = {}) {
     0
   );
 
-  const baseVolume = firstNumber(row, [
-    'baseVolume',
-    'baseVol',
-    'volume',
-    'vol',
-    'size',
-    'amount'
-  ], 0);
+  const baseVolume = safeNumber(
+    row.baseVolume ??
+    row.baseVol ??
+    row.volume ??
+    row.vol,
+    0
+  );
 
-  const quoteVolumeRaw = firstNumber(row, [
-    'quoteVolume',
-    'quoteVol',
-    'usdtVolume',
-    'turnover',
-    'quoteTurnover',
-    'turnover24h',
-    'quoteVolume24h',
-    'quoteVol24h'
-  ], 0);
+  const quoteVolumeRaw = safeNumber(
+    row.quoteVolume ??
+    row.quoteVol ??
+    row.usdtVolume ??
+    row.turnover ??
+    row.quoteTurnover,
+    0
+  );
 
   const quoteVolume = quoteVolumeRaw > 0
     ? quoteVolumeRaw
@@ -224,8 +423,7 @@ export function parseTicker(row = {}) {
     row.changeUtc24h ??
     row.priceChangePercent ??
     row.priceChange24h ??
-    row.chgUtc ??
-    row.changeUtc,
+    row.chgUtc,
     0
   );
 
@@ -239,8 +437,18 @@ export function parseTicker(row = {}) {
     baseSymbol,
     price,
     volume24h: quoteVolume,
-    tickerVolume24h: quoteVolume,
     change24h,
+
+    ...longCandidateMeta(change24h),
+
+    source: 'BITGET_MARKET_DATA',
+    marketDataOnly: true,
+    noRealOrders: true,
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true,
+    exchangeCallsDisabled: true,
+
     raw: row
   };
 }
@@ -270,49 +478,67 @@ export async function fetchCandles(symbol, timeframe = '15m', limit = 100) {
 
   if (!contractSymbol) return [];
 
-  const endpoints = [
-    {
-      path: '/api/v2/mix/market/candles',
-      limit: safeLimit
-    },
-    {
-      path: '/api/v2/mix/market/history-candles',
-      limit: Math.min(safeLimit, 200)
-    }
-  ];
-
-  let lastError = null;
-
-  for (const endpoint of endpoints) {
-    try {
-      const raw = await fetchJson(endpoint.path, {
-        symbol: contractSymbol,
-        productType: normalizeProductType(),
-        granularity,
-        limit: endpoint.limit,
-        kLineType: 'MARKET'
-      });
-
-      const candles = (Array.isArray(raw) ? raw : [])
-        .map(parseBitgetCandle)
-        .filter(Boolean)
-        .sort((a, b) => a.ts - b.ts);
-
-      if (candles.length > 0) {
-        return candles.slice(-safeLimit);
-      }
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  console.warn('BITGET_CANDLES_FAILED', JSON.stringify({
+  const params = {
     symbol: contractSymbol,
-    timeframe,
-    error: lastError?.message || 'EMPTY'
-  }));
+    productType: normalizeProductType(),
+    granularity,
+    limit: safeLimit,
+    kLineType: 'MARKET'
+  };
 
-  return [];
+  return withCache(
+    cacheKey('/api/v2/mix/market/candles', params),
+    CACHE_TTL_MS.candles,
+    async () => {
+      const endpoints = [
+        {
+          path: '/api/v2/mix/market/candles',
+          limit: safeLimit
+        },
+        {
+          path: '/api/v2/mix/market/history-candles',
+          limit: Math.min(safeLimit, 200)
+        }
+      ];
+
+      let lastError = null;
+
+      for (const endpoint of endpoints) {
+        try {
+          const raw = await fetchJson(endpoint.path, {
+            symbol: contractSymbol,
+            productType: normalizeProductType(),
+            granularity,
+            limit: endpoint.limit,
+            kLineType: 'MARKET'
+          });
+
+          const candles = (Array.isArray(raw) ? raw : [])
+            .map(parseBitgetCandle)
+            .filter(Boolean)
+            .sort((a, b) => a.ts - b.ts);
+
+          if (candles.length > 0) {
+            return candles.slice(-safeLimit);
+          }
+        } catch (error) {
+          lastError = error;
+        }
+      }
+
+      console.warn('BITGET_CANDLES_FAILED', JSON.stringify({
+        symbol: contractSymbol,
+        timeframe,
+        targetTradeSide: TARGET_TRADE_SIDE,
+        dashboardSide: TARGET_DASHBOARD_SIDE,
+        marketDataOnly: true,
+        noRealOrders: true,
+        error: lastError?.message || 'EMPTY'
+      }));
+
+      return [];
+    }
+  );
 }
 
 export async function fetchOrderBook(symbol) {
@@ -320,46 +546,62 @@ export async function fetchOrderBook(symbol) {
 
   if (!contractSymbol) return null;
 
-  const attempts = [
-    {
-      path: '/api/v2/mix/market/merge-depth',
-      params: {
-        symbol: contractSymbol,
-        productType: normalizeProductType(),
-        precision: 'scale0',
-        limit: 100
-      }
-    },
-    {
-      path: '/api/v2/mix/market/orderbook',
-      params: {
-        symbol: contractSymbol,
-        productType: normalizeProductType(),
-        limit: 100
-      }
-    }
-  ];
-
-  let lastError = null;
-
-  for (const attempt of attempts) {
-    try {
-      const data = await fetchJson(attempt.path, attempt.params, {
-        retries: 1
-      });
-
-      if (data) return data;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  console.warn('BITGET_ORDERBOOK_FAILED', JSON.stringify({
+  const cacheParams = {
     symbol: contractSymbol,
-    error: lastError?.message || 'EMPTY'
-  }));
+    productType: normalizeProductType(),
+    limit: 100
+  };
 
-  return null;
+  return withCache(
+    cacheKey('/api/v2/mix/market/orderbook:merged', cacheParams),
+    CACHE_TTL_MS.orderBook,
+    async () => {
+      const attempts = [
+        {
+          path: '/api/v2/mix/market/merge-depth',
+          params: {
+            symbol: contractSymbol,
+            productType: normalizeProductType(),
+            precision: 'scale0',
+            limit: 100
+          }
+        },
+        {
+          path: '/api/v2/mix/market/orderbook',
+          params: {
+            symbol: contractSymbol,
+            productType: normalizeProductType(),
+            limit: 100
+          }
+        }
+      ];
+
+      let lastError = null;
+
+      for (const attempt of attempts) {
+        try {
+          const data = await fetchJson(attempt.path, attempt.params, {
+            retries: 1
+          });
+
+          if (data) return data;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+
+      console.warn('BITGET_ORDERBOOK_FAILED', JSON.stringify({
+        symbol: contractSymbol,
+        targetTradeSide: TARGET_TRADE_SIDE,
+        dashboardSide: TARGET_DASHBOARD_SIDE,
+        marketDataOnly: true,
+        noRealOrders: true,
+        error: lastError?.message || 'EMPTY'
+      }));
+
+      return null;
+    }
+  );
 }
 
 function parseBookRow(row) {
@@ -405,6 +647,63 @@ function parseBookSide(side) {
     .filter(Boolean);
 }
 
+function emptyOrderBookAnalysis() {
+  return {
+    bias: 'NEUTRAL',
+    obBias: 'NEUTRAL',
+    tradeSide: 'UNKNOWN',
+    scannerSide: 'UNKNOWN',
+    actualScannerSide: 'UNKNOWN',
+    side: 'unknown',
+
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    virtualLearning: true,
+    virtualOnly: true,
+    virtualTracked: true,
+
+    spreadPct: CONFIG.cost?.fallbackSpreadPct ?? 0.0008,
+    spreadBps: safeNumber(CONFIG.cost?.fallbackSpreadPct ?? 0.0008, 0) * 10_000,
+
+    depthMinUsd1p: 0,
+    bidDepthUsd1p: 0,
+    askDepthUsd1p: 0,
+
+    imbalance: 0,
+    orderbookImbalance: 0,
+    longPressure: 0,
+    shortPressure: 0,
+
+    mid: 0,
+    bestBid: 0,
+    bestAsk: 0,
+
+    fetchFailed: true,
+    marketDataOnly: true,
+    noRealOrders: true,
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true,
+    exchangeCallsDisabled: true,
+
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+    analyzeMicroFamiliesOnly: true,
+    symbolExcludedFromFamilyId: true,
+
+    redisNamespace: LONG_NAMESPACE,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    shortRootTouched: false
+  };
+}
+
 export function analyzeOrderBook(raw) {
   const bids = parseBookSide(raw?.bids);
   const asks = parseBookSide(raw?.asks);
@@ -417,32 +716,24 @@ export function analyzeOrderBook(raw) {
     : safeNumber(raw?.mid ?? raw?.price ?? raw?.last, 0);
 
   if (mid <= 0 || bestBid <= 0 || bestAsk <= 0) {
-    return {
-      bias: 'NEUTRAL',
-      spreadPct: CONFIG.cost?.fallbackSpreadPct ?? 0.0008,
-      depthMinUsd1p: 0,
-      bidDepthUsd1p: 0,
-      askDepthUsd1p: 0,
-      imbalance: 0,
-      mid: 0,
-      bestBid: 0,
-      bestAsk: 0,
-      fetchFailed: true
-    };
+    return emptyOrderBookAnalysis();
   }
 
   const spreadPct = Math.max(0, (bestAsk - bestBid) / mid);
+  const spreadBps = spreadPct * 10_000;
 
   const minBidPrice = mid * 0.99;
   const maxAskPrice = mid * 1.01;
 
   const bidDepth = bids.reduce((sum, [price, qty]) => {
     if (price < minBidPrice) return sum;
+
     return sum + price * qty;
   }, 0);
 
   const askDepth = asks.reduce((sum, [price, qty]) => {
     if (price > maxAskPrice) return sum;
+
     return sum + price * qty;
   }, 0);
 
@@ -452,22 +743,78 @@ export function analyzeOrderBook(raw) {
     ? (bidDepth - askDepth) / depthTotal
     : 0;
 
+  const longPressure = depthTotal > 0
+    ? (bidDepth - askDepth) / depthTotal
+    : 0;
+
+  const shortPressure = depthTotal > 0
+    ? (askDepth - bidDepth) / depthTotal
+    : 0;
+
   const bias =
-    imbalance > 0.12 ? 'BULLISH' :
-    imbalance < -0.12 ? 'BEARISH' :
+    imbalance > 0.12 ? 'BID_HEAVY' :
+    imbalance < -0.12 ? 'ASK_HEAVY' :
     'NEUTRAL';
+
+  const longAligned = longPressure > 0.12;
 
   return {
     bias,
+    obBias: bias,
+
+    tradeSide: longAligned ? TARGET_TRADE_SIDE : 'UNKNOWN',
+    scannerSide: longAligned ? TARGET_DASHBOARD_SIDE : 'UNKNOWN',
+    actualScannerSide: longAligned ? TARGET_DASHBOARD_SIDE : 'UNKNOWN',
+    side: longAligned ? TARGET_DASHBOARD_SIDE : 'unknown',
+    positionSide: longAligned ? TARGET_TRADE_SIDE : 'UNKNOWN',
+    direction: longAligned ? TARGET_TRADE_SIDE : 'UNKNOWN',
+
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    virtualLearning: true,
+    virtualOnly: true,
+    virtualTracked: true,
+
     spreadPct,
+    spreadBps,
+
     depthMinUsd1p: Math.min(bidDepth, askDepth),
     bidDepthUsd1p: bidDepth,
     askDepthUsd1p: askDepth,
+
     imbalance,
+    orderbookImbalance: imbalance,
+    longPressure,
+    shortPressure,
+
     mid,
     bestBid,
     bestAsk,
-    fetchFailed: false
+
+    fetchFailed: false,
+    marketDataOnly: true,
+    noRealOrders: true,
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true,
+    exchangeCallsDisabled: true,
+
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+    analyzeMicroFamiliesOnly: true,
+    learningIdentitySource: 'ANALYZE_MICRO_FAMILY',
+    symbolExcludedFromFamilyId: true,
+
+    redisNamespace: LONG_NAMESPACE,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    shortRootTouched: false
   };
 }
 
@@ -477,38 +824,122 @@ export async function fetchFunding(symbol) {
   if (!contractSymbol) {
     return {
       rate: 0,
-      fetchFailed: true
+      fetchFailed: true,
+
+      targetTradeSide: TARGET_TRADE_SIDE,
+      dashboardSide: TARGET_DASHBOARD_SIDE,
+      oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+      longOnly: true,
+      shortDisabled: true,
+      shortOnly: false,
+      longDisabled: false,
+
+      virtualLearning: true,
+      virtualOnly: true,
+      virtualTracked: true,
+
+      marketDataOnly: true,
+      noRealOrders: true,
+      realOrdersDisabled: true,
+      bitgetOrdersDisabled: true,
+      exchangeOrdersDisabled: true,
+      exchangeCallsDisabled: true,
+
+      redisNamespace: LONG_NAMESPACE,
+      redisKeyPrefix: LONG_KEY_PREFIX,
+      shortRootTouched: false
     };
   }
 
-  try {
-    const data = await fetchJson('/api/v2/mix/market/current-fund-rate', {
-      symbol: contractSymbol,
-      productType: normalizeProductType()
-    }, {
-      retries: 1
-    });
+  const params = {
+    symbol: contractSymbol,
+    productType: normalizeProductType()
+  };
 
-    const row = Array.isArray(data) ? data[0] : data;
+  return withCache(
+    cacheKey('/api/v2/mix/market/current-fund-rate', params),
+    CACHE_TTL_MS.funding,
+    async () => {
+      try {
+        const data = await fetchJson('/api/v2/mix/market/current-fund-rate', params, {
+          retries: 1
+        });
 
-    return {
-      rate: safeNumber(
-        row?.fundingRate ??
-        row?.fundRate ??
-        row?.rate,
-        0
-      ),
-      fetchFailed: false
-    };
-  } catch (error) {
-    console.warn('BITGET_FUNDING_FAILED', JSON.stringify({
-      symbol: contractSymbol,
-      error: error?.message || String(error)
-    }));
+        const row = Array.isArray(data) ? data[0] : data;
 
-    return {
-      rate: 0,
-      fetchFailed: true
-    };
-  }
+        return {
+          rate: safeNumber(
+            row?.fundingRate ??
+            row?.fundRate ??
+            row?.rate,
+            0
+          ),
+          fetchFailed: false,
+
+          targetTradeSide: TARGET_TRADE_SIDE,
+          dashboardSide: TARGET_DASHBOARD_SIDE,
+          oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+          longOnly: true,
+          shortDisabled: true,
+          shortOnly: false,
+          longDisabled: false,
+
+          virtualLearning: true,
+          virtualOnly: true,
+          virtualTracked: true,
+
+          marketDataOnly: true,
+          noRealOrders: true,
+          realOrdersDisabled: true,
+          bitgetOrdersDisabled: true,
+          exchangeOrdersDisabled: true,
+          exchangeCallsDisabled: true,
+
+          redisNamespace: LONG_NAMESPACE,
+          redisKeyPrefix: LONG_KEY_PREFIX,
+          shortRootTouched: false
+        };
+      } catch (error) {
+        console.warn('BITGET_FUNDING_FAILED', JSON.stringify({
+          symbol: contractSymbol,
+          targetTradeSide: TARGET_TRADE_SIDE,
+          dashboardSide: TARGET_DASHBOARD_SIDE,
+          marketDataOnly: true,
+          noRealOrders: true,
+          error: error?.message || String(error)
+        }));
+
+        return {
+          rate: 0,
+          fetchFailed: true,
+
+          targetTradeSide: TARGET_TRADE_SIDE,
+          dashboardSide: TARGET_DASHBOARD_SIDE,
+          oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+          longOnly: true,
+          shortDisabled: true,
+          shortOnly: false,
+          longDisabled: false,
+
+          virtualLearning: true,
+          virtualOnly: true,
+          virtualTracked: true,
+
+          marketDataOnly: true,
+          noRealOrders: true,
+          realOrdersDisabled: true,
+          bitgetOrdersDisabled: true,
+          exchangeOrdersDisabled: true,
+          exchangeCallsDisabled: true,
+
+          redisNamespace: LONG_NAMESPACE,
+          redisKeyPrefix: LONG_KEY_PREFIX,
+          shortRootTouched: false
+        };
+      }
+    }
+  );
 }
