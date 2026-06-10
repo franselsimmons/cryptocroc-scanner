@@ -12,46 +12,211 @@ import {
 } from '../../src/redis.js';
 import { getOpenPositions } from '../../src/trade/positionEngine.js';
 import { sendResetReport } from '../../src/discord/discord.js';
+import { sideToTradeSide } from '../../src/utils.js';
 
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
 const OPPOSITE_TRADE_SIDE = 'SHORT';
 
+const LONG_NAMESPACE = 'LONG';
+const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
+
 const LOCK_TTL_SEC = 300;
-const DEFAULT_CONFIRM_TEXT = 'FACTORY_RESET_CONFIRMED';
-const DEFAULT_ROTATION_CONFIRM_TEXT = 'RESET_ROTATION_CONFIRMED';
+const DEFAULT_CONFIRM_TEXT = 'LONG_FACTORY_RESET_CONFIRMED';
+const DEFAULT_ROTATION_CONFIRM_TEXT = 'LONG_RESET_ROTATION_CONFIRMED';
+
+function namespacedLongKey(key, fallback = null) {
+  const raw = String(key || fallback || '').trim();
+
+  if (!raw) return null;
+  if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
+
+  return `${LONG_KEY_PREFIX}${raw}`;
+}
+
+function namespacedLongPattern(pattern, fallback = null) {
+  return namespacedLongKey(pattern, fallback);
+}
 
 const LONG_KEYS = {
-  scan: KEYS.long?.scan || KEYS.scanLong || KEYS.scan?.long || {},
-  trade: KEYS.long?.trade || KEYS.tradeLong || KEYS.trade?.long || {},
-  analyze: KEYS.long?.analyze || KEYS.analyzeLong || KEYS.analyze?.long || {},
-  reset: KEYS.long?.reset || KEYS.resetLong || KEYS.reset?.long || {}
+  scan: {
+    lock: namespacedLongKey(
+      KEYS.long?.scan?.lock ||
+        KEYS.scan?.longLock ||
+        KEYS.scan?.lock,
+      'SCAN:LOCK'
+    ),
+    snapshotPattern: namespacedLongPattern(
+      KEYS.long?.scan?.snapshotPattern ||
+        KEYS.scan?.longSnapshotPattern,
+      'SCAN:SNAPSHOT:*'
+    ),
+    latest: namespacedLongKey(
+      KEYS.long?.scan?.latest ||
+        KEYS.scan?.longLatest ||
+        KEYS.scan?.latest,
+      'SCAN:LATEST'
+    ),
+    runMeta: namespacedLongKey(
+      KEYS.long?.scan?.runMeta ||
+        KEYS.scan?.longRunMeta ||
+        KEYS.scan?.runMeta,
+      'SCAN:RUN_META'
+    )
+  },
+
+  trade: {
+    lock: namespacedLongKey(
+      KEYS.long?.trade?.lock ||
+        KEYS.trade?.longLock ||
+        KEYS.trade?.lock,
+      'TRADE:LOCK'
+    ),
+    openPattern: namespacedLongPattern(
+      KEYS.long?.trade?.openPattern ||
+        KEYS.trade?.longOpenPattern,
+      'TRADE:OPEN:*'
+    ),
+    lastProcessedSnapshot: namespacedLongKey(
+      KEYS.long?.trade?.lastProcessedSnapshot ||
+        KEYS.trade?.longLastProcessedSnapshot ||
+        KEYS.trade?.lastProcessedSnapshot,
+      'TRADE:LAST_PROCESSED_SNAPSHOT'
+    ),
+    runMeta: namespacedLongKey(
+      KEYS.long?.trade?.runMeta ||
+        KEYS.trade?.longRunMeta ||
+        KEYS.trade?.runMeta,
+      'TRADE:RUN_META'
+    )
+  },
+
+  analyze: {
+    freezeLock: namespacedLongKey(
+      KEYS.long?.analyze?.freezeLock ||
+        KEYS.analyze?.longFreezeLock ||
+        KEYS.analyze?.freezeLock,
+      'ANALYZE:WEEKLY_FREEZE_LOCK'
+    ),
+    activateLock: namespacedLongKey(
+      KEYS.long?.analyze?.activateLock ||
+        KEYS.analyze?.longActivateLock ||
+        KEYS.analyze?.activateLock,
+      'ANALYZE:ROTATION_ACTIVATE_LOCK'
+    ),
+    activeRotation: namespacedLongKey(
+      KEYS.long?.analyze?.activeRotation ||
+        KEYS.analyze?.longActiveRotation ||
+        KEYS.analyze?.activeRotation,
+      'ANALYZE:ACTIVE_ROTATION'
+    ),
+    nextRotation: namespacedLongKey(
+      KEYS.long?.analyze?.nextRotation ||
+        KEYS.analyze?.longNextRotation ||
+        KEYS.analyze?.nextRotation,
+      'ANALYZE:NEXT_ROTATION'
+    ),
+    rotationValidFrom: namespacedLongKey(
+      KEYS.long?.analyze?.rotationValidFrom ||
+        KEYS.analyze?.longRotationValidFrom ||
+        KEYS.analyze?.rotationValidFrom,
+      'ANALYZE:ROTATION_VALID_FROM'
+    ),
+    weekPattern: namespacedLongPattern(
+      KEYS.long?.analyze?.weekPattern ||
+        KEYS.analyze?.longWeekPattern,
+      'ANALYZE:WEEK:*'
+    ),
+    microPattern: namespacedLongPattern(
+      KEYS.long?.analyze?.microPattern ||
+        KEYS.analyze?.longMicroPattern,
+      'ANALYZE:MICRO:*'
+    ),
+    obsLastPattern: namespacedLongPattern(
+      KEYS.long?.analyze?.obsLastPattern ||
+        KEYS.analyze?.longObsLastPattern,
+      'ANALYZE:OBS:LAST:*'
+    ),
+    shadowPattern: namespacedLongPattern(
+      KEYS.long?.analyze?.shadowPattern ||
+        KEYS.analyze?.longShadowPattern,
+      'ANALYZE:SHADOW:*'
+    ),
+    outcomePattern: namespacedLongPattern(
+      KEYS.long?.analyze?.outcomePattern ||
+        KEYS.analyze?.longOutcomePattern,
+      'ANALYZE:OUTCOME:*'
+    )
+  },
+
+  reset: {
+    logList: namespacedLongKey(
+      KEYS.long?.reset?.logList ||
+        KEYS.reset?.longLogList ||
+        KEYS.reset?.logList,
+      'RESET:LOGS'
+    )
+  },
+
+  circuit: {
+    pausedPattern: namespacedLongPattern(
+      KEYS.long?.circuit?.pausedPattern ||
+        KEYS.circuit?.longPausedPattern,
+      'CIRCUIT:PAUSED:*'
+    )
+  },
+
+  cache: {
+    livePattern: namespacedLongPattern(
+      KEYS.long?.cache?.livePattern ||
+        KEYS.cache?.longLivePattern,
+      'LIVE:CACHE:*'
+    ),
+    marketPattern: namespacedLongPattern(
+      KEYS.long?.cache?.marketPattern ||
+        KEYS.cache?.longMarketPattern,
+      'MARKET:CACHE:*'
+    ),
+    bitgetPattern: namespacedLongPattern(
+      KEYS.long?.cache?.bitgetPattern ||
+        KEYS.cache?.longBitgetPattern,
+      'BITGET:CACHE:*'
+    )
+  },
+
+  discord: {
+    logList: namespacedLongKey(
+      KEYS.long?.discord?.logList ||
+        KEYS.discord?.longLogList ||
+        KEYS.discordLong?.logList ||
+        KEYS.discord?.logList,
+      'DISCORD:LOGS'
+    )
+  }
 };
 
 const LOCK_KEYS = {
-  admin: 'LONG:ADMIN:FACTORY_RESET:LOCK',
-  scanner: LONG_KEYS.scan?.lock || 'LONG:SCAN:LOCK',
-  trade: LONG_KEYS.trade?.lock || 'LONG:TRADE:LOCK',
-  freeze: LONG_KEYS.analyze?.freezeLock || 'LONG:ANALYZE:WEEKLY_FREEZE_LOCK',
-  activate: LONG_KEYS.analyze?.activateLock || 'LONG:ANALYZE:ROTATION_ACTIVATE_LOCK'
-};
-
-const LONG_PATTERNS = {
-  scanSnapshots: 'LONG:SCAN:SNAPSHOT:*',
-  tradeOpenVirtualPositions: 'LONG:TRADE:OPEN:*',
-  circuitPaused: 'LONG:CIRCUIT:PAUSED:*',
-  analyzeWeeks: 'LONG:ANALYZE:WEEK:*',
-  analyzeMicros: 'LONG:ANALYZE:MICRO:*',
-  analyzeObsLast: 'LONG:ANALYZE:OBS:LAST:*',
-  analyzeShadow: 'LONG:ANALYZE:SHADOW:*',
-  analyzeOutcomeDedupe: 'LONG:ANALYZE:OUTCOME:*',
-  liveCache: 'LONG:LIVE:CACHE:*',
-  marketCache: 'LONG:MARKET:CACHE:*',
-  bitgetCache: 'LONG:BITGET:CACHE:*'
+  admin: namespacedLongKey('ADMIN:FACTORY_RESET:LOCK'),
+  scanner: LONG_KEYS.scan.lock,
+  trade: LONG_KEYS.trade.lock,
+  freeze: LONG_KEYS.analyze.freezeLock,
+  activate: LONG_KEYS.analyze.activateLock
 };
 
 function now() {
   return Date.now();
+}
+
+function methodNotAllowed(res) {
+  res.setHeader('Allow', 'POST');
+
+  return res.status(405).json({
+    ok: false,
+    error: 'METHOD_NOT_ALLOWED',
+    allowed: ['POST'],
+
+    ...modePayload()
+  });
 }
 
 function modePayload() {
@@ -70,36 +235,42 @@ function modePayload() {
     shortOnly: false,
     longDisabled: false,
 
+    virtualLearningForced: true,
     virtualPositionsOnly: true,
-    virtualLearning: true,
-    virtualOnly: true,
-
     realOrdersDisabled: true,
     bitgetOrdersDisabled: true,
-    exchangeOrdersDisabled: true,
+    exchangeCallsDisabled: true,
+
+    maxOneOpenPositionPerSymbol: true,
+    globalMaxOpenPositionsBlockDisabled: true,
 
     manualSelectionRequired: true,
     discordOnlyForSelectedMicroFamilies: true,
-    discordOnlyForExactTrueMicroMatch: true,
+    manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
+
+    scannerSide: TARGET_DASHBOARD_SIDE,
+    scannerFingerprintRole: 'METADATA_ONLY',
+    scannerFingerprintsUsedAsLearningFamily: false,
+
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+    analyzeMicroFamiliesOnly: true,
+    symbolExcludedFromFamilyId: true,
+
+    completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
+    scoringRSource: 'netR',
+    winrateDefinition: 'netR > 0',
 
     autoRotationActivationDisabled: true,
     manualRotationPreservedByDefault: true,
     explicitRotationResetRequired: true,
+    resetCronDisabled: true,
+    activateFreezeCronDisabled: true,
 
-    redisNamespace: 'LONG',
-    isolatedFromShortRoot: true
+    redisNamespace: LONG_NAMESPACE,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    redisKeysSeparatedFromShortRoot: true,
+    shortRootTouched: false
   };
-}
-
-function methodNotAllowed(res) {
-  res.setHeader('Allow', 'POST');
-
-  return res.status(405).json({
-    ok: false,
-    error: 'METHOD_NOT_ALLOWED',
-    allowed: ['POST'],
-    ...modePayload()
-  });
 }
 
 function parseJson(text) {
@@ -146,6 +317,204 @@ function isTrue(value) {
   return ['true', '1', 'yes', 'y', 'on'].includes(raw);
 }
 
+function upper(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function cleanSideText(value = '') {
+  return upper(value)
+    .replaceAll('SHORT_DISABLED', '')
+    .replaceAll('SHORTDISABLED', '')
+    .replaceAll('BLOCK_SHORT', '')
+    .replaceAll('SHORT_ENABLED_FALSE', '')
+    .replaceAll('SHORT_ONLY_FALSE', '')
+    .replaceAll('LONG_DISABLED_FALSE', '')
+    .replaceAll('LONG_ENABLED_FALSE', '')
+    .replaceAll('LONG_ONLY_FALSE', '')
+    .replaceAll('LONG_ONLY_MODE', 'LONG')
+    .replaceAll('LONG_ONLY', 'LONG')
+    .replaceAll('LONG-ONLY', 'LONG');
+}
+
+function normalizeSideToken(value) {
+  const raw = cleanSideText(value);
+
+  if (!raw) return 'UNKNOWN';
+
+  const direct = sideToTradeSide(raw);
+
+  if (direct === TARGET_TRADE_SIDE) return TARGET_TRADE_SIDE;
+  if (direct === OPPOSITE_TRADE_SIDE) return OPPOSITE_TRADE_SIDE;
+
+  if (['LONG', 'BULL', 'BULLISH', 'BUY', 'UP', 'UPSIDE'].includes(raw)) {
+    return TARGET_TRADE_SIDE;
+  }
+
+  if (['SHORT', 'BEAR', 'BEARISH', 'SELL', 'DOWN', 'DOWNSIDE'].includes(raw)) {
+    return OPPOSITE_TRADE_SIDE;
+  }
+
+  return 'UNKNOWN';
+}
+
+function hasLongSignal(text = '') {
+  const raw = ` ${cleanSideText(text)} `;
+
+  return (
+    raw.includes('TRADE_SIDE=LONG') ||
+    raw.includes('TRADESIDE=LONG') ||
+    raw.includes('SIDE=LONG') ||
+    raw.includes('POSITION_SIDE=LONG') ||
+    raw.includes('POSITIONSIDE=LONG') ||
+    raw.includes('DIRECTION=LONG') ||
+    raw.includes('SIDE=BULL') ||
+    raw.includes('DIRECTION=BULL') ||
+    raw.includes('SIDE=BUY') ||
+    raw.includes('DIRECTION=BUY') ||
+    raw.includes('MICRO_LONG_') ||
+    raw.includes(' LONG_') ||
+    raw.includes('_LONG ') ||
+    raw.includes('_LONG_') ||
+    raw.includes('|LONG|') ||
+    raw.includes(':LONG') ||
+    raw.includes('=LONG') ||
+    raw.includes(' BULL ') ||
+    raw.includes('_BULL') ||
+    raw.includes('BULL_') ||
+    raw.includes('|BULL|') ||
+    raw.includes(':BULL') ||
+    raw.includes('=BULL') ||
+    raw.includes(' BUY ') ||
+    raw.includes('_BUY') ||
+    raw.includes('BUY_') ||
+    raw.includes('|BUY|') ||
+    raw.includes(':BUY') ||
+    raw.includes('=BUY')
+  );
+}
+
+function hasShortSignal(text = '') {
+  const raw = ` ${cleanSideText(text)} `;
+
+  return (
+    raw.includes('TRADE_SIDE=SHORT') ||
+    raw.includes('TRADESIDE=SHORT') ||
+    raw.includes('SIDE=SHORT') ||
+    raw.includes('POSITION_SIDE=SHORT') ||
+    raw.includes('POSITIONSIDE=SHORT') ||
+    raw.includes('DIRECTION=SHORT') ||
+    raw.includes('SIDE=BEAR') ||
+    raw.includes('DIRECTION=BEAR') ||
+    raw.includes('SIDE=SELL') ||
+    raw.includes('DIRECTION=SELL') ||
+    raw.includes('MICRO_SHORT_') ||
+    raw.includes(' SHORT_') ||
+    raw.includes('_SHORT ') ||
+    raw.includes('_SHORT_') ||
+    raw.includes('|SHORT|') ||
+    raw.includes(':SHORT') ||
+    raw.includes('=SHORT') ||
+    raw.includes(' BEAR ') ||
+    raw.includes('_BEAR') ||
+    raw.includes('BEAR_') ||
+    raw.includes('|BEAR|') ||
+    raw.includes(':BEAR') ||
+    raw.includes('=BEAR') ||
+    raw.includes(' SELL ') ||
+    raw.includes('_SELL') ||
+    raw.includes('SELL_') ||
+    raw.includes('|SELL|') ||
+    raw.includes(':SELL') ||
+    raw.includes('=SELL')
+  );
+}
+
+function inferPositionTradeSide(position = {}) {
+  const directSources = [
+    position.tradeSide,
+    position.positionSide,
+    position.direction,
+    position.side,
+    position.signalSide,
+    position.scannerSide,
+    position.analysisSide
+  ];
+
+  for (const source of directSources) {
+    const side = normalizeSideToken(source);
+
+    if (side === TARGET_TRADE_SIDE || side === OPPOSITE_TRADE_SIDE) return side;
+  }
+
+  const text = [
+    position.tradeSide,
+    position.positionSide,
+    position.direction,
+    position.side,
+    position.signalSide,
+    position.scannerSide,
+    position.analysisSide,
+
+    position.familyId,
+    position.macroFamilyId,
+    position.parentMacroFamilyId,
+    position.parentMicroFamilyId,
+    position.microFamilyId,
+    position.trueMicroFamilyId,
+    position.coarseMicroFamilyId,
+
+    position.tradeId,
+    position.key,
+    position.redisKey,
+    position.positionKey
+  ]
+    .map((value) => cleanSideText(value))
+    .filter(Boolean)
+    .join(' | ');
+
+  const longSignal = hasLongSignal(text);
+  const shortSignal = hasShortSignal(text);
+
+  if (longSignal && !shortSignal) return TARGET_TRADE_SIDE;
+  if (shortSignal && !longSignal) return OPPOSITE_TRADE_SIDE;
+
+  if (longSignal && shortSignal) {
+    const microId = cleanSideText(
+      position.trueMicroFamilyId ||
+        position.microFamilyId ||
+        position.coarseMicroFamilyId ||
+        ''
+    );
+
+    if (microId.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
+    if (microId.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
+  }
+
+  if (position.longOnly === true || position.shortDisabled === true) return TARGET_TRADE_SIDE;
+  if (position.shortOnly === true || position.longDisabled === true) return OPPOSITE_TRADE_SIDE;
+
+  return 'UNKNOWN';
+}
+
+function isLongNamespacedPosition(position = {}) {
+  return [
+    position.key,
+    position.redisKey,
+    position.positionKey
+  ]
+    .filter(Boolean)
+    .some((key) => String(key).startsWith(LONG_KEY_PREFIX));
+}
+
+function isLongPosition(position = {}) {
+  const side = inferPositionTradeSide(position);
+
+  if (side === TARGET_TRADE_SIDE) return true;
+  if (side === OPPOSITE_TRADE_SIDE) return false;
+
+  return isLongNamespacedPosition(position);
+}
+
 function isConfirmed(body = {}, requiredText) {
   return (
     body.confirm === requiredText ||
@@ -169,67 +538,6 @@ function isRotationResetConfirmed(body = {}, requiredText) {
     body.rotationConfirm === requiredText ||
     body.rotationConfirmation === requiredText ||
     body.confirmResetRotation === requiredText
-  );
-}
-
-function getLongKey(...candidates) {
-  return candidates.find(Boolean) || null;
-}
-
-function getScanLatestKey() {
-  return getLongKey(
-    LONG_KEYS.scan?.latest,
-    LONG_KEYS.scan?.latestSnapshot,
-    'LONG:SCAN:LATEST'
-  );
-}
-
-function getScanRunMetaKey() {
-  return getLongKey(
-    LONG_KEYS.scan?.runMeta,
-    'LONG:SCAN:RUN_META'
-  );
-}
-
-function getTradeLastProcessedKey() {
-  return getLongKey(
-    LONG_KEYS.trade?.lastProcessedSnapshot,
-    'LONG:TRADE:LAST_PROCESSED_SNAPSHOT'
-  );
-}
-
-function getTradeRunMetaKey() {
-  return getLongKey(
-    LONG_KEYS.trade?.runMeta,
-    'LONG:TRADE:RUN_META'
-  );
-}
-
-function getActiveRotationKey() {
-  return getLongKey(
-    LONG_KEYS.analyze?.activeRotation,
-    'LONG:ANALYZE:ACTIVE_ROTATION'
-  );
-}
-
-function getNextRotationKey() {
-  return getLongKey(
-    LONG_KEYS.analyze?.nextRotation,
-    'LONG:ANALYZE:NEXT_ROTATION'
-  );
-}
-
-function getRotationValidFromKey() {
-  return getLongKey(
-    LONG_KEYS.analyze?.rotationValidFrom,
-    'LONG:ANALYZE:ROTATION_VALID_FROM'
-  );
-}
-
-function getResetLogListKey() {
-  return getLongKey(
-    LONG_KEYS.reset?.logList,
-    'LONG:RESET:LOGS'
   );
 }
 
@@ -368,6 +676,19 @@ async function releaseResetLocks(acquired = [], token) {
   return released;
 }
 
+async function getLongOpenPositions() {
+  const rawPositions = await getOpenPositions({
+    tradeSide: TARGET_TRADE_SIDE,
+    side: TARGET_DASHBOARD_SIDE,
+    namespace: LONG_NAMESPACE,
+    keyPrefix: LONG_KEY_PREFIX,
+    virtualOnly: true
+  });
+
+  return (Array.isArray(rawPositions) ? rawPositions : [])
+    .filter(isLongPosition);
+}
+
 function openPositionSymbols(openPositions = []) {
   return openPositions
     .map((position) => (
@@ -389,8 +710,14 @@ function normalizeOpenPosition(position = {}) {
     baseSymbol: position.baseSymbol || position.symbol || null,
     contractSymbol: position.contractSymbol || null,
 
-    microFamilyId: position.microFamilyId || position.trueMicroFamilyId || null,
+    microFamilyId: position.trueMicroFamilyId || position.microFamilyId || null,
     trueMicroFamilyId: position.trueMicroFamilyId || position.microFamilyId || null,
+    coarseMicroFamilyId:
+      position.coarseMicroFamilyId ||
+      position.trueMicroFamilyId ||
+      position.microFamilyId ||
+      null,
+
     familyId: position.familyId || null,
     macroFamilyId:
       position.parentMacroFamilyId ||
@@ -403,26 +730,40 @@ function normalizeOpenPosition(position = {}) {
     positionSide: TARGET_TRADE_SIDE,
     direction: TARGET_TRADE_SIDE,
 
-    targetTradeSide: TARGET_TRADE_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-
     longOnly: true,
     shortDisabled: true,
     shortOnly: false,
     longDisabled: false,
 
-    source: source === 'VIRTUAL' ? 'VIRTUAL' : source,
+    source: source === 'VIRTUAL' || source === 'SHADOW' || source === 'PAPER'
+      ? 'VIRTUAL'
+      : source,
+
+    outcomeSource: 'VIRTUAL',
     virtualOnly: true,
     virtualTracked: true,
     shadowOnly: position.shadowOnly !== false,
 
-    realOrdersDisabled: true,
-    bitgetOrdersDisabled: true,
-    exchangeOrdersDisabled: true,
-
     exchangeTouched: false,
     bitgetOrdersTouched: false,
     realOrdersTouched: false,
+
+    entry: position.entry ?? position.entryPrice ?? null,
+    sl: position.sl ?? position.stopLoss ?? position.initialSl ?? null,
+    tp: position.tp ?? position.takeProfit ?? null,
+    initialSl: position.initialSl ?? position.sl ?? position.stopLoss ?? null,
+
+    currentPrice: position.currentPrice ?? position.lastPrice ?? null,
+    lastPrice: position.lastPrice ?? position.currentPrice ?? null,
+
+    ageSec: position.ageSec ?? null,
+    currentR: position.currentR ?? null,
+    mfeR: position.mfeR ?? null,
+    maeR: position.maeR ?? null,
+
+    reachedHalfR: Boolean(position.reachedHalfR),
+    reachedOneR: Boolean(position.reachedOneR),
+    nearTpSeen: Boolean(position.nearTpSeen),
 
     openedAt: position.openedAt || position.createdAt || null,
     updatedAt: position.updatedAt || null
@@ -437,87 +778,87 @@ async function runDeleteSteps({
   const deleted = {};
   const preserved = {};
 
-  // Scanner volatile data: LONG namespace only.
+  // Scanner volatile data — LONG namespace only.
   deleted.scanSnapshots = await delPatternSafe(
     volatile,
-    LONG_PATTERNS.scanSnapshots,
+    LONG_KEYS.scan.snapshotPattern,
     10000
   );
 
   deleted.scanLatest = await delKey(
     volatile,
-    getScanLatestKey()
+    LONG_KEYS.scan.latest
   );
 
   deleted.scanRunMeta = await delKey(
     volatile,
-    getScanRunMetaKey()
+    LONG_KEYS.scan.runMeta
   );
 
-  // Trade durable data: LONG virtual open positions only.
+  // Trade durable data — LONG virtual open positions only.
   deleted.tradeOpenVirtualPositions = await delPatternSafe(
     durable,
-    LONG_PATTERNS.tradeOpenVirtualPositions,
+    LONG_KEYS.trade.openPattern,
     10000
   );
 
   deleted.tradeLastProcessed = await delKey(
     durable,
-    getTradeLastProcessedKey()
+    LONG_KEYS.trade.lastProcessedSnapshot
   );
 
   deleted.tradeMeta = await delKey(
     durable,
-    getTradeRunMetaKey()
+    LONG_KEYS.trade.runMeta
   );
 
   deleted.tradeLocks = 0;
 
-  // Circuit breakers / optional safety state: LONG namespace only.
+  // Circuit breakers / optional safety state — LONG namespace only.
   deleted.circuitPaused = await delPatternSafe(
     durable,
-    LONG_PATTERNS.circuitPaused,
+    LONG_KEYS.circuit.pausedPattern,
     10000
   );
 
-  // Analyze learning data: LONG namespace only.
+  // Analyze learning data — LONG namespace only.
   deleted.analyzeWeeks = await delPatternSafe(
     durable,
-    LONG_PATTERNS.analyzeWeeks,
+    LONG_KEYS.analyze.weekPattern,
     10000
   );
 
   deleted.analyzeMicros = await delPatternSafe(
     durable,
-    LONG_PATTERNS.analyzeMicros,
+    LONG_KEYS.analyze.microPattern,
     10000
   );
 
   deleted.analyzeObsLast = await delPatternSafe(
     durable,
-    LONG_PATTERNS.analyzeObsLast,
+    LONG_KEYS.analyze.obsLastPattern,
     10000
   );
 
   deleted.analyzeShadow = await delPatternSafe(
     durable,
-    LONG_PATTERNS.analyzeShadow,
+    LONG_KEYS.analyze.shadowPattern,
     10000
   );
 
   deleted.analyzeOutcomeDedupe = await delPatternSafe(
     durable,
-    LONG_PATTERNS.analyzeOutcomeDedupe,
+    LONG_KEYS.analyze.outcomePattern,
     10000
   );
 
   // Rotation policy:
-  // - activeRotation = handmatige exacte trueMicroFamilyId selectie, standaard bewaren.
+  // - activeRotation = handmatige Discord/selectie, standaard bewaren.
   // - nextRotation/validFrom = pending/legacy state, altijd verwijderen tegen auto-activatie.
   if (resetRotation) {
     deleted.activeRotation = await delKey(
       durable,
-      getActiveRotationKey()
+      LONG_KEYS.analyze.activeRotation
     );
   } else {
     deleted.activeRotation = 0;
@@ -526,30 +867,30 @@ async function runDeleteSteps({
 
   deleted.nextRotation = await delKey(
     durable,
-    getNextRotationKey()
+    LONG_KEYS.analyze.nextRotation
   );
 
   deleted.rotationValidFrom = await delKey(
     durable,
-    getRotationValidFromKey()
+    LONG_KEYS.analyze.rotationValidFrom
   );
 
-  // Volatile live cache: LONG namespace only.
+  // Volatile live cache — LONG namespace only.
   deleted.liveCache = await delPatternSafe(
     volatile,
-    LONG_PATTERNS.liveCache,
+    LONG_KEYS.cache.livePattern,
     10000
   );
 
   deleted.marketCache = await delPatternSafe(
     volatile,
-    LONG_PATTERNS.marketCache,
+    LONG_KEYS.cache.marketPattern,
     10000
   );
 
   deleted.bitgetCache = await delPatternSafe(
     volatile,
-    LONG_PATTERNS.bitgetCache,
+    LONG_KEYS.cache.bitgetPattern,
     10000
   );
 
@@ -576,14 +917,19 @@ function buildBlockedResponse({
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
-  res.setHeader('X-Admin-Factory-Reset-Mode', 'long-only-virtual-learning-v1');
+  res.setHeader('X-Admin-Factory-Reset-Mode', 'long-only-virtual-learning-v3');
   res.setHeader('X-Target-Trade-Side', TARGET_TRADE_SIDE);
+  res.setHeader('X-Long-Only', 'true');
   res.setHeader('X-Short-Disabled', 'true');
   res.setHeader('X-Real-Orders-Disabled', 'true');
   res.setHeader('X-Bitget-Orders-Disabled', 'true');
+  res.setHeader('X-Exchange-Calls-Disabled', 'true');
+  res.setHeader('X-Virtual-Learning-Forced', 'true');
   res.setHeader('X-Virtual-Positions-Only', 'true');
   res.setHeader('X-Manual-Rotation-Preserved-By-Default', 'true');
-  res.setHeader('X-Redis-Namespace', 'LONG');
+  res.setHeader('X-Manual-Selection-Match-Mode', 'EXACT_TRUE_MICRO_FAMILY_ID');
+  res.setHeader('X-Redis-Namespace', LONG_NAMESPACE);
+  res.setHeader('X-Short-Root-Touched', 'false');
 
   const token = randomUUID();
   let acquiredLocks = [];
@@ -596,10 +942,14 @@ export default async function handler(req, res) {
     const body = await readBody(req);
 
     const requiredConfirmText =
-      CONFIG.reset?.confirmText || DEFAULT_CONFIRM_TEXT;
+      CONFIG.long?.reset?.confirmText ||
+      CONFIG.reset?.longConfirmText ||
+      DEFAULT_CONFIRM_TEXT;
 
     const requiredRotationConfirmText =
-      CONFIG.reset?.rotationConfirmText || DEFAULT_ROTATION_CONFIRM_TEXT;
+      CONFIG.long?.reset?.rotationConfirmText ||
+      CONFIG.reset?.longRotationConfirmText ||
+      DEFAULT_ROTATION_CONFIRM_TEXT;
 
     const confirmed = isConfirmed(body, requiredConfirmText);
     const resetRotation = wantsRotationReset(body);
@@ -612,7 +962,7 @@ export default async function handler(req, res) {
     if (!confirmed) {
       return res.status(400).json(
         buildBlockedResponse({
-          reason: 'CONFIRMATION_REQUIRED',
+          reason: 'LONG_CONFIRMATION_REQUIRED',
           extra: {
             required: requiredConfirmText
           }
@@ -623,10 +973,10 @@ export default async function handler(req, res) {
     if (resetRotation && !isRotationResetConfirmed(body, requiredRotationConfirmText)) {
       return res.status(400).json(
         buildBlockedResponse({
-          reason: 'ROTATION_RESET_CONFIRMATION_REQUIRED',
+          reason: 'LONG_ROTATION_RESET_CONFIRMATION_REQUIRED',
           extra: {
             required: requiredRotationConfirmText,
-            note: 'activeRotation bevat je handmatige LONG true micro-family selectie en wordt standaard bewaard.'
+            note: 'activeRotation bevat je handmatige LONG micro-family keuze en wordt standaard bewaard.'
           }
         })
       );
@@ -657,12 +1007,12 @@ export default async function handler(req, res) {
       );
     }
 
-    const openPositions = await getOpenPositions();
+    const openPositions = await getLongOpenPositions();
 
     if (openPositions.length > 0 && !forceDeleteVirtualPositions) {
       return res.status(409).json(
         buildBlockedResponse({
-          reason: 'OPEN_VIRTUAL_LONG_POSITIONS_EXIST',
+          reason: 'LONG_OPEN_VIRTUAL_POSITIONS_EXIST',
           extra: {
             count: openPositions.length,
             symbols: openPositionSymbols(openPositions),
@@ -708,11 +1058,24 @@ export default async function handler(req, res) {
 
       preserved: {
         ...deleteResult.preserved,
+        shortRoot: true,
+        shortRedisKeys: true,
         resetLogs: true,
         discordLogs: true,
+        discordLogKey: LONG_KEYS.discord.logList,
         environmentVariables: true,
         deploymentConfig: true,
         activeRotation: !resetRotation
+      },
+
+      longKeys: {
+        namespace: LONG_NAMESPACE,
+        prefix: LONG_KEY_PREFIX,
+        scan: LONG_KEYS.scan,
+        trade: LONG_KEYS.trade,
+        analyze: LONG_KEYS.analyze,
+        reset: LONG_KEYS.reset,
+        discord: LONG_KEYS.discord
       },
 
       resetAt: now()
@@ -720,7 +1083,7 @@ export default async function handler(req, res) {
 
     await pushJsonLog(
       durable,
-      getResetLogListKey(),
+      LONG_KEYS.reset.logList,
       report,
       100
     ).catch(() => null);
