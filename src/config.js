@@ -190,8 +190,8 @@ export const CONFIG = Object.freeze({
     minQuoteVolume24h: boundedNum(env.SCANNER_MIN_QUOTE_VOLUME_24H, 1_500_000, 0),
     softMinQuoteVolume24h: boundedNum(env.SCANNER_SOFT_MIN_QUOTE_VOLUME_24H, 10_000, 0),
 
-    minAbsChange1h: boundedNum(env.SCANNER_MIN_ABS_CHANGE_1H, 0.12, 0),
-    minAbsChange24h: boundedNum(env.SCANNER_MIN_ABS_CHANGE_24H, 0.35, 0),
+    minAbsChange1h: boundedNum(env.SCANNER_MIN_ABS_CHANGE_1H, 0.08, 0),
+    minAbsChange24h: boundedNum(env.SCANNER_MIN_ABS_CHANGE_24H, 0.25, 0),
 
     strictFilters: bool(env.SCANNER_STRICT_FILTERS, false),
 
