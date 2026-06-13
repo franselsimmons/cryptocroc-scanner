@@ -23,15 +23,43 @@ const EXECUTION_MICRO_SUFFIX = 'XR';
 const EXECUTION_MICRO_HASH_LEN = 10;
 
 /*
-  Bijna dezelfde precisie als eerst.
-  Enige bewuste versoepeling:
-  - liqDistance wordt niet meer gebruikt in de echte Analyze learning-hash.
-  - liqDistance blijft wel metadata/debug.
+  BELANGRIJKE WIJZIGING (taxonomie i.p.v. hash):
+
+  De echte Analyze learning-ID (trueMicroFamilyId) is NIET langer een hash
+  over ~25 buckets. Dat veroorzaakte families met 1 coin (astronomisch veel
+  unieke combinaties). In plaats daarvan vallen alle setups verplicht in een
+  klein, vast aantal families:
+
+      MICRO_LONG_{SETUP}_{REGIME}
+
+      SETUP:  BREAKOUT | RETEST | SWEEP_REVERSAL | CONTINUATION | COMPRESSION
+      REGIME: TREND | CHOP | SQUEEZE
+
+  = 5 x 3 = 15 vaste families. Breed genoeg voor data, smal genoeg voor edge.
+
+  Alle oude buckets (rsi, flow, ob, spread, depth, funding, cost, etc.)
+  BLIJVEN behouden als metadata/debug in definitionParts en in de
+  execution-fingerprint. Ze bepalen alleen niet langer de IDENTITEIT.
 */
-const LEARNING_GRANULARITY = 'LONG_PRECISE_TINY_LOOSER_V2';
+const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 
 const MIN_COMPLETED_ACTIVE_LEARNING = 20;
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
+
+// Vaste taxonomie-dimensies (voor referentie/validatie).
+const SETUP_TYPES = Object.freeze([
+  'BREAKOUT',
+  'RETEST',
+  'SWEEP_REVERSAL',
+  'CONTINUATION',
+  'COMPRESSION'
+]);
+
+const REGIME_BUCKETS = Object.freeze([
+  'TREND',
+  'CHOP',
+  'SQUEEZE'
+]);
 
 const LONG_TOKENS = new Set([
   'LONG',
@@ -879,6 +907,92 @@ function getSpreadPct(metrics = {}) {
   return NaN;
 }
 
+/*
+  ===========================================================================
+  VASTE TAXONOMIE: SETUP-TYPE + REGIME-BUCKET (LONG)
+  ===========================================================================
+  Geen hash. Elke coin valt deterministisch in 1 van 5 setups x 3 regimes.
+*/
+
+/*
+  Setup-type bepalen uit de signalen die de scanner/riskEngine al meelevert.
+  LONG-gespiegeld: BREAKOUT is de default bullish afbraak-tegenhanger.
+
+   1. RETEST   - bevestigde retest is het sterkst gedefinieerd
+   2. SWEEP_REVERSAL - liquidity sweep
+   3. (PULLBACK telt als RETEST)
+   4. COMPRESSION - lage volatiliteit / squeeze
+   5. CONTINUATION - duidelijke trend-flow die doorloopt
+   6. BREAKOUT - default/overige bullish doorbraak
+*/
+function classifySetupType(metrics = {}) {
+  const reason = toUpper(metrics.scannerReason, '');
+  const flow = coarseFlow(metrics.flow);
+  const volBucket = volatilityTier(getVolatilityPct(metrics));
+
+  // 1. Retest expliciet bevestigd of in reason.
+  if (metrics.retestConfirmed || reason.includes('RETEST')) {
+    return 'RETEST';
+  }
+
+  // 2. Liquidity sweep.
+  if (metrics.sweepConfirmed || reason.includes('SWEEP')) {
+    return 'SWEEP_REVERSAL';
+  }
+
+  // 3. Pullback telt als retest-achtige continuation entry.
+  if (metrics.pullbackConfirmed || reason.includes('PULLBACK')) {
+    return 'RETEST';
+  }
+
+  // 4. Compressie/squeeze: lage volatiliteit zonder duidelijke trend-flow.
+  if (volBucket === 'VOL_LOW' && flow !== 'TREND') {
+    return 'COMPRESSION';
+  }
+
+  // 5. Duidelijke doorlopende bullish flow = continuation.
+  if (flow === 'TREND' && !metrics.fakeBreakout) {
+    return 'CONTINUATION';
+  }
+
+  // 6. Default: bullish doorbraak.
+  return 'BREAKOUT';
+}
+
+/*
+  Regime-bucket: TREND / CHOP / SQUEEZE.
+   - SQUEEZE: lage volatiliteit (compressie)
+   - TREND:   duidelijke richting (trend-flow of hoge volatiliteit met flow)
+   - CHOP:    de rest (rommelig/range)
+*/
+function classifyRegimeBucket(metrics = {}) {
+  const vol = coarseRegime(metrics.regime); // HIGH_VOL | NORMAL_VOL | LOW_VOL
+  const flow = coarseFlow(metrics.flow);
+
+  if (vol === 'LOW_VOL') return 'SQUEEZE';
+
+  if (flow === 'TREND') return 'TREND';
+  if (vol === 'HIGH_VOL') return 'TREND';
+
+  return 'CHOP';
+}
+
+/*
+  De vaste learning-familie. Dit is de IDENTITEIT waarop geleerd wordt.
+  Vorm: MICRO_LONG_{SETUP}_{REGIME}
+  Voorbeeld: MICRO_LONG_BREAKOUT_TREND
+*/
+function buildTaxonomyFamilyId(metrics = {}) {
+  const setup = classifySetupType(metrics);
+  const regime = classifyRegimeBucket(metrics);
+
+  return {
+    setup,
+    regime,
+    microFamilyId: `MICRO_${TARGET_TRADE_SIDE}_${setup}_${regime}`
+  };
+}
+
 function isScannerFamilyId(id = '') {
   const value = String(id || '').toUpperCase();
 
@@ -990,20 +1104,10 @@ function buildMacroDefinitionParts(metrics = {}, familyId) {
 }
 
 /*
-  Dit is de echte Analyze learning-ID.
-
-  Hij is maar heel klein beetje losser dan eerst:
-  - parent blijft parent.microFamilyId
-  - entryDistance blijft erin
-  - risk/slDistance blijft erin
-  - reward/tpDistance blijft erin
-  - spoof blijft erin
-  - spread/depth/funding/cost blijven erin
-  - alleen liqDistance is eruit gehaald om mini-versnippering te verminderen
-
-  liqDistance wordt later nog wel als metadata/debug toegevoegd.
+  Deze parts blijven volledig behouden als METADATA/DEBUG.
+  Ze bepalen NIET meer de learning-identiteit (die komt uit de taxonomie).
 */
-function buildMicroDefinitionParts(metrics = {}, parent) {
+function buildMicroDefinitionParts(metrics = {}, parent, taxonomy) {
   const spreadPct = getSpreadPct(metrics);
   const entryDistancePct = getEntryDistancePct(metrics);
   const slDistancePct = getSlDistancePct(metrics);
@@ -1021,6 +1125,11 @@ function buildMicroDefinitionParts(metrics = {}, parent) {
     `side=${TARGET_DASHBOARD_SIDE}`,
     `tradeSide=${TARGET_TRADE_SIDE}`,
     `family=${parent.familyId}`,
+
+    // De vaste taxonomie-identiteit, expliciet vastgelegd in de definitie.
+    `setupType=${taxonomy.setup}`,
+    `regimeBucket=${taxonomy.regime}`,
+    `learningFamily=${taxonomy.microFamilyId}`,
 
     `assetClass=${assetClass(metrics)}`,
     `symbolClass=${symbolClassBucket(metrics)}`,
@@ -1259,11 +1368,14 @@ export function buildMicroFamilyV2(metrics = {}) {
   const scannerMetadata = getScannerMetadata(sideSafeMetrics);
   const parent = buildMicroFamilyV1(sideSafeMetrics);
 
-  const baseDefinitionParts = buildMicroDefinitionParts(sideSafeMetrics, parent);
-  const coarseHash = stableHash(baseDefinitionParts.join('|'), 8);
-  const schema = getMicroSchema();
+  // === DE VASTE TAXONOMIE: dit is de echte learning-identiteit ===
+  const taxonomy = buildTaxonomyFamilyId(sideSafeMetrics);
+  const analyzeMicroFamilyId = taxonomy.microFamilyId; // MICRO_LONG_{SETUP}_{REGIME}
 
-  const analyzeMicroFamilyId = `MICRO_${TARGET_TRADE_SIDE}_${parent.familyId}_${schema}_${coarseHash}`;
+  // De oude buckets blijven als metadata/debug (NIET als identiteit).
+  const baseDefinitionParts = buildMicroDefinitionParts(sideSafeMetrics, parent, taxonomy);
+
+  const schema = getMicroSchema();
 
   const executionFingerprintParts = shouldBuildExecutionFingerprintMetadata()
     ? buildExecutionFingerprintParts(sideSafeMetrics, parent)
@@ -1285,11 +1397,13 @@ export function buildMicroFamilyV2(metrics = {}) {
       midLabel: 'MID',
       highLabel: 'FAR'
     })}`,
+    `setupType=${taxonomy.setup}`,
+    `regimeBucket=${taxonomy.regime}`,
     `analyzeMicroFamilyId=${analyzeMicroFamilyId}`,
     `trueMicroFamilyId=${analyzeMicroFamilyId}`,
     `coarseMicroFamilyId=${analyzeMicroFamilyId}`,
     `learningGranularity=${LEARNING_GRANULARITY}`,
-    `learningIdentity=ANALYZE_TRUE_MICRO_FAMILY`,
+    `learningIdentity=ANALYZE_TRUE_MICRO_FAMILY_FIXED_TAXONOMY`,
     `scannerFingerprintRole=METADATA_ONLY`,
     `executionFingerprintRole=METADATA_ONLY`
   ]);
@@ -1309,6 +1423,10 @@ export function buildMicroFamilyV2(metrics = {}) {
 
     analyzeMicroFamilyId,
     learningMicroFamilyId: analyzeMicroFamilyId,
+
+    // Vaste taxonomie-velden, expliciet beschikbaar voor dashboard/sortering.
+    setupType: taxonomy.setup,
+    regimeBucket: taxonomy.regime,
 
     learningGranularity: LEARNING_GRANULARITY,
     learningHashInputParts: baseDefinitionParts,
@@ -1415,6 +1533,25 @@ export function getParentMacroFamilyId(metrics = {}) {
   return buildMicroFamilyV1(metrics).microFamilyId;
 }
 
+/*
+  De vaste-taxonomie micro-IDs hebben de vorm MICRO_LONG_{SETUP}_{REGIME}
+  en bevatten GEEN schema-segment meer (geen _MF_V2_<hash>). De id-detectie
+  hieronder accepteert daarom zowel de nieuwe vaste vorm als de oude vorm,
+  zodat eventuele oude opgeslagen rijen niet kapotgaan.
+*/
+function isFixedTaxonomyMicroId(id = '') {
+  const value = String(id || '').toUpperCase();
+
+  if (!value || isScannerFamilyId(value)) return false;
+  if (!value.startsWith(`MICRO_${TARGET_TRADE_SIDE}_`)) return false;
+
+  return SETUP_TYPES.some((setup) => (
+    REGIME_BUCKETS.some((regime) => (
+      value === `MICRO_${TARGET_TRADE_SIDE}_${setup}_${regime}`
+    ))
+  ));
+}
+
 export function isMicroFamilyV1Id(id) {
   const value = String(id || '').toUpperCase();
 
@@ -1428,10 +1565,15 @@ export function isMicroFamilyV1Id(id) {
 export function isMicroFamilyV2Id(id) {
   const value = String(id || '').toUpperCase();
 
+  if (isScannerFamilyId(value)) return false;
+
+  // Nieuwe vaste taxonomie.
+  if (isFixedTaxonomyMicroId(value)) return true;
+
+  // Oude hash-vorm blijft herkenbaar voor backward-compat.
   return (
     value.includes(`_${getMicroSchema()}_`) &&
-    value.includes('MICRO_LONG_') &&
-    !isScannerFamilyId(value)
+    value.includes('MICRO_LONG_')
   );
 }
 
@@ -1439,7 +1581,8 @@ export function isExecutionRefinedMicroFamilyId(id) {
   const value = String(id || '').toUpperCase();
 
   return (
-    isMicroFamilyV2Id(value) &&
+    value.includes('MICRO_LONG_') &&
+    !isScannerFamilyId(value) &&
     value.includes(`_${EXECUTION_MICRO_SUFFIX}_`)
   );
 }
@@ -1486,6 +1629,9 @@ export function attachMicroFamilies(metrics = {}) {
 
     analyzeMicroFamilyId: micro.analyzeMicroFamilyId,
     learningMicroFamilyId: micro.learningMicroFamilyId,
+
+    setupType: micro.setupType,
+    regimeBucket: micro.regimeBucket,
 
     learningGranularity: micro.learningGranularity,
     learningHashInputParts: micro.learningHashInputParts,
