@@ -62,6 +62,25 @@ const RUN_SCOPE = 'TRADE_ONLY';
 const WRITE_SCOPE = 'TRADE_AND_ANALYZE_PARTIAL_ONLY';
 const READ_SCOPE = 'READ_SCANNER_LATEST_ONLY';
 
+/*
+  Kwaliteitsvariant LONG:
+  - iets soepeler op candle-count: 30 -> 25
+  - iets ruimere risk range: 0.40%-2.50% -> 0.35%-3.00%
+  - synthetic risk NIET standaard aan
+  - synthetic risk alleen als expliciet in CONFIG.trade aangezet
+  - echte Analyze trueMicroFamilyId blijft verplicht
+  - scanner fingerprint blijft metadata-only
+  - echte LONG risk shape blijft verplicht
+  - één open positie per symbol blijft verplicht
+*/
+const ENTRY_RELAXATION_PROFILE = 'LONG_ENTRY_QUALITY_TINY_LOOSER_V1';
+const DEFAULT_MIN_LIVE_CANDLES_15M = 25;
+const DEFAULT_MIN_RISK_PCT = 0.0035;
+const DEFAULT_MAX_RISK_PCT = 0.03;
+const DEFAULT_FALLBACK_RISK_PCT = 0.005;
+const DEFAULT_ALLOW_SYNTHETIC_RISK_FALLBACK = false;
+const DEFAULT_ALLOW_SYNTHETIC_RISK_VIRTUAL_ENTRIES = false;
+
 const KNOWN_TRADE_SIDES = new Set([
   TARGET_TRADE_SIDE,
   OPPOSITE_TRADE_SIDE
@@ -297,6 +316,10 @@ function virtualFlags() {
     exactTrueMicroFamilyRequired: true,
     symbolExcludedFromFamilyId: true,
 
+    entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
+    entrySlightlyLoosened: true,
+    syntheticRiskDefaultEnabled: DEFAULT_ALLOW_SYNTHETIC_RISK_FALLBACK,
+
     completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
     scoringRSource: 'netR',
     winsLossesFlatsSource: 'netR',
@@ -355,6 +378,8 @@ function tradeConfig() {
   );
 
   return {
+    entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
+
     maxCandidatesPerSnapshot: positiveInt(
       Math.max(
         configuredTradeMax,
@@ -380,6 +405,16 @@ function tradeConfig() {
 
     maxSpreadPct: cfgNumber(CONFIG.trade?.maxSpreadPct, 0.0015),
 
+    minLiveCandles15m: positiveInt(
+      CONFIG.trade?.minLiveCandles15m ??
+      CONFIG.trade?.minLiveCandles15M ??
+      CONFIG.trade?.minCandles15m ??
+      CONFIG.trade?.minCandles15M,
+      DEFAULT_MIN_LIVE_CANDLES_15M,
+      20,
+      100
+    ),
+
     candleTtlSec: positiveInt(
       CONFIG.trade?.candleTtlSec,
       90
@@ -397,17 +432,32 @@ function tradeConfig() {
 
     allowSyntheticRiskFallback: cfgBoolean(
       CONFIG.trade?.allowSyntheticRiskFallback,
-      false
+      DEFAULT_ALLOW_SYNTHETIC_RISK_FALLBACK
     ),
 
     allowSyntheticRiskVirtualEntries: cfgBoolean(
       CONFIG.trade?.allowSyntheticRiskVirtualEntries,
-      false
+      DEFAULT_ALLOW_SYNTHETIC_RISK_VIRTUAL_ENTRIES
     ),
 
-    minRiskPct: cfgNumber(CONFIG.trade?.minRiskPct, 0.004),
-    maxRiskPct: cfgNumber(CONFIG.trade?.maxRiskPct, 0.025),
-    fallbackRiskPct: cfgNumber(CONFIG.trade?.fallbackRiskPct, 0.005),
+    syntheticRiskRequiresScannerGatePassed: cfgBoolean(
+      CONFIG.trade?.syntheticRiskRequiresScannerGatePassed,
+      true
+    ),
+
+    syntheticRiskRequiresAnalyzeEligible: cfgBoolean(
+      CONFIG.trade?.syntheticRiskRequiresAnalyzeEligible,
+      true
+    ),
+
+    syntheticRiskRequiresSpreadGatePassed: cfgBoolean(
+      CONFIG.trade?.syntheticRiskRequiresSpreadGatePassed,
+      true
+    ),
+
+    minRiskPct: cfgNumber(CONFIG.trade?.minRiskPct, DEFAULT_MIN_RISK_PCT),
+    maxRiskPct: cfgNumber(CONFIG.trade?.maxRiskPct, DEFAULT_MAX_RISK_PCT),
+    fallbackRiskPct: cfgNumber(CONFIG.trade?.fallbackRiskPct, DEFAULT_FALLBACK_RISK_PCT),
     defaultRR: cfgNumber(CONFIG.trade?.defaultRR, 1.5),
     minRR: cfgNumber(CONFIG.trade?.minRR, 0.5),
     positionTimeStopMin: cfgNumber(CONFIG.trade?.positionTimeStopMin, 720)
@@ -1020,6 +1070,8 @@ function waitAction(candidate, reason, extra = {}) {
     shortOnly: false,
     longDisabled: false,
 
+    entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
+
     ...isolationFlags(),
 
     ...extra
@@ -1086,6 +1138,8 @@ function buildVirtualExitAction(outcome = {}) {
     realOrder: false,
     exchangeOrder: false,
     bitgetOrderPlaced: false,
+
+    entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
 
     ...sideFlags(),
     ...isolationFlags()
@@ -1490,7 +1544,9 @@ function validateVirtualEntry(row = {}) {
 
   return {
     ok: true,
-    reason: 'LONG_VIRTUAL_RISK_VALID'
+    reason: row.syntheticRisk
+      ? 'LONG_VIRTUAL_RISK_VALID_SYNTHETIC_EXPLICITLY_ENABLED'
+      : 'LONG_VIRTUAL_RISK_VALID'
   };
 }
 
@@ -1891,6 +1947,9 @@ function enrichMetricsWithScannerAndLiveGates({
     ...sideFlags(),
     ...isolationFlags(),
 
+    entryRelaxationProfile: cfg.entryRelaxationProfile,
+    minLiveCandles15m: cfg.minLiveCandles15m,
+
     snapshotId: normalized.snapshotId || metrics.snapshotId || null,
 
     symbol: normalized.symbol || metrics.symbol,
@@ -2033,7 +2092,8 @@ function buildObservationOnlyMetrics({
       analysisInputOnly: true,
       learningOnly: true,
       liveRiskValid: false,
-      liveEntryBlockedReason: reason
+      liveEntryBlockedReason: reason,
+      entryRelaxationProfile: ENTRY_RELAXATION_PROFILE
     },
     candidate: {
       ...normalized,
@@ -2066,6 +2126,34 @@ function buildSyntheticLongRiskMetrics({
     0
   );
 
+  const scannerGatePassed = normalized.scannerGatePassed !== false;
+  const analyzeEligible = normalized.analyzeEligible !== false;
+  const spreadGatePassed = spreadPct <= cfg.maxSpreadPct;
+
+  if (cfg.syntheticRiskRequiresScannerGatePassed && !scannerGatePassed) {
+    return buildObservationOnlyMetrics({
+      normalized,
+      data,
+      reason: 'SYNTHETIC_LONG_RISK_BLOCKED_SCANNER_GATE_FAILED'
+    });
+  }
+
+  if (cfg.syntheticRiskRequiresAnalyzeEligible && !analyzeEligible) {
+    return buildObservationOnlyMetrics({
+      normalized,
+      data,
+      reason: 'SYNTHETIC_LONG_RISK_BLOCKED_ANALYZE_NOT_ELIGIBLE'
+    });
+  }
+
+  if (cfg.syntheticRiskRequiresSpreadGatePassed && !spreadGatePassed) {
+    return buildObservationOnlyMetrics({
+      normalized,
+      data,
+      reason: 'SYNTHETIC_LONG_RISK_BLOCKED_SPREAD_TOO_WIDE'
+    });
+  }
+
   if (mid <= 0) {
     return buildObservationOnlyMetrics({
       normalized,
@@ -2087,7 +2175,7 @@ function buildSyntheticLongRiskMetrics({
   );
 
   const entry = mid;
-  const sl = entry * (1 - riskPct);
+  const sl = Math.max(entry * (1 - riskPct), entry * 0.0001);
   const tp = entry * (1 + riskPct * rr);
   const rewardPct = Math.max(0, (tp - entry) / entry);
 
@@ -2129,12 +2217,18 @@ function buildSyntheticLongRiskMetrics({
 
       syntheticRisk: true,
       syntheticRiskReason: reason,
+      syntheticRiskEntryRelaxed: true,
+      syntheticRiskVirtualEntryAllowed: cfg.allowSyntheticRiskVirtualEntries,
+      syntheticRiskQuality: 'EXPLICITLY_ENABLED_CONFIG_ONLY',
+
       observationOnly: false,
       analysisInputOnly: false,
 
       learningOnly: false,
       liveRiskValid: true,
-      liveEntryBlockedReason: null
+      liveEntryBlockedReason: null,
+
+      entryRelaxationProfile: cfg.entryRelaxationProfile
     },
     candidate: {
       ...normalized,
@@ -2231,7 +2325,10 @@ async function processCandidate(candidate) {
     };
   }
 
-  const hasEnough15mCandles = Array.isArray(data.candles15m) && data.candles15m.length >= 30;
+  const hasEnough15mCandles = (
+    Array.isArray(data.candles15m) &&
+    data.candles15m.length >= cfg.minLiveCandles15m
+  );
 
   if (!hasEnough15mCandles) {
     const fallback = buildObservationOnlyMetrics({
@@ -2243,7 +2340,8 @@ async function processCandidate(candidate) {
     return {
       actions: [
         waitAction(normalized, 'INSUFFICIENT_LIVE_CANDLES_15M', {
-          candleCount: data.candles15m?.length || 0
+          candleCount: data.candles15m?.length || 0,
+          requiredCandleCount: cfg.minLiveCandles15m
         })
       ],
       metrics: [fallback]
@@ -2380,7 +2478,9 @@ function buildVirtualEntryAction({
     ...isolationFlags(),
 
     action: 'VIRTUAL_ENTRY',
-    reason: 'LONG_VIRTUAL_RISK_VALID',
+    reason: row.syntheticRisk
+      ? 'LONG_VIRTUAL_RISK_VALID_SYNTHETIC_EXPLICITLY_ENABLED'
+      : 'LONG_VIRTUAL_RISK_VALID',
 
     shadowOnly: false,
 
@@ -2417,6 +2517,8 @@ function buildVirtualEntryAction({
     longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
     longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
     positionTimeStopMin: tradeConfig().positionTimeStopMin,
+
+    entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
 
     entryCreatedAt: now()
   };
@@ -2474,6 +2576,8 @@ async function saveRunMeta(result) {
   const finalResult = {
     ok: true,
     ...result,
+
+    entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
 
     ...sideFlags(),
     ...virtualFlags(),
@@ -2924,6 +3028,17 @@ export async function runTradeSystem(options = {}) {
       blockedNonLongCandidatesCount: snapshot.blockedNonLongCandidatesCount || 0,
       blockedNonShortCandidatesCount: snapshot.blockedNonShortCandidatesCount || 0,
 
+      entryRelaxationProfile: cfg.entryRelaxationProfile,
+      minLiveCandles15m: cfg.minLiveCandles15m,
+      allowSyntheticRiskFallback: cfg.allowSyntheticRiskFallback,
+      allowSyntheticRiskVirtualEntries: cfg.allowSyntheticRiskVirtualEntries,
+      syntheticRiskRequiresScannerGatePassed: cfg.syntheticRiskRequiresScannerGatePassed,
+      syntheticRiskRequiresAnalyzeEligible: cfg.syntheticRiskRequiresAnalyzeEligible,
+      syntheticRiskRequiresSpreadGatePassed: cfg.syntheticRiskRequiresSpreadGatePassed,
+      minRiskPct: cfg.minRiskPct,
+      maxRiskPct: cfg.maxRiskPct,
+      fallbackRiskPct: cfg.fallbackRiskPct,
+
       ...sideFlags(),
       ...virtualFlags(),
       ...isolationFlags(),
@@ -3032,6 +3147,17 @@ export async function runTradeSystem(options = {}) {
     selectedShortCandidateCount: snapshot.selectedShortCandidateCount || 0,
     blockedNonLongCandidatesCount: snapshot.blockedNonLongCandidatesCount || 0,
     blockedNonShortCandidatesCount: snapshot.blockedNonShortCandidatesCount || 0,
+
+    entryRelaxationProfile: cfg.entryRelaxationProfile,
+    minLiveCandles15m: cfg.minLiveCandles15m,
+    allowSyntheticRiskFallback: cfg.allowSyntheticRiskFallback,
+    allowSyntheticRiskVirtualEntries: cfg.allowSyntheticRiskVirtualEntries,
+    syntheticRiskRequiresScannerGatePassed: cfg.syntheticRiskRequiresScannerGatePassed,
+    syntheticRiskRequiresAnalyzeEligible: cfg.syntheticRiskRequiresAnalyzeEligible,
+    syntheticRiskRequiresSpreadGatePassed: cfg.syntheticRiskRequiresSpreadGatePassed,
+    minRiskPct: cfg.minRiskPct,
+    maxRiskPct: cfg.maxRiskPct,
+    fallbackRiskPct: cfg.fallbackRiskPct,
 
     ...sideFlags(),
     ...virtualFlags(),
