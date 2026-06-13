@@ -63,23 +63,32 @@ const WRITE_SCOPE = 'TRADE_AND_ANALYZE_PARTIAL_ONLY';
 const READ_SCOPE = 'READ_SCANNER_LATEST_ONLY';
 
 /*
-  Kwaliteitsvariant LONG:
-  - iets soepeler op candle-count: 30 -> 25
-  - iets ruimere risk range: 0.40%-2.50% -> 0.35%-3.00%
-  - synthetic risk NIET standaard aan
-  - synthetic risk alleen als expliciet in CONFIG.trade aangezet
-  - echte Analyze trueMicroFamilyId blijft verplicht
-  - scanner fingerprint blijft metadata-only
-  - echte LONG risk shape blijft verplicht
-  - één open positie per symbol blijft verplicht
+  LONG kwaliteitsvariant:
+  - geen synthetic shadow-laag standaard
+  - geen kunstmatig completed-volume
+  - wel iets soepeler maar nog betrouwbaar:
+    - 30 -> 25 candles
+    - risk range 0.40%-2.50% -> 0.35%-3.00%
+  - echte Analyze trueMicroFamilyId verplicht
+  - scanner fingerprint metadata-only
+  - echte LONG risk shape verplicht
+  - één open positie per symbol
 */
 const ENTRY_RELAXATION_PROFILE = 'LONG_ENTRY_QUALITY_TINY_LOOSER_V1';
+const QUALITY_MEASUREMENT_PROFILE = 'LONG_DISCIPLINED_QUALITY_AUDIT_V1';
+
 const DEFAULT_MIN_LIVE_CANDLES_15M = 25;
 const DEFAULT_MIN_RISK_PCT = 0.0035;
 const DEFAULT_MAX_RISK_PCT = 0.03;
 const DEFAULT_FALLBACK_RISK_PCT = 0.005;
+
 const DEFAULT_ALLOW_SYNTHETIC_RISK_FALLBACK = false;
 const DEFAULT_ALLOW_SYNTHETIC_RISK_VIRTUAL_ENTRIES = false;
+
+const FREEZE_MEASUREMENT_RECOMMENDED_DAYS = 14;
+const MIN_COMPLETED_EARLY_SIGNAL = 20;
+const MIN_COMPLETED_REASONABLE_SIGNAL = 50;
+const MIN_COMPLETED_STRONG_SIGNAL = 100;
 
 const KNOWN_TRADE_SIDES = new Set([
   TARGET_TRADE_SIDE,
@@ -320,6 +329,11 @@ function virtualFlags() {
     entrySlightlyLoosened: true,
     syntheticRiskDefaultEnabled: DEFAULT_ALLOW_SYNTHETIC_RISK_FALLBACK,
 
+    qualityMeasurementProfile: QUALITY_MEASUREMENT_PROFILE,
+    noSyntheticShadowLayer: true,
+    disciplinedMeasurement: true,
+    recommendedFreezeDays: FREEZE_MEASUREMENT_RECOMMENDED_DAYS,
+
     completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
     scoringRSource: 'netR',
     winsLossesFlatsSource: 'netR',
@@ -335,6 +349,12 @@ function virtualFlags() {
       observing: 'completed = 0',
       earlyOutcomes: 'completed > 0 && completed < 20',
       activeLearning: 'completed >= 20'
+    },
+
+    completedThresholds: {
+      earlySignal: MIN_COMPLETED_EARLY_SIGNAL,
+      reasonableSignal: MIN_COMPLETED_REASONABLE_SIGNAL,
+      strongSignal: MIN_COMPLETED_STRONG_SIGNAL
     }
   };
 }
@@ -367,6 +387,19 @@ function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
+function ratio(part, total) {
+  const p = safeNumber(part, 0);
+  const t = safeNumber(total, 0);
+
+  if (t <= 0) return 0;
+
+  return p / t;
+}
+
+function pct(part, total) {
+  return Number((ratio(part, total) * 100).toFixed(2));
+}
+
 function tradeConfig() {
   const configuredTradeMax = cfgNumber(CONFIG.trade?.maxCandidatesPerSnapshot, 0);
   const configuredAnalyzeMax = cfgNumber(
@@ -379,6 +412,7 @@ function tradeConfig() {
 
   return {
     entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
+    qualityMeasurementProfile: QUALITY_MEASUREMENT_PROFILE,
 
     maxCandidatesPerSnapshot: positiveInt(
       Math.max(
@@ -501,6 +535,21 @@ function actionCounts(actions = []) {
     acc[key] = (acc[key] || 0) + 1;
     return acc;
   }, {});
+}
+
+function reasonCounts(actions = []) {
+  return actions.reduce((acc, row) => {
+    const key = row?.reason || row?.liveEntryBlockedReason || 'UNKNOWN_REASON';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function topReasonCounts(actions = [], limit = 10) {
+  return Object.entries(reasonCounts(actions))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([reason, count]) => ({ reason, count }));
 }
 
 function uniqueStrings(values = []) {
@@ -1948,6 +1997,7 @@ function enrichMetricsWithScannerAndLiveGates({
     ...isolationFlags(),
 
     entryRelaxationProfile: cfg.entryRelaxationProfile,
+    qualityMeasurementProfile: cfg.qualityMeasurementProfile,
     minLiveCandles15m: cfg.minLiveCandles15m,
 
     snapshotId: normalized.snapshotId || metrics.snapshotId || null,
@@ -2093,7 +2143,8 @@ function buildObservationOnlyMetrics({
       learningOnly: true,
       liveRiskValid: false,
       liveEntryBlockedReason: reason,
-      entryRelaxationProfile: ENTRY_RELAXATION_PROFILE
+      entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
+      qualityMeasurementProfile: QUALITY_MEASUREMENT_PROFILE
     },
     candidate: {
       ...normalized,
@@ -2228,7 +2279,8 @@ function buildSyntheticLongRiskMetrics({
       liveRiskValid: true,
       liveEntryBlockedReason: null,
 
-      entryRelaxationProfile: cfg.entryRelaxationProfile
+      entryRelaxationProfile: cfg.entryRelaxationProfile,
+      qualityMeasurementProfile: cfg.qualityMeasurementProfile
     },
     candidate: {
       ...normalized,
@@ -2519,6 +2571,7 @@ function buildVirtualEntryAction({
     positionTimeStopMin: tradeConfig().positionTimeStopMin,
 
     entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
+    qualityMeasurementProfile: QUALITY_MEASUREMENT_PROFILE,
 
     entryCreatedAt: now()
   };
@@ -2542,6 +2595,181 @@ function maybeSendDiscordEntryAlert(entry = {}) {
     queued: true,
     fireAndForget: true,
     reason: 'DISCORD_ENTRY_ALERT_QUEUED_FIRE_AND_FORGET'
+  };
+}
+
+function inferPrimaryBottleneck({
+  candidates,
+  processed,
+  liveRows,
+  riskValidRows,
+  analyzedRows,
+  analyzedRiskValidRows,
+  virtualCreatedRows,
+  virtualExitRows,
+  openPositionCountAfterEntries,
+  actionCountMap
+}) {
+  if (candidates <= 0) return 'NO_LONG_CANDIDATES';
+  if (processed <= 0) return 'NO_CANDIDATES_PROCESSED';
+  if (liveRows <= 0) return 'NO_LIVE_ROWS';
+
+  if ((actionCountMap?.SNAPSHOT_ALREADY_PROCESSED || 0) > 0) {
+    return 'SNAPSHOT_ALREADY_PROCESSED';
+  }
+
+  if ((actionCountMap?.SNAPSHOT_TOO_STALE || 0) > 0) {
+    return 'SNAPSHOT_TOO_STALE';
+  }
+
+  if (riskValidRows <= 0) {
+    return 'RISK_ENGINE_OR_LIVE_RISK_SHAPE';
+  }
+
+  if (analyzedRows <= 0) {
+    return 'ANALYZE_RETURNED_NO_TARGET_ROWS';
+  }
+
+  if (analyzedRiskValidRows <= 0) {
+    return 'ANALYZE_REMOVED_OR_DID_NOT_CONFIRM_RISK_ROWS';
+  }
+
+  if (virtualCreatedRows <= 0) {
+    return 'VIRTUAL_ENTRY_GATE_OR_SYMBOL_LOCK';
+  }
+
+  if (virtualCreatedRows > 0 && virtualExitRows <= 0 && openPositionCountAfterEntries > 0) {
+    return 'POSITIONS_OPEN_WAITING_FOR_OUTCOMES';
+  }
+
+  if (virtualCreatedRows > 0 && virtualExitRows > 0) {
+    return 'HEALTHY_OUTCOME_PIPELINE';
+  }
+
+  return 'PIPELINE_ACTIVE_MONITOR_REQUIRED';
+}
+
+function buildQualityAudit({
+  snapshot,
+  candidates,
+  processed,
+  liveRows,
+  analyzedRowsRaw,
+  analyzedRows,
+  actions,
+  actionCountMap,
+  virtualExits,
+  counts,
+  openPositionCountBeforeEntries,
+  openPositionCountAfterEntries
+}) {
+  const candidateCount = candidates.length;
+  const processedCount = processed.length;
+  const liveRowsCount = liveRows.length;
+  const analyzedRowsRawCount = analyzedRowsRaw.length;
+  const analyzedRowsCount = analyzedRows.length;
+
+  const virtualExitRows = virtualExits.length;
+
+  const riskValidRows = counts.riskValidRows;
+  const analyzedRiskValidRows = counts.analyzedRiskValidRows;
+  const entryRows = counts.entryRows;
+  const virtualCreatedRows = counts.virtualCreatedRows;
+  const waitRows = counts.waitRows;
+
+  const primaryBottleneck = inferPrimaryBottleneck({
+    candidates: candidateCount,
+    processed: processedCount,
+    liveRows: liveRowsCount,
+    riskValidRows,
+    analyzedRows: analyzedRowsCount,
+    analyzedRiskValidRows,
+    virtualCreatedRows,
+    virtualExitRows,
+    openPositionCountAfterEntries,
+    actionCountMap
+  });
+
+  const waitReasons = topReasonCounts(actions, 12);
+
+  return {
+    profile: QUALITY_MEASUREMENT_PROFILE,
+    entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
+
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+
+    noSyntheticShadowLayer: true,
+    syntheticRiskDefaultEnabled: DEFAULT_ALLOW_SYNTHETIC_RISK_FALLBACK,
+    completedIsPureClosedVirtualOutcome: true,
+
+    recommendedFreezeDays: FREEZE_MEASUREMENT_RECOMMENDED_DAYS,
+
+    completedThresholds: {
+      earlySignal: MIN_COMPLETED_EARLY_SIGNAL,
+      reasonableSignal: MIN_COMPLETED_REASONABLE_SIGNAL,
+      strongSignal: MIN_COMPLETED_STRONG_SIGNAL
+    },
+
+    snapshot: {
+      snapshotId: snapshot?.snapshotId || null,
+      selectedSnapshotSource: snapshot?.selectedSnapshotSource || null,
+      selectedSnapshotReason: snapshot?.selectedSnapshotReason || null,
+      selectedTargetCandidateCount: snapshot?.selectedTargetCandidateCount || 0,
+      selectedLongCandidateCount: snapshot?.selectedLongCandidateCount || 0,
+      selectedOppositeCandidateCount: snapshot?.selectedOppositeCandidateCount || 0,
+      selectedShortCandidateCount: snapshot?.selectedShortCandidateCount || 0
+    },
+
+    pipelineCounts: {
+      candidates: candidateCount,
+      processed: processedCount,
+      liveRows: liveRowsCount,
+      riskValidRows,
+      analyzedRowsRaw: analyzedRowsRawCount,
+      analyzedRows: analyzedRowsCount,
+      analyzedRiskValidRows,
+      entryRows,
+      virtualCreatedRows,
+      virtualExitRows,
+      waitRows,
+      openPositionCountBeforeEntries,
+      openPositionCountAfterEntries
+    },
+
+    conversionRatesPct: {
+      processedPerCandidate: pct(processedCount, candidateCount),
+      liveRowsPerCandidate: pct(liveRowsCount, candidateCount),
+      riskValidPerLiveRow: pct(riskValidRows, liveRowsCount),
+      analyzedPerLiveRow: pct(analyzedRowsCount, liveRowsCount),
+      analyzedRiskValidPerAnalyzed: pct(analyzedRiskValidRows, analyzedRowsCount),
+      virtualCreatedPerAnalyzedRiskValid: pct(virtualCreatedRows, analyzedRiskValidRows),
+      virtualExitPerCreatedThisRun: pct(virtualExitRows, virtualCreatedRows)
+    },
+
+    primaryBottleneck,
+    topWaitReasons: waitReasons,
+
+    interpretation: {
+      ifVirtualCreatedLow: 'Entry/gating/risk pipeline geeft te weinig nieuwe outcome-kansen.',
+      ifVirtualCreatedHighAndExitLow: 'Posities lopen nog; completed komt later via TP/SL/TIME_STOP.',
+      ifRiskValidLow: 'RiskEngine of live risk shape is waarschijnlijk de bottleneck.',
+      ifAnalyzedRiskValidLow: 'Analyze/microfamily-filter bevestigt te weinig geldige risk rows.',
+      ifSymbolAlreadyOpenHigh: 'Eén open positie per symbol blokkeert extra entries, bewust kwaliteitsfilter.',
+      ifSnapshotAlreadyProcessedHigh: 'Trade-run verwerkt geen nieuwe entries totdat scanner een nieuwe snapshot levert.'
+    },
+
+    doNotChangeDuringFreeze: [
+      'microFamilies',
+      'riskEngine',
+      'positionEngine',
+      'scoring',
+      'scanner thresholds',
+      'time-stop',
+      'synthetic shadow layer'
+    ],
+
+    measurementPrinciple: 'Eén zuivere completed-meting lang genoeg volhouden; niet kunstmatig completed-volume toevoegen.'
   };
 }
 
@@ -2578,6 +2806,7 @@ async function saveRunMeta(result) {
     ...result,
 
     entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
+    qualityMeasurementProfile: QUALITY_MEASUREMENT_PROFILE,
 
     ...sideFlags(),
     ...virtualFlags(),
@@ -2604,7 +2833,8 @@ async function saveRunMeta(result) {
 
     completedAt,
     durationMs: completedAt - safeNumber(result.startedAt, completedAt),
-    actionCounts: result.actionCounts || buildRunActionCounts(result.actions || [], virtualExits)
+    actionCounts: result.actionCounts || buildRunActionCounts(result.actions || [], virtualExits),
+    qualityAudit: result.qualityAudit || null
   };
 
   await scopedSetJson(
@@ -3011,6 +3241,27 @@ export async function runTradeSystem(options = {}) {
 
   const counts = buildRunActionCounts(actions, virtualExits);
 
+  const qualityAudit = buildQualityAudit({
+    snapshot,
+    candidates,
+    processed,
+    liveRows,
+    analyzedRowsRaw,
+    analyzedRows,
+    actions,
+    actionCountMap: counts,
+    virtualExits,
+    counts: {
+      riskValidRows,
+      analyzedRiskValidRows,
+      entryRows,
+      virtualCreatedRows,
+      waitRows
+    },
+    openPositionCountBeforeEntries,
+    openPositionCountAfterEntries: openPositions.length
+  });
+
   await scopedSetJson(
     durableRedis,
     LONG_KEYS.trade.lastProcessedSnapshot,
@@ -3029,6 +3280,7 @@ export async function runTradeSystem(options = {}) {
       blockedNonShortCandidatesCount: snapshot.blockedNonShortCandidatesCount || 0,
 
       entryRelaxationProfile: cfg.entryRelaxationProfile,
+      qualityMeasurementProfile: cfg.qualityMeasurementProfile,
       minLiveCandles15m: cfg.minLiveCandles15m,
       allowSyntheticRiskFallback: cfg.allowSyntheticRiskFallback,
       allowSyntheticRiskVirtualEntries: cfg.allowSyntheticRiskVirtualEntries,
@@ -3102,6 +3354,7 @@ export async function runTradeSystem(options = {}) {
 
       actions: actions.length,
       actionCounts: counts,
+      qualityAudit,
 
       selectedRotationId: alertContext.rotationId,
       activeRotationId: alertContext.rotationId,
@@ -3149,6 +3402,7 @@ export async function runTradeSystem(options = {}) {
     blockedNonShortCandidatesCount: snapshot.blockedNonShortCandidatesCount || 0,
 
     entryRelaxationProfile: cfg.entryRelaxationProfile,
+    qualityMeasurementProfile: cfg.qualityMeasurementProfile,
     minLiveCandles15m: cfg.minLiveCandles15m,
     allowSyntheticRiskFallback: cfg.allowSyntheticRiskFallback,
     allowSyntheticRiskVirtualEntries: cfg.allowSyntheticRiskVirtualEntries,
@@ -3222,6 +3476,7 @@ export async function runTradeSystem(options = {}) {
 
     actions,
     actionCounts: counts,
+    qualityAudit,
 
     selectedRotationId: alertContext.rotationId,
     activeRotationId: alertContext.rotationId,
