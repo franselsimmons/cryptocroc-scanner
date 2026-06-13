@@ -63,27 +63,38 @@ const WRITE_SCOPE = 'TRADE_AND_ANALYZE_PARTIAL_ONLY';
 const READ_SCOPE = 'READ_SCANNER_LATEST_ONLY';
 
 /*
-  LONG kwaliteitsvariant:
-  - geen synthetic shadow-laag standaard
-  - geen kunstmatig completed-volume
-  - wel iets soepeler maar nog betrouwbaar:
-    - 30 -> 25 candles
-    - risk range 0.40%-2.50% -> 0.35%-3.00%
-  - echte Analyze trueMicroFamilyId verplicht
-  - scanner fingerprint metadata-only
-  - echte LONG risk shape verplicht
-  - één open positie per symbol
+  LONG scanner-wide virtual learning variant:
+
+  Doel:
+  - scanner vindt coins
+  - tradeSystem opent op elke geldige LONG scanner coin een virtual learning trade
+  - elke virtual learning trade krijgt entry / TP / SL
+  - Analyze koppelt elke trade aan de juiste trueMicroFamilyId
+  - PositionEngine sluit later TP / SL / TIME_STOP
+  - microFamilies krijgen veel outcome-data:
+      seen, trades, completed, TP, SL, netR, avgR, totalR
+  - Discord stuurt alleen als exact geselecteerde trueMicroFamilyId opnieuw verschijnt
+
+  Belangrijk:
+  - geen echte orders
+  - geen Bitget orders
+  - geen exchange orders
+  - RiskEngine blijft voorkeur
+  - als RiskEngine geen geldige risk shape geeft, gebruikt learning fallback TP/SL
+  - fallback is alleen virtual learning, niet premium riskEngine-signaal
+  - één open virtual positie per symbol blijft actief
 */
-const ENTRY_RELAXATION_PROFILE = 'LONG_ENTRY_QUALITY_TINY_LOOSER_V1';
-const QUALITY_MEASUREMENT_PROFILE = 'LONG_DISCIPLINED_QUALITY_AUDIT_V1';
+const ENTRY_RELAXATION_PROFILE = 'LONG_SCANNER_WIDE_VIRTUAL_LEARNING_V1';
+const QUALITY_MEASUREMENT_PROFILE = 'LONG_MICRO_FAMILY_TP_SL_LEARNING_V1';
 
 const DEFAULT_MIN_LIVE_CANDLES_15M = 25;
 const DEFAULT_MIN_RISK_PCT = 0.0035;
 const DEFAULT_MAX_RISK_PCT = 0.03;
 const DEFAULT_FALLBACK_RISK_PCT = 0.005;
 
-const DEFAULT_ALLOW_SYNTHETIC_RISK_FALLBACK = false;
-const DEFAULT_ALLOW_SYNTHETIC_RISK_VIRTUAL_ENTRIES = false;
+const DEFAULT_TRADE_EVERY_SCANNER_CANDIDATE_VIRTUAL = true;
+const DEFAULT_ALLOW_STANDARDIZED_LEARNING_RISK_FALLBACK = true;
+const DEFAULT_ALLOW_STANDARDIZED_LEARNING_RISK_VIRTUAL_ENTRIES = true;
 
 const FREEZE_MEASUREMENT_RECOMMENDED_DAYS = 14;
 const MIN_COMPLETED_EARLY_SIGNAL = 20;
@@ -312,6 +323,11 @@ function virtualFlags() {
     learningOnly: false,
     microFamilyLearning: true,
 
+    scannerWideVirtualLearning: true,
+    tradeEveryScannerCandidateVirtual: DEFAULT_TRADE_EVERY_SCANNER_CANDIDATE_VIRTUAL,
+    riskEnginePreferredButNotRequiredForLearning: true,
+    standardizedLearningRiskFallbackEnabled: DEFAULT_ALLOW_STANDARDIZED_LEARNING_RISK_FALLBACK,
+
     observationFirst: true,
     observationFirstLearning: true,
     everyAnalyzeRowCountsSeen: true,
@@ -321,18 +337,21 @@ function virtualFlags() {
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
 
-    learningIdentitySource: 'ANALYZE_MICRO_FAMILY',
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
     exactTrueMicroFamilyRequired: true,
     symbolExcludedFromFamilyId: true,
 
     entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
     entrySlightlyLoosened: true,
-    syntheticRiskDefaultEnabled: DEFAULT_ALLOW_SYNTHETIC_RISK_FALLBACK,
 
     qualityMeasurementProfile: QUALITY_MEASUREMENT_PROFILE,
     noSyntheticShadowLayer: true,
     disciplinedMeasurement: true,
     recommendedFreezeDays: FREEZE_MEASUREMENT_RECOMMENDED_DAYS,
+
+    discordOnlyForSelectedMicroFamilies: true,
+    discordOnlyForExactTrueMicroMatch: true,
+    manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
 
     completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
     scoringRSource: 'netR',
@@ -410,9 +429,29 @@ function tradeConfig() {
     DEFAULT_MAX_CANDIDATES_PER_SNAPSHOT
   );
 
+  const allowStandardizedLearningRiskFallback = cfgBoolean(
+    CONFIG.trade?.allowStandardizedLearningRiskFallback ??
+    CONFIG.trade?.allowLearningRiskFallback ??
+    CONFIG.trade?.allowSyntheticRiskFallback,
+    DEFAULT_ALLOW_STANDARDIZED_LEARNING_RISK_FALLBACK
+  );
+
+  const allowStandardizedLearningRiskVirtualEntries = cfgBoolean(
+    CONFIG.trade?.allowStandardizedLearningRiskVirtualEntries ??
+    CONFIG.trade?.allowLearningRiskVirtualEntries ??
+    CONFIG.trade?.allowSyntheticRiskVirtualEntries,
+    DEFAULT_ALLOW_STANDARDIZED_LEARNING_RISK_VIRTUAL_ENTRIES
+  );
+
   return {
     entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
     qualityMeasurementProfile: QUALITY_MEASUREMENT_PROFILE,
+
+    scannerWideVirtualLearning: true,
+    tradeEveryScannerCandidateVirtual: cfgBoolean(
+      CONFIG.trade?.tradeEveryScannerCandidateVirtual,
+      DEFAULT_TRADE_EVERY_SCANNER_CANDIDATE_VIRTUAL
+    ),
 
     maxCandidatesPerSnapshot: positiveInt(
       Math.max(
@@ -445,7 +484,7 @@ function tradeConfig() {
       CONFIG.trade?.minCandles15m ??
       CONFIG.trade?.minCandles15M,
       DEFAULT_MIN_LIVE_CANDLES_15M,
-      20,
+      0,
       100
     ),
 
@@ -464,29 +503,29 @@ function tradeConfig() {
       120
     ),
 
-    allowSyntheticRiskFallback: cfgBoolean(
-      CONFIG.trade?.allowSyntheticRiskFallback,
-      DEFAULT_ALLOW_SYNTHETIC_RISK_FALLBACK
-    ),
+    allowStandardizedLearningRiskFallback,
+    allowStandardizedLearningRiskVirtualEntries,
 
-    allowSyntheticRiskVirtualEntries: cfgBoolean(
-      CONFIG.trade?.allowSyntheticRiskVirtualEntries,
-      DEFAULT_ALLOW_SYNTHETIC_RISK_VIRTUAL_ENTRIES
-    ),
+    // Backward-compatible admin/config fields.
+    allowSyntheticRiskFallback: allowStandardizedLearningRiskFallback,
+    allowSyntheticRiskVirtualEntries: allowStandardizedLearningRiskVirtualEntries,
 
-    syntheticRiskRequiresScannerGatePassed: cfgBoolean(
+    standardizedLearningRiskRequiresScannerGatePassed: cfgBoolean(
+      CONFIG.trade?.standardizedLearningRiskRequiresScannerGatePassed ??
       CONFIG.trade?.syntheticRiskRequiresScannerGatePassed,
-      true
+      false
     ),
 
-    syntheticRiskRequiresAnalyzeEligible: cfgBoolean(
+    standardizedLearningRiskRequiresAnalyzeEligible: cfgBoolean(
+      CONFIG.trade?.standardizedLearningRiskRequiresAnalyzeEligible ??
       CONFIG.trade?.syntheticRiskRequiresAnalyzeEligible,
-      true
+      false
     ),
 
-    syntheticRiskRequiresSpreadGatePassed: cfgBoolean(
+    standardizedLearningRiskRequiresSpreadGatePassed: cfgBoolean(
+      CONFIG.trade?.standardizedLearningRiskRequiresSpreadGatePassed ??
       CONFIG.trade?.syntheticRiskRequiresSpreadGatePassed,
-      true
+      false
     ),
 
     minRiskPct: cfgNumber(CONFIG.trade?.minRiskPct, DEFAULT_MIN_RISK_PCT),
@@ -715,7 +754,7 @@ function scannerMetadataFrom(...rows) {
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
 
-    learningIdentitySource: 'ANALYZE_MICRO_FAMILY',
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
     symbolExcludedFromFamilyId: true
   };
 }
@@ -1120,6 +1159,7 @@ function waitAction(candidate, reason, extra = {}) {
     longDisabled: false,
 
     entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
+    qualityMeasurementProfile: QUALITY_MEASUREMENT_PROFILE,
 
     ...isolationFlags(),
 
@@ -1152,7 +1192,7 @@ function buildVirtualExitAction(outcome = {}) {
     scannerFingerprintOnlyMetadata: false,
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
-    learningIdentitySource: 'ANALYZE_MICRO_FAMILY',
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
 
     exitReason: outcome.exitReason || null,
     exitPrice: outcome.exitPrice ?? null,
@@ -1189,6 +1229,7 @@ function buildVirtualExitAction(outcome = {}) {
     bitgetOrderPlaced: false,
 
     entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
+    qualityMeasurementProfile: QUALITY_MEASUREMENT_PROFILE,
 
     ...sideFlags(),
     ...isolationFlags()
@@ -1575,6 +1616,15 @@ function validateVirtualEntry(row = {}) {
     };
   }
 
+  if (row.standardizedLearningRisk && !cfg.allowStandardizedLearningRiskVirtualEntries) {
+    return {
+      ok: false,
+      reason: 'STANDARDIZED_LEARNING_RISK_NOT_ALLOWED_FOR_VIRTUAL_TRACKING',
+      standardizedLearningRisk: true,
+      riskSource: row.riskSource || null
+    };
+  }
+
   if (row.syntheticRisk && !cfg.allowSyntheticRiskVirtualEntries) {
     return {
       ok: false,
@@ -1593,9 +1643,11 @@ function validateVirtualEntry(row = {}) {
 
   return {
     ok: true,
-    reason: row.syntheticRisk
-      ? 'LONG_VIRTUAL_RISK_VALID_SYNTHETIC_EXPLICITLY_ENABLED'
-      : 'LONG_VIRTUAL_RISK_VALID'
+    reason: row.standardizedLearningRisk
+      ? 'LONG_VIRTUAL_LEARNING_STANDARDIZED_TP_SL'
+      : row.syntheticRisk
+        ? 'LONG_VIRTUAL_RISK_VALID_SYNTHETIC_EXPLICITLY_ENABLED'
+        : 'LONG_VIRTUAL_RISK_ENGINE_VALID'
   };
 }
 
@@ -1825,7 +1877,6 @@ function normalizeSelectedSnapshot(snapshot = {}, meta = {}) {
     blockedNonLongCandidates,
     blockedNonLongCandidatesCount: rows.length - targetRows.length,
 
-    // Backward-compatible admin field name.
     blockedNonShortCandidates: blockedNonLongCandidates,
     blockedNonShortCandidatesCount: rows.length - targetRows.length,
 
@@ -1963,7 +2014,7 @@ function enrichMetricsWithScannerAndLiveGates({
   const spreadPct = safeNumber(
     metrics?.spreadPct ??
     ob?.spreadPct,
-    0
+    CONFIG.cost?.fallbackSpreadPct || 0.0008
   );
 
   const cleanMicroFamilyId = cleanLearningFamilyId(
@@ -1998,6 +2049,11 @@ function enrichMetricsWithScannerAndLiveGates({
 
     entryRelaxationProfile: cfg.entryRelaxationProfile,
     qualityMeasurementProfile: cfg.qualityMeasurementProfile,
+    scannerWideVirtualLearning: true,
+    tradeEveryScannerCandidateVirtual: cfg.tradeEveryScannerCandidateVirtual,
+    riskEnginePreferredButNotRequiredForLearning: true,
+    standardizedLearningRiskFallbackEnabled: cfg.allowStandardizedLearningRiskFallback,
+
     minLiveCandles15m: cfg.minLiveCandles15m,
 
     snapshotId: normalized.snapshotId || metrics.snapshotId || null,
@@ -2081,6 +2137,21 @@ function enrichMetricsWithScannerAndLiveGates({
   };
 }
 
+function candidateFallbackPrice(normalized = {}, data = {}) {
+  const ob = data.ob || {};
+
+  return safeNumber(
+    ob.mid ??
+    normalized.price ??
+    normalized.markPrice ??
+    normalized.currentPrice ??
+    normalized.lastPrice ??
+    normalized.close ??
+    normalized.entry,
+    0
+  );
+}
+
 function buildObservationOnlyMetrics({
   normalized,
   data = {},
@@ -2094,13 +2165,7 @@ function buildObservationOnlyMetrics({
     0.0008
   );
 
-  const mid = safeNumber(
-    ob.mid ??
-    normalized.price ??
-    normalized.markPrice ??
-    normalized.currentPrice,
-    0
-  );
+  const mid = candidateFallbackPrice(normalized, data);
 
   return enrichMetricsWithScannerAndLiveGates({
     metrics: {
@@ -2143,6 +2208,9 @@ function buildObservationOnlyMetrics({
       learningOnly: true,
       liveRiskValid: false,
       liveEntryBlockedReason: reason,
+
+      scannerWideVirtualLearning: true,
+      tradeEveryScannerCandidateVirtual: tradeConfig().tradeEveryScannerCandidateVirtual,
       entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
       qualityMeasurementProfile: QUALITY_MEASUREMENT_PROFILE
     },
@@ -2154,10 +2222,10 @@ function buildObservationOnlyMetrics({
   });
 }
 
-function buildSyntheticLongRiskMetrics({
+function buildStandardizedLongLearningRiskMetrics({
   normalized,
   data = {},
-  reason = 'RISK_ENGINE_EMPTY_SYNTHETIC_LONG_RISK'
+  reason = 'STANDARDIZED_LONG_LEARNING_TP_SL'
 }) {
   const cfg = tradeConfig();
   const ob = data.ob || {};
@@ -2169,39 +2237,41 @@ function buildSyntheticLongRiskMetrics({
     0.0008
   );
 
-  const mid = safeNumber(
-    ob.mid ??
-    normalized.price ??
-    normalized.markPrice ??
-    normalized.currentPrice,
-    0
-  );
+  const mid = candidateFallbackPrice(normalized, data);
 
   const scannerGatePassed = normalized.scannerGatePassed !== false;
   const analyzeEligible = normalized.analyzeEligible !== false;
   const spreadGatePassed = spreadPct <= cfg.maxSpreadPct;
 
-  if (cfg.syntheticRiskRequiresScannerGatePassed && !scannerGatePassed) {
+  if (!cfg.allowStandardizedLearningRiskFallback) {
     return buildObservationOnlyMetrics({
       normalized,
       data,
-      reason: 'SYNTHETIC_LONG_RISK_BLOCKED_SCANNER_GATE_FAILED'
+      reason: 'STANDARDIZED_LEARNING_RISK_FALLBACK_DISABLED'
     });
   }
 
-  if (cfg.syntheticRiskRequiresAnalyzeEligible && !analyzeEligible) {
+  if (cfg.standardizedLearningRiskRequiresScannerGatePassed && !scannerGatePassed) {
     return buildObservationOnlyMetrics({
       normalized,
       data,
-      reason: 'SYNTHETIC_LONG_RISK_BLOCKED_ANALYZE_NOT_ELIGIBLE'
+      reason: 'STANDARDIZED_LONG_RISK_BLOCKED_SCANNER_GATE_FAILED'
     });
   }
 
-  if (cfg.syntheticRiskRequiresSpreadGatePassed && !spreadGatePassed) {
+  if (cfg.standardizedLearningRiskRequiresAnalyzeEligible && !analyzeEligible) {
     return buildObservationOnlyMetrics({
       normalized,
       data,
-      reason: 'SYNTHETIC_LONG_RISK_BLOCKED_SPREAD_TOO_WIDE'
+      reason: 'STANDARDIZED_LONG_RISK_BLOCKED_ANALYZE_NOT_ELIGIBLE'
+    });
+  }
+
+  if (cfg.standardizedLearningRiskRequiresSpreadGatePassed && !spreadGatePassed) {
+    return buildObservationOnlyMetrics({
+      normalized,
+      data,
+      reason: 'STANDARDIZED_LONG_RISK_BLOCKED_SPREAD_TOO_WIDE'
     });
   }
 
@@ -2209,7 +2279,7 @@ function buildSyntheticLongRiskMetrics({
     return buildObservationOnlyMetrics({
       normalized,
       data,
-      reason: 'SYNTHETIC_LONG_RISK_NO_MID_PRICE'
+      reason: 'STANDARDIZED_LONG_RISK_NO_PRICE'
     });
   }
 
@@ -2266,11 +2336,15 @@ function buildSyntheticLongRiskMetrics({
       regime: normalized.regime || null,
       regimeCoarse: normalized.regimeCoarse || null,
 
-      syntheticRisk: true,
-      syntheticRiskReason: reason,
-      syntheticRiskEntryRelaxed: true,
-      syntheticRiskVirtualEntryAllowed: cfg.allowSyntheticRiskVirtualEntries,
-      syntheticRiskQuality: 'EXPLICITLY_ENABLED_CONFIG_ONLY',
+      riskSource: 'LEARNING_STANDARDIZED_TP_SL',
+      riskEngineRisk: false,
+      standardizedLearningRisk: true,
+      standardizedLearningRiskReason: reason,
+      standardizedLearningRiskEntry: true,
+      standardizedLearningRiskVirtualEntryAllowed: cfg.allowStandardizedLearningRiskVirtualEntries,
+
+      syntheticRisk: false,
+      syntheticRiskReason: null,
 
       observationOnly: false,
       analysisInputOnly: false,
@@ -2279,6 +2353,8 @@ function buildSyntheticLongRiskMetrics({
       liveRiskValid: true,
       liveEntryBlockedReason: null,
 
+      scannerWideVirtualLearning: true,
+      tradeEveryScannerCandidateVirtual: cfg.tradeEveryScannerCandidateVirtual,
       entryRelaxationProfile: cfg.entryRelaxationProfile,
       qualityMeasurementProfile: cfg.qualityMeasurementProfile
     },
@@ -2319,7 +2395,7 @@ function buildActualRiskWaitIfNeeded({
       side: TARGET_DASHBOARD_SIDE,
       tradeSide: TARGET_TRADE_SIDE
     },
-    'LONG_RISK_INVALID_OBSERVATION_ONLY'
+    'LONG_NO_TP_SL_AVAILABLE_FOR_VIRTUAL_LEARNING'
   );
 }
 
@@ -2361,18 +2437,20 @@ async function processCandidate(candidate) {
     .catch((error) => ({ error }));
 
   if (data.error || data.ob?.fetchFailed) {
-    const fallback = buildObservationOnlyMetrics({
+    const fallback = buildStandardizedLongLearningRiskMetrics({
       normalized,
       data,
-      reason: 'LIVE_DATA_FAILED'
+      reason: 'LIVE_DATA_FAILED_STANDARDIZED_LEARNING_TP_SL'
+    });
+
+    const riskWait = buildActualRiskWaitIfNeeded({
+      normalized,
+      scannerSide,
+      metricsRows: [fallback]
     });
 
     return {
-      actions: [
-        waitAction(normalized, 'LIVE_DATA_FAILED', {
-          error: data.error?.message || null
-        })
-      ],
+      actions: riskWait ? [riskWait] : [],
       metrics: [fallback]
     };
   }
@@ -2383,19 +2461,27 @@ async function processCandidate(candidate) {
   );
 
   if (!hasEnough15mCandles) {
-    const fallback = buildObservationOnlyMetrics({
+    const fallback = buildStandardizedLongLearningRiskMetrics({
       normalized,
       data,
-      reason: 'INSUFFICIENT_LIVE_CANDLES_15M'
+      reason: 'INSUFFICIENT_LIVE_CANDLES_STANDARDIZED_LEARNING_TP_SL'
+    });
+
+    const riskWait = buildActualRiskWaitIfNeeded({
+      normalized,
+      scannerSide,
+      metricsRows: [fallback]
     });
 
     return {
-      actions: [
-        waitAction(normalized, 'INSUFFICIENT_LIVE_CANDLES_15M', {
-          candleCount: data.candles15m?.length || 0,
-          requiredCandleCount: cfg.minLiveCandles15m
-        })
-      ],
+      actions: riskWait
+        ? [
+          waitAction(normalized, 'INSUFFICIENT_LIVE_CANDLES_15M_BUT_LEARNING_FALLBACK_FAILED', {
+            candleCount: data.candles15m?.length || 0,
+            requiredCandleCount: cfg.minLiveCandles15m
+          })
+        ]
+        : [],
       metrics: [fallback]
     };
   }
@@ -2435,7 +2521,12 @@ async function processCandidate(candidate) {
       if (!variant) return null;
 
       return enrichMetricsWithScannerAndLiveGates({
-        metrics: row,
+        metrics: {
+          ...row,
+          riskSource: row.riskSource || 'RISK_ENGINE',
+          riskEngineRisk: true,
+          standardizedLearningRisk: false
+        },
         candidate: variant,
         ob: data.ob
       });
@@ -2447,17 +2538,11 @@ async function processCandidate(candidate) {
   const finalMetrics = hasValidLongRisk
     ? metrics
     : [
-      cfg.allowSyntheticRiskFallback
-        ? buildSyntheticLongRiskMetrics({
-          normalized,
-          data,
-          reason: 'RISK_ENGINE_EMPTY_SYNTHETIC_LONG_RISK'
-        })
-        : buildObservationOnlyMetrics({
-          normalized,
-          data,
-          reason: 'RISK_ENGINE_EMPTY_LONG_RISK_OBSERVATION_ONLY'
-        })
+      buildStandardizedLongLearningRiskMetrics({
+        normalized,
+        data,
+        reason: 'RISK_ENGINE_EMPTY_STANDARDIZED_LONG_LEARNING_TP_SL'
+      })
     ];
 
   const riskWait = buildActualRiskWaitIfNeeded({
@@ -2478,18 +2563,27 @@ async function safeProcessCandidate(candidate) {
   } catch (error) {
     const normalized = normalizeCandidate(candidate);
 
+    const fallback = buildStandardizedLongLearningRiskMetrics({
+      normalized,
+      reason: 'CANDIDATE_PROCESS_ERROR_STANDARDIZED_LEARNING_TP_SL'
+    });
+
+    const riskWait = buildActualRiskWaitIfNeeded({
+      normalized,
+      scannerSide: TARGET_TRADE_SIDE,
+      metricsRows: [fallback]
+    });
+
     return {
       actions: [
         waitAction(normalized, 'CANDIDATE_PROCESS_ERROR', {
-          error: error?.message || String(error)
-        })
+          error: error?.message || String(error),
+          learningFallbackAttempted: true,
+          learningFallbackValid: hasValidRiskShape(fallback)
+        }),
+        ...(riskWait ? [riskWait] : [])
       ],
-      metrics: [
-        buildObservationOnlyMetrics({
-          normalized,
-          reason: 'CANDIDATE_PROCESS_ERROR'
-        })
-      ]
+      metrics: [fallback]
     };
   }
 }
@@ -2530,9 +2624,11 @@ function buildVirtualEntryAction({
     ...isolationFlags(),
 
     action: 'VIRTUAL_ENTRY',
-    reason: row.syntheticRisk
-      ? 'LONG_VIRTUAL_RISK_VALID_SYNTHETIC_EXPLICITLY_ENABLED'
-      : 'LONG_VIRTUAL_RISK_VALID',
+    reason: virtualGate.reason || (
+      row.standardizedLearningRisk
+        ? 'LONG_VIRTUAL_LEARNING_STANDARDIZED_TP_SL'
+        : 'LONG_VIRTUAL_RISK_ENGINE_VALID'
+    ),
 
     shadowOnly: false,
 
@@ -2562,13 +2658,23 @@ function buildVirtualEntryAction({
 
     outcomeIdentityLocked: true,
     outcomeIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
-    learningIdentitySource: 'ANALYZE_MICRO_FAMILY',
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
     symbolExcludedFromFamilyId: true,
 
     validLongRiskShape: true,
     longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
     longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
     positionTimeStopMin: tradeConfig().positionTimeStopMin,
+
+    scannerWideVirtualLearning: true,
+    tradeEveryScannerCandidateVirtual: true,
+    riskSource: row.riskSource || (
+      row.standardizedLearningRisk
+        ? 'LEARNING_STANDARDIZED_TP_SL'
+        : 'RISK_ENGINE'
+    ),
+    riskEngineRisk: Boolean(row.riskEngineRisk),
+    standardizedLearningRisk: Boolean(row.standardizedLearningRisk),
 
     entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
     qualityMeasurementProfile: QUALITY_MEASUREMENT_PROFILE,
@@ -2607,23 +2713,14 @@ function inferPrimaryBottleneck({
   analyzedRiskValidRows,
   virtualCreatedRows,
   virtualExitRows,
-  openPositionCountAfterEntries,
-  actionCountMap
+  openPositionCountAfterEntries
 }) {
   if (candidates <= 0) return 'NO_LONG_CANDIDATES';
   if (processed <= 0) return 'NO_CANDIDATES_PROCESSED';
-  if (liveRows <= 0) return 'NO_LIVE_ROWS';
-
-  if ((actionCountMap?.SNAPSHOT_ALREADY_PROCESSED || 0) > 0) {
-    return 'SNAPSHOT_ALREADY_PROCESSED';
-  }
-
-  if ((actionCountMap?.SNAPSHOT_TOO_STALE || 0) > 0) {
-    return 'SNAPSHOT_TOO_STALE';
-  }
+  if (liveRows <= 0) return 'NO_LIVE_ROWS_OR_NO_FALLBACK_PRICE';
 
   if (riskValidRows <= 0) {
-    return 'RISK_ENGINE_OR_LIVE_RISK_SHAPE';
+    return 'NO_TP_SL_AVAILABLE_FOR_SCANNER_WIDE_VIRTUAL_LEARNING';
   }
 
   if (analyzedRows <= 0) {
@@ -2631,19 +2728,19 @@ function inferPrimaryBottleneck({
   }
 
   if (analyzedRiskValidRows <= 0) {
-    return 'ANALYZE_REMOVED_OR_DID_NOT_CONFIRM_RISK_ROWS';
+    return 'ANALYZE_DID_NOT_RETURN_TRUE_MICRO_RISK_ROWS';
   }
 
   if (virtualCreatedRows <= 0) {
-    return 'VIRTUAL_ENTRY_GATE_OR_SYMBOL_LOCK';
+    return 'VIRTUAL_ENTRY_GATE_OR_SYMBOL_ALREADY_OPEN';
   }
 
   if (virtualCreatedRows > 0 && virtualExitRows <= 0 && openPositionCountAfterEntries > 0) {
-    return 'POSITIONS_OPEN_WAITING_FOR_OUTCOMES';
+    return 'POSITIONS_OPEN_WAITING_FOR_TP_SL_OR_TIME_STOP';
   }
 
   if (virtualCreatedRows > 0 && virtualExitRows > 0) {
-    return 'HEALTHY_OUTCOME_PIPELINE';
+    return 'HEALTHY_SCANNER_WIDE_LEARNING_PIPELINE';
   }
 
   return 'PIPELINE_ACTIVE_MONITOR_REQUIRED';
@@ -2657,7 +2754,6 @@ function buildQualityAudit({
   analyzedRowsRaw,
   analyzedRows,
   actions,
-  actionCountMap,
   virtualExits,
   counts,
   openPositionCountBeforeEntries,
@@ -2686,8 +2782,7 @@ function buildQualityAudit({
     analyzedRiskValidRows,
     virtualCreatedRows,
     virtualExitRows,
-    openPositionCountAfterEntries,
-    actionCountMap
+    openPositionCountAfterEntries
   });
 
   const waitReasons = topReasonCounts(actions, 12);
@@ -2699,9 +2794,16 @@ function buildQualityAudit({
     targetTradeSide: TARGET_TRADE_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
 
-    noSyntheticShadowLayer: true,
-    syntheticRiskDefaultEnabled: DEFAULT_ALLOW_SYNTHETIC_RISK_FALLBACK,
+    scannerWideVirtualLearning: true,
+    tradeEveryScannerCandidateVirtual: true,
+    riskEnginePreferredButNotRequiredForLearning: true,
+    standardizedLearningRiskFallbackEnabled: true,
+
+    discordOnlyForSelectedMicroFamilies: true,
+    discordOnlyForExactTrueMicroMatch: true,
+
     completedIsPureClosedVirtualOutcome: true,
+    completedComesOnlyFrom: 'TP_SL_OR_TIME_STOP',
 
     recommendedFreezeDays: FREEZE_MEASUREMENT_RECOMMENDED_DAYS,
 
@@ -2751,25 +2853,16 @@ function buildQualityAudit({
     topWaitReasons: waitReasons,
 
     interpretation: {
-      ifVirtualCreatedLow: 'Entry/gating/risk pipeline geeft te weinig nieuwe outcome-kansen.',
-      ifVirtualCreatedHighAndExitLow: 'Posities lopen nog; completed komt later via TP/SL/TIME_STOP.',
-      ifRiskValidLow: 'RiskEngine of live risk shape is waarschijnlijk de bottleneck.',
-      ifAnalyzedRiskValidLow: 'Analyze/microfamily-filter bevestigt te weinig geldige risk rows.',
-      ifSymbolAlreadyOpenHigh: 'Eén open positie per symbol blokkeert extra entries, bewust kwaliteitsfilter.',
-      ifSnapshotAlreadyProcessedHigh: 'Trade-run verwerkt geen nieuwe entries totdat scanner een nieuwe snapshot levert.'
+      healthy: 'Scanner coins worden breed virtueel getraded, Analyze groepeert ze per trueMicroFamilyId, completed komt later via TP/SL/TIME_STOP.',
+      ifVirtualCreatedLow: 'Meestal symbol-lock, geen trueMicroFamilyId, of geen geldige TP/SL fallback.',
+      ifVirtualCreatedHighAndExitLow: 'Posities lopen nog; completed komt later.',
+      ifRiskValidLow: 'Er is geen TP/SL beschikbaar, ook fallback kon geen prijs vinden.',
+      ifAnalyzedRiskValidLow: 'Analyze gaf geen bruikbare trueMicroFamilyId terug voor risk rows.',
+      ifSymbolAlreadyOpenHigh: 'Eén open positie per symbol blokkeert extra entries. Dit voorkomt dubbele vervuiling.',
+      ifSnapshotAlreadyProcessedHigh: 'Geen nieuwe entries totdat scanner een nieuwe snapshot levert.'
     },
 
-    doNotChangeDuringFreeze: [
-      'microFamilies',
-      'riskEngine',
-      'positionEngine',
-      'scoring',
-      'scanner thresholds',
-      'time-stop',
-      'synthetic shadow layer'
-    ],
-
-    measurementPrinciple: 'Eén zuivere completed-meting lang genoeg volhouden; niet kunstmatig completed-volume toevoegen.'
+    measurementPrinciple: 'Alles van scanner virtueel laten leren; Discord alleen voor exact geselecteerde bewezen trueMicroFamilyIds.'
   };
 }
 
@@ -3040,6 +3133,7 @@ export async function runTradeSystem(options = {}) {
   const actualLiveRows = liveRows.filter(isLiveScannerRow).length;
   const mirrorRows = liveRows.filter(isMirrorAnalysisRow).length;
   const observationOnlyRows = liveRows.filter((row) => row.observationOnly || row.analysisInputOnly).length;
+  const standardizedLearningRiskRows = liveRows.filter((row) => row.standardizedLearningRisk).length;
   const syntheticRiskRows = liveRows.filter((row) => row.syntheticRisk).length;
   const learningOnlyRows = liveRows.filter((row) => row.learningOnly).length;
   const riskValidRows = liveRows.filter(hasValidRiskShape).length;
@@ -3066,6 +3160,7 @@ export async function runTradeSystem(options = {}) {
   const analyzedActualRows = analyzedRows.filter(isLiveScannerRow).length;
   const analyzedMirrorRows = analyzedRows.filter(isMirrorAnalysisRow).length;
   const analyzedRiskValidRows = analyzedRows.filter(hasValidRiskShape).length;
+  const analyzedStandardizedLearningRiskRows = analyzedRows.filter((row) => row.standardizedLearningRisk).length;
   const analyzedSyntheticRiskRows = analyzedRows.filter((row) => row.syntheticRisk).length;
 
   const openPositions = await getOpenPositions();
@@ -3249,7 +3344,6 @@ export async function runTradeSystem(options = {}) {
     analyzedRowsRaw,
     analyzedRows,
     actions,
-    actionCountMap: counts,
     virtualExits,
     counts: {
       riskValidRows,
@@ -3281,12 +3375,15 @@ export async function runTradeSystem(options = {}) {
 
       entryRelaxationProfile: cfg.entryRelaxationProfile,
       qualityMeasurementProfile: cfg.qualityMeasurementProfile,
+      scannerWideVirtualLearning: cfg.scannerWideVirtualLearning,
+      tradeEveryScannerCandidateVirtual: cfg.tradeEveryScannerCandidateVirtual,
+
       minLiveCandles15m: cfg.minLiveCandles15m,
-      allowSyntheticRiskFallback: cfg.allowSyntheticRiskFallback,
-      allowSyntheticRiskVirtualEntries: cfg.allowSyntheticRiskVirtualEntries,
-      syntheticRiskRequiresScannerGatePassed: cfg.syntheticRiskRequiresScannerGatePassed,
-      syntheticRiskRequiresAnalyzeEligible: cfg.syntheticRiskRequiresAnalyzeEligible,
-      syntheticRiskRequiresSpreadGatePassed: cfg.syntheticRiskRequiresSpreadGatePassed,
+      allowStandardizedLearningRiskFallback: cfg.allowStandardizedLearningRiskFallback,
+      allowStandardizedLearningRiskVirtualEntries: cfg.allowStandardizedLearningRiskVirtualEntries,
+      standardizedLearningRiskRequiresScannerGatePassed: cfg.standardizedLearningRiskRequiresScannerGatePassed,
+      standardizedLearningRiskRequiresAnalyzeEligible: cfg.standardizedLearningRiskRequiresAnalyzeEligible,
+      standardizedLearningRiskRequiresSpreadGatePassed: cfg.standardizedLearningRiskRequiresSpreadGatePassed,
       minRiskPct: cfg.minRiskPct,
       maxRiskPct: cfg.maxRiskPct,
       fallbackRiskPct: cfg.fallbackRiskPct,
@@ -3308,6 +3405,7 @@ export async function runTradeSystem(options = {}) {
       actualLiveRows,
       mirrorRows,
       observationOnlyRows,
+      standardizedLearningRiskRows,
       syntheticRiskRows,
       learningOnlyRows,
       riskValidRows,
@@ -3317,6 +3415,7 @@ export async function runTradeSystem(options = {}) {
       analyzedActualRows,
       analyzedMirrorRows,
       analyzedRiskValidRows,
+      analyzedStandardizedLearningRiskRows,
       analyzedSyntheticRiskRows,
 
       analyzeError,
@@ -3403,12 +3502,15 @@ export async function runTradeSystem(options = {}) {
 
     entryRelaxationProfile: cfg.entryRelaxationProfile,
     qualityMeasurementProfile: cfg.qualityMeasurementProfile,
+    scannerWideVirtualLearning: cfg.scannerWideVirtualLearning,
+    tradeEveryScannerCandidateVirtual: cfg.tradeEveryScannerCandidateVirtual,
+
     minLiveCandles15m: cfg.minLiveCandles15m,
-    allowSyntheticRiskFallback: cfg.allowSyntheticRiskFallback,
-    allowSyntheticRiskVirtualEntries: cfg.allowSyntheticRiskVirtualEntries,
-    syntheticRiskRequiresScannerGatePassed: cfg.syntheticRiskRequiresScannerGatePassed,
-    syntheticRiskRequiresAnalyzeEligible: cfg.syntheticRiskRequiresAnalyzeEligible,
-    syntheticRiskRequiresSpreadGatePassed: cfg.syntheticRiskRequiresSpreadGatePassed,
+    allowStandardizedLearningRiskFallback: cfg.allowStandardizedLearningRiskFallback,
+    allowStandardizedLearningRiskVirtualEntries: cfg.allowStandardizedLearningRiskVirtualEntries,
+    standardizedLearningRiskRequiresScannerGatePassed: cfg.standardizedLearningRiskRequiresScannerGatePassed,
+    standardizedLearningRiskRequiresAnalyzeEligible: cfg.standardizedLearningRiskRequiresAnalyzeEligible,
+    standardizedLearningRiskRequiresSpreadGatePassed: cfg.standardizedLearningRiskRequiresSpreadGatePassed,
     minRiskPct: cfg.minRiskPct,
     maxRiskPct: cfg.maxRiskPct,
     fallbackRiskPct: cfg.fallbackRiskPct,
@@ -3430,6 +3532,7 @@ export async function runTradeSystem(options = {}) {
     actualLiveRows,
     mirrorRows,
     observationOnlyRows,
+    standardizedLearningRiskRows,
     syntheticRiskRows,
     learningOnlyRows,
     riskValidRows,
@@ -3439,6 +3542,7 @@ export async function runTradeSystem(options = {}) {
     analyzedActualRows,
     analyzedMirrorRows,
     analyzedRiskValidRows,
+    analyzedStandardizedLearningRiskRows,
     analyzedSyntheticRiskRows,
 
     analyzeError,
