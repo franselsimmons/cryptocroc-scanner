@@ -10,6 +10,7 @@ import {
 
 const FALLBACK_MACRO_SCHEMA = 'MF_V1';
 const FALLBACK_MICRO_SCHEMA = 'MF_V2';
+const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY';
 
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
@@ -383,7 +384,15 @@ function modeFlags() {
 
     analyzeMicroFamiliesOnly: true,
     learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+    exactTrueMicroFamilyRequired: true,
     symbolExcludedFromFamilyId: true,
+
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    broadTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    fixedTaxonomyPreferred: true,
+    fixedTaxonomyLearningId: true,
 
     bucketGranularity: 'LOW_MID_HIGH',
     bucketsCoarseOnly: true,
@@ -439,16 +448,6 @@ function firstValue(...values) {
   return null;
 }
 
-function formatBucketNumber(value, decimals = 0) {
-  if (!Number.isFinite(value)) return 'NA';
-
-  return Number(value)
-    .toFixed(decimals)
-    .replace(/\.?0+$/u, '')
-    .replace('-', 'M')
-    .replace('.', 'P');
-}
-
 function ratioToBps(value) {
   const n = safeNumber(value, NaN);
 
@@ -462,7 +461,7 @@ function numericBps(value) {
 
   if (!Number.isFinite(bps)) return null;
 
-  return Number(formatBucketNumber(bps, 3));
+  return Number(bps.toFixed(3));
 }
 
 function threeTier(value, {
@@ -888,7 +887,19 @@ function getSpreadPct(metrics = {}) {
 }
 
 function classifySetupType(metrics = {}) {
-  const reason = toUpper(metrics.scannerReason, '');
+  const explicit = toUpper(metrics.setupType || metrics.setup || '', '');
+
+  if (SETUP_TYPES.includes(explicit)) return explicit;
+
+  const reason = toUpper(
+    metrics.scannerReason ||
+    metrics.reason ||
+    metrics.signalReason ||
+    metrics.actionReason ||
+    '',
+    ''
+  );
+
   const flow = coarseFlow(metrics.flow);
   const volBucket = volatilityTier(getVolatilityPct(metrics));
 
@@ -904,24 +915,56 @@ function classifySetupType(metrics = {}) {
     return 'RETEST';
   }
 
-  if (volBucket === 'VOL_LOW' && flow !== 'TREND') {
+  if (
+    reason.includes('COMPRESSION') ||
+    reason.includes('SQUEEZE') ||
+    (
+      volBucket === 'VOL_LOW' &&
+      flow !== 'TREND'
+    )
+  ) {
     return 'COMPRESSION';
   }
 
-  if (flow === 'TREND' && !metrics.fakeBreakout) {
+  if (
+    flow === 'TREND' &&
+    !metrics.fakeBreakout &&
+    !metrics.fakeBreakoutRisk
+  ) {
     return 'CONTINUATION';
+  }
+
+  if (reason.includes('BREAKOUT')) {
+    return 'BREAKOUT';
   }
 
   return 'BREAKOUT';
 }
 
 function classifyRegimeBucket(metrics = {}) {
+  const explicit = toUpper(metrics.regimeBucket || '', '');
+
+  if (REGIME_BUCKETS.includes(explicit)) return explicit;
+
   const vol = coarseRegime(metrics.regime);
   const flow = coarseFlow(metrics.flow);
+  const volBucket = volatilityTier(getVolatilityPct(metrics));
 
-  if (vol === 'LOW_VOL') return 'SQUEEZE';
-  if (flow === 'TREND') return 'TREND';
-  if (vol === 'HIGH_VOL') return 'TREND';
+  if (
+    vol === 'LOW_VOL' ||
+    volBucket === 'VOL_LOW' ||
+    metrics.squeeze === true ||
+    metrics.compression === true
+  ) {
+    return 'SQUEEZE';
+  }
+
+  if (
+    flow === 'TREND' ||
+    vol === 'HIGH_VOL'
+  ) {
+    return 'TREND';
+  }
 
   return 'CHOP';
 }
@@ -933,6 +976,8 @@ function buildTaxonomyFamilyId(metrics = {}) {
   return {
     setup,
     regime,
+    setupType: setup,
+    regimeBucket: regime,
     microFamilyId: `MICRO_${TARGET_TRADE_SIDE}_${setup}_${regime}`
   };
 }
@@ -955,11 +1000,28 @@ function isScannerFamilyId(id = '') {
   );
 }
 
+function isFixedTaxonomyMicroId(id = '') {
+  const value = String(id || '').toUpperCase();
+
+  if (!value || isScannerFamilyId(value)) return false;
+  if (!value.startsWith(`MICRO_${TARGET_TRADE_SIDE}_`)) return false;
+  if (value.includes(`_${EXECUTION_MICRO_SUFFIX}_`)) return false;
+  if (value.includes(`_${FALLBACK_MACRO_SCHEMA}_`)) return false;
+  if (value.includes(`_${FALLBACK_MICRO_SCHEMA}_`)) return false;
+
+  return SETUP_TYPES.some((setup) => (
+    REGIME_BUCKETS.some((regime) => (
+      value === `MICRO_${TARGET_TRADE_SIDE}_${setup}_${regime}`
+    ))
+  ));
+}
+
 function isAnalyzeFamilyId(id = '') {
   const value = String(id || '').toUpperCase();
 
   if (!value) return false;
   if (isScannerFamilyId(value)) return false;
+  if (isFixedTaxonomyMicroId(value)) return true;
 
   return (
     /^LONG_F\d{2}$/u.test(value) ||
@@ -1012,7 +1074,7 @@ function resolveAnalyzeFamilyId(metrics = {}) {
     metrics.familyId
   );
 
-  if (isAnalyzeFamilyId(candidate)) {
+  if (isAnalyzeFamilyId(candidate) && !isFixedTaxonomyMicroId(candidate)) {
     return String(candidate).toUpperCase();
   }
 
@@ -1060,7 +1122,8 @@ function buildMicroDefinitionParts(metrics = {}, parent, taxonomy) {
   const costR = getCostR(metrics);
 
   return [
-    `schema=${getMicroSchema()}`,
+    `schema=${TRUE_MICRO_SCHEMA}`,
+    `legacySchema=${getMicroSchema()}`,
     `granularity=${LEARNING_GRANULARITY}`,
     `parent=${parent.microFamilyId}`,
     `side=${TARGET_DASHBOARD_SIDE}`,
@@ -1273,6 +1336,10 @@ export function buildMicroFamilyV1(metrics = {}) {
 
     ...modeFlags(),
 
+    isLegacyMacro: true,
+    isTrueMicro: false,
+    macroOnlyMetadata: true,
+
     spreadBps: Number((safeNumber(getSpreadPct(metrics), 0) * 10000).toFixed(3))
   };
 }
@@ -1288,8 +1355,6 @@ export function buildMicroFamilyV2(metrics = {}) {
   const analyzeMicroFamilyId = taxonomy.microFamilyId;
 
   const baseDefinitionParts = buildMicroDefinitionParts(sideSafeMetrics, parent, taxonomy);
-
-  const schema = getMicroSchema();
 
   const executionFingerprintParts = shouldBuildExecutionFingerprintMetadata()
     ? buildExecutionFingerprintParts(sideSafeMetrics, parent)
@@ -1317,13 +1382,18 @@ export function buildMicroFamilyV2(metrics = {}) {
     `trueMicroFamilyId=${analyzeMicroFamilyId}`,
     `coarseMicroFamilyId=${analyzeMicroFamilyId}`,
     `learningGranularity=${LEARNING_GRANULARITY}`,
+    `trueMicroFamilySchema=${TRUE_MICRO_SCHEMA}`,
     'learningIdentity=ANALYZE_TRUE_MICRO_FAMILY_FIXED_TAXONOMY',
     'scannerFingerprintRole=METADATA_ONLY',
     'executionFingerprintRole=METADATA_ONLY'
   ]);
 
   return {
-    schema,
+    schema: TRUE_MICRO_SCHEMA,
+    microFamilySchema: TRUE_MICRO_SCHEMA,
+    legacyMicroFamilySchema: getMicroSchema(),
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    broadTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
     version: 'micro',
 
     familyId: parent.familyId,
@@ -1337,6 +1407,8 @@ export function buildMicroFamilyV2(metrics = {}) {
 
     analyzeMicroFamilyId,
     learningMicroFamilyId: analyzeMicroFamilyId,
+    broadTrueMicroFamilyId: analyzeMicroFamilyId,
+    fixedTaxonomyMicroFamilyId: analyzeMicroFamilyId,
 
     setupType: taxonomy.setup,
     regimeBucket: taxonomy.regime,
@@ -1395,6 +1467,13 @@ export function buildMicroFamilyV2(metrics = {}) {
 
     ...modeFlags(),
 
+    isTrueMicro: true,
+    trueMicro: true,
+    isLegacyMacro: false,
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    fixedTaxonomyLearningId: true,
+
     spreadBps: Number((safeNumber(getSpreadPct(metrics), 0) * 10000).toFixed(3)),
     entryDistanceBps: numericBps(getEntryDistancePct(metrics)),
     slDistanceBps: numericBps(getSlDistancePct(metrics)),
@@ -1444,19 +1523,6 @@ export function getMicroFamilyId(metrics = {}, options = {}) {
 
 export function getParentMacroFamilyId(metrics = {}) {
   return buildMicroFamilyV1(metrics).microFamilyId;
-}
-
-function isFixedTaxonomyMicroId(id = '') {
-  const value = String(id || '').toUpperCase();
-
-  if (!value || isScannerFamilyId(value)) return false;
-  if (!value.startsWith(`MICRO_${TARGET_TRADE_SIDE}_`)) return false;
-
-  return SETUP_TYPES.some((setup) => (
-    REGIME_BUCKETS.some((regime) => (
-      value === `MICRO_${TARGET_TRADE_SIDE}_${setup}_${regime}`
-    ))
-  ));
 }
 
 export function isMicroFamilyV1Id(id) {
@@ -1534,6 +1600,8 @@ export function attachMicroFamilies(metrics = {}) {
 
     analyzeMicroFamilyId: micro.analyzeMicroFamilyId,
     learningMicroFamilyId: micro.learningMicroFamilyId,
+    broadTrueMicroFamilyId: micro.broadTrueMicroFamilyId,
+    fixedTaxonomyMicroFamilyId: micro.fixedTaxonomyMicroFamilyId,
 
     setupType: micro.setupType,
     regimeBucket: micro.regimeBucket,
@@ -1554,7 +1622,10 @@ export function attachMicroFamilies(metrics = {}) {
     executionMicroFamilyId: micro.executionMicroFamilyId,
     executionFingerprintRole: 'METADATA_ONLY',
 
-    microFamilySchema: micro.schema,
+    schema: micro.schema,
+    microFamilySchema: micro.microFamilySchema,
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    broadTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
 
     microFamilyDefinition: micro.definition,
     microFamilyDefinitionParts: micro.definitionParts,
@@ -1565,8 +1636,15 @@ export function attachMicroFamilies(metrics = {}) {
     scannerFingerprintRole: 'METADATA_ONLY',
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
+
+    analyzeMicroFamiliesOnly: true,
     learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+    exactTrueMicroFamilyRequired: true,
     symbolExcludedFromFamilyId: true,
+
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    fixedTaxonomyLearningId: true,
 
     completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
     scoringRSource: 'netR',
