@@ -31,7 +31,7 @@ function round4(value) {
 function rotationNumber(key, fallback) {
   return safeNumber(
     CONFIG.long?.rotation?.[key] ??
-      CONFIG.rotation?.[key],
+    CONFIG.rotation?.[key],
     fallback
   );
 }
@@ -39,9 +39,36 @@ function rotationNumber(key, fallback) {
 function analyzeNumber(key, fallback) {
   return safeNumber(
     CONFIG.long?.analyze?.[key] ??
-      CONFIG.analyze?.[key],
+    CONFIG.analyze?.[key],
     fallback
   );
+}
+
+function schemaConfig() {
+  const macroSchema = String(
+    CONFIG.long?.analyze?.macroSchema ??
+    CONFIG.analyze?.macroSchema ??
+    CONFIG.analyze?.legacySchema ??
+    'MF_V1'
+  ).toUpperCase();
+
+  const microSchema = String(
+    CONFIG.long?.analyze?.microSchema ??
+    CONFIG.analyze?.microSchema ??
+    'MF_V2'
+  ).toUpperCase();
+
+  const currentSchema = String(
+    CONFIG.long?.analyze?.schema ??
+    CONFIG.analyze?.schema ??
+    microSchema
+  ).toUpperCase();
+
+  return {
+    currentSchema,
+    macroSchema,
+    microSchema
+  };
 }
 
 function shadowWeight() {
@@ -101,6 +128,9 @@ function cleanSideText(value = '') {
   return String(value || '')
     .trim()
     .toUpperCase()
+    .replaceAll('SHORT_DISABLED_TRUE', '')
+    .replaceAll('SHORTDISABLED_TRUE', '')
+    .replaceAll('BLOCK_SHORT_TRUE', '')
     .replaceAll('SHORT_DISABLED_FALSE', '')
     .replaceAll('SHORTDISABLED_FALSE', '')
     .replaceAll('BLOCK_SHORT_FALSE', '')
@@ -190,9 +220,11 @@ function isScannerFamilyId(id = '') {
     value.startsWith('MICRO_LONG_SCANNER__') ||
     value.includes('MICRO_LONG_SCANNER__') ||
     value.startsWith('LONG_SCANNER_') ||
+    value.includes('LONG_SCANNER_') ||
     value.startsWith('MICRO_SHORT_SCANNER__') ||
     value.includes('MICRO_SHORT_SCANNER__') ||
     value.startsWith('SHORT_SCANNER_') ||
+    value.includes('SHORT_SCANNER_') ||
     value.includes('__SCANNER__') ||
     value.includes('SCANNER_GATE_PASS') ||
     value.includes('SCANNER_GATE_FAIL')
@@ -209,11 +241,11 @@ function normalizeTradeSide(value) {
   if (direct === TARGET_TRADE_SIDE) return TARGET_TRADE_SIDE;
   if (direct === OPPOSITE_TRADE_SIDE) return OPPOSITE_TRADE_SIDE;
 
-  if (['LONG', 'BULL', 'BULLISH', 'BUY', 'UP', 'UPSIDE'].includes(raw)) {
+  if (['LONG', 'BULL', 'BULLISH', 'BUY', 'BID', 'UP', 'UPSIDE', 'GREEN'].includes(raw)) {
     return TARGET_TRADE_SIDE;
   }
 
-  if (['SHORT', 'BEAR', 'BEARISH', 'SELL', 'DOWN', 'DOWNSIDE'].includes(raw)) {
+  if (['SHORT', 'BEAR', 'BEARISH', 'SELL', 'ASK', 'DOWN', 'DOWNSIDE', 'RED'].includes(raw)) {
     return OPPOSITE_TRADE_SIDE;
   }
 
@@ -258,8 +290,8 @@ function directSide(row = {}) {
   return 'UNKNOWN';
 }
 
-function definitionSide(row = {}) {
-  const values = [
+function definitionValues(row = {}) {
+  return [
     row.familyId,
     row.family,
     row.baseFamilyId,
@@ -289,6 +321,17 @@ function definitionSide(row = {}) {
     ...(Array.isArray(row.parentDefinitionParts) ? row.parentDefinitionParts : []),
     ...(Array.isArray(row.executionFingerprintParts) ? row.executionFingerprintParts : [])
   ];
+}
+
+function definitionText(row = {}) {
+  return definitionValues(row)
+    .map((value) => cleanSideText(value))
+    .filter(Boolean)
+    .join('|');
+}
+
+function definitionSide(row = {}) {
+  const values = definitionValues(row);
 
   let longHit = false;
   let shortHit = false;
@@ -350,10 +393,117 @@ function isLongRow(row = {}) {
   return inferTradeSide(row) === TARGET_TRADE_SIDE;
 }
 
-function isRealAnalyzeMicroRow(row = {}) {
-  const id = row.trueMicroFamilyId || row.microFamilyId || row.id || row.key || '';
+function rowSchema(row = {}) {
+  return String(
+    row.microFamilySchema ||
+    row.schema ||
+    row.versionSchema ||
+    ''
+  ).toUpperCase();
+}
 
-  return isLongRow(row) && !isScannerFamilyId(id);
+function rowMicroId(row = {}) {
+  return String(
+    row.trueMicroFamilyId ||
+    row.microFamilyId ||
+    row.analyzeMicroFamilyId ||
+    row.id ||
+    row.key ||
+    ''
+  ).trim();
+}
+
+function idHasSchema(id, schema) {
+  const value = String(id || '').toUpperCase();
+  const target = String(schema || '').toUpperCase();
+
+  if (!value || !target) return false;
+
+  return (
+    value.includes(`_${target}_`) ||
+    value.endsWith(`_${target}`) ||
+    value.includes(`|SCHEMA=${target}`) ||
+    value.includes(`SCHEMA=${target}`)
+  );
+}
+
+function definitionHasSchema(row = {}, schema) {
+  const target = String(schema || '').toUpperCase();
+
+  if (!target) return false;
+
+  const parts = [
+    ...(Array.isArray(row.definitionParts) ? row.definitionParts : []),
+    ...(Array.isArray(row.microDefinitionParts) ? row.microDefinitionParts : []),
+    ...(Array.isArray(row.executionFingerprintParts) ? row.executionFingerprintParts : [])
+  ];
+
+  if (parts.some((part) => String(part).toUpperCase() === `SCHEMA=${target}`)) {
+    return true;
+  }
+
+  return definitionText(row).includes(`SCHEMA=${target}`);
+}
+
+function parentMacroFamilyId(row = {}) {
+  return String(
+    row.parentMacroFamilyId ||
+    row.parentMicroFamilyId ||
+    row.macroFamilyId ||
+    row.familyMacroId ||
+    ''
+  ).trim();
+}
+
+function idLooksLikeSimpleMacroFamily(id = '') {
+  const value = String(id || '').trim();
+
+  return (
+    /^LONG(?:_F)?_?\d+$/iu.test(value) ||
+    /^LONG_F\d+$/iu.test(value)
+  );
+}
+
+function idLooksLikeLongMicroFamily(id = '') {
+  const value = String(id || '').toUpperCase();
+
+  if (!value) return false;
+  if (isScannerFamilyId(value)) return false;
+
+  return value.startsWith('MICRO_LONG_');
+}
+
+function isTrueAnalyzeMicroRow(row = {}) {
+  const { microSchema, macroSchema } = schemaConfig();
+
+  const id = rowMicroId(row);
+  const schema = rowSchema(row);
+  const version = String(row.version || '').toUpperCase();
+
+  if (!row || !id) return false;
+  if (isScannerFamilyId(id)) return false;
+  if (!isLongRow(row) && !idLooksLikeLongMicroFamily(id)) return false;
+
+  if (row.isLegacyMacro === true) return false;
+  if (idLooksLikeSimpleMacroFamily(id)) return false;
+  if (version.includes('MACRO')) return false;
+
+  if (schema === macroSchema) return false;
+  if (idHasSchema(id, macroSchema)) return false;
+  if (definitionHasSchema(row, macroSchema)) return false;
+
+  if (row.isTrueMicro === true || row.trueMicro === true) return true;
+  if (schema === microSchema) return true;
+  if (idHasSchema(id, microSchema)) return true;
+  if (definitionHasSchema(row, microSchema)) return true;
+  if (idLooksLikeLongMicroFamily(id)) return true;
+  if (parentMacroFamilyId(row) && String(id).toUpperCase().startsWith('MICRO_')) return true;
+
+  return false;
+}
+
+function isRealAnalyzeMicroRow(row = {}) {
+  return isTrueAnalyzeMicroRow(row);
 }
 
 function dashboardSideFromTradeSide(side, fallback = 'unknown') {
@@ -1324,7 +1474,6 @@ export function refreshStats(stats) {
 
   const closedCompleted = Math.max(
     closedCompletedCount(stats),
-    safeNumber(stats.completed, 0),
     actualCounts.completed,
     recent.actualCompleted
   );
@@ -1388,6 +1537,7 @@ export function refreshStats(stats) {
 
   const winrateSample = safeNumber(actualCounts.completed, 0);
   const winrateWins = safeNumber(actualCounts.wins, 0);
+
   const rawWinrate = winrateSample > 0
     ? winrateWins / winrateSample
     : 0;
