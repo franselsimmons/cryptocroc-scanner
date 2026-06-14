@@ -13,6 +13,7 @@ const FALLBACK_MICRO_SCHEMA = 'MF_V2';
 
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
+const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
 const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
 const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 
@@ -511,7 +512,7 @@ function modeFlags() {
     trueMicroOnly: true,
     exactTrueMicroOnly: true,
     trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
-    childTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
     exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
     parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
     fixedTaxonomyPreferred: true,
@@ -1137,6 +1138,7 @@ function parseLongTaxonomyMicroId(id = '') {
     childTrueMicroFamilyId: validChild ? childId : null,
     trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
     parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+    childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
     learningGranularity: LEARNING_GRANULARITY,
     parentLearningGranularity: PARENT_LEARNING_GRANULARITY
   };
@@ -1372,6 +1374,129 @@ function classifyRegimeBucket(metrics = {}) {
   return 'CHOP';
 }
 
+function detectStructureAligned(metrics = {}) {
+  const reason = toUpper(
+    metrics.scannerReason ||
+    metrics.reason ||
+    metrics.signalReason ||
+    metrics.actionReason ||
+    '',
+    ''
+  );
+
+  return Boolean(
+    metrics.retestConfirmed ||
+    metrics.pullbackConfirmed ||
+    metrics.sweepConfirmed ||
+    metrics.breakoutConfirmed ||
+    metrics.continuationConfirmed ||
+    metrics.compressionConfirmed ||
+    metrics.setupConfirmed ||
+    metrics.structureAlign ||
+    metrics.structureAligned
+  ) || [
+    'RETEST',
+    'PULLBACK',
+    'SWEEP',
+    'STOP_RUN',
+    'BREAKOUT',
+    'CONTINUATION',
+    'COMPRESSION',
+    'SQUEEZE'
+  ].some((token) => reason.includes(token));
+}
+
+function detectFlowAligned(metrics = {}) {
+  const flow = coarseFlow(metrics.flow);
+  const obRelation = normalizeObRelation(metrics);
+  const btcRel = btcRelation(TARGET_TRADE_SIDE, metrics.btcState);
+  const orderbookImbalance = getOrderbookImbalance(metrics);
+
+  return Boolean(
+    metrics.flowAlign ||
+    metrics.flowAligned ||
+    metrics.momentumAlign ||
+    metrics.bidFlowAlign ||
+    metrics.bullFlow ||
+    metrics.buyFlow
+  ) ||
+    flow === 'TREND' ||
+    flow === 'BUILDING' ||
+    obRelation === 'WITH' ||
+    btcRel === 'BTC_WITH' ||
+    (Number.isFinite(orderbookImbalance) && orderbookImbalance > 0.25);
+}
+
+function detectVolumeAligned(metrics = {}) {
+  const bucket = toUpper(
+    metrics.volBucket ||
+    metrics.volumeBucket ||
+    metrics.volumeTier ||
+    metrics.volumeRegime ||
+    '',
+    ''
+  );
+
+  if ([
+    'HIGH',
+    'STRONG',
+    'EXPANSION',
+    'VOLUME_HIGH',
+    'VOL_HIGH',
+    'HIGH_VOLUME',
+    'VOLUME_EXPANSION'
+  ].includes(bucket)) {
+    return true;
+  }
+
+  if (
+    metrics.volumeSpike === true ||
+    metrics.volumeConfirmed === true ||
+    metrics.volumeAlign === true ||
+    metrics.volumeAligned === true ||
+    metrics.volumeSpikeConfirmed === true ||
+    metrics.quoteVolumeSpike === true ||
+    metrics.obVolumeAlign === true
+  ) {
+    return true;
+  }
+
+  const relVol = firstFinite(
+    metrics.relativeVolume,
+    metrics.relVolume,
+    metrics.volumeScore,
+    metrics.volumeStrength
+  );
+
+  if (Number.isFinite(relVol) && relVol >= 1.4) {
+    return true;
+  }
+
+  return false;
+}
+
+function detectHardContra(metrics = {}) {
+  const obRelation = normalizeObRelation(metrics);
+  const btcRel = btcRelation(TARGET_TRADE_SIDE, metrics.btcState);
+
+  return Boolean(
+    metrics.fakeBreakout ||
+    metrics.fakeBreakoutRisk ||
+    metrics.avoidLong ||
+    metrics.doNotLong ||
+    metrics.weakContra ||
+    metrics.contraSignal ||
+    metrics.bearishDivergence
+  ) ||
+    obRelation === 'AGAINST' ||
+    btcRel === 'BTC_AGAINST' ||
+    hasShortSignal(metrics.flow) ||
+    hasShortSignal(metrics.flowDirection) ||
+    hasShortSignal(metrics.orderFlow) ||
+    hasShortSignal(metrics.marketFlow) ||
+    hasShortSignal(metrics.obBias);
+}
+
 function classifyConfirmationProfile(metrics = {}) {
   const explicit = normalizeConfirmationProfile(
     metrics.confirmationProfile ||
@@ -1392,55 +1517,17 @@ function classifyConfirmationProfile(metrics = {}) {
 
   if (parsedExisting.isChild) return parsedExisting.confirmationProfile;
 
+  const structureAligned = detectStructureAligned(metrics);
+  const flowAligned = detectFlowAligned(metrics);
+  const volumeAligned = detectVolumeAligned(metrics);
+  const hardContraDetected = detectHardContra(metrics);
   const confluence = safeNumber(getConfluenceScore(metrics), 0);
-  const flowScore = firstFinite(
-    metrics.flowScore,
-    metrics.flowStrength,
-    metrics.momentumScore,
-    metrics.buyFlowScore
-  );
-  const volumeScore = firstFinite(
-    metrics.volumeScore,
-    metrics.relativeVolume,
-    metrics.volumeSpike,
-    metrics.quoteVolumeSpike
-  );
 
-  const strongAlign = Boolean(
-    metrics.strongAlign ||
-    metrics.allAlign ||
-    metrics.fullAlign ||
-    (
-      metrics.structureAlign &&
-      metrics.flowAlign &&
-      metrics.volumeAlign
-    )
-  );
-
-  const flowAlign = Boolean(
-    metrics.flowAlign ||
-    metrics.momentumAlign ||
-    metrics.bidFlowAlign
-  ) || (Number.isFinite(flowScore) && flowScore >= 55);
-
-  const volumeAlign = Boolean(
-    metrics.volumeAlign ||
-    metrics.volumeSpikeConfirmed ||
-    metrics.volumeConfirmed ||
-    metrics.obVolumeAlign
-  ) || (Number.isFinite(volumeScore) && volumeScore >= 1.4);
-
-  const weakContra = Boolean(
-    metrics.weakContra ||
-    metrics.contraSignal ||
-    metrics.bearishDivergence ||
-    metrics.fakeBreakoutRisk
-  );
-
-  if (strongAlign || confluence >= 75) return 'A_STRONG_ALIGN';
-  if (flowAlign || confluence >= 62) return 'B_FLOW_ALIGN';
-  if (volumeAlign) return 'C_VOLUME_ALIGN';
-  if (!weakContra || confluence >= 35) return 'D_MIXED_OK';
+  if (hardContraDetected) return 'E_WEAK_CONTRA';
+  if (structureAligned && flowAligned && volumeAligned) return 'A_STRONG_ALIGN';
+  if (flowAligned) return 'B_FLOW_ALIGN';
+  if (volumeAligned) return 'C_VOLUME_ALIGN';
+  if (confluence >= 35 || structureAligned) return 'D_MIXED_OK';
 
   return 'E_WEAK_CONTRA';
 }
@@ -1825,6 +1912,7 @@ export function buildMicroFamilyV2(metrics = {}) {
     `learningGranularity=${LEARNING_GRANULARITY}`,
     `parentLearningGranularity=${PARENT_LEARNING_GRANULARITY}`,
     `trueMicroFamilySchema=${TRUE_MICRO_SCHEMA}`,
+    `childTrueMicroFamilySchema=${CHILD_TRUE_MICRO_SCHEMA}`,
     `parentTrueMicroFamilySchema=${PARENT_TRUE_MICRO_SCHEMA}`,
     'learningIdentity=ANALYZE_TRUE_MICRO_FAMILY_FIXED_TAXONOMY_75_CHILD',
     'scannerFingerprintRole=METADATA_ONLY',
@@ -1836,7 +1924,7 @@ export function buildMicroFamilyV2(metrics = {}) {
     microFamilySchema: TRUE_MICRO_SCHEMA,
     legacyMicroFamilySchema: getMicroSchema(),
     trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
-    childTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
     broadTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
     parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
     version: 'child-fixed-taxonomy-75',
@@ -2102,7 +2190,7 @@ export function attachMicroFamilies(metrics = {}) {
     schema: micro.schema,
     microFamilySchema: micro.microFamilySchema,
     trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
-    childTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
     exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
     broadTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
     parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
