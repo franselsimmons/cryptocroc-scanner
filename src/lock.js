@@ -12,6 +12,13 @@ const OPPOSITE_TRADE_SIDE = 'SHORT';
 
 const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
+const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
+
+const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
+const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
+const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
+const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
+const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 
 const RELEASE_LOCK_SCRIPT = `
 if redis.call("GET", KEYS[1]) == ARGV[1] then
@@ -30,12 +37,53 @@ const RAW_ROOT_KEY_PREFIXES = [
   'RESET:'
 ];
 
+const REFUSED_NON_LONG_PREFIXES = [
+  'SHORT:',
+  'SHORT_LIVE:',
+  'BEAR:',
+  'BEARISH:',
+  'SELL:'
+];
+
+function taxonomyFlags() {
+  return {
+    trueMicroSchema: TRUE_MICRO_SCHEMA,
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+
+    parentTrueMicroSchema: PARENT_TRUE_MICRO_SCHEMA,
+    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+
+    childTrueMicroSchema: CHILD_TRUE_MICRO_SCHEMA,
+    childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
+
+    learningGranularity: LEARNING_GRANULARITY,
+    parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
+
+    fixedTaxonomyPreferred: true,
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    exactTrueMicroFamilyRequired: true,
+
+    parentLearningEnabled: true,
+    childLearningEnabled: true,
+    selectionGranularity: 'EXACT_75_CHILD',
+    fallbackRankingGranularity: 'PARENT_15_UNTIL_CHILD_MIN_COMPLETED',
+
+    parentSelectable: false,
+    childSelectable: true,
+    selectableFamilyCount: 75,
+    parentFamilyCount: 15
+  };
+}
+
 function modeFlags() {
   return {
     namespace: LONG_NAMESPACE,
     redisNamespace: LONG_NAMESPACE,
     keyPrefix: LONG_KEY_PREFIX,
     redisKeyPrefix: LONG_KEY_PREFIX,
+    persistentLearningKey: PERSISTENT_LEARNING_KEY,
 
     targetTradeSide: TARGET_TRADE_SIDE,
     targetScannerSide: TARGET_SCANNER_SIDE,
@@ -46,6 +94,9 @@ function modeFlags() {
     tradeSide: TARGET_TRADE_SIDE,
     positionSide: TARGET_TRADE_SIDE,
     direction: TARGET_TRADE_SIDE,
+    scannerSide: TARGET_SCANNER_SIDE,
+    actualScannerSide: TARGET_SCANNER_SIDE,
+    analysisSide: TARGET_TRADE_SIDE,
 
     longOnly: true,
     shortDisabled: true,
@@ -54,11 +105,40 @@ function modeFlags() {
 
     virtualOnly: true,
     virtualLearning: true,
+    virtualTracked: true,
 
     noRealOrders: true,
+    noExchangeOrders: true,
     realOrdersDisabled: true,
     bitgetOrdersDisabled: true,
     exchangeOrdersDisabled: true,
+    exchangeCallsDisabled: true,
+
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+    scannerBucketsMetadataOnly: true,
+    legacy25BucketsMetadataOnly: true,
+
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false,
+
+    analyzeMicroFamiliesOnly: true,
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+
+    symbolExcludedFromFamilyId: true,
+    coinNameExcludedFromFamilyId: true,
+    hashesExcludedFromFamilyId: true,
+
+    manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
+    discordOnlyForExactTrueMicroMatch: true,
+
+    completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
+    scoringRSource: 'netR',
+    winsLossesFlatsSource: 'netR',
+    winrateDefinition: 'netR > 0',
+    avgRSource: 'netR',
+    totalRSource: 'netR',
+    avgCostRShown: true,
 
     noResetCron: true,
     noActivateCron: true,
@@ -66,7 +146,11 @@ function modeFlags() {
     manualSelectionPreserved: true,
 
     noGlobalMaxOpenPositionsBlock: true,
-    oneOpenPositionPerSymbol: true
+    oneOpenPositionPerSymbol: true,
+
+    shortRootTouched: false,
+
+    ...taxonomyFlags()
   };
 }
 
@@ -82,18 +166,28 @@ function isRawRootKey(key = '') {
   return RAW_ROOT_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
 
+function isExplicitNonLongKey(key = '') {
+  const raw = String(key || '').trim().toUpperCase();
+
+  if (!raw) return false;
+
+  return REFUSED_NON_LONG_PREFIXES.some((prefix) => raw.startsWith(prefix));
+}
+
 function normalizeLockKey(key) {
   const raw = String(key || '').trim();
 
   if (!raw) return '';
 
-  if (raw.startsWith(`${OPPOSITE_TRADE_SIDE}:`)) {
-    const error = new Error('LONG_LOCK_REFUSED_SHORT_NAMESPACE_KEY');
+  if (isExplicitNonLongKey(raw)) {
+    const error = new Error('LONG_LOCK_REFUSED_NON_LONG_NAMESPACE_KEY');
 
     error.details = {
       key: raw,
-      namespace: LONG_NAMESPACE,
+      requiredNamespace: LONG_NAMESPACE,
+      requiredPrefix: LONG_KEY_PREFIX,
       oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+      shortRootTouched: false,
       ...modeFlags()
     };
 
@@ -132,7 +226,6 @@ async function atomicRelease(redis, key, token) {
   }
 
   if (typeof redis.evalsha === 'function') {
-    // Kept out of the hot path; scripts are not preloaded in this app.
     return false;
   }
 
@@ -148,6 +241,8 @@ async function fallbackRelease(redis, key, token) {
       released: false,
       reason: current ? 'LOCK_TOKEN_MISMATCH' : 'LOCK_ALREADY_EXPIRED',
       key,
+      lockNamespace: LONG_NAMESPACE,
+      lockKeyPrefix: LONG_KEY_PREFIX,
       ...modeFlags()
     };
   }
@@ -159,8 +254,14 @@ async function fallbackRelease(redis, key, token) {
     released: Number(deleted) > 0,
     reason: Number(deleted) > 0 ? 'LOCK_RELEASED' : 'LOCK_DELETE_NOOP',
     key,
+    lockNamespace: LONG_NAMESPACE,
+    lockKeyPrefix: LONG_KEY_PREFIX,
     ...modeFlags()
   };
+}
+
+export function normalizeLongLockKey(key) {
+  return normalizeLockKey(key);
 }
 
 export async function acquireRedisLock(redis, key, ttlSec = DEFAULT_LOCK_TTL_SEC) {
@@ -186,6 +287,8 @@ export async function acquireRedisLock(redis, key, ttlSec = DEFAULT_LOCK_TTL_SEC
       ttlSec: ttl,
       token: null,
       reason: 'PREVIOUS_LONG_RUN_STILL_ACTIVE',
+      lockNamespace: LONG_NAMESPACE,
+      lockKeyPrefix: LONG_KEY_PREFIX,
       ...modeFlags()
     };
   }
@@ -196,6 +299,8 @@ export async function acquireRedisLock(redis, key, ttlSec = DEFAULT_LOCK_TTL_SEC
     key: lockKey,
     ttlSec: ttl,
     token,
+    lockNamespace: LONG_NAMESPACE,
+    lockKeyPrefix: LONG_KEY_PREFIX,
     ...modeFlags()
   };
 }
@@ -213,6 +318,8 @@ export async function releaseRedisLock(redis, key, token) {
       key: String(key || '').trim(),
       error: error?.message || String(error),
       details: error?.details || null,
+      lockNamespace: LONG_NAMESPACE,
+      lockKeyPrefix: LONG_KEY_PREFIX,
       ...modeFlags()
     };
   }
@@ -225,6 +332,8 @@ export async function releaseRedisLock(redis, key, token) {
       released: false,
       reason: 'RELEASE_LONG_LOCK_INVALID_INPUT',
       key: lockKey || key,
+      lockNamespace: LONG_NAMESPACE,
+      lockKeyPrefix: LONG_KEY_PREFIX,
       ...modeFlags()
     };
   }
@@ -238,6 +347,8 @@ export async function releaseRedisLock(redis, key, token) {
         released: true,
         reason: 'LONG_LOCK_RELEASED_ATOMIC',
         key: lockKey,
+        lockNamespace: LONG_NAMESPACE,
+        lockKeyPrefix: LONG_KEY_PREFIX,
         ...modeFlags()
       };
     }
@@ -248,6 +359,8 @@ export async function releaseRedisLock(redis, key, token) {
         released: false,
         reason: 'LONG_LOCK_TOKEN_MISMATCH_OR_ALREADY_EXPIRED',
         key: lockKey,
+        lockNamespace: LONG_NAMESPACE,
+        lockKeyPrefix: LONG_KEY_PREFIX,
         ...modeFlags()
       };
     }
@@ -263,6 +376,8 @@ export async function releaseRedisLock(redis, key, token) {
         reason: 'LONG_LOCK_RELEASE_FAILED',
         key: lockKey,
         error: fallbackError?.message || error?.message || String(fallbackError || error),
+        lockNamespace: LONG_NAMESPACE,
+        lockKeyPrefix: LONG_KEY_PREFIX,
         ...modeFlags()
       };
     }
@@ -284,6 +399,8 @@ export async function withRedisLock(redis, key, ttlSec, task) {
       reason: lock.reason,
       lockKey,
       ttlSec: lock.ttlSec,
+      lockNamespace: LONG_NAMESPACE,
+      lockKeyPrefix: LONG_KEY_PREFIX,
       ...modeFlags()
     };
   }
@@ -297,6 +414,8 @@ export async function withRedisLock(redis, key, ttlSec, task) {
       lockKey,
       lockToken: lock.token,
       lockTtlSec: lock.ttlSec,
+      lockNamespace: LONG_NAMESPACE,
+      lockKeyPrefix: LONG_KEY_PREFIX,
       ...modeFlags()
     });
   } catch (error) {
@@ -310,7 +429,16 @@ export async function withRedisLock(redis, key, ttlSec, task) {
     taskError.lockReleaseReason = releaseResult?.reason || null;
     taskError.lockKey = lockKey;
     taskError.lockNamespace = LONG_NAMESPACE;
+    taskError.lockKeyPrefix = LONG_KEY_PREFIX;
     taskError.tradeSide = TARGET_TRADE_SIDE;
+    taskError.dashboardSide = TARGET_DASHBOARD_SIDE;
+    taskError.shortDisabled = true;
+    taskError.realOrdersDisabled = true;
+    taskError.bitgetOrdersDisabled = true;
+    taskError.exchangeOrdersDisabled = true;
+    taskError.trueMicroFamilySchema = TRUE_MICRO_SCHEMA;
+    taskError.parentTrueMicroFamilySchema = PARENT_TRUE_MICRO_SCHEMA;
+    taskError.childTrueMicroFamilySchema = CHILD_TRUE_MICRO_SCHEMA;
 
     throw taskError;
   }
@@ -323,6 +451,8 @@ export async function withRedisLock(redis, key, ttlSec, task) {
     lockReleased: Boolean(releaseResult?.released),
     lockReleaseReason: releaseResult?.reason || null,
     result: taskResult,
+    lockNamespace: LONG_NAMESPACE,
+    lockKeyPrefix: LONG_KEY_PREFIX,
     ...modeFlags()
   };
 }
