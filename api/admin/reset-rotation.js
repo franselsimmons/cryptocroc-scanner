@@ -14,17 +14,78 @@ const LOCK_TTL_SEC = 180;
 
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
+const TARGET_SCANNER_SIDE = 'bull';
 const OPPOSITE_TRADE_SIDE = 'SHORT';
 
 const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
+
+const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY';
+const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
+
 const MIN_COMPLETED_ACTIVE_LEARNING = 20;
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 
+const LONG_FIXED_SETUP_TYPES = new Set([
+  'BREAKOUT',
+  'RETEST',
+  'SWEEP_REVERSAL',
+  'CONTINUATION',
+  'COMPRESSION'
+]);
+
+const LONG_FIXED_REGIME_BUCKETS = new Set([
+  'TREND',
+  'CHOP',
+  'SQUEEZE'
+]);
+
+const LONG_CONFIRMATION_PROFILES = new Set([
+  'A_STRONG_ALIGN',
+  'B_FLOW_ALIGN',
+  'C_VOLUME_ALIGN',
+  'D_MIXED_OK',
+  'E_WEAK_CONTRA'
+]);
+
+const SETUP_ORDER = [
+  'BREAKOUT',
+  'RETEST',
+  'SWEEP_REVERSAL',
+  'CONTINUATION',
+  'COMPRESSION'
+];
+
+const REGIME_ORDER = [
+  'TREND',
+  'CHOP',
+  'SQUEEZE'
+];
+
+const CONFIRMATION_PROFILE_ORDER = [
+  'A_STRONG_ALIGN',
+  'B_FLOW_ALIGN',
+  'C_VOLUME_ALIGN',
+  'D_MIXED_OK',
+  'E_WEAK_CONTRA'
+];
+
+function callMaybeKey(value, fallback = null) {
+  if (typeof value === 'function') {
+    try {
+      return value();
+    } catch {
+      return fallback;
+    }
+  }
+
+  return value || fallback;
+}
+
 function namespacedLongKey(key, fallback = null) {
-  const raw = String(key || fallback || '').trim();
+  const raw = String(callMaybeKey(key, fallback) || '').trim();
 
   if (!raw) return null;
   if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
@@ -102,10 +163,118 @@ function now() {
   return Date.now();
 }
 
+function upper(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function parseLongTaxonomyMicroId(id = '') {
+  const value = upper(id);
+
+  if (!value.startsWith('MICRO_LONG_')) {
+    return {
+      valid: false,
+      selectable: false,
+      isParent: false,
+      isChild: false,
+      rawId: String(id || '').trim()
+    };
+  }
+
+  let body = value.slice('MICRO_LONG_'.length);
+  let confirmationProfile = null;
+
+  for (const profile of CONFIRMATION_PROFILE_ORDER) {
+    const suffix = `_${profile}`;
+
+    if (body.endsWith(suffix)) {
+      confirmationProfile = profile;
+      body = body.slice(0, -suffix.length);
+      break;
+    }
+  }
+
+  let setup = null;
+  let regime = null;
+
+  for (const candidateRegime of LONG_FIXED_REGIME_BUCKETS) {
+    const suffix = `_${candidateRegime}`;
+
+    if (body.endsWith(suffix)) {
+      regime = candidateRegime;
+      setup = body.slice(0, -suffix.length);
+      break;
+    }
+  }
+
+  const parentId = setup && regime
+    ? `MICRO_LONG_${setup}_${regime}`
+    : null;
+
+  const childId = parentId && confirmationProfile
+    ? `${parentId}_${confirmationProfile}`
+    : null;
+
+  const validParent =
+    Boolean(parentId) &&
+    LONG_FIXED_SETUP_TYPES.has(setup) &&
+    LONG_FIXED_REGIME_BUCKETS.has(regime);
+
+  const validChild =
+    validParent &&
+    Boolean(confirmationProfile) &&
+    LONG_CONFIRMATION_PROFILES.has(confirmationProfile);
+
+  return {
+    valid: validParent || validChild,
+    selectable: validChild,
+    isParent: validParent && !validChild,
+    isChild: validChild,
+    rawId: String(id || '').trim(),
+    setup,
+    regime,
+    confirmationProfile,
+    parentTrueMicroFamilyId: validParent ? parentId : null,
+    trueMicroFamilyId: validChild ? childId : validParent ? parentId : null,
+    childTrueMicroFamilyId: validChild ? childId : null,
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    learningGranularity: LEARNING_GRANULARITY
+  };
+}
+
+function buildTaxonomyMeta() {
+  return {
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    learningGranularity: LEARNING_GRANULARITY,
+
+    parentMicroFamilyCount: 15,
+    selectableChildMicroFamilyCount: 75,
+
+    setups: SETUP_ORDER,
+    regimes: REGIME_ORDER,
+    confirmationProfiles: CONFIRMATION_PROFILE_ORDER,
+
+    validSetupTypes: [...LONG_FIXED_SETUP_TYPES],
+    validRegimeBuckets: [...LONG_FIXED_REGIME_BUCKETS],
+    validConfirmationProfiles: [...LONG_CONFIRMATION_PROFILES],
+
+    parentFormat: 'MICRO_LONG_{SETUP}_{REGIME}',
+    selectableChildFormat: 'MICRO_LONG_{SETUP}_{REGIME}_{CONFIRMATION_PROFILE}',
+
+    exampleParent: 'MICRO_LONG_BREAKOUT_TREND',
+    exampleSelectableChild: 'MICRO_LONG_BREAKOUT_TREND_A_STRONG_ALIGN',
+
+    selectableIdsAreChildrenOnly: true,
+    parentIdsAreMetadataOnly: true,
+
+    parseLongTaxonomyMicroIdAvailable: true
+  };
+}
+
 function modeFlags() {
   return {
     targetTradeSide: TARGET_TRADE_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
+    scannerSide: TARGET_SCANNER_SIDE,
     oppositeTradeSide: OPPOSITE_TRADE_SIDE,
 
     side: TARGET_DASHBOARD_SIDE,
@@ -122,7 +291,6 @@ function modeFlags() {
     virtualLearning: true,
     virtualLearningForced: true,
     virtualTracked: true,
-    shadowOnly: true,
     virtualOutcomesIncluded: true,
     shadowOutcomesIncluded: true,
     realOutcomesExcluded: true,
@@ -143,30 +311,58 @@ function modeFlags() {
     noRealOrders: true,
     realOrdersDisabled: true,
     bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true,
     exchangeCallsDisabled: true,
 
     globalMaxOpenPositionsBlockDisabled: true,
     maxOneOpenPositionPerSymbol: true,
+    oneOpenPositionPerSymbol: true,
 
     positionTimeStopMinDefault: DEFAULT_POSITION_TIME_STOP_MIN,
+    longRiskShape: 'sl < entry < tp',
+    tpRule: 'price >= tp',
+    slRule: 'price <= sl',
+    timeStopEnabled: true,
 
-    scannerSide: TARGET_DASHBOARD_SIDE,
     scannerFingerprintRole: 'METADATA_ONLY',
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
+    scannerBucketsDebugMetadataOnly: true,
+    legacy25BucketsDebugMetadataOnly: true,
+
+    executionFingerprintRole: 'METADATA_ONLY',
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false,
 
     analyzeMicroFamiliesOnly: true,
     learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
     symbolExcludedFromFamilyId: true,
+    coinNameExcludedFromFamilyId: true,
+    hashesExcludedFromFamilyId: true,
 
-    bucketsCoarseOnly: true,
-    bucketGranularity: 'LOW_MID_HIGH',
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    exactTrueMicroFamilyRequired: true,
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    broadTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    fixedTaxonomyPreferred: true,
+    learningGranularity: LEARNING_GRANULARITY,
+
+    parentMicroFamilyCount: 15,
+    selectableChildMicroFamilyCount: 75,
+    parentFamilyRule: 'MICRO_LONG_{SETUP}_{REGIME}',
+    selectableFamilyRule: 'MICRO_LONG_{SETUP}_{REGIME}_{CONFIRMATION_PROFILE}',
+    selectableIdsAreChildrenOnly: true,
+    parentIdsAreMetadataOnly: true,
 
     manualSelectionOnly: true,
     manualSelectionResetEndpoint: true,
     manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
     discordOnlyForSelectedMicroFamilies: true,
     discordOnlyForExactTrueMicroMatch: true,
+    discordSelectionRule: 'EXACT_75_CHILD_TRUE_MICRO_FAMILY_ID_ONLY',
+    parentMatchDoesNotTriggerDiscord: true,
+    macroMatchDoesNotTriggerDiscord: true,
 
     autoRotationActivationDisabled: true,
     activateFreezeCronDisabled: true,
@@ -385,7 +581,7 @@ async function deleteRotationKeys(redis) {
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
-  res.setHeader('X-Admin-Reset-Rotation-Mode', 'long-only-manual-selection-reset-v2');
+  res.setHeader('X-Admin-Reset-Rotation-Mode', 'long-only-75-child-manual-selection-reset-v1');
   res.setHeader('X-Target-Trade-Side', TARGET_TRADE_SIDE);
   res.setHeader('X-Long-Only', 'true');
   res.setHeader('X-Short-Disabled', 'true');
@@ -394,6 +590,11 @@ export default async function handler(req, res) {
   res.setHeader('X-Auto-Rotation-Disabled', 'true');
   res.setHeader('X-Manual-Selection-Reset', 'true');
   res.setHeader('X-Manual-Selection-Match-Mode', 'EXACT_TRUE_MICRO_FAMILY_ID');
+  res.setHeader('X-Discord-Selection-Rule', 'EXACT_75_CHILD_TRUE_MICRO_FAMILY_ID_ONLY');
+  res.setHeader('X-True-Micro-Family-Schema', TRUE_MICRO_SCHEMA);
+  res.setHeader('X-Learning-Granularity', LEARNING_GRANULARITY);
+  res.setHeader('X-Selectable-Child-Micro-Families', '75');
+  res.setHeader('X-Parent-Micro-Families', '15');
   res.setHeader('X-Real-Orders-Disabled', 'true');
   res.setHeader('X-Bitget-Orders-Disabled', 'true');
   res.setHeader('X-Exchange-Calls-Disabled', 'true');
@@ -444,24 +645,32 @@ export default async function handler(req, res) {
 
     const report = {
       ok: true,
-      type: 'RESET_ROTATION_LONG_ONLY_MANUAL_SELECTION',
+      type: 'RESET_ROTATION_LONG_75_CHILD_MANUAL_SELECTION',
 
       ...modeFlags(),
+
+      taxonomy: buildTaxonomyMeta(),
 
       exchangeTouched: false,
       bitgetOrdersTouched: false,
       realOrdersTouched: false,
+      shortRootTouched: false,
 
       deleted,
 
       effect: {
         discordEntryAlertsDisabledUntilManualSelection: true,
+        discordExitAlertsDisabledUntilManualSelection: true,
         activeManualSelectionCleared: true,
+        selected75ChildTrueMicroFamilyIdsCleared: true,
         nextRotationCleared: true,
         rotationValidFromCleared: true,
         autoRotationNotActivated: true,
         systemWillContinueLearning: true,
-        manualSelectionMustUseExactTrueMicroFamilyId: true
+        manualSelectionMustUseExactTrueMicroFamilyId: true,
+        manualSelectionMustUseSelectable75ChildId: true,
+        parent15SelectionWillNotTriggerDiscord: true,
+        macroSelectionWillNotTriggerDiscord: true
       },
 
       preserved: {
@@ -487,8 +696,10 @@ export default async function handler(req, res) {
       removed: {
         activeRotation: true,
         manualSelection: true,
+        selected75ChildTrueMicroFamilyIds: true,
         nextRotation: true,
         rotationValidFrom: true,
+
         learning: false,
         microFamilies: false,
         observations: false,
@@ -497,7 +708,8 @@ export default async function handler(req, res) {
         scannerSnapshots: false,
         tradeMemory: false,
         tradeRunMeta: false,
-        discordLogs: false
+        discordLogs: false,
+        shortRoot: false
       },
 
       longKeys: {
