@@ -17,6 +17,16 @@ const TARGET_SCANNER_SIDE = 'bull';
 const TARGET_DASHBOARD_SIDE = 'bull';
 const OPPOSITE_TRADE_SIDE = 'SHORT';
 
+const LONG_NAMESPACE = 'LONG';
+const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
+const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
+
+const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
+const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
+const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
+const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
+const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
+
 const RETEST_TOLERANCE_PCT = 0.004;
 const BREAKOUT_BUFFER_PCT = 0.0015;
 const WICK_REJECT_THRESHOLD = 0.45;
@@ -45,21 +55,179 @@ const LONG_TOKENS = new Set([
   'GREEN'
 ]);
 
+function now() {
+  return Date.now();
+}
+
 function upper(value) {
   return String(value || '').trim().toUpperCase();
 }
 
+function longMachineFlags() {
+  return {
+    targetTradeSide: TARGET_TRADE_SIDE,
+    targetScannerSide: TARGET_SCANNER_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+    side: TARGET_DASHBOARD_SIDE,
+    tradeSide: TARGET_TRADE_SIDE,
+    positionSide: TARGET_TRADE_SIDE,
+    direction: TARGET_TRADE_SIDE,
+
+    scannerSide: TARGET_SCANNER_SIDE,
+    actualScannerSide: TARGET_SCANNER_SIDE,
+    analysisSide: TARGET_TRADE_SIDE,
+
+    directionalSide: TARGET_DASHBOARD_SIDE,
+    inferredDirectionalSide: TARGET_DASHBOARD_SIDE,
+    marketSide: TARGET_DASHBOARD_SIDE,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    virtualLearning: true,
+    virtualOnly: true,
+    virtualTracked: true,
+    shadowOnly: true,
+
+    realTrade: false,
+    realOrder: false,
+    exchangeOrder: false,
+    bitgetOrderPlaced: false,
+
+    noRealOrders: true,
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true,
+    exchangeCallsDisabled: true,
+
+    scannerBullishOnly: true,
+    scannerDoesNotTrade: true,
+    scannerDoesNotSelectMicroFamilies: true,
+    scannerDoesNotSendDiscord: true,
+    scannerDoesNotWriteLearningFamilies: true,
+
+    scannerFingerprintRole: 'METADATA_ONLY',
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+
+    executionFingerprintRole: 'METADATA_ONLY',
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false,
+
+    analyzeMicroFamiliesOnly: true,
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+    symbolExcludedFromFamilyId: true,
+    coinNameExcludedFromFamilyId: true,
+    hashesExcludedFromFamilyId: true,
+
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    exactTrueMicroFamilyRequired: true,
+    fixedTaxonomyPreferred: true,
+
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
+    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+    exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    parentLearningEnabled: true,
+    childLearningEnabled: true,
+    learningGranularity: LEARNING_GRANULARITY,
+    parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
+    selectionGranularity: 'EXACT_75_CHILD',
+    fallbackRankingGranularity: 'PARENT_15_UNTIL_CHILD_MIN_COMPLETED',
+
+    completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
+    scoringRSource: 'netR',
+    winsLossesFlatsSource: 'netR',
+    winrateDefinition: 'netR > 0',
+    avgRSource: 'netR',
+    totalRSource: 'netR',
+    avgCostRShown: true,
+
+    manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
+    discordOnlyForExactTrueMicroMatch: true,
+
+    bucketGranularity: 'LOW_MID_HIGH',
+    bucketsCoarseOnly: true,
+
+    redisNamespace: LONG_NAMESPACE,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    shortRootTouched: false
+  };
+}
+
+function learningIdentityPlaceholders() {
+  return {
+    trueMicroFamilyId: null,
+    microFamilyId: null,
+    childTrueMicroFamilyId: null,
+    parentTrueMicroFamilyId: null,
+    coarseMicroFamilyId: null,
+    analyzeMicroFamilyId: null,
+    learningMicroFamilyId: null,
+    broadTrueMicroFamilyId: null,
+    fixedTaxonomyMicroFamilyId: null,
+
+    scannerMicroFamilyId: null,
+    scannerFamilyId: null,
+    scannerDefinition: null,
+    scannerDefinitionParts: [],
+
+    executionMicroFamilyId: null,
+    executionFingerprintHash: null,
+    executionFingerprintParts: [],
+    executionFingerprintSchema: null,
+
+    scannerBucketRole: 'DEBUG_METADATA_ONLY',
+    legacy25BucketRole: 'DEBUG_METADATA_ONLY',
+    coinNameRole: 'DEBUG_METADATA_ONLY',
+    hashesRole: 'DEBUG_METADATA_ONLY'
+  };
+}
+
 function cleanSideText(value = '') {
   return upper(value)
+    .replaceAll('SHORT_DISABLED_TRUE', '')
+    .replaceAll('SHORTDISABLED_TRUE', '')
+    .replaceAll('BLOCK_SHORT_TRUE', '')
+    .replaceAll('SHORT_DISABLED_FALSE', '')
+    .replaceAll('SHORTDISABLED_FALSE', '')
+    .replaceAll('BLOCK_SHORT_FALSE', '')
+    .replaceAll('SHORT_ENABLED_FALSE', '')
+    .replaceAll('SHORT_ONLY_FALSE', '')
+    .replaceAll('SHORT_DISABLED_LONG_ONLY', '')
+    .replaceAll('SHORTDISABLED_LONG_ONLY', '')
     .replaceAll('SHORT_DISABLED', '')
     .replaceAll('SHORTDISABLED', '')
     .replaceAll('BLOCK_SHORT', '')
-    .replaceAll('SHORT_ENABLED_FALSE', '')
-    .replaceAll('SHORT_ONLY_FALSE', '')
     .replaceAll('LONG_DISABLED_FALSE', '')
     .replaceAll('LONG_ONLY_MODE', 'LONG')
     .replaceAll('LONG_ONLY', 'LONG')
     .replaceAll('LONG-ONLY', 'LONG');
+}
+
+function normalizedSignalText(value = '') {
+  return cleanSideText(value)
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function hasSignalPattern(value = '', patterns = []) {
+  const text = normalizedSignalText(value);
+
+  if (!text) return false;
+
+  return patterns.some((pattern) => (
+    text === pattern ||
+    text.startsWith(`${pattern}_`) ||
+    text.endsWith(`_${pattern}`) ||
+    text.includes(`_${pattern}_`)
+  ));
 }
 
 function textHasShortSignal(value = '') {
@@ -68,28 +236,25 @@ function textHasShortSignal(value = '') {
   if (!raw) return false;
   if (SHORT_TOKENS.has(raw)) return true;
 
-  return (
-    raw.includes('MICRO_SHORT_') ||
-    raw.includes('TRADE_SIDE=SHORT') ||
-    raw.includes('TRADESIDE=SHORT') ||
-    raw.includes('POSITION_SIDE=SHORT') ||
-    raw.includes('POSITIONSIDE=SHORT') ||
-    raw.includes('SIDE=SHORT') ||
-    raw.includes('SIDE=BEAR') ||
-    raw.includes('DIRECTION=SHORT') ||
-    raw.includes('DIRECTION=BEAR') ||
-    raw.includes('SIDE=SELL') ||
-    raw.includes('DIRECTION=SELL') ||
-    raw.startsWith('SHORT_') ||
-    raw.includes('_SHORT_') ||
-    raw.endsWith('_SHORT') ||
-    raw.startsWith('BEAR_') ||
-    raw.includes('_BEAR_') ||
-    raw.endsWith('_BEAR') ||
-    raw.startsWith('SELL_') ||
-    raw.includes('_SELL_') ||
-    raw.endsWith('_SELL')
-  );
+  return hasSignalPattern(raw, [
+    'SHORT',
+    'BEAR',
+    'BEARISH',
+    'SELL',
+    'SIDE_SHORT',
+    'TRADE_SIDE_SHORT',
+    'TRADESIDE_SHORT',
+    'POSITION_SIDE_SHORT',
+    'POSITIONSIDE_SHORT',
+    'DIRECTION_SHORT',
+    'SIDE_BEAR',
+    'TRADE_SIDE_BEAR',
+    'DIRECTION_BEAR',
+    'SIDE_SELL',
+    'DIRECTION_SELL',
+    'MICRO_SHORT',
+    'FAMILY_SHORT'
+  ]);
 }
 
 function textHasLongSignal(value = '') {
@@ -98,28 +263,25 @@ function textHasLongSignal(value = '') {
   if (!raw) return false;
   if (LONG_TOKENS.has(raw)) return true;
 
-  return (
-    raw.includes('MICRO_LONG_') ||
-    raw.includes('TRADE_SIDE=LONG') ||
-    raw.includes('TRADESIDE=LONG') ||
-    raw.includes('POSITION_SIDE=LONG') ||
-    raw.includes('POSITIONSIDE=LONG') ||
-    raw.includes('SIDE=LONG') ||
-    raw.includes('SIDE=BULL') ||
-    raw.includes('DIRECTION=LONG') ||
-    raw.includes('DIRECTION=BULL') ||
-    raw.includes('SIDE=BUY') ||
-    raw.includes('DIRECTION=BUY') ||
-    raw.startsWith('LONG_') ||
-    raw.includes('_LONG_') ||
-    raw.endsWith('_LONG') ||
-    raw.startsWith('BULL_') ||
-    raw.includes('_BULL_') ||
-    raw.endsWith('_BULL') ||
-    raw.startsWith('BUY_') ||
-    raw.includes('_BUY_') ||
-    raw.endsWith('_BUY')
-  );
+  return hasSignalPattern(raw, [
+    'LONG',
+    'BULL',
+    'BULLISH',
+    'BUY',
+    'SIDE_LONG',
+    'TRADE_SIDE_LONG',
+    'TRADESIDE_LONG',
+    'POSITION_SIDE_LONG',
+    'POSITIONSIDE_LONG',
+    'DIRECTION_LONG',
+    'SIDE_BULL',
+    'TRADE_SIDE_BULL',
+    'DIRECTION_BULL',
+    'SIDE_BUY',
+    'DIRECTION_BUY',
+    'MICRO_LONG',
+    'FAMILY_LONG'
+  ]);
 }
 
 function normalizeSide(side) {
@@ -150,6 +312,34 @@ function normalizeBtcState(btcState) {
   return upper(btcState || 'NEUTRAL');
 }
 
+function isBtcAgainstBull(btcState) {
+  return ['BEARISH', 'STRONG_BEAR', 'BEAR', 'DOWN'].includes(upper(btcState));
+}
+
+function isBtcWithBull(btcState) {
+  return ['BULLISH', 'STRONG_BULL', 'BULL', 'UP'].includes(upper(btcState));
+}
+
+function scannerBucketFromBreakout({
+  fake,
+  fakeBreakoutRisk,
+  validBreakout,
+  sweptHigh,
+  retestConfirmed,
+  pullbackConfirmed,
+  volumeExpansion
+}) {
+  if (fake) return 'BULL_FAKE_BREAKOUT_HIGH_SWEEP';
+  if (fakeBreakoutRisk) return 'BULL_BREAKOUT_RISK';
+  if (validBreakout && retestConfirmed) return 'BULL_BREAKOUT_RETEST_CONFIRMED';
+  if (validBreakout) return 'BULL_VALID_BREAKOUT';
+  if (sweptHigh) return 'BULL_HIGH_SWEEP';
+  if (pullbackConfirmed) return 'BULL_PULLBACK_IN_RANGE';
+  if (volumeExpansion >= EXHAUSTION_VOLUME_EXPANSION) return 'BULL_VOLUME_EXPANSION';
+
+  return 'BULL_RANGE_NEUTRAL';
+}
+
 function baseResult(reason = null) {
   return {
     fakeBreakout: false,
@@ -167,58 +357,42 @@ function baseResult(reason = null) {
     sweepConfirmed: false,
     retestConfirmed: false,
 
+    setupTypeHint: null,
+    regimeBucketHint: null,
+    confirmationProfileHint: null,
+    analyzeSetupHintSource: 'MARKET_METADATA_ONLY',
+
     rangeHigh: null,
     rangeLow: null,
     volumeExpansion: 0,
 
-    targetTradeSide: TARGET_TRADE_SIDE,
-    targetScannerSide: TARGET_SCANNER_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+    scannerBucket: reason || 'BULL_BREAKOUT_UNCLASSIFIED',
+    legacy25Bucket: null,
 
-    side: TARGET_DASHBOARD_SIDE,
-    tradeSide: TARGET_TRADE_SIDE,
-    positionSide: TARGET_TRADE_SIDE,
-    direction: TARGET_TRADE_SIDE,
+    reason,
+    createdAt: now(),
 
-    scannerSide: TARGET_SCANNER_SIDE,
-    actualScannerSide: TARGET_SCANNER_SIDE,
-    analysisSide: TARGET_TRADE_SIDE,
-
-    directionalSide: TARGET_DASHBOARD_SIDE,
-    inferredDirectionalSide: TARGET_DASHBOARD_SIDE,
-    marketSide: TARGET_DASHBOARD_SIDE,
-
-    longOnly: true,
-    shortDisabled: true,
-    shortOnly: false,
-    longDisabled: false,
-
-    virtualLearning: true,
-    virtualOnly: true,
-    virtualTracked: true,
-
-    noRealOrders: true,
-    realOrdersDisabled: true,
-    bitgetOrdersDisabled: true,
-    exchangeOrdersDisabled: true,
-    exchangeCallsDisabled: true,
-
-    scannerFingerprintRole: 'METADATA_ONLY',
-    scannerFingerprintsMetadataOnly: true,
-    scannerFingerprintsUsedAsLearningFamily: false,
-    analyzeMicroFamiliesOnly: true,
-    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
-    symbolExcludedFromFamilyId: true,
-
-    bucketGranularity: 'LOW_MID_HIGH',
-
-    reason
+    ...learningIdentityPlaceholders(),
+    ...longMachineFlags()
   };
 }
 
 function emptyResult(reason = 'INSUFFICIENT_DATA') {
-  return baseResult(reason);
+  return {
+    ...baseResult(reason),
+    breakoutType: 'NONE',
+    scannerBucket: reason,
+    side: 'unknown',
+    tradeSide: 'UNKNOWN',
+    positionSide: 'UNKNOWN',
+    direction: 'UNKNOWN',
+    scannerSide: 'UNKNOWN',
+    actualScannerSide: 'UNKNOWN',
+    analysisSide: 'UNKNOWN',
+    directionalSide: 'unknown',
+    inferredDirectionalSide: 'unknown',
+    marketSide: 'unknown'
+  };
 }
 
 function pctDistance(a, b) {
@@ -228,14 +402,6 @@ function pctDistance(a, b) {
   if (x <= 0 || y <= 0) return Infinity;
 
   return Math.abs(x - y) / Math.max(x, y);
-}
-
-function isBtcAgainstBull(btcState) {
-  return ['BEARISH', 'STRONG_BEAR'].includes(btcState);
-}
-
-function isBtcWithBull(btcState) {
-  return ['BULLISH', 'STRONG_BULL'].includes(btcState);
 }
 
 function normalizeCandle(candle = {}) {
@@ -274,6 +440,66 @@ function upperWickPct(candle = {}) {
   const wick = Math.max(0, high - bodyTop);
 
   return wick / range;
+}
+
+function inferSetupHint({
+  fake,
+  sweptHigh,
+  validBreakout,
+  retestConfirmed,
+  pullbackConfirmed,
+  volumeExpansion
+}) {
+  if (fake || sweptHigh) return 'SWEEP_REVERSAL';
+  if (validBreakout && retestConfirmed) return 'RETEST';
+  if (pullbackConfirmed) return 'RETEST';
+  if (volumeExpansion >= EXHAUSTION_VOLUME_EXPANSION) return 'BREAKOUT';
+
+  return 'BREAKOUT';
+}
+
+function inferRegimeHint({
+  validBreakout,
+  volumeExpansion,
+  btcWith,
+  btcAgainst,
+  fakeBreakoutRisk
+}) {
+  if (validBreakout && btcWith && volumeExpansion >= 1.15) return 'TREND';
+  if (fakeBreakoutRisk || btcAgainst) return 'CHOP';
+  if (volumeExpansion < 1.05) return 'SQUEEZE';
+
+  return 'CHOP';
+}
+
+function inferConfirmationProfileHint({
+  validBreakout,
+  fake,
+  fakeBreakoutRisk,
+  btcWith,
+  btcAgainst,
+  volumeExpansion,
+  wickReject,
+  weakBody,
+  retestConfirmed
+}) {
+  if (validBreakout && btcWith && volumeExpansion >= 1.4 && retestConfirmed) {
+    return 'A_STRONG_ALIGN';
+  }
+
+  if (validBreakout && btcWith) {
+    return 'B_FLOW_ALIGN';
+  }
+
+  if (validBreakout && volumeExpansion >= 1.25) {
+    return 'C_VOLUME_ALIGN';
+  }
+
+  if (!fake && !fakeBreakoutRisk && !btcAgainst && !wickReject && !weakBody) {
+    return 'D_MIXED_OK';
+  }
+
+  return 'E_WEAK_CONTRA';
 }
 
 function analyzeBullBreakout({
@@ -333,6 +559,45 @@ function analyzeBullBreakout({
     )
   );
 
+  const setupTypeHint = inferSetupHint({
+    fake,
+    sweptHigh,
+    validBreakout,
+    retestConfirmed,
+    pullbackConfirmed,
+    volumeExpansion
+  });
+
+  const regimeBucketHint = inferRegimeHint({
+    validBreakout,
+    volumeExpansion,
+    btcWith,
+    btcAgainst,
+    fakeBreakoutRisk
+  });
+
+  const confirmationProfileHint = inferConfirmationProfileHint({
+    validBreakout,
+    fake,
+    fakeBreakoutRisk,
+    btcWith,
+    btcAgainst,
+    volumeExpansion,
+    wickReject,
+    weakBody,
+    retestConfirmed
+  });
+
+  const scannerBucket = scannerBucketFromBreakout({
+    fake,
+    fakeBreakoutRisk,
+    validBreakout,
+    sweptHigh,
+    retestConfirmed,
+    pullbackConfirmed,
+    volumeExpansion
+  });
+
   return {
     ...baseResult(null),
 
@@ -359,43 +624,22 @@ function analyzeBullBreakout({
     sweepConfirmed: sweptHigh,
     retestConfirmed,
 
+    setupTypeHint,
+    regimeBucketHint,
+    confirmationProfileHint,
+
+    setupType: setupTypeHint,
+    regimeBucket: regimeBucketHint,
+    confirmationProfile: confirmationProfileHint,
+
     rangeHigh: recentHigh,
     rangeLow: recentLow,
     volumeExpansion,
 
+    scannerBucket,
+    legacy25Bucket: scannerBucket,
+
     details: {
-      side: TARGET_DASHBOARD_SIDE,
-      tradeSide: TARGET_TRADE_SIDE,
-      positionSide: TARGET_TRADE_SIDE,
-      direction: TARGET_TRADE_SIDE,
-
-      targetTradeSide: TARGET_TRADE_SIDE,
-      targetScannerSide: TARGET_SCANNER_SIDE,
-      dashboardSide: TARGET_DASHBOARD_SIDE,
-      oppositeTradeSide: OPPOSITE_TRADE_SIDE,
-
-      longOnly: true,
-      shortDisabled: true,
-      shortOnly: false,
-      longDisabled: false,
-
-      virtualLearning: true,
-      virtualOnly: true,
-      virtualTracked: true,
-
-      noRealOrders: true,
-      realOrdersDisabled: true,
-      bitgetOrdersDisabled: true,
-      exchangeOrdersDisabled: true,
-      exchangeCallsDisabled: true,
-
-      scannerFingerprintRole: 'METADATA_ONLY',
-      scannerFingerprintsMetadataOnly: true,
-      scannerFingerprintsUsedAsLearningFamily: false,
-      analyzeMicroFamiliesOnly: true,
-      learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
-      symbolExcludedFromFamilyId: true,
-
       recentHigh,
       recentLow,
 
@@ -417,7 +661,17 @@ function analyzeBullBreakout({
       weakBody,
       volumeExhaustion,
       validBreakout,
-      fakeBreakoutRisk
+      fakeBreakoutRisk,
+
+      scannerBucket,
+      legacy25Bucket: scannerBucket,
+
+      setupTypeHint,
+      regimeBucketHint,
+      confirmationProfileHint,
+
+      ...learningIdentityPlaceholders(),
+      ...longMachineFlags()
     }
   };
 }
