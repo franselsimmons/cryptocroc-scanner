@@ -14,10 +14,18 @@ const DEFAULT_RETRIES = 2;
 
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
+const TARGET_SCANNER_SIDE = 'bull';
 const OPPOSITE_TRADE_SIDE = 'SHORT';
 
 const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
+const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
+
+const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
+const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
+const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
+const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
+const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 
 const DEFAULT_TIMEOUT_MS = 2500;
 const DEFAULT_MIN_REQUEST_INTERVAL_MS = 80;
@@ -41,6 +49,88 @@ function now() {
   return Date.now();
 }
 
+function longMachineFlags() {
+  return {
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    scannerSide: TARGET_SCANNER_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    virtualLearning: true,
+    virtualOnly: true,
+    virtualTracked: true,
+    shadowOnly: true,
+
+    realTrade: false,
+    realOrder: false,
+    exchangeOrder: false,
+    bitgetOrderPlaced: false,
+
+    marketDataOnly: true,
+    noRealOrders: true,
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true,
+    exchangeTradeCallsDisabled: true,
+    orderPlacementDisabled: true,
+
+    scannerBullishOnly: true,
+    scannerSearchSide: TARGET_SCANNER_SIDE,
+    scannerDoesNotTrade: true,
+    scannerDoesNotSelectMicroFamilies: true,
+    scannerDoesNotSendDiscord: true,
+    scannerDoesNotWriteLearningFamilies: true,
+
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false,
+
+    analyzeMicroFamiliesOnly: true,
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+    symbolExcludedFromFamilyId: true,
+    coinNameExcludedFromFamilyId: true,
+    hashesExcludedFromFamilyId: true,
+
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    exactTrueMicroFamilyRequired: true,
+    fixedTaxonomyPreferred: true,
+
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
+    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+    exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    parentLearningEnabled: true,
+    childLearningEnabled: true,
+    learningGranularity: LEARNING_GRANULARITY,
+    parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
+    selectionGranularity: 'EXACT_75_CHILD',
+    fallbackRankingGranularity: 'PARENT_15_UNTIL_CHILD_MIN_COMPLETED',
+
+    completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
+    scoringRSource: 'netR',
+    winsLossesFlatsSource: 'netR',
+    winrateDefinition: 'netR > 0',
+    avgRSource: 'netR',
+    totalRSource: 'netR',
+    avgCostRShown: true,
+
+    manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
+    discordOnlyForExactTrueMicroMatch: true,
+
+    redisNamespace: LONG_NAMESPACE,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    shortRootTouched: false
+  };
+}
+
 function bitgetConfig() {
   return {
     baseUrl: CONFIG.bitget?.baseUrl || 'https://api.bitget.com',
@@ -52,16 +142,7 @@ function bitgetConfig() {
     ),
     cacheEnabled: CONFIG.bitget?.cacheEnabled !== false,
 
-    targetTradeSide: TARGET_TRADE_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-    namespace: LONG_NAMESPACE,
-    keyPrefix: LONG_KEY_PREFIX,
-
-    marketDataOnly: true,
-    noRealOrders: true,
-    realOrdersDisabled: true,
-    bitgetOrdersDisabled: true,
-    exchangeOrdersDisabled: true
+    ...longMachineFlags()
   };
 }
 
@@ -94,6 +175,8 @@ function stableParams(params = {}) {
 function cacheKey(path, params = {}) {
   return JSON.stringify({
     namespace: LONG_NAMESPACE,
+    keyPrefix: LONG_KEY_PREFIX,
+    persistentLearningKey: PERSISTENT_LEARNING_KEY,
     path,
     params: stableParams(params)
   });
@@ -164,7 +247,14 @@ function parseJsonText(text) {
 }
 
 function bitgetErrorMessage(prefix, details = {}) {
-  return `${prefix}_${JSON.stringify(details).slice(0, 500)}`;
+  return `${prefix}_${JSON.stringify({
+    ...details,
+    targetTradeSide: TARGET_TRADE_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    marketDataOnly: true,
+    noRealOrders: true,
+    redisNamespace: LONG_NAMESPACE
+  }).slice(0, 500)}`;
 }
 
 function isLikelyNetworkError(error) {
@@ -209,7 +299,7 @@ async function fetchJsonOnce(path, params = {}, timeoutMs = bitgetConfig().timeo
       method: 'GET',
       headers: {
         accept: 'application/json',
-        'user-agent': CONFIG.strategyVersion || 'LONG_ONLY_VIRTUAL_MF_TS_V1'
+        'user-agent': CONFIG.strategyVersion || 'LONG_ONLY_VIRTUAL_75_TRUE_MICRO_MARKET_DATA_V1'
       },
       signal: controller.signal
     });
@@ -322,43 +412,30 @@ function longCandidateMeta(change24h) {
   return {
     side: rising ? TARGET_DASHBOARD_SIDE : 'rejected',
     tradeSide: rising ? TARGET_TRADE_SIDE : 'UNKNOWN',
-    scannerSide: rising ? TARGET_DASHBOARD_SIDE : 'UNKNOWN',
-    actualScannerSide: rising ? TARGET_DASHBOARD_SIDE : 'UNKNOWN',
+    scannerSide: rising ? TARGET_SCANNER_SIDE : 'UNKNOWN',
+    actualScannerSide: rising ? TARGET_SCANNER_SIDE : 'UNKNOWN',
     positionSide: rising ? TARGET_TRADE_SIDE : 'UNKNOWN',
     direction: rising ? TARGET_TRADE_SIDE : 'UNKNOWN',
 
-    targetTradeSide: TARGET_TRADE_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
-
-    longOnly: true,
-    shortDisabled: true,
-    shortOnly: false,
-    longDisabled: false,
-
-    virtualLearning: true,
-    virtualOnly: true,
-    virtualTracked: true,
-
-    noRealOrders: true,
-    realOrdersDisabled: true,
-    bitgetOrdersDisabled: true,
-    exchangeOrdersDisabled: true,
-    exchangeCallsDisabled: true,
-
-    scannerFingerprintsMetadataOnly: true,
-    scannerFingerprintsUsedAsLearningFamily: false,
-    analyzeMicroFamiliesOnly: true,
-    learningIdentitySource: 'ANALYZE_MICRO_FAMILY',
-    symbolExcludedFromFamilyId: true,
-
-    redisNamespace: LONG_NAMESPACE,
-    redisKeyPrefix: LONG_KEY_PREFIX,
-    shortRootTouched: false,
-
-    isRising: rising,
+    bullishScannerCandidate: rising,
     eligibleLongCandidate: rising,
-    rejectReason: rising ? null : 'NOT_RISING_LONG_ONLY'
+    isRising: rising,
+    rejectReason: rising ? null : 'NOT_BULLISH_LONG_SCANNER_ONLY',
+
+    scannerBucket: rising ? 'BULLISH_RISING' : 'REJECTED_NOT_RISING',
+    legacyScannerBucket: null,
+    scannerBucketRole: 'DEBUG_METADATA_ONLY',
+    legacy25BucketRole: 'DEBUG_METADATA_ONLY',
+
+    scannerMicroFamilyId: null,
+    scannerFamilyId: null,
+    trueMicroFamilyId: null,
+    microFamilyId: null,
+    childTrueMicroFamilyId: null,
+    parentTrueMicroFamilyId: null,
+    coarseMicroFamilyId: null,
+
+    ...longMachineFlags()
   };
 }
 
@@ -439,15 +516,10 @@ export function parseTicker(row = {}) {
     volume24h: quoteVolume,
     change24h,
 
-    ...longCandidateMeta(change24h),
-
     source: 'BITGET_MARKET_DATA',
     marketDataOnly: true,
-    noRealOrders: true,
-    realOrdersDisabled: true,
-    bitgetOrdersDisabled: true,
-    exchangeOrdersDisabled: true,
-    exchangeCallsDisabled: true,
+
+    ...longCandidateMeta(change24h),
 
     raw: row
   };
@@ -529,10 +601,7 @@ export async function fetchCandles(symbol, timeframe = '15m', limit = 100) {
       console.warn('BITGET_CANDLES_FAILED', JSON.stringify({
         symbol: contractSymbol,
         timeframe,
-        targetTradeSide: TARGET_TRADE_SIDE,
-        dashboardSide: TARGET_DASHBOARD_SIDE,
-        marketDataOnly: true,
-        noRealOrders: true,
+        ...longMachineFlags(),
         error: lastError?.message || 'EMPTY'
       }));
 
@@ -592,10 +661,7 @@ export async function fetchOrderBook(symbol) {
 
       console.warn('BITGET_ORDERBOOK_FAILED', JSON.stringify({
         symbol: contractSymbol,
-        targetTradeSide: TARGET_TRADE_SIDE,
-        dashboardSide: TARGET_DASHBOARD_SIDE,
-        marketDataOnly: true,
-        noRealOrders: true,
+        ...longMachineFlags(),
         error: lastError?.message || 'EMPTY'
       }));
 
@@ -655,19 +721,8 @@ function emptyOrderBookAnalysis() {
     scannerSide: 'UNKNOWN',
     actualScannerSide: 'UNKNOWN',
     side: 'unknown',
-
-    targetTradeSide: TARGET_TRADE_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
-
-    longOnly: true,
-    shortDisabled: true,
-    shortOnly: false,
-    longDisabled: false,
-
-    virtualLearning: true,
-    virtualOnly: true,
-    virtualTracked: true,
+    positionSide: 'UNKNOWN',
+    direction: 'UNKNOWN',
 
     spreadPct: CONFIG.cost?.fallbackSpreadPct ?? 0.0008,
     spreadBps: safeNumber(CONFIG.cost?.fallbackSpreadPct ?? 0.0008, 0) * 10_000,
@@ -685,22 +740,22 @@ function emptyOrderBookAnalysis() {
     bestBid: 0,
     bestAsk: 0,
 
+    bullishOrderBookCandidate: false,
+    eligibleLongCandidate: false,
+    rejectReason: 'ORDERBOOK_UNAVAILABLE_OR_INVALID',
+
     fetchFailed: true,
-    marketDataOnly: true,
-    noRealOrders: true,
-    realOrdersDisabled: true,
-    bitgetOrdersDisabled: true,
-    exchangeOrdersDisabled: true,
-    exchangeCallsDisabled: true,
 
-    scannerFingerprintsMetadataOnly: true,
-    scannerFingerprintsUsedAsLearningFamily: false,
-    analyzeMicroFamiliesOnly: true,
-    symbolExcludedFromFamilyId: true,
+    scannerBucket: 'ORDERBOOK_INVALID',
+    scannerBucketRole: 'DEBUG_METADATA_ONLY',
 
-    redisNamespace: LONG_NAMESPACE,
-    redisKeyPrefix: LONG_KEY_PREFIX,
-    shortRootTouched: false
+    trueMicroFamilyId: null,
+    microFamilyId: null,
+    childTrueMicroFamilyId: null,
+    parentTrueMicroFamilyId: null,
+    coarseMicroFamilyId: null,
+
+    ...longMachineFlags()
   };
 }
 
@@ -763,24 +818,11 @@ export function analyzeOrderBook(raw) {
     obBias: bias,
 
     tradeSide: longAligned ? TARGET_TRADE_SIDE : 'UNKNOWN',
-    scannerSide: longAligned ? TARGET_DASHBOARD_SIDE : 'UNKNOWN',
-    actualScannerSide: longAligned ? TARGET_DASHBOARD_SIDE : 'UNKNOWN',
+    scannerSide: longAligned ? TARGET_SCANNER_SIDE : 'UNKNOWN',
+    actualScannerSide: longAligned ? TARGET_SCANNER_SIDE : 'UNKNOWN',
     side: longAligned ? TARGET_DASHBOARD_SIDE : 'unknown',
     positionSide: longAligned ? TARGET_TRADE_SIDE : 'UNKNOWN',
     direction: longAligned ? TARGET_TRADE_SIDE : 'UNKNOWN',
-
-    targetTradeSide: TARGET_TRADE_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
-
-    longOnly: true,
-    shortDisabled: true,
-    shortOnly: false,
-    longDisabled: false,
-
-    virtualLearning: true,
-    virtualOnly: true,
-    virtualTracked: true,
 
     spreadPct,
     spreadBps,
@@ -798,23 +840,22 @@ export function analyzeOrderBook(raw) {
     bestBid,
     bestAsk,
 
+    bullishOrderBookCandidate: longAligned,
+    eligibleLongCandidate: longAligned,
+    rejectReason: longAligned ? null : 'ORDERBOOK_NOT_BULLISH_LONG_ONLY',
+
     fetchFailed: false,
-    marketDataOnly: true,
-    noRealOrders: true,
-    realOrdersDisabled: true,
-    bitgetOrdersDisabled: true,
-    exchangeOrdersDisabled: true,
-    exchangeCallsDisabled: true,
 
-    scannerFingerprintsMetadataOnly: true,
-    scannerFingerprintsUsedAsLearningFamily: false,
-    analyzeMicroFamiliesOnly: true,
-    learningIdentitySource: 'ANALYZE_MICRO_FAMILY',
-    symbolExcludedFromFamilyId: true,
+    scannerBucket: longAligned ? 'ORDERBOOK_BID_HEAVY' : 'ORDERBOOK_NOT_BULLISH',
+    scannerBucketRole: 'DEBUG_METADATA_ONLY',
 
-    redisNamespace: LONG_NAMESPACE,
-    redisKeyPrefix: LONG_KEY_PREFIX,
-    shortRootTouched: false
+    trueMicroFamilyId: null,
+    microFamilyId: null,
+    childTrueMicroFamilyId: null,
+    parentTrueMicroFamilyId: null,
+    coarseMicroFamilyId: null,
+
+    ...longMachineFlags()
   };
 }
 
@@ -825,30 +866,14 @@ export async function fetchFunding(symbol) {
     return {
       rate: 0,
       fetchFailed: true,
-
-      targetTradeSide: TARGET_TRADE_SIDE,
-      dashboardSide: TARGET_DASHBOARD_SIDE,
-      oppositeTradeSide: OPPOSITE_TRADE_SIDE,
-
-      longOnly: true,
-      shortDisabled: true,
-      shortOnly: false,
-      longDisabled: false,
-
-      virtualLearning: true,
-      virtualOnly: true,
-      virtualTracked: true,
-
-      marketDataOnly: true,
-      noRealOrders: true,
-      realOrdersDisabled: true,
-      bitgetOrdersDisabled: true,
-      exchangeOrdersDisabled: true,
-      exchangeCallsDisabled: true,
-
-      redisNamespace: LONG_NAMESPACE,
-      redisKeyPrefix: LONG_KEY_PREFIX,
-      shortRootTouched: false
+      fundingBucket: 'FUNDING_SYMBOL_INVALID',
+      fundingBucketRole: 'DEBUG_METADATA_ONLY',
+      trueMicroFamilyId: null,
+      microFamilyId: null,
+      childTrueMicroFamilyId: null,
+      parentTrueMicroFamilyId: null,
+      coarseMicroFamilyId: null,
+      ...longMachineFlags()
     };
   }
 
@@ -867,77 +892,46 @@ export async function fetchFunding(symbol) {
         });
 
         const row = Array.isArray(data) ? data[0] : data;
+        const rate = safeNumber(
+          row?.fundingRate ??
+          row?.fundRate ??
+          row?.rate,
+          0
+        );
 
         return {
-          rate: safeNumber(
-            row?.fundingRate ??
-            row?.fundRate ??
-            row?.rate,
-            0
-          ),
+          rate,
           fetchFailed: false,
-
-          targetTradeSide: TARGET_TRADE_SIDE,
-          dashboardSide: TARGET_DASHBOARD_SIDE,
-          oppositeTradeSide: OPPOSITE_TRADE_SIDE,
-
-          longOnly: true,
-          shortDisabled: true,
-          shortOnly: false,
-          longDisabled: false,
-
-          virtualLearning: true,
-          virtualOnly: true,
-          virtualTracked: true,
-
-          marketDataOnly: true,
-          noRealOrders: true,
-          realOrdersDisabled: true,
-          bitgetOrdersDisabled: true,
-          exchangeOrdersDisabled: true,
-          exchangeCallsDisabled: true,
-
-          redisNamespace: LONG_NAMESPACE,
-          redisKeyPrefix: LONG_KEY_PREFIX,
-          shortRootTouched: false
+          fundingBucket:
+            rate < -0.0001 ? 'FUNDING_NEG' :
+            rate > 0.0001 ? 'FUNDING_POS' :
+            'FUNDING_FLAT',
+          fundingBucketRole: 'DEBUG_METADATA_ONLY',
+          trueMicroFamilyId: null,
+          microFamilyId: null,
+          childTrueMicroFamilyId: null,
+          parentTrueMicroFamilyId: null,
+          coarseMicroFamilyId: null,
+          ...longMachineFlags()
         };
       } catch (error) {
         console.warn('BITGET_FUNDING_FAILED', JSON.stringify({
           symbol: contractSymbol,
-          targetTradeSide: TARGET_TRADE_SIDE,
-          dashboardSide: TARGET_DASHBOARD_SIDE,
-          marketDataOnly: true,
-          noRealOrders: true,
+          ...longMachineFlags(),
           error: error?.message || String(error)
         }));
 
         return {
           rate: 0,
           fetchFailed: true,
-
-          targetTradeSide: TARGET_TRADE_SIDE,
-          dashboardSide: TARGET_DASHBOARD_SIDE,
-          oppositeTradeSide: OPPOSITE_TRADE_SIDE,
-
-          longOnly: true,
-          shortDisabled: true,
-          shortOnly: false,
-          longDisabled: false,
-
-          virtualLearning: true,
-          virtualOnly: true,
-          virtualTracked: true,
-
-          marketDataOnly: true,
-          noRealOrders: true,
-          realOrdersDisabled: true,
-          bitgetOrdersDisabled: true,
-          exchangeOrdersDisabled: true,
-          exchangeCallsDisabled: true,
-
-          redisNamespace: LONG_NAMESPACE,
-          redisKeyPrefix: LONG_KEY_PREFIX,
-          shortRootTouched: false
+          fundingBucket: 'FUNDING_FETCH_FAILED',
+          fundingBucketRole: 'DEBUG_METADATA_ONLY',
+          trueMicroFamilyId: null,
+          microFamilyId: null,
+          childTrueMicroFamilyId: null,
+          parentTrueMicroFamilyId: null,
+          coarseMicroFamilyId: null,
+          ...longMachineFlags()
         };
       }
     }
