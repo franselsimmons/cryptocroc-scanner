@@ -12,6 +12,7 @@ import { sideToTradeSide } from '../../src/utils.js';
 
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
+const TARGET_SCANNER_SIDE = 'bull';
 const OPPOSITE_TRADE_SIDE = 'SHORT';
 
 const LONG_NAMESPACE = 'LONG';
@@ -22,16 +23,45 @@ const DEFAULT_LOCK_TTL_SEC = 180;
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 const MIN_COMPLETED_ACTIVE_LEARNING = 20;
 
+const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY';
+const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
+
 const RUN_SCOPE = 'TRADE_ONLY';
 const WRITE_SCOPE = 'TRADE_AND_ANALYZE_PARTIAL_ONLY';
 const READ_SCOPE = 'READ_LONG_SCANNER_LATEST_ONLY';
+
+const LONG_FIXED_SETUP_TYPES = new Set([
+  'BREAKOUT',
+  'RETEST',
+  'SWEEP_REVERSAL',
+  'CONTINUATION',
+  'COMPRESSION'
+]);
+
+const LONG_FIXED_REGIME_BUCKETS = new Set([
+  'TREND',
+  'CHOP',
+  'SQUEEZE'
+]);
 
 function now() {
   return Date.now();
 }
 
+function callMaybeKey(value, fallback = null) {
+  if (typeof value === 'function') {
+    try {
+      return value();
+    } catch {
+      return fallback;
+    }
+  }
+
+  return value || fallback;
+}
+
 function namespacedLongKey(key, fallback = null) {
-  const raw = String(key || fallback || '').trim();
+  const raw = String(callMaybeKey(key, fallback) || '').trim();
 
   if (!raw) return null;
   if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
@@ -73,12 +103,41 @@ const LONG_KEYS = {
   }
 };
 
+function safeNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function round(value, decimals = 4) {
+  return Number(safeNumber(value, 0).toFixed(decimals));
+}
+
+function upper(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
 function getPositionTimeStopMin() {
-  const value = Number(CONFIG.trade?.positionTimeStopMin || DEFAULT_POSITION_TIME_STOP_MIN);
+  const value = Number(
+    CONFIG.long?.trade?.positionTimeStopMin ??
+      CONFIG.trade?.positionTimeStopMin ??
+      DEFAULT_POSITION_TIME_STOP_MIN
+  );
 
   if (!Number.isFinite(value) || value <= 0) return DEFAULT_POSITION_TIME_STOP_MIN;
 
   return Math.floor(value);
+}
+
+function getLockTtlSec() {
+  const ttl = Number(
+    CONFIG.long?.trade?.lockTtlSec ??
+      CONFIG.trade?.lockTtlSec ??
+      DEFAULT_LOCK_TTL_SEC
+  );
+
+  if (!Number.isFinite(ttl) || ttl <= 0) return DEFAULT_LOCK_TTL_SEC;
+
+  return Math.floor(ttl);
 }
 
 function isolationFlags() {
@@ -117,6 +176,7 @@ function isolationFlags() {
     writesMicroFamilies: true,
     microFamiliesAppendOnly: true,
     microFamiliesAntiWipe: true,
+    analyzePartialOnly: true,
     analyzeFullOverwriteDisabled: true,
 
     writesRotation: false,
@@ -125,7 +185,21 @@ function isolationFlags() {
 
     preserveRotation: true,
     preserveManualSelection: true,
-    preserveDiscordSelection: true
+    preserveDiscordSelection: true,
+
+    noResetCron: true,
+    resetCronDisabled: true,
+    noActivateCron: true,
+    activateCronDisabled: true,
+    noFreezeCron: true,
+    freezeCronDisabled: true,
+    autoRotationActivationDisabled: true,
+
+    ignoreGlobalMaxOpenPositions: true,
+    noGlobalMaxOpenPositionsBlock: true,
+    globalMaxOpenPositionsBlockDisabled: true,
+    maxOneOpenPositionPerSymbol: true,
+    oneOpenPositionPerSymbol: true
   };
 }
 
@@ -133,6 +207,7 @@ function baseFlags() {
   return {
     targetTradeSide: TARGET_TRADE_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
+    scannerSide: TARGET_SCANNER_SIDE,
     oppositeTradeSide: OPPOSITE_TRADE_SIDE,
 
     side: TARGET_DASHBOARD_SIDE,
@@ -140,8 +215,7 @@ function baseFlags() {
     positionSide: TARGET_TRADE_SIDE,
     direction: TARGET_TRADE_SIDE,
 
-    scannerSide: TARGET_DASHBOARD_SIDE,
-    actualScannerSide: TARGET_DASHBOARD_SIDE,
+    actualScannerSide: TARGET_SCANNER_SIDE,
     analysisSide: TARGET_TRADE_SIDE,
 
     longOnly: true,
@@ -189,19 +263,27 @@ function baseFlags() {
     },
 
     scannerFingerprintRole: 'METADATA_ONLY',
+    scannerFingerprintOnlyMetadata: true,
     scannerFingerprintsHiddenFromLearning: true,
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
 
+    executionFingerprintRole: 'METADATA_ONLY',
+    executionFingerprintOnlyMetadata: true,
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false,
+
+    analyzeMicroFamiliesOnly: true,
     learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
     exactTrueMicroFamilyRequired: true,
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    broadTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    fixedTaxonomyPreferred: true,
+    learningGranularity: LEARNING_GRANULARITY,
     symbolExcludedFromFamilyId: true,
 
-    bucketsCoarseOnly: true,
-    bucketGranularity: 'LOW_MID_HIGH',
-
-    globalMaxOpenPositionsBlockDisabled: true,
-    maxOneOpenPositionPerSymbol: true,
     positionTimeStopMinDefault: DEFAULT_POSITION_TIME_STOP_MIN,
     positionTimeStopMin: getPositionTimeStopMin(),
 
@@ -287,24 +369,6 @@ function isTrue(value) {
   return ['true', '1', 'yes', 'y', 'on', 'force', 'forced'].includes(raw);
 }
 
-function safeNumber(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function round(value, decimals = 4) {
-  return Number(safeNumber(value, 0).toFixed(decimals));
-}
-
-function getLockTtlSec() {
-  const ttl = Number(CONFIG.trade?.lockTtlSec || DEFAULT_LOCK_TTL_SEC);
-
-  if (!Number.isFinite(ttl)) return DEFAULT_LOCK_TTL_SEC;
-  if (ttl <= 0) return DEFAULT_LOCK_TTL_SEC;
-
-  return Math.floor(ttl);
-}
-
 function shouldForceProcessSnapshot(req, body = {}) {
   return (
     isTrue(firstValue(req.query?.force, false)) ||
@@ -349,23 +413,103 @@ function getRunSource(req, body = {}) {
     : 'CRON_OR_API_LONG_TRADE_RUN';
 }
 
-function upper(value) {
-  return String(value || '').trim().toUpperCase();
-}
-
 function cleanSideText(value = '') {
   return upper(value)
-    .replaceAll('SHORT_DISABLED', '')
-    .replaceAll('SHORTDISABLED', '')
-    .replaceAll('BLOCK_SHORT', '')
+    .replaceAll('SHORT_DISABLED_FALSE', '')
+    .replaceAll('SHORTDISABLED_FALSE', '')
+    .replaceAll('BLOCK_SHORT_FALSE', '')
     .replaceAll('SHORT_ENABLED_FALSE', '')
     .replaceAll('SHORT_ONLY_FALSE', '')
     .replaceAll('LONG_DISABLED_FALSE', '')
-    .replaceAll('LONG_ENABLED_FALSE', '')
-    .replaceAll('LONG_ONLY_FALSE', '')
+    .replaceAll('SHORT_DISABLED_LONG_ONLY', '')
+    .replaceAll('SHORTDISABLED_LONG_ONLY', '')
+    .replaceAll('BLOCK_SHORT', '')
+    .replaceAll('SHORT_DISABLED', '')
+    .replaceAll('SHORTDISABLED', '')
     .replaceAll('LONG_ONLY_MODE', 'LONG')
     .replaceAll('LONG_ONLY', 'LONG')
-    .replaceAll('LONG-ONLY', 'LONG');
+    .replaceAll('LONG-ONLY', 'LONG')
+    .replaceAll('SHORT_ONLY_MODE', 'SHORT')
+    .replaceAll('SHORT_ONLY', 'SHORT')
+    .replaceAll('SHORT-ONLY', 'SHORT');
+}
+
+function normalizeSignalText(value = '') {
+  return cleanSideText(value)
+    .replace(/[^A-Z0-9=:_|]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function hasSignalPattern(value = '', patterns = []) {
+  const text = normalizeSignalText(value);
+
+  if (!text) return false;
+
+  return patterns.some((pattern) => (
+    text === pattern ||
+    text.startsWith(`${pattern}_`) ||
+    text.endsWith(`_${pattern}`) ||
+    text.includes(`_${pattern}_`) ||
+    text.includes(`=${pattern}`) ||
+    text.includes(`:${pattern}`) ||
+    text.includes(`|${pattern}|`)
+  ));
+}
+
+function hasLongSignal(value = '') {
+  return hasSignalPattern(value, [
+    'LONG',
+    'BULL',
+    'BULLISH',
+    'BUY',
+    'UP',
+    'UPSIDE',
+    'MICRO_LONG',
+    'SIDE_LONG',
+    'SIDE_BULL',
+    'SIDE_BUY',
+    'TRADE_SIDE_LONG',
+    'TRADESIDE_LONG',
+    'POSITION_SIDE_LONG',
+    'POSITIONSIDE_LONG',
+    'DIRECTION_LONG',
+    'DIRECTION_BULL',
+    'DIRECTION_BUY'
+  ]);
+}
+
+function hasShortSignal(value = '') {
+  return hasSignalPattern(value, [
+    'SHORT',
+    'BEAR',
+    'BEARISH',
+    'SELL',
+    'DOWN',
+    'DOWNSIDE',
+    'MICRO_SHORT',
+    'SIDE_SHORT',
+    'SIDE_BEAR',
+    'SIDE_SELL',
+    'TRADE_SIDE_SHORT',
+    'TRADESIDE_SHORT',
+    'POSITION_SIDE_SHORT',
+    'POSITIONSIDE_SHORT',
+    'DIRECTION_SHORT',
+    'DIRECTION_BEAR',
+    'DIRECTION_SELL'
+  ]);
+}
+
+function isFixedLongTaxonomyMicroId(id = '') {
+  const value = upper(id);
+  const match = /^MICRO_LONG_([A-Z_]+)_(TREND|CHOP|SQUEEZE)$/.exec(value);
+
+  if (!match) return false;
+
+  const setup = match[1];
+  const regime = match[2];
+
+  return LONG_FIXED_SETUP_TYPES.has(setup) && LONG_FIXED_REGIME_BUCKETS.has(regime);
 }
 
 function isScannerFingerprintId(id = '') {
@@ -375,13 +519,76 @@ function isScannerFingerprintId(id = '') {
     value.startsWith('MICRO_LONG_SCANNER__') ||
     value.includes('MICRO_LONG_SCANNER__') ||
     value.startsWith('LONG_SCANNER_') ||
+    value.includes('LONG_SCANNER_') ||
     value.startsWith('MICRO_SHORT_SCANNER__') ||
     value.includes('MICRO_SHORT_SCANNER__') ||
     value.startsWith('SHORT_SCANNER_') ||
+    value.includes('SHORT_SCANNER_') ||
     value.includes('__SCANNER__') ||
     value.includes('SCANNER_GATE_PASS') ||
     value.includes('SCANNER_GATE_FAIL')
   );
+}
+
+function isExecutionFingerprintId(id = '') {
+  const value = upper(id);
+
+  return (
+    value.includes('_XR_') ||
+    value.includes('__XR__') ||
+    value.includes('EXECUTION_FINGERPRINT') ||
+    value.includes('EXECUTION_MICRO') ||
+    value.includes('REFINED_EXECUTION')
+  );
+}
+
+function validLearningId(id = '') {
+  const value = String(id || '').trim();
+
+  if (!value) return false;
+  if (isScannerFingerprintId(value)) return false;
+  if (isExecutionFingerprintId(value)) return false;
+
+  return true;
+}
+
+function idLooksLikeLongFamily(id = '') {
+  const value = String(id || '').trim();
+
+  if (!validLearningId(value)) return false;
+
+  return hasLongSignal(value);
+}
+
+function idLooksLikeShortFamily(id = '') {
+  const value = String(id || '').trim();
+
+  if (!validLearningId(value)) return false;
+
+  return hasShortSignal(value);
+}
+
+function isSelectableTrueMicroId(id = '') {
+  const value = String(id || '').trim();
+  const upperValue = upper(value);
+
+  if (!validLearningId(value)) return false;
+  if (!idLooksLikeLongFamily(value)) return false;
+  if (idLooksLikeShortFamily(value) && !idLooksLikeLongFamily(value)) return false;
+
+  if (isFixedLongTaxonomyMicroId(value)) return true;
+  if (!upperValue.startsWith('MICRO_LONG_')) return false;
+
+  if (
+    upperValue.includes('_MF_V1_') ||
+    upperValue.endsWith('_MF_V1') ||
+    upperValue.includes('|SCHEMA=MF_V1') ||
+    upperValue.includes('SCHEMA=MF_V1')
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function normalizeSymbolToken(value = '') {
@@ -408,6 +615,10 @@ function stripSymbolTokensFromFamilyId(id = '', row = {}) {
 
   if (!raw) return raw;
 
+  if (isFixedLongTaxonomyMicroId(raw)) {
+    return upper(raw);
+  }
+
   const tokens = symbolTokensFromRow(row);
   if (!tokens.length) return raw;
 
@@ -433,8 +644,15 @@ function cleanLearningFamilyId(id = '', row = {}) {
 
   if (!raw) return '';
   if (isScannerFingerprintId(raw)) return '';
+  if (isExecutionFingerprintId(raw)) return '';
 
-  return stripSymbolTokensFromFamilyId(raw, row);
+  const clean = stripSymbolTokensFromFamilyId(raw, row);
+
+  if (!clean) return '';
+  if (isScannerFingerprintId(clean)) return '';
+  if (isExecutionFingerprintId(clean)) return '';
+
+  return clean;
 }
 
 function scannerMicroFamilyIdFrom(row = {}) {
@@ -457,9 +675,22 @@ function scannerFamilyIdFrom(row = {}) {
   );
 }
 
+function executionMicroFamilyIdFrom(row = {}) {
+  return (
+    row.executionMicroFamilyId ||
+    (isExecutionFingerprintId(row.microFamilyId) ? row.microFamilyId : null) ||
+    (isExecutionFingerprintId(row.trueMicroFamilyId) ? row.trueMicroFamilyId : null) ||
+    (isExecutionFingerprintId(row.analyzeMicroFamilyId) ? row.analyzeMicroFamilyId : null) ||
+    (isExecutionFingerprintId(row.id) ? row.id : null) ||
+    (isExecutionFingerprintId(row.key) ? row.key : null) ||
+    null
+  );
+}
+
 function scannerMetadataFrom(row = {}) {
   const scannerMicroFamilyId = scannerMicroFamilyIdFrom(row);
   const scannerFamilyId = scannerFamilyIdFrom(row);
+  const executionMicroFamilyId = executionMicroFamilyIdFrom(row);
 
   return {
     scannerMicroFamilyId: scannerMicroFamilyId || null,
@@ -475,8 +706,14 @@ function scannerMetadataFrom(row = {}) {
         ? row.definitionParts
         : [],
 
+    executionMicroFamilyId,
+    executionFingerprintRole: 'METADATA_ONLY',
+    executionFingerprintOnlyMetadata: Boolean(executionMicroFamilyId),
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false,
+
     scannerFingerprintRole: 'METADATA_ONLY',
-    scannerFingerprintOnlyMetadata: false,
+    scannerFingerprintOnlyMetadata: true,
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
 
@@ -488,29 +725,32 @@ function scannerMetadataFrom(row = {}) {
 function normalizeLearningIdentity(row = {}) {
   const microFamilyId = cleanLearningFamilyId(
     row.trueMicroFamilyId ||
-    row.microFamilyId ||
-    row.analyzeMicroFamilyId ||
-    '',
+      row.learningMicroFamilyId ||
+      row.analyzeMicroFamilyId ||
+      row.microFamilyId ||
+      '',
     row
   );
 
   const coarseMicroFamilyId = cleanLearningFamilyId(
     row.coarseMicroFamilyId ||
-    row.baseMicroFamilyId ||
-    row.legacyMicroFamilyId ||
-    microFamilyId ||
-    '',
+      row.baseMicroFamilyId ||
+      row.legacyMicroFamilyId ||
+      microFamilyId ||
+      '',
     row
   );
 
   return {
     microFamilyId: microFamilyId || null,
     trueMicroFamilyId: microFamilyId || null,
+    analyzeMicroFamilyId: microFamilyId || null,
+    learningMicroFamilyId: microFamilyId || null,
     coarseMicroFamilyId: coarseMicroFamilyId || microFamilyId || null,
-    baseMicroFamilyId: row.baseMicroFamilyId && !isScannerFingerprintId(row.baseMicroFamilyId)
+    baseMicroFamilyId: row.baseMicroFamilyId && validLearningId(row.baseMicroFamilyId)
       ? cleanLearningFamilyId(row.baseMicroFamilyId, row)
       : coarseMicroFamilyId || microFamilyId || null,
-    legacyMicroFamilyId: row.legacyMicroFamilyId && !isScannerFingerprintId(row.legacyMicroFamilyId)
+    legacyMicroFamilyId: row.legacyMicroFamilyId && validLearningId(row.legacyMicroFamilyId)
       ? cleanLearningFamilyId(row.legacyMicroFamilyId, row)
       : coarseMicroFamilyId || microFamilyId || null
   };
@@ -534,79 +774,20 @@ function normalizeTradeSide(value) {
     return OPPOSITE_TRADE_SIDE;
   }
 
+  const longHit = hasLongSignal(raw);
+  const shortHit = hasShortSignal(raw);
+
+  if (longHit && !shortHit) return TARGET_TRADE_SIDE;
+  if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
+
+  if (longHit && shortHit) {
+    if (raw.includes('TRADE_SIDE=LONG') || raw.includes('TRADESIDE=LONG')) return TARGET_TRADE_SIDE;
+    if (raw.includes('TRADE_SIDE=SHORT') || raw.includes('TRADESIDE=SHORT')) return OPPOSITE_TRADE_SIDE;
+    if (raw.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
+    if (raw.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
+  }
+
   return 'UNKNOWN';
-}
-
-function hasShortSignal(value = '') {
-  const text = ` ${cleanSideText(value)} `;
-
-  return (
-    text.includes('MICRO_SHORT_') ||
-    text.includes('TRADESIDE=SHORT') ||
-    text.includes('TRADE_SIDE=SHORT') ||
-    text.includes('POSITION_SIDE=SHORT') ||
-    text.includes('POSITIONSIDE=SHORT') ||
-    text.includes('SIDE=SHORT') ||
-    text.includes('SIDE=BEAR') ||
-    text.includes('SIDE=SELL') ||
-    text.includes('DIRECTION=SHORT') ||
-    text.includes('DIRECTION=BEAR') ||
-    text.includes('DIRECTION=SELL') ||
-    text.includes(' SHORT_') ||
-    text.includes('_SHORT ') ||
-    text.includes('_SHORT_') ||
-    text.includes('|SHORT|') ||
-    text.includes(':SHORT') ||
-    text.includes('=SHORT') ||
-    text.includes(' BEAR ') ||
-    text.includes('_BEAR') ||
-    text.includes('BEAR_') ||
-    text.includes('|BEAR|') ||
-    text.includes(':BEAR') ||
-    text.includes('=BEAR') ||
-    text.includes(' SELL ') ||
-    text.includes('_SELL') ||
-    text.includes('SELL_') ||
-    text.includes('|SELL|') ||
-    text.includes(':SELL') ||
-    text.includes('=SELL')
-  );
-}
-
-function hasLongSignal(value = '') {
-  const text = ` ${cleanSideText(value)} `;
-
-  return (
-    text.includes('MICRO_LONG_') ||
-    text.includes('TRADESIDE=LONG') ||
-    text.includes('TRADE_SIDE=LONG') ||
-    text.includes('POSITION_SIDE=LONG') ||
-    text.includes('POSITIONSIDE=LONG') ||
-    text.includes('SIDE=LONG') ||
-    text.includes('SIDE=BULL') ||
-    text.includes('SIDE=BUY') ||
-    text.includes('DIRECTION=LONG') ||
-    text.includes('DIRECTION=BULL') ||
-    text.includes('DIRECTION=BUY') ||
-    text.includes(' LONG_') ||
-    text.includes('_LONG ') ||
-    text.includes('_LONG_') ||
-    text.includes('|LONG|') ||
-    text.includes(':LONG') ||
-    text.includes('=LONG') ||
-    text.includes(' BULL ') ||
-    text.includes('_BULL') ||
-    text.includes('BULL_') ||
-    text.includes('|BULL|') ||
-    text.includes(':BULL') ||
-    text.includes('=BULL') ||
-    text.includes(' BUY ') ||
-    text.includes('_BUY') ||
-    text.includes('BUY_') ||
-    text.includes('|BUY|') ||
-    text.includes(':BUY') ||
-    text.includes('=BUY')
-  );
 }
 
 function inferTradeSideFromText(value) {
@@ -663,12 +844,12 @@ function inferActionTradeSide(row = {}) {
 
   const reasonSide = inferTradeSideFromText(
     row.scannerReason ||
-    row.reason ||
-    row.signalReason ||
-    row.actionReason ||
-    row.exitReason ||
-    row.rejectionReason ||
-    ''
+      row.reason ||
+      row.signalReason ||
+      row.actionReason ||
+      row.exitReason ||
+      row.rejectionReason ||
+      ''
   );
 
   if (reasonSide !== 'UNKNOWN') return reasonSide;
@@ -748,8 +929,8 @@ function forceLongVirtualRow(row = {}) {
     positionSide: TARGET_TRADE_SIDE,
     direction: TARGET_TRADE_SIDE,
 
-    scannerSide: TARGET_DASHBOARD_SIDE,
-    actualScannerSide: TARGET_DASHBOARD_SIDE,
+    scannerSide: TARGET_SCANNER_SIDE,
+    actualScannerSide: TARGET_SCANNER_SIDE,
     analysisSide: TARGET_TRADE_SIDE,
 
     targetTradeSide: TARGET_TRADE_SIDE,
@@ -780,6 +961,16 @@ function forceLongVirtualRow(row = {}) {
     hasAnalyzeMicroFamilyId: hasLearningMicroId,
     scannerFingerprintCanOpenPosition: false,
     scannerFingerprintCanBeLearningFamily: false,
+
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    exactTrueMicroFamilyRequired: true,
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    broadTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    fixedTaxonomyPreferred: true,
+    learningGranularity: LEARNING_GRANULARITY,
+    symbolExcludedFromFamilyId: true,
 
     inferredTradeSide: inferredTradeSide === 'UNKNOWN'
       ? TARGET_TRADE_SIDE
@@ -815,7 +1006,7 @@ function unwrapLockResult(lockResult) {
   if (!lockResult) return null;
 
   if (lockResult.result?.result?.result) return lockResult.result.result.result;
-  if (lockResult.result?.result) return lockResult.result;
+  if (lockResult.result?.result) return lockResult.result.result;
   if (lockResult.result) return lockResult.result;
 
   return lockResult;
@@ -870,17 +1061,40 @@ function sanitizeArray(rows = []) {
     .map(forceLongVirtualRow);
 }
 
+function flattenValues(values = []) {
+  const stack = Array.isArray(values) ? [...values] : [values];
+  const output = [];
+
+  while (stack.length > 0) {
+    const value = stack.shift();
+
+    if (Array.isArray(value)) {
+      stack.unshift(...value);
+      continue;
+    }
+
+    output.push(value);
+  }
+
+  return output;
+}
+
 function sanitizeIds(ids = []) {
   return [...new Set(
-    (Array.isArray(ids) ? ids : [])
-      .flatMap((value) => Array.isArray(value) ? value : [value])
+    flattenValues(Array.isArray(ids) ? ids : [ids])
       .map((value) => String(value || '').trim())
       .filter(Boolean)
-      .filter((id) => !isScannerFingerprintId(id))
+      .filter(validLearningId)
       .map((id) => cleanLearningFamilyId(id, {}))
       .filter(Boolean)
+      .filter(validLearningId)
       .filter((id) => inferTradeSideFromText(id) !== OPPOSITE_TRADE_SIDE)
+      .filter((id) => idLooksLikeLongFamily(id) || isSelectableTrueMicroId(id))
   )];
+}
+
+function sanitizeTrueMicroIds(ids = []) {
+  return sanitizeIds(ids).filter(isSelectableTrueMicroId);
 }
 
 function selectRawExitRows(payload = {}) {
@@ -913,6 +1127,7 @@ function normalizeExitMath(row = {}) {
   const entry = safeNumber(row.entry ?? row.entryPrice, 0);
   const initialSl = safeNumber(row.initialSl ?? row.initialStopLoss ?? row.sl ?? row.stopLoss, 0);
   const exitPrice = safeNumber(row.exitPrice ?? row.currentPrice ?? row.lastPrice ?? row.price, 0);
+
   const riskDistance = entry > 0 && initialSl > 0 && initialSl < entry
     ? entry - initialSl
     : 0;
@@ -924,6 +1139,7 @@ function normalizeExitMath(row = {}) {
   const netR = safeNumber(
     row.netR ??
       row.r ??
+      row.realizedNetR ??
       row.realizedR ??
       grossR,
     grossR
@@ -1020,18 +1236,50 @@ function sanitizeRunPayload(payload) {
     isScannerFingerprintId(row?.key)
   )).length;
 
-  const activeMicroFamilyIds = sanitizeIds(
+  const executionFingerprintActions = rawActions.filter((row) => (
+    isExecutionFingerprintId(row?.microFamilyId) ||
+    isExecutionFingerprintId(row?.trueMicroFamilyId) ||
+    isExecutionFingerprintId(row?.analyzeMicroFamilyId) ||
+    isExecutionFingerprintId(row?.id) ||
+    isExecutionFingerprintId(row?.key)
+  )).length;
+
+  const executionFingerprintExitRows = rawExitRows.filter((row) => (
+    isExecutionFingerprintId(row?.microFamilyId) ||
+    isExecutionFingerprintId(row?.trueMicroFamilyId) ||
+    isExecutionFingerprintId(row?.analyzeMicroFamilyId) ||
+    isExecutionFingerprintId(row?.id) ||
+    isExecutionFingerprintId(row?.key)
+  )).length;
+
+  const activeMicroFamilyIds = sanitizeTrueMicroIds(
     payload.activeMicroFamilyIds ||
+      payload.selectedMicroFamilyIds ||
+      payload.trueMicroFamilyIds ||
+      payload.microFamilyIds ||
+      []
+  );
+
+  const selectedMicroFamilyIds = sanitizeTrueMicroIds(
     payload.selectedMicroFamilyIds ||
-    payload.microFamilyIds ||
-    []
+      payload.activeMicroFamilyIds ||
+      payload.trueMicroFamilyIds ||
+      payload.microFamilyIds ||
+      []
   );
 
   const activeMacroFamilyIds = sanitizeIds(
     payload.activeMacroFamilyIds ||
+      payload.selectedMacroFamilyIds ||
+      payload.macroFamilyIds ||
+      []
+  );
+
+  const selectedMacroFamilyIds = sanitizeIds(
     payload.selectedMacroFamilyIds ||
-    payload.macroFamilyIds ||
-    []
+      payload.activeMacroFamilyIds ||
+      payload.macroFamilyIds ||
+      []
   );
 
   const actionCounts = buildMergedActionCounts(
@@ -1126,11 +1374,19 @@ function sanitizeRunPayload(payload) {
     scannerFingerprintExitRows,
     scannerFingerprintsUsedAsLearningFamily: 0,
 
+    executionFingerprintActions,
+    executionFingerprintExitRows,
+    executionFingerprintsUsedAsLearningFamily: 0,
+
     activeMicroFamilyIds,
     activeMacroFamilyIds,
 
-    selectedMicroFamilyIds: sanitizeIds(payload.selectedMicroFamilyIds || activeMicroFamilyIds),
-    selectedMacroFamilyIds: sanitizeIds(payload.selectedMacroFamilyIds || activeMacroFamilyIds),
+    selectedMicroFamilyIds,
+    selectedMacroFamilyIds,
+
+    trueMicroFamilyIds: activeMicroFamilyIds,
+    activeTrueMicroFamilyIds: activeMicroFamilyIds,
+    selectedTrueMicroFamilyIds: selectedMicroFamilyIds,
 
     activeMicroFamilies: safeNumber(payload.activeMicroFamilies || activeMicroFamilyIds.length, 0),
     activeMacroFamilies: safeNumber(payload.activeMacroFamilies || activeMacroFamilyIds.length, 0),
@@ -1203,13 +1459,13 @@ function responseCounts(lockResult) {
     candidates: safeNumber(payload.candidates || payload.candidatesCount, 0),
     longCandidateCount: safeNumber(
       payload.longCandidateCount ||
-      payload.targetCandidateCount ||
-      payload.longCandidatesCount,
+        payload.targetCandidateCount ||
+        payload.longCandidatesCount,
       0
     ),
     nonLongCandidateCount: safeNumber(
       payload.nonLongCandidateCount ||
-      payload.nonTargetCandidateCount,
+        payload.nonTargetCandidateCount,
       0
     ),
 
@@ -1248,13 +1504,13 @@ function responseCounts(lockResult) {
 
     entries: safeNumber(
       payload.entryRows ||
-      actions.filter((row) => row?.action === 'VIRTUAL_ENTRY' || row?.action === 'ENTRY').length,
+        actions.filter((row) => row?.action === 'VIRTUAL_ENTRY' || row?.action === 'ENTRY').length,
       0
     ),
 
     waits: safeNumber(
       payload.waitRows ||
-      actions.filter((row) => row?.action === 'WAIT').length,
+        actions.filter((row) => row?.action === 'WAIT').length,
       0
     ),
 
@@ -1282,13 +1538,13 @@ function responseCounts(lockResult) {
 
     discordEligibleEntries: safeNumber(
       payload.discordAlertEligibleRows ||
-      payload.discordEligibleEntries,
+        payload.discordEligibleEntries,
       0
     ),
 
     discordSkippedNotSelected: safeNumber(
       payload.discordAlertsSkippedNoSelectedMicro ||
-      payload.discordSkippedNotSelected,
+        payload.discordSkippedNotSelected,
       0
     ),
 
@@ -1303,6 +1559,10 @@ function responseCounts(lockResult) {
     scannerFingerprintActions: safeNumber(payload.scannerFingerprintActions, 0),
     scannerFingerprintExitRows: safeNumber(payload.scannerFingerprintExitRows, 0),
     scannerFingerprintsUsedAsLearningFamily: 0,
+
+    executionFingerprintActions: safeNumber(payload.executionFingerprintActions, 0),
+    executionFingerprintExitRows: safeNumber(payload.executionFingerprintExitRows, 0),
+    executionFingerprintsUsedAsLearningFamily: 0,
 
     scannerSnapshotPreserved: true,
     microFamiliesAppendOnly: true
@@ -1344,8 +1604,8 @@ function buildRunOptions(req, body = {}) {
     positionSide: TARGET_TRADE_SIDE,
     direction: TARGET_TRADE_SIDE,
 
-    scannerSide: TARGET_DASHBOARD_SIDE,
-    actualScannerSide: TARGET_DASHBOARD_SIDE,
+    scannerSide: TARGET_SCANNER_SIDE,
+    actualScannerSide: TARGET_SCANNER_SIDE,
     analysisSide: TARGET_TRADE_SIDE,
 
     dashboardSide: TARGET_DASHBOARD_SIDE,
@@ -1364,6 +1624,10 @@ function buildRunOptions(req, body = {}) {
     source: 'VIRTUAL',
     outcomeSource: 'VIRTUAL',
 
+    realTrade: false,
+    realOrder: false,
+    exchangeOrder: false,
+    bitgetOrderPlaced: false,
     realOrdersDisabled: true,
     exchangeOrdersDisabled: true,
     bitgetOrdersDisabled: true,
@@ -1376,12 +1640,25 @@ function buildRunOptions(req, body = {}) {
 
     observationFirst: true,
     scannerFingerprintRole: 'METADATA_ONLY',
+    scannerFingerprintOnlyMetadata: true,
     scannerFingerprintsHiddenFromLearning: true,
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
 
+    executionFingerprintRole: 'METADATA_ONLY',
+    executionFingerprintOnlyMetadata: true,
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false,
+
+    analyzeMicroFamiliesOnly: true,
     learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
     exactTrueMicroFamilyRequired: true,
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    broadTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    fixedTaxonomyPreferred: true,
+    learningGranularity: LEARNING_GRANULARITY,
     symbolExcludedFromFamilyId: true,
 
     allowLearningWithoutActiveRotation: true,
@@ -1400,6 +1677,7 @@ function buildRunOptions(req, body = {}) {
     },
 
     longExitRules: {
+      validRiskShape: 'entry > 0 && sl < entry && tp > entry',
       tp: 'currentPrice >= tp',
       sl: 'currentPrice <= sl',
       timeStop: `age >= ${getPositionTimeStopMin()} minutes`,
@@ -1412,6 +1690,15 @@ function buildRunOptions(req, body = {}) {
     discordOnlyForSelectedMicroFamilies: true,
     discordOnlyForManualSelection: true,
     discordOnlyForExactTrueMicroMatch: true,
+    manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
+
+    completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
+    scoringRSource: 'netR',
+    winsLossesFlatsSource: 'netR',
+    winrateDefinition: 'netR > 0',
+    avgRSource: 'netR',
+    totalRSource: 'netR',
+    avgCostRShown: true,
 
     runScope: RUN_SCOPE,
     writeScope: WRITE_SCOPE,
@@ -1532,8 +1819,11 @@ export default async function handler(req, res) {
   res.setHeader('X-Bitget-Orders-Disabled', 'true');
   res.setHeader('X-No-Real-Orders', 'true');
   res.setHeader('X-Scanner-Fingerprint-Role', 'METADATA_ONLY');
+  res.setHeader('X-Execution-Fingerprint-Role', 'METADATA_ONLY');
   res.setHeader('X-Learning-Identity-Source', 'ANALYZE_TRUE_MICRO_FAMILY');
   res.setHeader('X-Exact-True-Micro-Match', 'true');
+  res.setHeader('X-True-Micro-Family-Schema', TRUE_MICRO_SCHEMA);
+  res.setHeader('X-Learning-Granularity', LEARNING_GRANULARITY);
   res.setHeader('X-Run-Scope', RUN_SCOPE);
   res.setHeader('X-Write-Scope', WRITE_SCOPE);
   res.setHeader('X-Scanner-Write', 'false');
@@ -1694,6 +1984,12 @@ export default async function handler(req, res) {
           : null,
         payload?.scannerFingerprintExitRows > 0
           ? `SCANNER_FINGERPRINT_EXITS_METADATA_ONLY:${payload.scannerFingerprintExitRows}`
+          : null,
+        payload?.executionFingerprintActions > 0
+          ? `EXECUTION_FINGERPRINT_ACTIONS_METADATA_ONLY:${payload.executionFingerprintActions}`
+          : null,
+        payload?.executionFingerprintExitRows > 0
+          ? `EXECUTION_FINGERPRINT_EXITS_METADATA_ONLY:${payload.executionFingerprintExitRows}`
           : null
       ].filter(Boolean),
 
