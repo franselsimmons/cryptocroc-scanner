@@ -1,21 +1,28 @@
 // ================= FILE: src/trade/costModel.js =================
 //
-// Turns gross price moves into fee+slippage-adjusted NET outcomes.
-// Everything Analyze learns from must pass through here, otherwise the system
-// ranks micro-families on paper profit and trades on net loss.
-//
-// Execution model: TAKER on both sides by default.
-// Long-only: explicit SHORT/BEAR/SELL input is rejected and never produces a
-// learnable net outcome.
+// Turns gross LONG price moves into fee+slippage-adjusted NET outcomes.
+// Analyze learns only from netR after costs.
+// Explicit SHORT/BEAR/SELL input is rejected and never produces a learnable net outcome.
 
 import { CONFIG } from '../config.js';
 import { safeNumber, sideToTradeSide } from '../utils.js';
 
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
+const TARGET_SCANNER_SIDE = 'bull';
 const OPPOSITE_TRADE_SIDE = 'SHORT';
 
-const COST_MODEL_VERSION = 'LONG_TAKER_NET_COST_V2';
+const LONG_NAMESPACE = 'LONG';
+const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
+const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
+
+const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
+const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
+const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
+const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
+const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
+
+const COST_MODEL_VERSION = 'LONG_TAKER_NET_COST_V3';
 const DEFAULT_SOURCE = 'VIRTUAL';
 
 const SHORT_TOKENS = new Set([
@@ -50,19 +57,101 @@ function costConfig() {
   };
 }
 
+function upper(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
 function cleanSideText(value = '') {
-  return String(value || '')
-    .trim()
-    .toUpperCase()
-    .replaceAll('SHORT_DISABLED', '')
-    .replaceAll('SHORTDISABLED', '')
-    .replaceAll('BLOCK_SHORT', '')
+  return upper(value)
+    .replaceAll('SHORT_DISABLED_TRUE', '')
+    .replaceAll('SHORTDISABLED_TRUE', '')
+    .replaceAll('BLOCK_SHORT_TRUE', '')
+    .replaceAll('SHORT_DISABLED_FALSE', '')
+    .replaceAll('SHORTDISABLED_FALSE', '')
+    .replaceAll('BLOCK_SHORT_FALSE', '')
     .replaceAll('SHORT_ENABLED_FALSE', '')
     .replaceAll('SHORT_ONLY_FALSE', '')
     .replaceAll('LONG_DISABLED_FALSE', '')
+    .replaceAll('SHORT_DISABLED_LONG_ONLY', '')
+    .replaceAll('SHORTDISABLED_LONG_ONLY', '')
+    .replaceAll('BLOCK_SHORT', '')
+    .replaceAll('SHORT_DISABLED', '')
+    .replaceAll('SHORTDISABLED', '')
     .replaceAll('LONG_ONLY_MODE', 'LONG')
     .replaceAll('LONG_ONLY', 'LONG')
-    .replaceAll('LONG-ONLY', 'LONG');
+    .replaceAll('LONG-ONLY', 'LONG')
+    .replaceAll('SHORT_ONLY_MODE', 'SHORT')
+    .replaceAll('SHORT_ONLY', 'SHORT')
+    .replaceAll('SHORT-ONLY', 'SHORT');
+}
+
+function hasPattern(value = '', patterns = []) {
+  const text = cleanSideText(value)
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  if (!text) return false;
+
+  return patterns.some((pattern) => (
+    text === pattern ||
+    text.startsWith(`${pattern}_`) ||
+    text.endsWith(`_${pattern}`) ||
+    text.includes(`_${pattern}_`)
+  ));
+}
+
+function hasLongSignal(value = '') {
+  const raw = cleanSideText(value);
+
+  if (!raw) return false;
+  if (LONG_TOKENS.has(raw)) return true;
+
+  return hasPattern(raw, [
+    'LONG',
+    'BULL',
+    'BULLISH',
+    'BUY',
+    'SIDE_LONG',
+    'TRADE_SIDE_LONG',
+    'TRADESIDE_LONG',
+    'POSITION_SIDE_LONG',
+    'POSITIONSIDE_LONG',
+    'DIRECTION_LONG',
+    'SIDE_BULL',
+    'TRADE_SIDE_BULL',
+    'DIRECTION_BULL',
+    'SIDE_BUY',
+    'DIRECTION_BUY',
+    'MICRO_LONG',
+    'FAMILY_LONG'
+  ]);
+}
+
+function hasShortSignal(value = '') {
+  const raw = cleanSideText(value);
+
+  if (!raw) return false;
+  if (SHORT_TOKENS.has(raw)) return true;
+
+  return hasPattern(raw, [
+    'SHORT',
+    'BEAR',
+    'BEARISH',
+    'SELL',
+    'SIDE_SHORT',
+    'TRADE_SIDE_SHORT',
+    'TRADESIDE_SHORT',
+    'POSITION_SIDE_SHORT',
+    'POSITIONSIDE_SHORT',
+    'DIRECTION_SHORT',
+    'SIDE_BEAR',
+    'TRADE_SIDE_BEAR',
+    'DIRECTION_BEAR',
+    'SIDE_SELL',
+    'DIRECTION_SELL',
+    'MICRO_SHORT',
+    'FAMILY_SHORT'
+  ]);
 }
 
 function normalizeTradeSide(value = TARGET_TRADE_SIDE) {
@@ -75,64 +164,18 @@ function normalizeTradeSide(value = TARGET_TRADE_SIDE) {
   if (direct === TARGET_TRADE_SIDE) return TARGET_TRADE_SIDE;
   if (direct === OPPOSITE_TRADE_SIDE) return OPPOSITE_TRADE_SIDE;
 
-  if (LONG_TOKENS.has(raw)) return TARGET_TRADE_SIDE;
-  if (SHORT_TOKENS.has(raw)) return OPPOSITE_TRADE_SIDE;
-
-  const normalized = raw
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-
-  const longHit = (
-    normalized.includes('MICRO_LONG_') ||
-    normalized.includes('TRADESIDE_LONG') ||
-    normalized.includes('TRADE_SIDE_LONG') ||
-    normalized.includes('POSITION_SIDE_LONG') ||
-    normalized.includes('POSITIONSIDE_LONG') ||
-    normalized.includes('SIDE_LONG') ||
-    normalized.includes('SIDE_BULL') ||
-    normalized.includes('DIRECTION_LONG') ||
-    normalized.includes('DIRECTION_BULL') ||
-    normalized.includes('SIDE_BUY') ||
-    normalized.includes('DIRECTION_BUY') ||
-    normalized.startsWith('LONG_') ||
-    normalized.includes('_LONG_') ||
-    normalized.endsWith('_LONG') ||
-    normalized.startsWith('BULL_') ||
-    normalized.includes('_BULL_') ||
-    normalized.endsWith('_BULL') ||
-    normalized.startsWith('BUY_') ||
-    normalized.includes('_BUY_') ||
-    normalized.endsWith('_BUY')
-  );
-
-  const shortHit = (
-    normalized.includes('MICRO_SHORT_') ||
-    normalized.includes('TRADESIDE_SHORT') ||
-    normalized.includes('TRADE_SIDE_SHORT') ||
-    normalized.includes('POSITION_SIDE_SHORT') ||
-    normalized.includes('POSITIONSIDE_SHORT') ||
-    normalized.includes('SIDE_SHORT') ||
-    normalized.includes('SIDE_BEAR') ||
-    normalized.includes('DIRECTION_SHORT') ||
-    normalized.includes('DIRECTION_BEAR') ||
-    normalized.includes('SIDE_SELL') ||
-    normalized.includes('DIRECTION_SELL') ||
-    normalized.startsWith('SHORT_') ||
-    normalized.includes('_SHORT_') ||
-    normalized.endsWith('_SHORT') ||
-    normalized.startsWith('BEAR_') ||
-    normalized.includes('_BEAR_') ||
-    normalized.endsWith('_BEAR') ||
-    normalized.startsWith('SELL_') ||
-    normalized.includes('_SELL_') ||
-    normalized.endsWith('_SELL')
-  );
+  const longHit = hasLongSignal(raw);
+  const shortHit = hasShortSignal(raw);
 
   if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
   if (longHit && !shortHit) return TARGET_TRADE_SIDE;
 
-  if (longHit) return TARGET_TRADE_SIDE;
-  if (shortHit) return OPPOSITE_TRADE_SIDE;
+  if (longHit && shortHit) {
+    if (raw.includes('TRADE_SIDE=LONG') || raw.includes('TRADESIDE=LONG')) return TARGET_TRADE_SIDE;
+    if (raw.includes('TRADE_SIDE=SHORT') || raw.includes('TRADESIDE=SHORT')) return OPPOSITE_TRADE_SIDE;
+    if (raw.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
+    if (raw.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
+  }
 
   return 'UNKNOWN';
 }
@@ -143,6 +186,15 @@ function isLongSide(side = TARGET_TRADE_SIDE) {
 
 function isShortSide(side = TARGET_TRADE_SIDE) {
   return normalizeTradeSide(side) === OPPOSITE_TRADE_SIDE;
+}
+
+function normalizeSource(source = DEFAULT_SOURCE) {
+  const src = upper(source || DEFAULT_SOURCE);
+
+  if (src === 'SHADOW') return 'SHADOW';
+  if (src === 'VIRTUAL') return 'VIRTUAL';
+
+  return DEFAULT_SOURCE;
 }
 
 function normalizeLeg(leg) {
@@ -178,18 +230,117 @@ function round6(value) {
   return Number(safeNumber(value, 0).toFixed(6));
 }
 
+function validLongRiskShape({ entry, sl, tp } = {}) {
+  const e = safeNumber(entry, 0);
+  const s = safeNumber(sl, 0);
+  const t = safeNumber(tp, 0);
+
+  return e > 0 && s > 0 && t > 0 && s < e && e < t;
+}
+
+function calcRiskPct({ entry, sl } = {}) {
+  const e = safeNumber(entry, 0);
+  const s = safeNumber(sl, 0);
+
+  if (e <= 0 || s <= 0 || s >= e) return 0;
+
+  return (e - s) / e;
+}
+
+function calcGrossMovePct({ entry, exit } = {}) {
+  const e = safeNumber(entry, 0);
+  const x = safeNumber(exit, 0);
+
+  if (e <= 0 || x <= 0) return 0;
+
+  return (x - e) / e;
+}
+
+function calcLongGrossR({ entry, initialSl, exit } = {}) {
+  const e = safeNumber(entry, 0);
+  const s = safeNumber(initialSl, 0);
+  const x = safeNumber(exit, 0);
+
+  if (e <= 0 || s <= 0 || x <= 0 || s >= e) return 0;
+
+  const riskDistance = e - s;
+
+  if (riskDistance <= 0) return 0;
+
+  return (x - e) / riskDistance;
+}
+
+function identityFlags() {
+  return {
+    virtualLearning: true,
+    virtualOnly: true,
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeCallsDisabled: true,
+    exchangeOrdersDisabled: true,
+    noRealOrders: true,
+    noExchangeOrders: true,
+
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false,
+
+    analyzeMicroFamiliesOnly: true,
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+    symbolExcludedFromFamilyId: true,
+    coinNameExcludedFromFamilyId: true,
+    hashesExcludedFromFamilyId: true,
+
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    exactTrueMicroFamilyRequired: true,
+    fixedTaxonomyPreferred: true,
+
+    manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
+    discordOnlyForExactTrueMicroMatch: true,
+
+    completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
+    scoringRSource: 'netR',
+    winsLossesFlatsSource: 'netR',
+    winrateDefinition: 'netR > 0',
+    avgRSource: 'netR',
+    totalRSource: 'netR',
+    avgCostRShown: true,
+
+    exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+    childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
+
+    parentLearningEnabled: true,
+    childLearningEnabled: true,
+    learningGranularity: LEARNING_GRANULARITY,
+    parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
+    selectionGranularity: 'EXACT_75_CHILD',
+    fallbackRankingGranularity: 'PARENT_15_UNTIL_CHILD_MIN_COMPLETED',
+
+    redisNamespace: LONG_NAMESPACE,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    shortRootTouched: false
+  };
+}
+
 function baseLongOnlyMeta({
   skipped = false,
-  reason = null
+  reason = null,
+  source = DEFAULT_SOURCE
 } = {}) {
   return {
-    source: DEFAULT_SOURCE,
+    source: normalizeSource(source),
 
     costModel: COST_MODEL_VERSION,
     costModelApplied: !skipped,
     netCostModelApplied: !skipped,
 
     targetTradeSide: TARGET_TRADE_SIDE,
+    targetScannerSide: TARGET_SCANNER_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
     oppositeTradeSide: OPPOSITE_TRADE_SIDE,
 
@@ -206,14 +357,16 @@ function baseLongOnlyMeta({
     virtualOnly: true,
     virtualTracked: true,
     shadowOnly: true,
-    outcomeSource: DEFAULT_SOURCE,
+    outcomeSource: normalizeSource(source),
 
     realTrade: false,
     realOrder: false,
     exchangeOrder: false,
+    bitgetOrderPlaced: false,
     realOrdersDisabled: true,
     bitgetOrdersDisabled: true,
     exchangeOrdersDisabled: true,
+    exchangeCallsDisabled: true,
     noRealOrders: true,
     noExchangeOrders: true,
 
@@ -225,15 +378,18 @@ function baseLongOnlyMeta({
     avgCostRShown: true,
 
     skipped,
-    reason
+    reason,
+
+    ...identityFlags()
   };
 }
 
-function emptyCostResult(reason = 'NON_LONG_COST_MODEL_SKIPPED') {
+function emptyCostResult(reason = 'NON_LONG_COST_MODEL_SKIPPED', source = DEFAULT_SOURCE) {
   return {
     ...baseLongOnlyMeta({
       skipped: true,
-      reason
+      reason,
+      source
     }),
 
     feeRatio: 0,
@@ -252,8 +408,54 @@ function emptyCostResult(reason = 'NON_LONG_COST_MODEL_SKIPPED') {
     netPnlPct: 0,
 
     grossR: 0,
+    rawR: 0,
+    realizedGrossR: 0,
+
     costR: 0,
-    netR: 0
+    avgCostR: 0,
+
+    netR: 0,
+    exitR: 0,
+    realizedNetR: 0,
+    realizedR: 0,
+    r: 0,
+
+    win: false,
+    loss: false,
+    flat: true,
+    isWin: false
+  };
+}
+
+export function validateLongRiskShape({ entry, sl, tp } = {}) {
+  const e = safeNumber(entry, 0);
+  const s = safeNumber(sl, 0);
+  const t = safeNumber(tp, 0);
+  const valid = validLongRiskShape({
+    entry: e,
+    sl: s,
+    tp: t
+  });
+
+  return {
+    valid,
+    reason: valid ? null : 'INVALID_LONG_RISK_SHAPE_REQUIRES_SL_LT_ENTRY_LT_TP',
+    entry: e,
+    sl: s,
+    tp: t,
+    riskPct: valid
+      ? calcRiskPct({
+        entry: e,
+        sl: s
+      })
+      : 0,
+    rewardPct: valid
+      ? (t - e) / e
+      : 0,
+    ...baseLongOnlyMeta({
+      skipped: !valid,
+      reason: valid ? null : 'INVALID_LONG_RISK_SHAPE_REQUIRES_SL_LT_ENTRY_LT_TP'
+    })
   };
 }
 
@@ -303,8 +505,6 @@ export function roundTripCostRatio(entrySpreadPct, exitSpreadPct) {
   return feeRoundTrip + entrySlip + exitSlip;
 }
 
-// Backwards-compatible alias.
-// Returns decimal ratio, not percent.
 export function roundTripCostPct(entrySpreadPct, exitSpreadPct) {
   return roundTripCostRatio(entrySpreadPct, exitSpreadPct);
 }
@@ -321,17 +521,21 @@ export function applyCosts({
   const normalizedSide = normalizeTradeSide(tradeSide || side);
 
   if (normalizedSide === OPPOSITE_TRADE_SIDE) {
-    return emptyCostResult('SHORT_DISABLED_LONG_ONLY_COST_MODEL');
+    return emptyCostResult('SHORT_DISABLED_LONG_ONLY_COST_MODEL', source);
   }
 
   if (normalizedSide !== TARGET_TRADE_SIDE) {
-    return emptyCostResult('UNKNOWN_OR_NON_LONG_COST_MODEL_SKIPPED');
+    return emptyCostResult('UNKNOWN_OR_NON_LONG_COST_MODEL_SKIPPED', source);
   }
 
   const cfg = costConfig();
 
   const move = safeNumber(grossMovePct, 0);
   const risk = Math.max(0, safeNumber(riskPct, 0));
+
+  if (risk <= 0) {
+    return emptyCostResult('INVALID_OR_ZERO_LONG_RISK_PCT', source);
+  }
 
   const feeRatio = cfg.takerFeePct * 2;
   const costRatio = roundTripCostRatio(entrySpreadPct, exitSpreadPct);
@@ -342,14 +546,14 @@ export function applyCosts({
   const grossPnlPct = move * 100;
   const netPnlPct = netMovePct * 100;
 
-  const grossR = risk > 0 ? move / risk : 0;
-  const costR = risk > 0 ? costRatio / risk : 0;
+  const grossR = move / risk;
+  const costR = costRatio / risk;
   const netR = grossR - costR;
 
   return {
-    ...baseLongOnlyMeta(),
-
-    source: String(source || DEFAULT_SOURCE).trim().toUpperCase() || DEFAULT_SOURCE,
+    ...baseLongOnlyMeta({
+      source
+    }),
 
     takerFeePct: round6(cfg.takerFeePct),
     makerFeePct: round6(cfg.makerFeePct),
@@ -393,3 +597,106 @@ export function applyCosts({
     isWin: netR > 0
   };
 }
+
+export function applyCostsFromPrices({
+  entry,
+  exit,
+  exitPrice = exit,
+  sl,
+  initialSl = sl,
+  tp,
+  side = TARGET_TRADE_SIDE,
+  tradeSide = side,
+  source = DEFAULT_SOURCE,
+  entrySpreadPct,
+  exitSpreadPct
+} = {}) {
+  const normalizedSide = normalizeTradeSide(tradeSide || side);
+
+  if (normalizedSide === OPPOSITE_TRADE_SIDE) {
+    return emptyCostResult('SHORT_DISABLED_LONG_ONLY_COST_MODEL', source);
+  }
+
+  if (normalizedSide !== TARGET_TRADE_SIDE) {
+    return emptyCostResult('UNKNOWN_OR_NON_LONG_COST_MODEL_SKIPPED', source);
+  }
+
+  const e = safeNumber(entry, 0);
+  const s = safeNumber(initialSl, 0);
+  const t = safeNumber(tp, 0);
+  const x = safeNumber(exitPrice, 0);
+
+  if (!validLongRiskShape({ entry: e, sl: s, tp: t })) {
+    return emptyCostResult('INVALID_LONG_RISK_SHAPE_REQUIRES_SL_LT_ENTRY_LT_TP', source);
+  }
+
+  if (x <= 0) {
+    return emptyCostResult('INVALID_LONG_EXIT_PRICE', source);
+  }
+
+  const riskPct = calcRiskPct({
+    entry: e,
+    sl: s
+  });
+
+  const grossMovePct = calcGrossMovePct({
+    entry: e,
+    exit: x
+  });
+
+  const result = applyCosts({
+    grossMovePct,
+    riskPct,
+    entrySpreadPct,
+    exitSpreadPct,
+    side: TARGET_TRADE_SIDE,
+    tradeSide: TARGET_TRADE_SIDE,
+    source
+  });
+
+  const grossR = calcLongGrossR({
+    entry: e,
+    initialSl: s,
+    exit: x
+  });
+
+  return {
+    ...result,
+
+    entry: e,
+    exit: x,
+    exitPrice: x,
+    sl: s,
+    initialSl: s,
+    tp: t,
+
+    validLongRiskShape: true,
+    longRiskFormula: 'sl < entry < tp',
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+
+    riskPct: round6(riskPct),
+    grossMovePct: round6(grossMovePct),
+
+    grossR: round4(grossR),
+    rawR: round4(grossR),
+    realizedGrossR: round4(grossR),
+
+    netR: round4(grossR - result.costR),
+    exitR: round4(grossR - result.costR),
+    realizedNetR: round4(grossR - result.costR),
+    realizedR: round4(grossR - result.costR),
+    r: round4(grossR - result.costR),
+
+    win: grossR - result.costR > 0,
+    loss: grossR - result.costR < 0,
+    flat: grossR - result.costR === 0,
+    isWin: grossR - result.costR > 0
+  };
+}
+
+export {
+  calcLongGrossR,
+  calcGrossMovePct,
+  calcRiskPct,
+  validLongRiskShape
+};
