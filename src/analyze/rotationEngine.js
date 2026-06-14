@@ -19,8 +19,6 @@ const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
 const OPPOSITE_TRADE_SIDE = 'SHORT';
 
-const LONG_NAMESPACE = 'LONG';
-const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 
 const ROTATION_SIDES = [TARGET_TRADE_SIDE];
@@ -34,7 +32,6 @@ const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 const MANUAL_ACTIVE_SOURCES = new Set([
   'ADMIN_MANUAL_SELECTION_LONG_TRUE_MICRO_ONLY',
   'ADMIN_ACTIVATE_SELECTED_LONG_TRUE_MICROS',
-  'ADMIN_ACTIVATE_SELECTED_LONG_MACRO_EXPANDED_TRUE_MICROS',
   'ADMIN_ACTIVATE_TOP_LONG_TRUE_MICROS',
   'ADMIN_ACTIVATE_TOP_BALANCED_LONG_TRUE_MICROS',
   'CLI_MANUAL_SELECTION_LONG_ONLY',
@@ -45,48 +42,16 @@ function now() {
   return Date.now();
 }
 
-function namespacedLongKey(key, fallback) {
-  const raw = String(key || fallback || '').trim();
-
-  if (!raw) return `${LONG_KEY_PREFIX}${String(fallback || '').trim()}`;
-  if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
-
-  return `${LONG_KEY_PREFIX}${raw}`;
-}
-
-const LONG_KEYS = {
-  analyze: {
-    activeRotation: namespacedLongKey(
-      KEYS.long?.analyze?.activeRotation ||
-        KEYS.analyze?.longActiveRotation ||
-        KEYS.analyze?.activeRotation,
-      'ANALYZE:ACTIVE_ROTATION'
-    ),
-    nextRotation: namespacedLongKey(
-      KEYS.long?.analyze?.nextRotation ||
-        KEYS.analyze?.longNextRotation ||
-        KEYS.analyze?.nextRotation,
-      'ANALYZE:NEXT_ROTATION'
-    ),
-    rotationValidFrom: namespacedLongKey(
-      KEYS.long?.analyze?.rotationValidFrom ||
-        KEYS.analyze?.longRotationValidFrom ||
-        KEYS.analyze?.rotationValidFrom,
-      'ANALYZE:ROTATION_VALID_FROM'
-    )
-  }
-};
-
 function activeRotationKey() {
-  return LONG_KEYS.analyze.activeRotation;
+  return KEYS.analyze?.activeRotation || 'ANALYZE:ACTIVE_ROTATION';
 }
 
 function nextRotationKey() {
-  return LONG_KEYS.analyze.nextRotation;
+  return KEYS.analyze?.nextRotation || 'ANALYZE:NEXT_ROTATION';
 }
 
 function rotationValidFromKey() {
-  return LONG_KEYS.analyze.rotationValidFrom;
+  return KEYS.analyze?.rotationValidFrom || 'ANALYZE:ROTATION_VALID_FROM';
 }
 
 function flattenValues(values = []) {
@@ -130,19 +95,25 @@ function normalizeSchema(value) {
 
 function schemaMeta() {
   const macroSchema = normalizeSchema(
-    CONFIG.analyze?.macroSchema ||
-    CONFIG.analyze?.legacySchema ||
-    CONFIG.analyze?.schema ||
-    'MF_V1'
+    CONFIG.long?.analyze?.macroSchema ||
+      CONFIG.analyze?.macroSchema ||
+      CONFIG.analyze?.legacySchema ||
+      CONFIG.analyze?.schema ||
+      'MF_V1'
   );
 
   const microSchema = normalizeSchema(
-    CONFIG.analyze?.microSchema ||
-    'MF_V2'
+    CONFIG.long?.analyze?.microSchema ||
+      CONFIG.analyze?.microSchema ||
+      'MF_V2'
   );
 
   return {
-    schema: normalizeSchema(CONFIG.analyze?.schema || microSchema),
+    schema: normalizeSchema(
+      CONFIG.long?.analyze?.schema ||
+        CONFIG.analyze?.schema ||
+        microSchema
+    ),
     macroSchema,
     microSchema,
     strategyVersion: CONFIG.strategyVersion
@@ -152,7 +123,11 @@ function schemaMeta() {
 function minWeightedCompleted() {
   return Math.max(
     0,
-    safeNumber(CONFIG.long?.rotation?.minWeightedCompleted, DEFAULT_MIN_WEIGHTED_COMPLETED)
+    safeNumber(
+      CONFIG.long?.rotation?.minWeightedCompleted ??
+        CONFIG.rotation?.minWeightedCompleted,
+      DEFAULT_MIN_WEIGHTED_COMPLETED
+    )
   );
 }
 
@@ -171,9 +146,17 @@ function topNPerSide() {
 }
 
 function maxPerMacroFamily() {
-  if (CONFIG.long?.rotation?.enforceMaxPerMacroFamily !== true) return 0;
+  const enforce =
+    CONFIG.long?.rotation?.enforceMaxPerMacroFamily ??
+    CONFIG.rotation?.enforceMaxPerMacroFamily;
 
-  const n = Number(CONFIG.long?.rotation?.maxPerMacroFamily || 0);
+  if (enforce !== true) return 0;
+
+  const n = Number(
+    CONFIG.long?.rotation?.maxPerMacroFamily ??
+      CONFIG.rotation?.maxPerMacroFamily ??
+      0
+  );
 
   return Number.isFinite(n) && n > 0
     ? Math.floor(n)
@@ -181,7 +164,11 @@ function maxPerMacroFamily() {
 }
 
 function minPrimaryRowsForPreviousMerge() {
-  const n = Number(CONFIG.long?.rotation?.minPrimaryRowsForPreviousMerge || 0);
+  const n = Number(
+    CONFIG.long?.rotation?.minPrimaryRowsForPreviousMerge ??
+      CONFIG.rotation?.minPrimaryRowsForPreviousMerge ??
+      0
+  );
 
   return Number.isFinite(n) && n > 0
     ? Math.floor(n)
@@ -189,7 +176,7 @@ function minPrimaryRowsForPreviousMerge() {
 }
 
 function defaultRotationMode() {
-  return CONFIG.long?.rotation?.mode || 'balanced';
+  return CONFIG.long?.rotation?.mode || CONFIG.rotation?.mode || 'balanced';
 }
 
 function allowManualUnknownTrueMicroIds() {
@@ -260,9 +247,6 @@ function modeFlags() {
     defaultRanking: 'dashboardBalancedScore|balancedScore|fairWinrate',
     bareWinrateRankingDisabled: true,
 
-    bucketGranularity: 'LOW_MID_HIGH',
-    bucketsCoarseOnly: true,
-
     manualSelectionOnly: true,
     manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
     discordOnlyForSelectedMicroFamilies: true,
@@ -285,9 +269,9 @@ function modeFlags() {
     freezeCronDisabled: true,
     resetCronDisabled: true,
 
-    redisNamespace: LONG_NAMESPACE,
-    redisKeyPrefix: LONG_KEY_PREFIX,
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    rootSide: TARGET_TRADE_SIDE,
+    rootIsolated: true,
     shortRootTouched: false
   };
 }
@@ -382,6 +366,7 @@ function rowId(row = {}) {
   return String(
     row.trueMicroFamilyId ||
     row.microFamilyId ||
+    row.analyzeMicroFamilyId ||
     row.id ||
     row.key ||
     ''
@@ -536,6 +521,19 @@ function normalizeDirectSide(value) {
   if (longHit && !shortHit) return TARGET_TRADE_SIDE;
   if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
 
+  if (longHit && shortHit) {
+    if (raw.includes('TRADE_SIDE=LONG') || raw.includes('TRADESIDE=LONG')) {
+      return TARGET_TRADE_SIDE;
+    }
+
+    if (raw.includes('TRADE_SIDE=SHORT') || raw.includes('TRADESIDE=SHORT')) {
+      return OPPOSITE_TRADE_SIDE;
+    }
+
+    if (raw.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
+    if (raw.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
+  }
+
   return 'UNKNOWN';
 }
 
@@ -548,8 +546,14 @@ function definitionSide(row = {}) {
   if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
 
   if (shortHit && longHit) {
-    if (text.includes('TRADE_SIDE=LONG') || text.includes('TRADESIDE=LONG')) return TARGET_TRADE_SIDE;
-    if (text.includes('TRADE_SIDE=SHORT') || text.includes('TRADESIDE=SHORT')) return OPPOSITE_TRADE_SIDE;
+    if (text.includes('TRADE_SIDE=LONG') || text.includes('TRADESIDE=LONG')) {
+      return TARGET_TRADE_SIDE;
+    }
+
+    if (text.includes('TRADE_SIDE=SHORT') || text.includes('TRADESIDE=SHORT')) {
+      return OPPOSITE_TRADE_SIDE;
+    }
+
     if (text.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
     if (text.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
   }
@@ -639,6 +643,7 @@ export function isTrueMicroFamily(row = {}) {
   if (definitionHasSchema(row, microSchema)) return true;
 
   if (hasParentMacro(row) && idLooksLikeMicroFamily(id)) return true;
+  if (id.startsWith('MICRO_LONG_')) return true;
 
   return false;
 }
@@ -817,9 +822,21 @@ function compactRotationRow(row = {}, rank = 0) {
     trueMicroFamilyId: microFamilyId,
     familyId: refreshed.familyId || null,
 
-    coarseMicroFamilyId: refreshed.coarseMicroFamilyId || refreshed.baseMicroFamilyId || refreshed.legacyMicroFamilyId || microFamilyId,
-    baseMicroFamilyId: refreshed.baseMicroFamilyId || refreshed.coarseMicroFamilyId || microFamilyId,
-    legacyMicroFamilyId: refreshed.legacyMicroFamilyId || refreshed.coarseMicroFamilyId || microFamilyId,
+    coarseMicroFamilyId:
+      refreshed.coarseMicroFamilyId ||
+      refreshed.baseMicroFamilyId ||
+      refreshed.legacyMicroFamilyId ||
+      microFamilyId,
+
+    baseMicroFamilyId:
+      refreshed.baseMicroFamilyId ||
+      refreshed.coarseMicroFamilyId ||
+      microFamilyId,
+
+    legacyMicroFamilyId:
+      refreshed.legacyMicroFamilyId ||
+      refreshed.coarseMicroFamilyId ||
+      microFamilyId,
 
     macroFamilyId: macroId || refreshed.macroFamilyId || null,
     parentMacroFamilyId: macroId || null,
@@ -953,6 +970,7 @@ function compactRotationRow(row = {}, rank = 0) {
     parentDefinition: refreshed.parentDefinition || '',
 
     counters: refreshed.counters || {},
+
     examples: Array.isArray(refreshed.examples)
       ? refreshed.examples.slice(0, 20)
       : [],
@@ -1004,7 +1022,13 @@ function addSelectedRow({
   countsBySide,
   countsByMacro
 }) {
-  const id = String(row?.trueMicroFamilyId || row?.microFamilyId || row?.id || '').trim();
+  const id = String(
+    row?.trueMicroFamilyId ||
+    row?.microFamilyId ||
+    row?.id ||
+    ''
+  ).trim();
+
   const side = microSide(row);
 
   if (!id) return false;
@@ -1188,7 +1212,9 @@ function buildSelectionIndexes(microFamilies = []) {
 
   const microFamilyIds = uniqueStrings(
     longRows.map((row) => row.trueMicroFamilyId || row.microFamilyId)
-  ).filter((id) => !isScannerFingerprintId(id));
+  )
+    .filter((id) => !isScannerFingerprintId(id))
+    .filter(isKnownTrueMicroId);
 
   const macroFamilyIds = uniqueStrings(
     longRows.map((row) => (
@@ -1590,15 +1616,7 @@ export async function freezeWeeklyRotation({
 
       missingSides: rotation.missingSides || [],
       bestLong: rotation.bestLong?.microFamilyId || null,
-      bestShort: null,
-
-      longKeys: {
-        namespace: LONG_NAMESPACE,
-        keyPrefix: LONG_KEY_PREFIX,
-        activeRotation: activeRotationKey(),
-        nextRotation: nextRotationKey(),
-        rotationValidFrom: rotationValidFromKey()
-      }
+      bestShort: null
     }
   );
 
@@ -1642,14 +1660,6 @@ export async function freezeWeeklyRotation({
     missingSides: rotation.missingSides || [],
     bestLong: rotation.bestLong,
     bestShort: null,
-
-    longKeys: {
-      namespace: LONG_NAMESPACE,
-      keyPrefix: LONG_KEY_PREFIX,
-      activeRotation: activeRotationKey(),
-      nextRotation: nextRotationKey(),
-      rotationValidFrom: rotationValidFromKey()
-    },
 
     rotation
   };
@@ -1750,8 +1760,7 @@ export async function getActiveRotation() {
     raw?.dashboardSide === 'bear' ||
     raw?.manualOnly !== true ||
     raw?.liveSelectable !== true ||
-    raw?.autoRotation === true ||
-    raw?.redisNamespace !== LONG_NAMESPACE
+    raw?.autoRotation === true
   ) {
     await setJson(
       redis,
@@ -2068,14 +2077,7 @@ function buildPreservedActiveResponse({
     ...preserved,
     requestedMicroFamilyIds: requestedIds,
     ignoredRequestedIds: ignoredIds,
-    expandedFromMacro,
-    longKeys: {
-      namespace: LONG_NAMESPACE,
-      keyPrefix: LONG_KEY_PREFIX,
-      activeRotation: activeRotationKey(),
-      nextRotation: nextRotationKey(),
-      rotationValidFrom: rotationValidFromKey()
-    }
+    expandedFromMacro
   };
 }
 
@@ -2216,14 +2218,7 @@ export async function activateSelectedMicroFamilies(options = {}) {
     ok: true,
     skipped: false,
     changed: true,
-    activePreserved: false,
-    longKeys: {
-      namespace: LONG_NAMESPACE,
-      keyPrefix: LONG_KEY_PREFIX,
-      activeRotation: activeRotationKey(),
-      nextRotation: nextRotationKey(),
-      rotationValidFrom: rotationValidFromKey()
-    }
+    activePreserved: false
   };
 
   await setJson(
@@ -2334,14 +2329,6 @@ export async function getRotationDashboard() {
 
     ...modeFlags(),
 
-    trueMicroOnly: true,
-
-    longKeys: {
-      namespace: LONG_NAMESPACE,
-      keyPrefix: LONG_KEY_PREFIX,
-      activeRotation: activeRotationKey(),
-      nextRotation: nextRotationKey(),
-      rotationValidFrom: rotationValidFromKey()
-    }
+    trueMicroOnly: true
   };
 }
