@@ -5,6 +5,7 @@ import { runTradeSystem } from '../src/trade/tradeSystem.js';
 
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
+const TARGET_SCANNER_SIDE = 'bull';
 const OPPOSITE_TRADE_SIDE = 'SHORT';
 
 const LONG_NAMESPACE = 'LONG';
@@ -13,6 +14,34 @@ const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 
 const MIN_COMPLETED_ACTIVE_LEARNING = 20;
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
+
+const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
+const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
+const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
+const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
+const SELECTION_GRANULARITY = 'EXACT_75_CHILD';
+
+const LONG_FIXED_SETUP_TYPES = new Set([
+  'BREAKOUT',
+  'RETEST',
+  'SWEEP_REVERSAL',
+  'CONTINUATION',
+  'COMPRESSION'
+]);
+
+const LONG_FIXED_REGIME_BUCKETS = new Set([
+  'TREND',
+  'CHOP',
+  'SQUEEZE'
+]);
+
+const LONG_FIXED_CONFIRMATION_PROFILES = new Set([
+  'A_STRONG_ALIGN',
+  'B_FLOW_ALIGN',
+  'C_VOLUME_ALIGN',
+  'D_MIXED_OK',
+  'E_WEAK_CONTRA'
+]);
 
 function now() {
   return Date.now();
@@ -63,8 +92,19 @@ function safeNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function round(value, decimals = 4) {
+  const n = Number(value);
+
+  if (!Number.isFinite(n)) return 0;
+
+  return Number(n.toFixed(decimals));
+}
+
 function getPositionTimeStopMin() {
-  const value = Number(CONFIG.trade?.positionTimeStopMin);
+  const value = Number(
+    CONFIG.long?.trade?.positionTimeStopMin ??
+      CONFIG.trade?.positionTimeStopMin
+  );
 
   if (!Number.isFinite(value) || value <= 0) return DEFAULT_POSITION_TIME_STOP_MIN;
 
@@ -75,6 +115,7 @@ function baseFlags() {
   return {
     targetTradeSide: TARGET_TRADE_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
+    scannerSide: TARGET_SCANNER_SIDE,
     oppositeTradeSide: OPPOSITE_TRADE_SIDE,
 
     side: TARGET_DASHBOARD_SIDE,
@@ -82,8 +123,7 @@ function baseFlags() {
     positionSide: TARGET_TRADE_SIDE,
     direction: TARGET_TRADE_SIDE,
 
-    scannerSide: TARGET_DASHBOARD_SIDE,
-    actualScannerSide: TARGET_DASHBOARD_SIDE,
+    actualScannerSide: TARGET_SCANNER_SIDE,
     analysisSide: TARGET_TRADE_SIDE,
 
     longOnly: true,
@@ -96,8 +136,14 @@ function baseFlags() {
     outcomeSource: 'VIRTUAL',
     virtualOnly: true,
     virtualTracked: true,
+    virtualLearning: true,
     virtualLearningForced: true,
     shadowOnly: true,
+    virtualOutcomesIncluded: true,
+    shadowOutcomesIncluded: true,
+    realOutcomesExcluded: true,
+    learningOutcomesOnly: true,
+    outcomesSourceMode: 'VIRTUAL_AND_SHADOW_NET_OUTCOMES',
 
     realOrdersDisabled: true,
     exchangeOrdersDisabled: true,
@@ -115,6 +161,7 @@ function baseFlags() {
     microFamilyLearning: true,
     allowLearningWithoutActiveRotation: true,
     ignoreMaxOpenPositionsForLearning: true,
+    ignoreGlobalMaxOpenPositions: true,
     globalMaxOpenPositionsBlockDisabled: true,
     ignoreRiskCapsForLearning: true,
     oneOpenPositionPerSymbol: true,
@@ -135,9 +182,32 @@ function baseFlags() {
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
 
+    executionFingerprintRole: 'METADATA_ONLY',
+    executionFingerprintsHiddenFromLearning: true,
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false,
+
+    analyzeMicroFamiliesOnly: true,
     learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
     exactTrueMicroFamilyRequired: true,
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    fixedTaxonomyPreferred: true,
     symbolExcludedFromFamilyId: true,
+
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    broadTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+    learningGranularity: LEARNING_GRANULARITY,
+    parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
+    selectionGranularity: SELECTION_GRANULARITY,
+
+    childLearningEnabled: true,
+    parentLearningEnabled: true,
+    parentIsContextOnly: true,
+    parentMatchDoesNotTriggerDiscord: true,
+    macroMatchDoesNotTriggerDiscord: true,
 
     completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
     scoringRSource: 'netR',
@@ -153,16 +223,22 @@ function baseFlags() {
       ACTIVE_LEARNING: `completed >= ${MIN_COMPLETED_ACTIVE_LEARNING}`
     },
 
-    defaultRanking: 'dashboardBalancedScore|balancedScore|fairWinrate',
+    defaultRanking: 'dashboardBalancedScore|balancedScore|fairWinrate|totalR|avgR|avgCostR',
+    rankingPolicy: 'balancedScore|fairWinrate|totalR|avgR|avgCostR',
     bareWinrateRankingDisabled: true,
 
     bucketGranularity: 'LOW_MID_HIGH',
     bucketsCoarseOnly: true,
+    scannerBucketsDebugOnly: true,
+    legacy25BucketsDebugOnly: true,
+    coinNameDebugOnly: true,
+    hashesDebugOnly: true,
 
     positionTimeStopMin: getPositionTimeStopMin(),
     positionTimeStopMinDefault: DEFAULT_POSITION_TIME_STOP_MIN,
 
     validLongRiskShape: 'entry > 0 && sl < entry && tp > entry',
+    longRiskShape: 'sl < entry < tp',
     longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
     longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
     longExitPriority: ['TP', 'SL', 'TIME_STOP'],
@@ -174,7 +250,8 @@ function baseFlags() {
     shortRootTouched: false,
 
     resetCronDisabled: true,
-    activateFreezeCronDisabled: true
+    activateFreezeCronDisabled: true,
+    autoRotationActivationDisabled: true
   };
 }
 
@@ -261,17 +338,23 @@ function upper(value, fallback = '') {
 
 function cleanSideText(value = '') {
   return upper(value)
-    .replaceAll('SHORT_DISABLED', '')
-    .replaceAll('SHORTDISABLED', '')
-    .replaceAll('BLOCK_SHORT', '')
+    .replaceAll('SHORT_DISABLED_FALSE', '')
+    .replaceAll('SHORTDISABLED_FALSE', '')
+    .replaceAll('BLOCK_SHORT_FALSE', '')
     .replaceAll('SHORT_ENABLED_FALSE', '')
     .replaceAll('SHORT_ONLY_FALSE', '')
     .replaceAll('LONG_DISABLED_FALSE', '')
-    .replaceAll('LONG_ENABLED_FALSE', '')
-    .replaceAll('LONG_ONLY_FALSE', '')
+    .replaceAll('SHORT_DISABLED_LONG_ONLY', '')
+    .replaceAll('SHORTDISABLED_LONG_ONLY', '')
+    .replaceAll('BLOCK_SHORT', '')
+    .replaceAll('SHORT_DISABLED', '')
+    .replaceAll('SHORTDISABLED', '')
     .replaceAll('LONG_ONLY_MODE', 'LONG')
     .replaceAll('LONG_ONLY', 'LONG')
-    .replaceAll('LONG-ONLY', 'LONG');
+    .replaceAll('LONG-ONLY', 'LONG')
+    .replaceAll('SHORT_ONLY_MODE', 'SHORT')
+    .replaceAll('SHORT_ONLY', 'SHORT')
+    .replaceAll('SHORT-ONLY', 'SHORT');
 }
 
 function normalizeTradeSide(side) {
@@ -399,8 +482,11 @@ function getDefinitionHaystack(row = {}) {
 
     row.microFamilyId,
     row.trueMicroFamilyId,
+    row.learningMicroFamilyId,
+    row.analyzeMicroFamilyId,
     row.activeMicroFamilyId,
     row.coarseMicroFamilyId,
+    row.parentTrueMicroFamilyId,
     row.baseMicroFamilyId,
     row.legacyMicroFamilyId,
     row.liveMicroFamilyId,
@@ -500,13 +586,71 @@ function isScannerFingerprintId(id = '') {
     value.startsWith('MICRO_LONG_SCANNER__') ||
     value.includes('MICRO_LONG_SCANNER__') ||
     value.startsWith('LONG_SCANNER_') ||
+    value.includes('LONG_SCANNER_') ||
     value.startsWith('MICRO_SHORT_SCANNER__') ||
     value.includes('MICRO_SHORT_SCANNER__') ||
     value.startsWith('SHORT_SCANNER_') ||
+    value.includes('SHORT_SCANNER_') ||
     value.includes('__SCANNER__') ||
     value.includes('SCANNER_GATE_PASS') ||
     value.includes('SCANNER_GATE_FAIL')
   );
+}
+
+function isExecutionFingerprintId(id = '') {
+  const value = upper(id);
+
+  return (
+    value.includes('_XR_') ||
+    value.includes('__XR__') ||
+    value.includes('EXECUTION_FINGERPRINT') ||
+    value.includes('EXECUTION_MICRO') ||
+    value.includes('REFINED_EXECUTION')
+  );
+}
+
+function parseFixedLongTaxonomyId(id = '') {
+  const value = upper(id);
+  const match = /^MICRO_LONG_([A-Z_]+)_(TREND|CHOP|SQUEEZE)(?:_(A_STRONG_ALIGN|B_FLOW_ALIGN|C_VOLUME_ALIGN|D_MIXED_OK|E_WEAK_CONTRA))?$/.exec(value);
+
+  if (!match) return null;
+
+  const setup = match[1];
+  const regime = match[2];
+  const confirmation = match[3] || null;
+
+  if (!LONG_FIXED_SETUP_TYPES.has(setup)) return null;
+  if (!LONG_FIXED_REGIME_BUCKETS.has(regime)) return null;
+  if (confirmation && !LONG_FIXED_CONFIRMATION_PROFILES.has(confirmation)) return null;
+
+  const parentTrueMicroFamilyId = `MICRO_LONG_${setup}_${regime}`;
+  const childTrueMicroFamilyId = confirmation
+    ? `${parentTrueMicroFamilyId}_${confirmation}`
+    : null;
+
+  return {
+    setup,
+    regime,
+    confirmation,
+    parentTrueMicroFamilyId,
+    childTrueMicroFamilyId,
+    isParent: !confirmation,
+    isChild: Boolean(confirmation)
+  };
+}
+
+function isExactLongChildTrueMicroId(id = '') {
+  return parseFixedLongTaxonomyId(id)?.isChild === true;
+}
+
+function isParentLongMicroId(id = '') {
+  return parseFixedLongTaxonomyId(id)?.isParent === true;
+}
+
+function parentTrueMicroFamilyIdFromChild(id = '') {
+  const parsed = parseFixedLongTaxonomyId(id);
+
+  return parsed?.isChild ? parsed.parentTrueMicroFamilyId : null;
 }
 
 function normalizeSymbolToken(value = '') {
@@ -533,6 +677,10 @@ function stripSymbolTokensFromFamilyId(id = '', row = {}) {
 
   if (!raw) return raw;
 
+  if (parseFixedLongTaxonomyId(raw)) {
+    return upper(raw);
+  }
+
   const tokens = symbolTokensFromRow(row);
   if (!tokens.length) return raw;
 
@@ -558,57 +706,91 @@ function cleanLearningFamilyId(id = '', row = {}) {
 
   if (!raw) return '';
   if (isScannerFingerprintId(raw)) return '';
+  if (isExecutionFingerprintId(raw)) return '';
 
-  return stripSymbolTokensFromFamilyId(raw, row);
+  const clean = stripSymbolTokensFromFamilyId(raw, row);
+
+  if (!clean) return '';
+  if (isScannerFingerprintId(clean)) return '';
+  if (isExecutionFingerprintId(clean)) return '';
+
+  return upper(clean);
 }
 
-function getMicroFamilyId(row = {}) {
-  return cleanLearningFamilyId(
-    row?.trueMicroFamilyId ||
-      row?.microFamilyId ||
-      row?.activeMicroFamilyId ||
-      row?.liveMicroFamilyId ||
-      row?.realMicroFamilyId ||
-      row?.executionMicroFamilyId ||
-      row?.id ||
-      '',
-    row
-  ) || null;
+function firstCleanLearningId(row = {}, fields = []) {
+  for (const field of fields) {
+    const id = cleanLearningFamilyId(row?.[field], row);
+
+    if (id) return id;
+  }
+
+  return null;
 }
 
 function getTrueMicroFamilyId(row = {}) {
-  return cleanLearningFamilyId(
-    row?.trueMicroFamilyId ||
-      row?.microFamilyId ||
-      row?.executionMicroFamilyId ||
-      row?.id ||
-      '',
-    row
-  ) || null;
+  const explicit = firstCleanLearningId(row, [
+    'trueMicroFamilyId',
+    'learningMicroFamilyId',
+    'analyzeMicroFamilyId',
+    'microFamilyId',
+    'activeMicroFamilyId',
+    'id',
+    'key'
+  ]);
+
+  if (isExactLongChildTrueMicroId(explicit)) return explicit;
+
+  return null;
+}
+
+function getParentTrueMicroFamilyId(row = {}) {
+  const direct = firstCleanLearningId(row, [
+    'parentTrueMicroFamilyId',
+    'coarseMicroFamilyId',
+    'parentMicroFamilyId',
+    'parentMacroFamilyId',
+    'macroFamilyId'
+  ]);
+
+  if (isParentLongMicroId(direct)) return direct;
+
+  const childParent = parentTrueMicroFamilyIdFromChild(getTrueMicroFamilyId(row));
+  if (childParent) return childParent;
+
+  return null;
 }
 
 function getCoarseMicroFamilyId(row = {}) {
-  return cleanLearningFamilyId(
-    row?.coarseMicroFamilyId ||
-      row?.baseMicroFamilyId ||
-      row?.legacyMicroFamilyId ||
-      row?.trueMicroFamilyId ||
-      row?.microFamilyId ||
-      '',
-    row
-  ) || getTrueMicroFamilyId(row);
+  return (
+    getParentTrueMicroFamilyId(row) ||
+    getTrueMicroFamilyId(row) ||
+    firstCleanLearningId(row, [
+      'coarseMicroFamilyId',
+      'baseMicroFamilyId',
+      'legacyMicroFamilyId'
+    ])
+  );
+}
+
+function getMicroFamilyId(row = {}) {
+  return getTrueMicroFamilyId(row);
 }
 
 function getMacroFamilyId(row = {}) {
   return (
-    row?.parentMacroFamilyId ||
-    row?.activeMacroFamilyId ||
-    row?.macroFamilyId ||
-    row?.parentMicroFamilyId ||
-    row?.parentFamilyId ||
-    row?.familyMacroId ||
-    row?.macroId ||
-    row?.familyId ||
+    getParentTrueMicroFamilyId(row) ||
+    cleanLearningFamilyId(
+      row?.parentMacroFamilyId ||
+        row?.activeMacroFamilyId ||
+        row?.macroFamilyId ||
+        row?.parentMicroFamilyId ||
+        row?.parentFamilyId ||
+        row?.familyMacroId ||
+        row?.macroId ||
+        row?.familyId ||
+        '',
+      row
+    ) ||
     null
   );
 }
@@ -628,19 +810,90 @@ function getSymbol(row = {}) {
   );
 }
 
+function scannerMetadataFrom(row = {}) {
+  const scannerMicroFamilyId = [
+    row.scannerMicroFamilyId,
+    row.microFamilyId,
+    row.trueMicroFamilyId,
+    row.id,
+    row.key
+  ].find(isScannerFingerprintId) || row.scannerMicroFamilyId || null;
+
+  const scannerFamilyId = [
+    row.scannerFamilyId,
+    row.familyId,
+    row.baseFamilyId
+  ].find(isScannerFingerprintId) || row.scannerFamilyId || null;
+
+  return {
+    scannerMicroFamilyId,
+    scannerFamilyId,
+    scannerDefinition: row.scannerDefinition || null,
+    scannerDefinitionParts: Array.isArray(row.scannerDefinitionParts)
+      ? row.scannerDefinitionParts
+      : [],
+
+    scannerBucket: row.scannerBucket || row.bucket || null,
+    scannerBucketDebug: row.scannerBucketDebug || row.bucketDebug || null,
+    legacy25Bucket: row.legacy25Bucket || row.oldBucket || row.bucket25 || null,
+
+    scannerFingerprintRole: 'METADATA_ONLY',
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false
+  };
+}
+
+function executionMetadataFrom(row = {}) {
+  const executionMicroFamilyId = [
+    row.executionMicroFamilyId,
+    row.executionFingerprintHash,
+    row.microFamilyId,
+    row.trueMicroFamilyId,
+    row.analyzeMicroFamilyId,
+    row.id,
+    row.key
+  ].find(isExecutionFingerprintId) || row.executionMicroFamilyId || null;
+
+  return {
+    executionMicroFamilyId,
+    executionFingerprintHash: row.executionFingerprintHash || null,
+    executionFingerprintParts: Array.isArray(row.executionFingerprintParts)
+      ? row.executionFingerprintParts
+      : [],
+    executionFingerprintSchema: row.executionFingerprintSchema || null,
+
+    executionFingerprintRole: 'METADATA_ONLY',
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false
+  };
+}
+
 function forceLongRow(row = {}) {
   const trueMicroFamilyId = getTrueMicroFamilyId(row);
-  const microFamilyId = trueMicroFamilyId || getMicroFamilyId(row);
-  const coarseMicroFamilyId = getCoarseMicroFamilyId(row) || microFamilyId;
+  const parentTrueMicroFamilyId = getParentTrueMicroFamilyId(row);
+  const coarseMicroFamilyId = getCoarseMicroFamilyId(row);
 
   return {
     ...row,
 
     ...baseFlags(),
+    ...scannerMetadataFrom(row),
+    ...executionMetadataFrom(row),
 
-    microFamilyId,
-    trueMicroFamilyId: microFamilyId,
-    coarseMicroFamilyId,
+    microFamilyId: trueMicroFamilyId,
+    trueMicroFamilyId,
+    analyzeMicroFamilyId: trueMicroFamilyId,
+    learningMicroFamilyId: trueMicroFamilyId,
+
+    parentTrueMicroFamilyId,
+    coarseMicroFamilyId: coarseMicroFamilyId || parentTrueMicroFamilyId || trueMicroFamilyId,
+    macroFamilyId: parentTrueMicroFamilyId || getMacroFamilyId(row),
+    parentMacroFamilyId: parentTrueMicroFamilyId || row.parentMacroFamilyId || null,
+    parentMicroFamilyId: parentTrueMicroFamilyId || row.parentMicroFamilyId || null,
+
+    trueMicroFamilySchema: trueMicroFamilyId ? TRUE_MICRO_SCHEMA : null,
+    exactTrueMicroFamilySchema: trueMicroFamilyId ? TRUE_MICRO_SCHEMA : null,
+    parentTrueMicroFamilySchema: parentTrueMicroFamilyId ? PARENT_TRUE_MICRO_SCHEMA : null,
 
     inferredTradeSide: TARGET_TRADE_SIDE,
 
@@ -695,27 +948,38 @@ function exitReason(row = {}) {
 function netR(row = {}) {
   const value = Number(
     row.netR ??
-    row.r ??
-    row.finalNetR ??
-    row.outcomeNetR ??
-    row.resultNetR ??
-    row.rNet ??
-    0
+      row.r ??
+      row.finalNetR ??
+      row.outcomeNetR ??
+      row.resultNetR ??
+      row.rNet ??
+      0
   );
 
   return Number.isFinite(value) ? value : 0;
 }
 
 function grossR(row = {}) {
+  const entry = safeNumber(row.entry ?? row.entryPrice, 0);
+  const initialSl = safeNumber(row.initialSl ?? row.initialStopLoss ?? row.sl ?? row.stopLoss, 0);
+  const exitPrice = safeNumber(row.exitPrice ?? row.currentPrice ?? row.lastPrice ?? row.price, 0);
+  const riskDistance = entry > 0 && initialSl > 0 && initialSl < entry
+    ? entry - initialSl
+    : 0;
+
+  if (riskDistance > 0 && exitPrice > 0) {
+    return (exitPrice - entry) / riskDistance;
+  }
+
   const value = Number(
     row.grossR ??
-    row.finalGrossR ??
-    row.outcomeGrossR ??
-    row.resultGrossR ??
-    row.rGross ??
-    row.netR ??
-    row.r ??
-    0
+      row.finalGrossR ??
+      row.outcomeGrossR ??
+      row.resultGrossR ??
+      row.rGross ??
+      row.netR ??
+      row.r ??
+      0
   );
 
   return Number.isFinite(value) ? value : 0;
@@ -724,9 +988,9 @@ function grossR(row = {}) {
 function costR(row = {}) {
   const explicit = Number(
     row.costR ??
-    row.totalCostR ??
-    row.feeCostR ??
-    row.executionCostR
+      row.totalCostR ??
+      row.feeCostR ??
+      row.executionCostR
   );
 
   if (Number.isFinite(explicit)) return explicit;
@@ -760,14 +1024,6 @@ function avg(rows = [], selector) {
   return sum(rows, selector) / rows.length;
 }
 
-function round(value, decimals = 4) {
-  const n = Number(value);
-
-  if (!Number.isFinite(n)) return 0;
-
-  return Number(n.toFixed(decimals));
-}
-
 function unwrapRunResult(result = {}) {
   if (!result || typeof result !== 'object') return {};
 
@@ -781,9 +1037,9 @@ function unwrapRunResult(result = {}) {
 function extractActions(payload = {}) {
   return asArray(
     payload.actions ||
-    payload.tradeActions ||
-    payload.result?.actions ||
-    []
+      payload.tradeActions ||
+      payload.result?.actions ||
+      []
   );
 }
 
@@ -805,10 +1061,10 @@ function extractVirtualExits(payload = {}) {
 function extractOpenPositions(payload = {}) {
   return asArray(
     payload.openPositions ||
-    payload.positions ||
-    payload.virtualPositions ||
-    payload.result?.openPositions ||
-    []
+      payload.positions ||
+      payload.virtualPositions ||
+      payload.result?.openPositions ||
+      []
   );
 }
 
@@ -825,12 +1081,17 @@ function summarizeEntries(actions = []) {
     symbols: uniqueStrings(entries.map(getSymbol)),
     microFamilyIds: uniqueStrings(entries.map(getMicroFamilyId)),
     trueMicroFamilyIds: uniqueStrings(entries.map(getTrueMicroFamilyId)),
+    parentTrueMicroFamilyIds: uniqueStrings(entries.map(getParentTrueMicroFamilyId)),
     coarseMicroFamilyIds: uniqueStrings(entries.map(getCoarseMicroFamilyId)),
     macroFamilyIds: uniqueStrings(entries.map(getMacroFamilyId)),
     familyIds: uniqueStrings(entries.map(getFamilyId)),
 
+    exact75ChildIds: uniqueStrings(entries.map(getTrueMicroFamilyId)).filter(isExactLongChildTrueMicroId),
+    parent15Ids: uniqueStrings(entries.map(getParentTrueMicroFamilyId)).filter(isParentLongMicroId),
+
     byMicroFamily: countBy(entries, getMicroFamilyId),
     byTrueMicroFamily: countBy(entries, getTrueMicroFamilyId),
+    byParentTrueMicroFamily: countBy(entries, getParentTrueMicroFamilyId),
     byCoarseMicroFamily: countBy(entries, getCoarseMicroFamilyId),
     byMacroFamily: countBy(entries, getMacroFamilyId),
     byFamily: countBy(entries, getFamilyId)
@@ -846,11 +1107,13 @@ function summarizeWaits(actions = []) {
     byReason: countBy(waits, waitReason),
     byMicroFamily: countBy(waits, getMicroFamilyId),
     byTrueMicroFamily: countBy(waits, getTrueMicroFamilyId),
+    byParentTrueMicroFamily: countBy(waits, getParentTrueMicroFamilyId),
     byCoarseMicroFamily: countBy(waits, getCoarseMicroFamilyId),
     byMacroFamily: countBy(waits, getMacroFamilyId),
 
     observationOnly: waits.filter((row) => Boolean(row.observationOnly)).length,
     riskInvalid: waits.filter((row) => Boolean(row.riskInvalid || row.invalidRisk)).length,
+    missingExact75Child: waits.filter((row) => !getTrueMicroFamilyId(row)).length,
     symbolAlreadyOpen: waits.filter((row) => waitReason(row).includes('SYMBOL_ALREADY_OPEN')).length,
     nonSelectedSilent: waits.filter((row) => Boolean(row.nonSelectedSilent || row.discordAlertEligible === false)).length
   };
@@ -859,6 +1122,8 @@ function summarizeWaits(actions = []) {
 function normalizeExitRow(row = {}) {
   const normalized = forceLongRow(row);
   const nR = netR(row);
+  const gR = grossR(row);
+  const cR = costR(row);
 
   return {
     ...normalized,
@@ -867,14 +1132,21 @@ function normalizeExitRow(row = {}) {
     source: 'VIRTUAL',
     outcomeSource: 'VIRTUAL',
 
-    grossR: grossR(row),
-    costR: costR(row),
-    netR: nR,
-    realizedR: nR,
+    grossR: round(gR, 4),
+    costR: round(cR, 4),
+    totalCostR: round(cR, 4),
+    avgCostR: round(row.avgCostR ?? cR, 4),
+    netR: round(nR, 4),
+    r: round(nR, 4),
+    realizedR: round(row.realizedR ?? nR, 4),
 
     win: nR > 0,
     loss: nR < 0,
     flat: nR === 0,
+
+    completedCountsAs: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOME',
+    scoringRSource: 'netR',
+    winrateDefinition: 'netR > 0',
 
     realTrade: false,
     realOrder: false,
@@ -911,8 +1183,12 @@ function summarizeVirtualExits(payload = {}) {
     byReason: countBy(exits, exitReason),
     byMicroFamily: countBy(exits, getMicroFamilyId),
     byTrueMicroFamily: countBy(exits, getTrueMicroFamilyId),
+    byParentTrueMicroFamily: countBy(exits, getParentTrueMicroFamilyId),
     byCoarseMicroFamily: countBy(exits, getCoarseMicroFamilyId),
     byMacroFamily: countBy(exits, getMacroFamilyId),
+
+    exact75ChildIds: uniqueStrings(exits.map(getTrueMicroFamilyId)).filter(isExactLongChildTrueMicroId),
+    parent15Ids: uniqueStrings(exits.map(getParentTrueMicroFamilyId)).filter(isParentLongMicroId),
 
     tradeIds: uniqueStrings(exits.map((row) => row?.tradeId || row?.positionId || row?.id)),
 
@@ -1006,6 +1282,7 @@ function buildExitFlags(row = {}) {
     ageSec,
 
     longRiskShapeValid: riskValid,
+    validLongRiskShape: riskValid,
 
     currentR: row.currentR !== undefined && Number.isFinite(Number(row.currentR))
       ? Number(row.currentR)
@@ -1053,11 +1330,16 @@ function summarizeOpenPositions(payload = {}) {
     symbols: uniqueStrings(positions.map(getSymbol)),
     microFamilyIds: uniqueStrings(positions.map(getMicroFamilyId)),
     trueMicroFamilyIds: uniqueStrings(positions.map(getTrueMicroFamilyId)),
+    parentTrueMicroFamilyIds: uniqueStrings(positions.map(getParentTrueMicroFamilyId)),
     coarseMicroFamilyIds: uniqueStrings(positions.map(getCoarseMicroFamilyId)),
     macroFamilyIds: uniqueStrings(positions.map(getMacroFamilyId)),
 
+    exact75ChildIds: uniqueStrings(positions.map(getTrueMicroFamilyId)).filter(isExactLongChildTrueMicroId),
+    parent15Ids: uniqueStrings(positions.map(getParentTrueMicroFamilyId)).filter(isParentLongMicroId),
+
     byMicroFamily: countBy(positions, getMicroFamilyId),
     byTrueMicroFamily: countBy(positions, getTrueMicroFamilyId),
+    byParentTrueMicroFamily: countBy(positions, getParentTrueMicroFamilyId),
     byCoarseMicroFamily: countBy(positions, getCoarseMicroFamilyId),
     byMacroFamily: countBy(positions, getMacroFamilyId),
 
@@ -1065,6 +1347,7 @@ function summarizeOpenPositions(payload = {}) {
     virtualOnly: positions.filter((row) => row.virtualOnly !== false).length,
 
     invalidLongRiskShape: debugRows.filter((row) => !row.longRiskShapeValid).length,
+    missingExact75Child: debugRows.filter((row) => !getTrueMicroFamilyId(row)).length,
     tpReady: debugRows.filter((row) => row.tpHitNow).length,
     slReady: debugRows.filter((row) => row.slHitNow).length,
     timeStopReady: debugRows.filter((row) => row.timeStopHitNow).length,
@@ -1088,6 +1371,43 @@ function summarizeIgnoredSides(payload = {}, actions = []) {
 
     shortPositionsIgnored: allPositions.filter(isShortRow).length,
     unknownSidePositionsIgnored: allPositions.filter((row) => getSide(row) === 'UNKNOWN').length
+  };
+}
+
+function summarizeFingerprintMetadata(payload = {}, actions = []) {
+  const allActions = asArray(actions);
+  const allExits = extractVirtualExits(payload);
+  const allPositions = extractOpenPositions(payload);
+
+  const hasScanner = (row = {}) => (
+    isScannerFingerprintId(row.scannerMicroFamilyId) ||
+    isScannerFingerprintId(row.scannerFamilyId) ||
+    isScannerFingerprintId(row.microFamilyId) ||
+    isScannerFingerprintId(row.trueMicroFamilyId) ||
+    isScannerFingerprintId(row.id) ||
+    isScannerFingerprintId(row.key)
+  );
+
+  const hasExecution = (row = {}) => (
+    isExecutionFingerprintId(row.executionMicroFamilyId) ||
+    isExecutionFingerprintId(row.executionFingerprintHash) ||
+    isExecutionFingerprintId(row.microFamilyId) ||
+    isExecutionFingerprintId(row.trueMicroFamilyId) ||
+    isExecutionFingerprintId(row.analyzeMicroFamilyId) ||
+    isExecutionFingerprintId(row.id) ||
+    isExecutionFingerprintId(row.key)
+  );
+
+  return {
+    scannerFingerprintActions: allActions.filter(hasScanner).length,
+    scannerFingerprintExits: allExits.filter(hasScanner).length,
+    scannerFingerprintPositions: allPositions.filter(hasScanner).length,
+    scannerFingerprintsUsedAsLearningFamily: 0,
+
+    executionFingerprintActions: allActions.filter(hasExecution).length,
+    executionFingerprintExits: allExits.filter(hasExecution).length,
+    executionFingerprintPositions: allPositions.filter(hasExecution).length,
+    executionFingerprintsUsedAsLearningFamily: 0
   };
 }
 
@@ -1121,6 +1441,8 @@ function buildRunOptions(requested = {}) {
 
     monitorOpenPositionsFirst: true,
     monitorOpenPositions: true,
+    processOpenPositions: true,
+    closeVirtualPositions: true,
     processScannerSnapshot: !requested.monitorOnly,
 
     snapshotId: requested.snapshotId,
@@ -1132,8 +1454,8 @@ function buildRunOptions(requested = {}) {
 
     side: TARGET_DASHBOARD_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
-    scannerSide: TARGET_DASHBOARD_SIDE,
-    actualScannerSide: TARGET_DASHBOARD_SIDE,
+    scannerSide: TARGET_SCANNER_SIDE,
+    actualScannerSide: TARGET_SCANNER_SIDE,
     analysisSide: TARGET_TRADE_SIDE,
 
     longOnly: true,
@@ -1147,12 +1469,14 @@ function buildRunOptions(requested = {}) {
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    weekKey: PERSISTENT_LEARNING_KEY,
 
     source: 'VIRTUAL',
     sourceMode: 'VIRTUAL',
     outcomeSource: 'VIRTUAL',
     virtualOnly: true,
     virtualTracked: true,
+    virtualLearning: true,
     virtualLearningForced: true,
     shadowOnly: true,
 
@@ -1178,7 +1502,21 @@ function buildRunOptions(requested = {}) {
     discordOnlyForSelectedMicroFamilies: true,
     discordOnlyForManualSelection: true,
     discordOnlyForExactTrueMicroMatch: true,
+    manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
+
     exactTrueMicroFamilyRequired: true,
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+    learningGranularity: LEARNING_GRANULARITY,
+    parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
+    selectionGranularity: SELECTION_GRANULARITY,
+
+    analyzeMicroFamiliesOnly: true,
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+    symbolExcludedFromFamilyId: true,
 
     observationFirst: true,
     observationFirstAnalyze: true,
@@ -1188,8 +1526,10 @@ function buildRunOptions(requested = {}) {
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
 
-    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
-    symbolExcludedFromFamilyId: true,
+    executionFingerprintRole: 'METADATA_ONLY',
+    executionFingerprintsHiddenFromLearning: true,
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false,
 
     completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
     scoringRSource: 'netR',
@@ -1201,20 +1541,28 @@ function buildRunOptions(requested = {}) {
 
     bucketGranularity: 'LOW_MID_HIGH',
     bucketsCoarseOnly: true,
+    scannerBucketsDebugOnly: true,
+    legacy25BucketsDebugOnly: true,
+    coinNameDebugOnly: true,
+    hashesDebugOnly: true,
 
     positionTimeStopMin: getPositionTimeStopMin(),
 
     longRiskShape: {
       entryGtZero: true,
       slBelowEntry: true,
-      tpAboveEntry: true
+      tpAboveEntry: true,
+      expression: 'sl < entry < tp'
     },
 
     longExitRules: {
       tp: 'currentPrice >= tp',
       sl: 'currentPrice <= sl',
       timeStop: 'ageSec >= CONFIG.trade.positionTimeStopMin * 60',
-      priority: ['TP', 'SL', 'TIME_STOP']
+      priority: ['TP', 'SL', 'TIME_STOP'],
+      grossR: '(exitPrice - entry) / (entry - initialSl)',
+      currentR: '(currentPrice - entry) / (entry - initialSl)',
+      outcomeSource: 'VIRTUAL'
     }
   };
 }
@@ -1240,6 +1588,18 @@ function sanitizePayload(payload = {}) {
     ...actions,
     ...exits
   ], actionType);
+
+  const activeMicroFamilyIds = uniqueStrings([
+    payload.activeMicroFamilyIds,
+    payload.trueMicroFamilyIds,
+    payload.selectedMicroFamilyIds
+  ]).filter(isExactLongChildTrueMicroId);
+
+  const activeMacroFamilyIds = uniqueStrings([
+    payload.activeMacroFamilyIds,
+    payload.parentTrueMicroFamilyIds,
+    payload.selectedMacroFamilyIds
+  ]).filter(isParentLongMicroId);
 
   return {
     ...payload,
@@ -1292,6 +1652,14 @@ function sanitizePayload(payload = {}) {
     virtualPositions: openPositions,
     openPositionsCount: openPositions.length,
 
+    activeMicroFamilyIds,
+    activeTrueMicroFamilyIds: activeMicroFamilyIds,
+    selectedMicroFamilyIds: activeMicroFamilyIds,
+
+    activeMacroFamilyIds,
+    activeParentTrueMicroFamilyIds: activeMacroFamilyIds,
+    selectedMacroFamilyIds: activeMacroFamilyIds,
+
     shortActionsBlockedOrIgnored: rawActions.filter(isShortRow).length,
     unknownSideActionsIgnored: rawActions.filter((row) => getSide(row) === 'UNKNOWN').length,
 
@@ -1305,7 +1673,8 @@ function sanitizePayload(payload = {}) {
     virtualLearningOnly: true,
     shadowDataMode: 'VIRTUAL_LEARNING_OUTCOMES_COUNTED',
 
-    scannerFingerprintsUsedAsLearningFamily: 0
+    scannerFingerprintsUsedAsLearningFamily: 0,
+    executionFingerprintsUsedAsLearningFamily: 0
   };
 }
 
@@ -1325,6 +1694,7 @@ function buildCliResponse({
   const exits = summarizeVirtualExits(payload);
   const positions = summarizeOpenPositions(payload);
   const ignoredSides = summarizeIgnoredSides(rawPayload, extractActions(rawPayload));
+  const fingerprintMetadata = summarizeFingerprintMetadata(rawPayload, extractActions(rawPayload));
 
   return {
     ok: payload?.ok !== false,
@@ -1422,14 +1792,23 @@ function buildCliResponse({
     realExitRows: 0,
 
     activeRotationId: payload?.activeRotationId || null,
-    activeMicroFamilies: payload?.activeMicroFamilies ?? null,
-    activeMacroFamilies: payload?.activeMacroFamilies ?? null,
+    activeMicroFamilies: payload?.activeMicroFamilies ?? payload?.activeMicroFamilyIds?.length ?? null,
+    activeMacroFamilies: payload?.activeMacroFamilies ?? payload?.activeMacroFamilyIds?.length ?? null,
     activeMicroFamilyIds: Array.isArray(payload?.activeMicroFamilyIds)
-      ? payload.activeMicroFamilyIds
+      ? payload.activeMicroFamilyIds.filter(isExactLongChildTrueMicroId)
       : [],
 
-    trueMicroOnly: payload?.trueMicroOnly ?? true,
-    manualSelectionOnly: payload?.manualSelectionOnly ?? true,
+    activeTrueMicroFamilyIds: Array.isArray(payload?.activeTrueMicroFamilyIds)
+      ? payload.activeTrueMicroFamilyIds.filter(isExactLongChildTrueMicroId)
+      : [],
+
+    activeMacroFamilyIds: Array.isArray(payload?.activeMacroFamilyIds)
+      ? payload.activeMacroFamilyIds.filter(isParentLongMicroId)
+      : [],
+
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    manualSelectionOnly: true,
     autoSelectionDisabled: true,
 
     discordEligibleEntries: payload?.discordEligibleEntries ?? null,
@@ -1457,7 +1836,19 @@ function buildCliResponse({
       openPositionDebugRows: positions.debugRows
     },
 
+    learningIdentityDebug: {
+      requiredTrueMicroSchema: TRUE_MICRO_SCHEMA,
+      requiredParentSchema: PARENT_TRUE_MICRO_SCHEMA,
+      selectionGranularity: SELECTION_GRANULARITY,
+      entriesMissingExact75Child: entries.count - entries.exact75ChildIds.length,
+      exitsMissingExact75Child: exits.total - exits.exact75ChildIds.length,
+      openPositionsMissingExact75Child: positions.missingExact75Child,
+      parentOnlyDoesNotTriggerDiscord: true,
+      scannerAndExecutionFingerprintsMetadataOnly: true
+    },
+
     ignoredSides,
+    fingerprintMetadata,
 
     scannerSnapshotStats: payload?.scannerSnapshotStats || null,
 
