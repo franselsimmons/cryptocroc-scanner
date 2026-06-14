@@ -28,11 +28,19 @@ const OPPOSITE_TRADE_SIDE = 'SHORT';
 
 const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
+const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 
 const POSITION_SOURCE = 'VIRTUAL';
 const OUTCOME_SOURCE = 'VIRTUAL';
 
-const COST_MODEL_VERSION = 'POSITION_ENGINE_LONG_NET_COST_V5';
+const FIXED_TAXONOMY_SCHEMA = 'FIXED_TAXONOMY';
+const FALLBACK_MACRO_SCHEMA = 'MF_V1';
+const FALLBACK_MICRO_SCHEMA = 'MF_V2';
+const FALLBACK_TRUE_MICRO_SCHEMA = 'MF_V3';
+
+const EXECUTION_MICRO_SUFFIX = 'XR';
+
+const COST_MODEL_VERSION = 'POSITION_ENGINE_LONG_NET_COST_V6';
 
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 
@@ -83,6 +91,16 @@ function namespacedLongKey(key, fallback) {
   if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
 
   return `${LONG_KEY_PREFIX}${raw}`;
+}
+
+function storageSymbol(input) {
+  const raw = typeof input === 'object'
+    ? input?.symbol || input?.baseSymbol || input?.contractSymbol
+    : input;
+
+  const base = normalizeBaseSymbol(raw);
+
+  return base || String(raw || '').toUpperCase().trim();
 }
 
 function resolveOpenPatternKey() {
@@ -164,25 +182,21 @@ function schemaConfig() {
     CONFIG.long?.analyze?.macroSchema ||
     CONFIG.analyze?.macroSchema ||
     CONFIG.analyze?.legacySchema ||
-    'MF_V1'
+    FALLBACK_MACRO_SCHEMA
   ).toUpperCase();
 
-  const microSchema = String(
+  const fallbackMicroSchema = String(
     CONFIG.long?.analyze?.microSchema ||
     CONFIG.analyze?.microSchema ||
-    'MF_V2'
-  ).toUpperCase();
-
-  const currentSchema = String(
-    CONFIG.long?.analyze?.schema ||
-    CONFIG.analyze?.schema ||
-    microSchema
+    FALLBACK_MICRO_SCHEMA
   ).toUpperCase();
 
   return {
-    currentSchema,
+    currentSchema: FIXED_TAXONOMY_SCHEMA,
     macroSchema,
-    microSchema
+    microSchema: FIXED_TAXONOMY_SCHEMA,
+    fallbackMicroSchema,
+    fallbackTrueMicroSchema: FALLBACK_TRUE_MICRO_SCHEMA
   };
 }
 
@@ -211,16 +225,6 @@ function clonePlainObject(value) {
   return JSON.parse(JSON.stringify(value ?? null));
 }
 
-function storageSymbol(input) {
-  const raw = typeof input === 'object'
-    ? input?.symbol || input?.baseSymbol || input?.contractSymbol
-    : input;
-
-  const base = normalizeBaseSymbol(raw);
-
-  return base || String(raw || '').toUpperCase().trim();
-}
-
 function normalizeSymbolToken(value = '') {
   return String(value || '')
     .toUpperCase()
@@ -240,8 +244,53 @@ function symbolTokensFromRow(row = {}) {
     .filter((token) => token.length >= 2);
 }
 
+function isScannerFamilyId(id = '') {
+  const value = String(id || '').toUpperCase();
+
+  return (
+    value.startsWith('MICRO_LONG_SCANNER__') ||
+    value.includes('MICRO_LONG_SCANNER__') ||
+    value.startsWith('LONG_SCANNER_') ||
+    value.includes('LONG_SCANNER_') ||
+    value.startsWith('MICRO_SHORT_SCANNER__') ||
+    value.includes('MICRO_SHORT_SCANNER__') ||
+    value.startsWith('SHORT_SCANNER_') ||
+    value.includes('SHORT_SCANNER_') ||
+    value.includes('__SCANNER__') ||
+    value.includes('SCANNER_GATE_PASS') ||
+    value.includes('SCANNER_GATE_FAIL')
+  );
+}
+
+function isExecutionFingerprintId(id = '') {
+  const value = String(id || '').toUpperCase();
+
+  return (
+    value.includes(`_${EXECUTION_MICRO_SUFFIX}_`) ||
+    value.includes('__XR__') ||
+    value.includes('|XR|') ||
+    value.includes('EXECUTION_FINGERPRINT') ||
+    value.includes('EXECUTION_MICRO') ||
+    value.includes('EXECUTIONMICRO') ||
+    value.includes('REFINED_EXECUTION')
+  );
+}
+
 function isFixedLongTaxonomyMicroId(id = '') {
   const value = String(id || '').trim().toUpperCase();
+
+  if (!value) return false;
+  if (isScannerFamilyId(value)) return false;
+  if (isExecutionFingerprintId(value)) return false;
+
+  if (
+    value.includes('_MF_V1_') ||
+    value.includes('_MF_V2_') ||
+    value.includes('_MF_V3_')
+  ) {
+    return false;
+  }
+
   const match = /^MICRO_LONG_([A-Z_]+)_(TREND|CHOP|SQUEEZE)$/.exec(value);
 
   if (!match) return false;
@@ -250,18 +299,6 @@ function isFixedLongTaxonomyMicroId(id = '') {
   const regime = match[2];
 
   return LONG_FIXED_SETUP_TYPES.has(setup) && LONG_FIXED_REGIME_BUCKETS.has(regime);
-}
-
-function isExecutionFingerprintId(id = '') {
-  const value = String(id || '').toUpperCase();
-
-  return (
-    value.includes('_XR_') ||
-    value.includes('__XR__') ||
-    value.includes('EXECUTION_FINGERPRINT') ||
-    value.includes('EXECUTION_MICRO') ||
-    value.includes('REFINED_EXECUTION')
-  );
 }
 
 function stripSymbolTokensFromLearningId(id = '', row = {}) {
@@ -634,22 +671,6 @@ function isLongPosition(row = {}) {
   return inferPositionTradeSide(row) === TARGET_TRADE_SIDE;
 }
 
-function isScannerFamilyId(id = '') {
-  const value = String(id || '').toUpperCase();
-
-  return (
-    value.startsWith('MICRO_LONG_SCANNER__') ||
-    value.includes('MICRO_LONG_SCANNER__') ||
-    value.startsWith('LONG_SCANNER_') ||
-    value.startsWith('MICRO_SHORT_SCANNER__') ||
-    value.includes('MICRO_SHORT_SCANNER__') ||
-    value.startsWith('SHORT_SCANNER_') ||
-    value.includes('__SCANNER__') ||
-    value.includes('SCANNER_GATE_PASS') ||
-    value.includes('SCANNER_GATE_FAIL')
-  );
-}
-
 function isScannerFamilyRow(row = {}) {
   return Boolean(
     isScannerFamilyId(row.microFamilyId) ||
@@ -695,6 +716,7 @@ function definitionHasSchema(row = {}, schema) {
 function rowSchema(row = {}) {
   return String(
     row.microFamilySchema ||
+    row.trueMicroFamilySchema ||
     row.schema ||
     row.versionSchema ||
     ''
@@ -792,12 +814,16 @@ function fallbackFamilyId(row = {}) {
   return String(
     parentMacroFamilyId(row) ||
     rowMicroId(row) ||
-    ''
+    'LONG_VIRTUAL_POSITION'
   ).trim();
 }
 
 function isTrueMicroFamilyRow(row = {}) {
-  const { microSchema, macroSchema } = schemaConfig();
+  const {
+    macroSchema,
+    fallbackMicroSchema,
+    fallbackTrueMicroSchema
+  } = schemaConfig();
 
   const id = rowMicroId(row);
   const schema = rowSchema(row);
@@ -811,28 +837,40 @@ function isTrueMicroFamilyRow(row = {}) {
   if (row.isLegacyMacro === true) return false;
   if (version.includes('MACRO')) return false;
 
-  if (row.isTrueMicro === true || row.trueMicro === true) return true;
   if (isFixedLongTaxonomyMicroId(id)) return true;
 
-  if (schema === microSchema) return true;
-  if (idHasSchema(id, microSchema)) return true;
-  if (definitionHasSchema(row, microSchema)) return true;
+  if (row.fixedTaxonomyLearningId === true) {
+    return isFixedLongTaxonomyMicroId(id);
+  }
+
+  if (schema === FIXED_TAXONOMY_SCHEMA) return isFixedLongTaxonomyMicroId(id);
 
   if (schema === macroSchema) return false;
   if (idHasSchema(id, macroSchema)) return false;
   if (definitionHasSchema(row, macroSchema)) return false;
 
-  if (String(id).toUpperCase().startsWith('MICRO_LONG_')) return true;
+  if (row.isTrueMicro === true || row.trueMicro === true) return true;
 
-  return Boolean(parentMacroFamilyId(row) || row.coarseMicroFamilyId || row.trueMicroFamilyId);
+  if (schema === fallbackMicroSchema || schema === fallbackTrueMicroSchema) return true;
+  if (idHasSchema(id, fallbackMicroSchema)) return true;
+  if (idHasSchema(id, fallbackTrueMicroSchema)) return true;
+  if (definitionHasSchema(row, fallbackMicroSchema)) return true;
+  if (definitionHasSchema(row, fallbackTrueMicroSchema)) return true;
+
+  return false;
 }
 
 function normalizeMicroIdentity(row = {}) {
-  const { currentSchema, microSchema } = schemaConfig();
+  const {
+    currentSchema,
+    microSchema,
+    fallbackTrueMicroSchema
+  } = schemaConfig();
 
   const microFamilyId = rowMicroId(row);
   const coarseMicroFamilyId = rowCoarseMicroId(row);
   const macroId = parentMacroFamilyId(row);
+  const fixedTaxonomyLearningId = isFixedLongTaxonomyMicroId(microFamilyId);
 
   if (!microFamilyId) {
     throw new Error('ANALYZE_TRUE_MICRO_FAMILY_ID_REQUIRED');
@@ -872,27 +910,37 @@ function normalizeMicroIdentity(row = {}) {
     executionMicroFamilyId: executionMicroId(row),
     executionFingerprintRole: 'METADATA_ONLY',
     executionFingerprintOnlyMetadata: Boolean(executionMicroId(row)),
+    executionFingerprintsUsedAsLearningFamily: false,
 
     scannerFingerprintRole: 'METADATA_ONLY',
     scannerFingerprintOnlyMetadata: true,
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
+
     learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+    exactTrueMicroFamilyRequired: true,
     symbolExcludedFromFamilyId: true,
 
     parentMacroFamilyId: macroId || null,
     parentMicroFamilyId: row.parentMicroFamilyId || macroId || null,
     macroFamilyId: macroId || null,
 
-    microFamilySchema: row.microFamilySchema || row.schema || microSchema,
-    schema: row.schema || row.microFamilySchema || microSchema,
+    fixedTaxonomyLearningId,
+    trueMicroFamilySchema: fixedTaxonomyLearningId
+      ? FIXED_TAXONOMY_SCHEMA
+      : row.trueMicroFamilySchema || fallbackTrueMicroSchema,
+    microFamilySchema: fixedTaxonomyLearningId
+      ? FIXED_TAXONOMY_SCHEMA
+      : row.microFamilySchema || row.schema || microSchema,
+    schema: fixedTaxonomyLearningId
+      ? FIXED_TAXONOMY_SCHEMA
+      : row.schema || row.microFamilySchema || microSchema,
     analyzeSchema: row.analyzeSchema || currentSchema,
 
     isTrueMicro: true,
     isLegacyMacro: false,
 
-    trueMicroOnly: true,
-    exactTrueMicroFamilyRequired: true
+    trueMicroOnly: true
   };
 }
 
@@ -1150,7 +1198,11 @@ function forceLongPositionFields(row = {}) {
     bitgetOrdersDisabled: true,
     exchangeOrdersDisabled: true,
     noRealOrders: true,
-    noExchangeOrders: true
+    noExchangeOrders: true,
+
+    redisNamespace: LONG_NAMESPACE,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    persistentLearningKey: PERSISTENT_LEARNING_KEY
   };
 }
 
@@ -1224,12 +1276,12 @@ function positiveCostR(value) {
 }
 
 function ratioToR(value, riskPct) {
-  const ratio = safeNumber(value, NaN);
+  const ratioValue = safeNumber(value, NaN);
   const risk = safeNumber(riskPct, 0);
 
-  if (!Number.isFinite(ratio) || risk <= 0) return null;
+  if (!Number.isFinite(ratioValue) || risk <= 0) return null;
 
-  return Math.max(0, ratio / risk);
+  return Math.max(0, ratioValue / risk);
 }
 
 function firstPositiveCostR(values = []) {
@@ -1702,7 +1754,7 @@ export function buildOpenPositionFromEntry(entry) {
     ...identity,
     ...buildVirtualFlags(normalizedEntry),
 
-    tradeId: normalizedEntry.tradeId || randomId('trade'),
+    tradeId: normalizedEntry.tradeId || randomId('trade_long'),
 
     symbol: normalizedEntry.symbol || keySymbol,
     baseSymbol: normalizedEntry.baseSymbol || keySymbol,
@@ -1745,7 +1797,15 @@ export function buildOpenPositionFromEntry(entry) {
     liveManaged: false,
     beLiveApplied: false,
     trailLiveApplied: false,
-    slManagementSource: null
+    slManagementSource: null,
+
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longExitRules: {
+      tp: 'currentPrice >= tp',
+      sl: 'currentPrice <= sl',
+      timeStop: `age >= ${tradeConfig().positionTimeStopMin} minutes`
+    }
   });
 
   assertPositionPersistable(position);
@@ -1823,6 +1883,7 @@ function enrichOutcomeIdentity(outcome = {}, position = {}) {
     executionMicroFamilyId: position.executionMicroFamilyId || identity.executionMicroFamilyId || null,
     executionFingerprintRole: 'METADATA_ONLY',
     executionFingerprintOnlyMetadata: Boolean(position.executionMicroFamilyId || identity.executionMicroFamilyId),
+    executionFingerprintsUsedAsLearningFamily: false,
 
     scannerFingerprintRole: 'METADATA_ONLY',
     scannerFingerprintOnlyMetadata: true,
@@ -1832,12 +1893,12 @@ function enrichOutcomeIdentity(outcome = {}, position = {}) {
     outcomeIdentityLocked: true,
     outcomeIdentitySource: 'POSITION_MICRO_IDENTITY',
     learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+    exactTrueMicroFamilyRequired: true,
     symbolExcludedFromFamilyId: true,
 
     isTrueMicro: true,
     isLegacyMacro: false,
     trueMicroOnly: true,
-    exactTrueMicroFamilyRequired: true,
 
     currentPrice: safeNumber(position.currentPrice ?? position.lastPrice ?? outcome.exitPrice, 0),
     lastPrice: safeNumber(position.lastPrice ?? position.currentPrice ?? outcome.exitPrice, 0),
@@ -1998,7 +2059,8 @@ async function monitorOnePosition({
   const discordOutcome = clonePlainObject(outcome);
 
   await recordOutcome(analyzeOutcome, {
-    source: OUTCOME_SOURCE
+    source: OUTCOME_SOURCE,
+    weekKey: PERSISTENT_LEARNING_KEY
   });
 
   const discordResult = await maybeSendExitAlert(closedPosition, discordOutcome);
@@ -2016,7 +2078,7 @@ async function monitorOnePosition({
   };
 }
 
-export async function monitorOpenPositions({ priceFetcher }) {
+export async function monitorOpenPositions({ priceFetcher } = {}) {
   if (typeof priceFetcher !== 'function') {
     throw new Error('PRICE_FETCHER_REQUIRED');
   }
