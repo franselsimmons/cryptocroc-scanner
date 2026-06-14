@@ -11,11 +11,26 @@ const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
 const OPPOSITE_TRADE_SIDE = 'SHORT';
 
-// Dashboard leest dezelfde vaste Analyze-bak als analyzeEngine.js.
-// Geen ISO-week reset meer. Alleen factory-reset wist LONG ANALYZE:*.
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 
 const SHOW_SCANNER_FINGERPRINT_LEGACY_FALLBACK = false;
+
+const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY';
+const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
+
+const LONG_FIXED_SETUP_TYPES = new Set([
+  'BREAKOUT',
+  'RETEST',
+  'SWEEP_REVERSAL',
+  'CONTINUATION',
+  'COMPRESSION'
+]);
+
+const LONG_FIXED_REGIME_BUCKETS = new Set([
+  'TREND',
+  'CHOP',
+  'SQUEEZE'
+]);
 
 const VALID_MODES = new Set([
   'balanced',
@@ -99,7 +114,11 @@ function modePayload() {
     outcomesSourceMode: 'VIRTUAL_AND_SHADOW_NET_OUTCOMES',
     completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
     scoringRSource: 'netR',
+    winsLossesFlatsSource: 'netR',
     winrateDefinition: 'netR > 0',
+    avgRSource: 'netR',
+    totalRSource: 'netR',
+    avgCostRShown: true,
 
     manualSelectionOnly: true,
     autoRotationActivationDisabled: true,
@@ -113,9 +132,17 @@ function modePayload() {
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
 
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false,
+
     analyzeMicroFamiliesOnly: true,
-    learningIdentitySource: 'ANALYZE_MICRO_FAMILY',
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
     symbolExcludedFromFamilyId: true,
+
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    broadTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    fixedTaxonomyPreferred: true,
+    learningGranularity: LEARNING_GRANULARITY,
 
     bucketsCoarseOnly: true,
     bucketGranularity: 'LOW_MID_HIGH',
@@ -201,15 +228,35 @@ function toSafeLimit(value, fallback = DEFAULT_LIMIT, max = MAX_LIMIT) {
   return Math.min(Math.floor(n), max);
 }
 
+function flattenValues(values = []) {
+  const stack = Array.isArray(values) ? [...values] : [values];
+  const output = [];
+
+  while (stack.length > 0) {
+    const value = stack.shift();
+
+    if (Array.isArray(value)) {
+      stack.unshift(...value);
+      continue;
+    }
+
+    output.push(value);
+  }
+
+  return output;
+}
+
 function uniqueStrings(values = []) {
   return [...new Set(
-    (Array.isArray(values) ? values : [values])
+    flattenValues(values)
       .flatMap((value) => {
-        if (Array.isArray(value)) return value;
+        if (typeof value === 'string') {
+          return value
+            .split(/[\s,;\n\r]+/g)
+            .map((part) => part.trim());
+        }
 
-        return String(value || '')
-          .split(/[\s,;\n\r]+/g)
-          .map((part) => part.trim());
+        return [value];
       })
       .map((value) => String(value || '').trim())
       .filter(Boolean)
@@ -304,61 +351,16 @@ function getMacroDefinitionParts(row = {}) {
   return [];
 }
 
-function getFamilyId(row = {}) {
-  return (
-    row.familyId ||
-    row.family ||
-    row.baseFamilyId ||
-    null
-  );
-}
+function isFixedLongTaxonomyMicroId(id = '') {
+  const value = upper(id);
+  const match = /^MICRO_LONG_([A-Z_]+)_(TREND|CHOP|SQUEEZE)$/.exec(value);
 
-function getMicroFamilyId(row = {}, fallback = null) {
-  return (
-    row.trueMicroFamilyId ||
-    row.microFamilyId ||
-    row.id ||
-    row.key ||
-    fallback ||
-    null
-  );
-}
+  if (!match) return false;
 
-function getTrueMicroFamilyId(row = {}, fallback = null) {
-  return (
-    row.trueMicroFamilyId ||
-    row.microFamilyId ||
-    row.id ||
-    row.key ||
-    fallback ||
-    null
-  );
-}
+  const setup = match[1];
+  const regime = match[2];
 
-function getCoarseMicroFamilyId(row = {}, fallback = null) {
-  return (
-    row.coarseMicroFamilyId ||
-    row.baseMicroFamilyId ||
-    row.legacyMicroFamilyId ||
-    row.trueMicroFamilyId ||
-    row.microFamilyId ||
-    row.id ||
-    row.key ||
-    fallback ||
-    null
-  );
-}
-
-function getMacroFamilyId(row = {}) {
-  return (
-    row.parentMacroFamilyId ||
-    row.macroFamilyId ||
-    row.parentMicroFamilyId ||
-    row.parentFamilyId ||
-    row.macroId ||
-    row.familyId ||
-    null
-  );
+  return LONG_FIXED_SETUP_TYPES.has(setup) && LONG_FIXED_REGIME_BUCKETS.has(regime);
 }
 
 function isScannerFingerprintId(id = '') {
@@ -368,12 +370,26 @@ function isScannerFingerprintId(id = '') {
     value.startsWith('MICRO_LONG_SCANNER__') ||
     value.includes('MICRO_LONG_SCANNER__') ||
     value.startsWith('LONG_SCANNER_') ||
+    value.includes('LONG_SCANNER_') ||
     value.startsWith('MICRO_SHORT_SCANNER__') ||
     value.includes('MICRO_SHORT_SCANNER__') ||
     value.startsWith('SHORT_SCANNER_') ||
+    value.includes('SHORT_SCANNER_') ||
     value.includes('__SCANNER__') ||
     value.includes('SCANNER_GATE_PASS') ||
     value.includes('SCANNER_GATE_FAIL')
+  );
+}
+
+function isExecutionFingerprintId(id = '') {
+  const value = upper(id);
+
+  return (
+    value.includes('_XR_') ||
+    value.includes('__XR__') ||
+    value.includes('EXECUTION_FINGERPRINT') ||
+    value.includes('EXECUTION_MICRO') ||
+    value.includes('REFINED_EXECUTION')
   );
 }
 
@@ -381,19 +397,105 @@ function allowScannerFingerprintRow(id = '') {
   return SHOW_SCANNER_FINGERPRINT_LEGACY_FALLBACK === true || !isScannerFingerprintId(id);
 }
 
+function validLearningId(id = '') {
+  const value = String(id || '').trim();
+
+  if (!value) return false;
+  if (!allowScannerFingerprintRow(value)) return false;
+  if (isExecutionFingerprintId(value)) return false;
+
+  return true;
+}
+
+function firstValidLearningId(values = [], fallback = null) {
+  for (const value of values) {
+    const id = String(value || '').trim();
+
+    if (validLearningId(id)) return id;
+  }
+
+  return fallback;
+}
+
+function getFamilyId(row = {}) {
+  return firstValidLearningId([
+    row.familyId,
+    row.family,
+    row.baseFamilyId
+  ], null);
+}
+
+function getMicroFamilyId(row = {}, fallback = null) {
+  return firstValidLearningId([
+    row.trueMicroFamilyId,
+    row.learningMicroFamilyId,
+    row.analyzeMicroFamilyId,
+    row.microFamilyId,
+    row.id,
+    row.key,
+    fallback
+  ], null);
+}
+
+function getTrueMicroFamilyId(row = {}, fallback = null) {
+  return firstValidLearningId([
+    row.trueMicroFamilyId,
+    row.learningMicroFamilyId,
+    row.analyzeMicroFamilyId,
+    row.microFamilyId,
+    row.id,
+    row.key,
+    fallback
+  ], null);
+}
+
+function getCoarseMicroFamilyId(row = {}, fallback = null) {
+  return firstValidLearningId([
+    row.coarseMicroFamilyId,
+    row.baseMicroFamilyId,
+    row.legacyMicroFamilyId,
+    row.trueMicroFamilyId,
+    row.learningMicroFamilyId,
+    row.analyzeMicroFamilyId,
+    row.microFamilyId,
+    row.id,
+    row.key,
+    fallback
+  ], null);
+}
+
+function getMacroFamilyId(row = {}) {
+  return firstValidLearningId([
+    row.parentMacroFamilyId,
+    row.macroFamilyId,
+    row.parentMicroFamilyId,
+    row.parentFamilyId,
+    row.macroId,
+    row.familyId
+  ], null);
+}
+
 function cleanSideHaystack(text = '') {
   return upper(text)
-    .replaceAll('SHORT_DISABLED', '')
-    .replaceAll('SHORTDISABLED', '')
-    .replaceAll('BLOCK_SHORT', '')
+    .replaceAll('SHORT_DISABLED_FALSE', '')
+    .replaceAll('SHORTDISABLED_FALSE', '')
+    .replaceAll('BLOCK_SHORT_FALSE', '')
     .replaceAll('SHORT_ENABLED_FALSE', '')
     .replaceAll('SHORT_ONLY_FALSE', '')
     .replaceAll('LONG_DISABLED_FALSE', '')
     .replaceAll('LONG_ENABLED_FALSE', '')
     .replaceAll('LONG_ONLY_FALSE', '')
+    .replaceAll('SHORT_DISABLED_LONG_ONLY', '')
+    .replaceAll('SHORTDISABLED_LONG_ONLY', '')
+    .replaceAll('BLOCK_SHORT', '')
+    .replaceAll('SHORT_DISABLED', '')
+    .replaceAll('SHORTDISABLED', '')
     .replaceAll('LONG_ONLY_MODE', 'LONG')
     .replaceAll('LONG_ONLY', 'LONG')
-    .replaceAll('LONG-ONLY', 'LONG');
+    .replaceAll('LONG-ONLY', 'LONG')
+    .replaceAll('SHORT_ONLY_MODE', 'SHORT')
+    .replaceAll('SHORT_ONLY', 'SHORT')
+    .replaceAll('SHORT-ONLY', 'SHORT');
 }
 
 function collectSideText(input = {}) {
@@ -424,6 +526,8 @@ function collectSideText(input = {}) {
 
     input.microFamilyId,
     input.trueMicroFamilyId,
+    input.learningMicroFamilyId,
+    input.analyzeMicroFamilyId,
     input.coarseMicroFamilyId,
     input.baseMicroFamilyId,
     input.legacyMicroFamilyId,
@@ -571,6 +675,8 @@ function inferTradeSide(input = {}) {
   );
   const microFamilyId = cleanSideHaystack(
     input.trueMicroFamilyId ||
+    input.learningMicroFamilyId ||
+    input.analyzeMicroFamilyId ||
     input.microFamilyId ||
     input.coarseMicroFamilyId ||
     input.baseMicroFamilyId ||
@@ -622,22 +728,26 @@ function isAnalyzeMicroRow(row = {}) {
   const id = getMicroFamilyId(row);
 
   if (!id) return false;
-  if (isScannerFingerprintId(id)) return false;
-  if (isScannerFingerprintId(row.trueMicroFamilyId)) return false;
-  if (isScannerFingerprintId(row.coarseMicroFamilyId)) return false;
-  if (row.scannerFingerprintOnlyMetadata === true && isScannerFingerprintId(id)) return false;
+  if (!validLearningId(id)) return false;
+  if (!validLearningId(row.trueMicroFamilyId || id)) return false;
+  if (!validLearningId(row.coarseMicroFamilyId || id)) return false;
   if (row.legacyScannerFamilyFallback === true) return false;
 
   const side = inferTradeSide({
     ...row,
     microFamilyId: id,
-    trueMicroFamilyId: row.trueMicroFamilyId || row.microFamilyId || id,
+    trueMicroFamilyId: row.trueMicroFamilyId || row.learningMicroFamilyId || row.analyzeMicroFamilyId || row.microFamilyId || id,
     coarseMicroFamilyId: row.coarseMicroFamilyId || id
   });
 
   if (side === OPPOSITE_TRADE_SIDE) return false;
 
-  return true;
+  if (isFixedLongTaxonomyMicroId(id)) return true;
+  if (upper(id).startsWith('MICRO_LONG_')) return true;
+  if (row.isTrueMicro === true || row.trueMicro === true) return true;
+  if (row.trueMicroFamilyId || row.learningMicroFamilyId || row.analyzeMicroFamilyId || row.microFamilyId) return true;
+
+  return false;
 }
 
 function sourceEntriesFromMicros(micros = {}) {
@@ -658,7 +768,7 @@ function microsCount(micros = {}) {
     .filter(([key, row]) => {
       const id = getMicroFamilyId(row, key);
 
-      return Boolean(id && !isScannerFingerprintId(id));
+      return Boolean(id && validLearningId(id));
     })
     .length;
 }
@@ -1068,7 +1178,6 @@ function learningStatusFor(row = {}, meta = null) {
 
   if (winrateMeta.outcomeSample >= MIN_COMPLETED_ACTIVE_LEARNING) return 'ACTIVE_LEARNING';
   if (winrateMeta.outcomeSample > 0) return 'EARLY_OUTCOMES';
-  if (winrateMeta.observationSample > 0) return 'OBSERVING';
 
   return 'OBSERVING';
 }
@@ -1102,7 +1211,18 @@ function scannerMetadata(row = {}) {
     scannerDefinitionParts: Array.isArray(row.scannerDefinitionParts)
       ? row.scannerDefinitionParts
       : [],
-    scannerFingerprintRole: 'METADATA_ONLY'
+    scannerFingerprintRole: 'METADATA_ONLY',
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+
+    executionMicroFamilyId: row.executionMicroFamilyId || null,
+    executionFingerprintHash: row.executionFingerprintHash || null,
+    executionFingerprintParts: Array.isArray(row.executionFingerprintParts)
+      ? row.executionFingerprintParts
+      : [],
+    executionFingerprintSchema: row.executionFingerprintSchema || null,
+    executionFingerprintRole: 'METADATA_ONLY',
+    executionFingerprintsUsedAsLearningFamily: false
   };
 }
 
@@ -1110,13 +1230,13 @@ function buildRawMicroRow(row = {}, key = '', index = 0) {
   const microFamilyId = getMicroFamilyId(row, key);
 
   if (!microFamilyId) return null;
-  if (!allowScannerFingerprintRow(microFamilyId)) return null;
+  if (!validLearningId(microFamilyId)) return null;
 
   const trueMicroFamilyId = getTrueMicroFamilyId(row, microFamilyId);
   const coarseMicroFamilyId = getCoarseMicroFamilyId(row, trueMicroFamilyId);
 
-  if (isScannerFingerprintId(trueMicroFamilyId)) return null;
-  if (isScannerFingerprintId(coarseMicroFamilyId)) return null;
+  if (!validLearningId(trueMicroFamilyId)) return null;
+  if (!validLearningId(coarseMicroFamilyId)) return null;
 
   const familyId = getFamilyId(row);
   const macroFamilyId = getMacroFamilyId({
@@ -1147,12 +1267,15 @@ function buildRawMicroRow(row = {}, key = '', index = 0) {
   const totalR = getTotalR(row);
   const totalCostR = getTotalCostR(row);
   const counts = getOutcomeCounts(row);
+  const fixedTaxonomyLearningId = isFixedLongTaxonomyMicroId(trueMicroFamilyId);
 
   return {
     sourceIndex: index,
 
     microFamilyId,
     trueMicroFamilyId,
+    analyzeMicroFamilyId: trueMicroFamilyId,
+    learningMicroFamilyId: trueMicroFamilyId,
     coarseMicroFamilyId,
     familyId,
     macroFamilyId,
@@ -1164,9 +1287,18 @@ function buildRawMicroRow(row = {}, key = '', index = 0) {
 
     scannerFingerprintLegacy: false,
     legacyScannerFamilyFallback: false,
-    scannerFingerprintOnlyMetadata: false,
+    scannerFingerprintOnlyMetadata: true,
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+
+    executionFingerprintsUsedAsLearningFamily: false,
 
     ...modePayload(),
+
+    fixedTaxonomyLearningId,
+    trueMicroFamilySchema: fixedTaxonomyLearningId
+      ? TRUE_MICRO_SCHEMA
+      : row.trueMicroFamilySchema || row.schema || null,
 
     inferredTradeSide,
     inferredFromLongOnlyMode: inferredTradeSide === 'UNKNOWN',
@@ -1286,15 +1418,11 @@ function buildRawMicroRow(row = {}, key = '', index = 0) {
 
     regime: row.regime || null,
     regimeCoarse: row.regimeCoarse || null,
+    setupType: row.setupType || null,
+    regimeBucket: row.regimeBucket || null,
 
     scannerReason: row.scannerReason || null,
     scannerReasonCoarse: row.scannerReasonCoarse || null,
-
-    executionFingerprintHash: row.executionFingerprintHash || null,
-    executionFingerprintParts: Array.isArray(row.executionFingerprintParts)
-      ? row.executionFingerprintParts
-      : [],
-    executionFingerprintSchema: row.executionFingerprintSchema || null,
 
     createdAt: row.createdAt || null,
     updatedAt: row.updatedAt || null
@@ -1318,7 +1446,10 @@ function decorateMicroRow(row = {}) {
 
     scannerFingerprintLegacy: false,
     legacyScannerFamilyFallback: false,
-    scannerFingerprintOnlyMetadata: false,
+    scannerFingerprintOnlyMetadata: true,
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+    executionFingerprintsUsedAsLearningFamily: false,
 
     completed: round(winrate.outcomeSample, 4),
     wins: round(winrate.wins, 4),
@@ -1379,13 +1510,15 @@ function buildRowsFromMicros(micros = {}) {
       const id = getMicroFamilyId(row, key);
 
       if (!id) return null;
-      if (!allowScannerFingerprintRow(id)) return null;
+      if (!validLearningId(id)) return null;
 
       const baseRow = {
         ...(row || {}),
         key,
         microFamilyId: id,
         trueMicroFamilyId: getTrueMicroFamilyId(row, id),
+        analyzeMicroFamilyId: getTrueMicroFamilyId(row, id),
+        learningMicroFamilyId: getTrueMicroFamilyId(row, id),
         coarseMicroFamilyId: getCoarseMicroFamilyId(row, id),
         sourceWeekKey: PERSISTENT_LEARNING_KEY,
         sourceWeekPrimary: true,
@@ -1404,6 +1537,8 @@ function buildRowsFromMicros(micros = {}) {
 function rowKey(row = {}) {
   return String(
     row.trueMicroFamilyId ||
+    row.learningMicroFamilyId ||
+    row.analyzeMicroFamilyId ||
     row.microFamilyId ||
     row.id ||
     row.key ||
@@ -1446,16 +1581,23 @@ function mergeRows(primaryRows = [], fallbackRows = []) {
 
 function manualRowFromId(id, index = 0) {
   if (!id || inferTradeSide(id) === OPPOSITE_TRADE_SIDE) return null;
-  if (isScannerFingerprintId(id)) return null;
+  if (!validLearningId(id)) return null;
 
   const raw = buildRawMicroRow({
     microFamilyId: id,
     trueMicroFamilyId: id,
+    analyzeMicroFamilyId: id,
+    learningMicroFamilyId: id,
     coarseMicroFamilyId: id,
     familyId: null,
     macroFamilyId: null,
 
     ...modePayload(),
+
+    fixedTaxonomyLearningId: isFixedLongTaxonomyMicroId(id),
+    trueMicroFamilySchema: isFixedLongTaxonomyMicroId(id)
+      ? TRUE_MICRO_SCHEMA
+      : null,
 
     active: true,
     macroActive: false,
@@ -1485,18 +1627,18 @@ function extractActiveIds(activeRotation) {
   if (!activeRotation) return [];
 
   const ids = [
-    ...(Array.isArray(activeRotation.microFamilyIds) ? activeRotation.microFamilyIds : []),
-    ...(Array.isArray(activeRotation.activeMicroFamilyIds) ? activeRotation.activeMicroFamilyIds : []),
-    ...(Array.isArray(activeRotation.trueMicroFamilyIds) ? activeRotation.trueMicroFamilyIds : []),
-    ...(Array.isArray(activeRotation.ids) ? activeRotation.ids : []),
-    ...(Array.isArray(activeRotation.microFamilies)
+    activeRotation.microFamilyIds || [],
+    activeRotation.activeMicroFamilyIds || [],
+    activeRotation.trueMicroFamilyIds || [],
+    activeRotation.ids || [],
+    Array.isArray(activeRotation.microFamilies)
       ? activeRotation.microFamilies.map((row) => getTrueMicroFamilyId(row))
-      : [])
+      : []
   ];
 
   return uniqueStrings(ids).filter((id) => (
     inferTradeSide(id) !== OPPOSITE_TRADE_SIDE &&
-    allowScannerFingerprintRow(id)
+    validLearningId(id)
   ));
 }
 
@@ -1504,17 +1646,17 @@ function extractActiveMacroIds(activeRotation) {
   if (!activeRotation) return [];
 
   const ids = [
-    ...(Array.isArray(activeRotation.macroFamilyIds) ? activeRotation.macroFamilyIds : []),
-    ...(Array.isArray(activeRotation.activeMacroFamilyIds) ? activeRotation.activeMacroFamilyIds : []),
-    ...(Array.isArray(activeRotation.macroIds) ? activeRotation.macroIds : []),
-    ...(Array.isArray(activeRotation.microFamilies)
+    activeRotation.macroFamilyIds || [],
+    activeRotation.activeMacroFamilyIds || [],
+    activeRotation.macroIds || [],
+    Array.isArray(activeRotation.microFamilies)
       ? activeRotation.microFamilies.map((row) => getMacroFamilyId(row))
-      : [])
+      : []
   ];
 
   return uniqueStrings(ids).filter((id) => (
     inferTradeSide(id) !== OPPOSITE_TRADE_SIDE &&
-    allowScannerFingerprintRow(id)
+    validLearningId(id)
   ));
 }
 
@@ -1530,13 +1672,15 @@ function buildRowsFromActiveRotation(activeRotation) {
           if (inferTradeSide(row) === OPPOSITE_TRADE_SIDE) return null;
 
           const id = getTrueMicroFamilyId(row, `active_${index}`);
-          if (!id || !allowScannerFingerprintRow(id)) return null;
+          if (!id || !validLearningId(id)) return null;
 
           const raw = buildRawMicroRow({
             ...row,
             ...modePayload(),
             microFamilyId: id,
             trueMicroFamilyId: id,
+            analyzeMicroFamilyId: id,
+            learningMicroFamilyId: id,
             coarseMicroFamilyId: getCoarseMicroFamilyId(row, id),
             active: true,
             selectedTier: row.selectedTier || row.rotationEligibilityTier || activeRotation.selectedTier || 'RAW'
@@ -1597,11 +1741,15 @@ function normalizeMicroRow(
   const learningStatus = learningStatusFor(row, winrate);
   const tooEarly = winrate.outcomeSample < MIN_COMPLETED_ACTIVE_LEARNING;
 
+  const fixedTaxonomyLearningId = isFixedLongTaxonomyMicroId(trueMicroFamilyId);
+
   const base = {
     rank: index + 1,
 
     microFamilyId,
     trueMicroFamilyId,
+    analyzeMicroFamilyId: trueMicroFamilyId,
+    learningMicroFamilyId: trueMicroFamilyId,
     coarseMicroFamilyId,
     familyId,
     macroFamilyId,
@@ -1613,9 +1761,17 @@ function normalizeMicroRow(
 
     scannerFingerprintLegacy: false,
     legacyScannerFamilyFallback: false,
-    scannerFingerprintOnlyMetadata: false,
+    scannerFingerprintOnlyMetadata: true,
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+    executionFingerprintsUsedAsLearningFamily: false,
 
     ...modePayload(),
+
+    fixedTaxonomyLearningId,
+    trueMicroFamilySchema: fixedTaxonomyLearningId
+      ? TRUE_MICRO_SCHEMA
+      : row.trueMicroFamilySchema || row.schema || null,
 
     inferredTradeSide: row.inferredTradeSide || inferTradeSide(row),
     inferredFromLongOnlyMode: Boolean(row.inferredFromLongOnlyMode),
@@ -1740,14 +1896,10 @@ function normalizeMicroRow(
     btcRelation: row.btcRelation || null,
     regime: row.regime || null,
     regimeCoarse: row.regimeCoarse || null,
+    setupType: row.setupType || null,
+    regimeBucket: row.regimeBucket || null,
     scannerReason: row.scannerReason || null,
     scannerReasonCoarse: row.scannerReasonCoarse || null,
-
-    executionFingerprintHash: row.executionFingerprintHash || null,
-    executionFingerprintParts: Array.isArray(row.executionFingerprintParts)
-      ? row.executionFingerprintParts
-      : [],
-    executionFingerprintSchema: row.executionFingerprintSchema || null,
 
     createdAt: row.createdAt || null,
     updatedAt: row.updatedAt || null
@@ -1776,21 +1928,32 @@ function compactBestRow(row) {
 
   const microFamilyId = getMicroFamilyId(row);
   const trueMicroFamilyId = getTrueMicroFamilyId(row, microFamilyId);
+  const fixedTaxonomyLearningId = isFixedLongTaxonomyMicroId(trueMicroFamilyId);
 
   return {
     microFamilyId,
     trueMicroFamilyId,
+    analyzeMicroFamilyId: trueMicroFamilyId,
+    learningMicroFamilyId: trueMicroFamilyId,
     coarseMicroFamilyId: getCoarseMicroFamilyId(row, trueMicroFamilyId),
     familyId: getFamilyId(row),
     macroFamilyId: getMacroFamilyId(row),
 
     ...modePayload(),
 
+    fixedTaxonomyLearningId,
+    trueMicroFamilySchema: fixedTaxonomyLearningId
+      ? TRUE_MICRO_SCHEMA
+      : row.trueMicroFamilySchema || row.schema || null,
+
     ...scannerMetadata(row),
 
     scannerFingerprintLegacy: false,
     legacyScannerFamilyFallback: false,
-    scannerFingerprintOnlyMetadata: false,
+    scannerFingerprintOnlyMetadata: true,
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+    executionFingerprintsUsedAsLearningFamily: false,
 
     active: Boolean(row.active),
     macroActive: Boolean(row.macroActive),
@@ -1850,6 +2013,7 @@ function compactActiveRotation(activeRotation) {
     ...modePayload(),
 
     trueMicroOnly: activeRotation.trueMicroOnly !== false,
+    exactTrueMicroOnly: true,
 
     manualOnly: true,
     adminSelected: Boolean(activeRotation.adminSelected || activeRotation.manualOnly),
@@ -1925,6 +2089,8 @@ function rowMatchesSearch(row = {}, q = '') {
   const haystack = [
     row.microFamilyId,
     row.trueMicroFamilyId,
+    row.learningMicroFamilyId,
+    row.analyzeMicroFamilyId,
     row.coarseMicroFamilyId,
     row.id,
     row.key,
@@ -1938,6 +2104,8 @@ function rowMatchesSearch(row = {}, q = '') {
     row.microDefinition,
     row.macroDefinition,
     row.parentDefinition,
+    row.setupType,
+    row.regimeBucket,
     ...getArray(row.definitionParts),
     ...getArray(row.microDefinitionParts),
     ...getArray(row.macroDefinitionParts),
@@ -1954,6 +2122,8 @@ function rowPassesFilters(row = {}, filters, activeSet, activeMacroSet) {
   if (!row?.microFamilyId) return false;
   if (!isAnalyzeMicroRow(row)) return false;
 
+  const exactId = row.trueMicroFamilyId || row.learningMicroFamilyId || row.analyzeMicroFamilyId || row.microFamilyId;
+
   if (filters.side === 'SHORT_DISABLED') return false;
   if (filters.side && filters.side !== TARGET_TRADE_SIDE) return false;
 
@@ -1968,7 +2138,7 @@ function rowPassesFilters(row = {}, filters, activeSet, activeMacroSet) {
     return false;
   }
 
-  if (filters.activeOnly && !activeSet.has(row.trueMicroFamilyId || row.microFamilyId)) {
+  if (filters.activeOnly && !activeSet.has(exactId)) {
     return false;
   }
 
@@ -2199,7 +2369,7 @@ function buildSummary(rows = [], activeSet = new Set()) {
   const observingRows = safeRows.filter((row) => row.status === 'OBSERVING');
 
   const activeRows = safeRows.filter((row) => (
-    activeSet.has(row.trueMicroFamilyId || row.microFamilyId || row.id || row.key)
+    activeSet.has(row.trueMicroFamilyId || row.learningMicroFamilyId || row.analyzeMicroFamilyId || row.microFamilyId || row.id || row.key)
   ));
 
   let totalR = 0;
@@ -2361,12 +2531,13 @@ function mergeMicrosByRecency(weekResults = []) {
 
       const id = getMicroFamilyId(row, key);
       if (!id) continue;
-      if (!allowScannerFingerprintRow(id)) continue;
+      if (!validLearningId(id)) continue;
 
       const trueMicroFamilyId = getTrueMicroFamilyId(row, id);
       const coarseMicroFamilyId = getCoarseMicroFamilyId(row, trueMicroFamilyId);
 
-      if (isScannerFingerprintId(trueMicroFamilyId) || isScannerFingerprintId(coarseMicroFamilyId)) continue;
+      if (!validLearningId(trueMicroFamilyId)) continue;
+      if (!validLearningId(coarseMicroFamilyId)) continue;
 
       if (inferTradeSide({
         ...row,
@@ -2381,6 +2552,8 @@ function mergeMicrosByRecency(weekResults = []) {
         ...row,
         microFamilyId: id,
         trueMicroFamilyId,
+        analyzeMicroFamilyId: trueMicroFamilyId,
+        learningMicroFamilyId: trueMicroFamilyId,
         coarseMicroFamilyId,
         sourceWeekKey: weekKey,
         sourceWeekPrimary: Boolean(isPrimary),
@@ -2537,7 +2710,7 @@ function forcedLongFallbackRows(activeRotation, existingRows = []) {
   for (const id of extractActiveIds(activeRotation)) {
     if (existing.has(id)) continue;
     if (inferTradeSide(id) === OPPOSITE_TRADE_SIDE) continue;
-    if (!allowScannerFingerprintRow(id)) continue;
+    if (!validLearningId(id)) continue;
 
     const manual = manualRowFromId(id, rows.length);
     if (!manual) continue;
@@ -2553,7 +2726,7 @@ export default async function handler(req, res) {
   const startedAt = now();
 
   res.setHeader('Cache-Control', 'no-store, max-age=0');
-  res.setHeader('X-Admin-Micro-Families-Mode', 'long-only-persistent-learning-analyze-micro-net-outcome-observation-first-best-data-v12');
+  res.setHeader('X-Admin-Micro-Families-Mode', 'long-only-persistent-learning-fixed-taxonomy-exact-true-micro-net-outcome-v13');
   res.setHeader('X-Target-Trade-Side', TARGET_TRADE_SIDE);
   res.setHeader('X-Long-Only', 'true');
   res.setHeader('X-Short-Disabled', 'true');
@@ -2569,8 +2742,10 @@ export default async function handler(req, res) {
   res.setHeader('X-Scanner-Side', TARGET_DASHBOARD_SIDE);
   res.setHeader('X-Scanner-Fingerprint-Legacy-Fallback', String(SHOW_SCANNER_FINGERPRINT_LEGACY_FALLBACK));
   res.setHeader('X-Scanner-Fingerprints-Metadata-Only', 'true');
+  res.setHeader('X-Execution-Fingerprints-Metadata-Only', 'true');
   res.setHeader('X-Analyze-Micro-Families-Only', 'true');
-  res.setHeader('X-Learning-Identity-Source', 'ANALYZE_MICRO_FAMILY');
+  res.setHeader('X-Learning-Identity-Source', 'ANALYZE_TRUE_MICRO_FAMILY');
+  res.setHeader('X-True-Micro-Family-Schema', TRUE_MICRO_SCHEMA);
   res.setHeader('X-Persistent-Learning-Key', PERSISTENT_LEARNING_KEY);
   res.setHeader('X-Week-Reset-Disabled', 'true');
   res.setHeader('X-Default-Sort', 'BEST_DATA_FIRST');
@@ -2736,6 +2911,18 @@ export default async function handler(req, res) {
       })
       .length;
 
+    const rawExecutionFingerprintRowsHidden = sourceEntriesFromMicros(weekResult.micros)
+      .filter(([key, row]) => {
+        const id = getMicroFamilyId(row, key);
+
+        return (
+          isExecutionFingerprintId(id) ||
+          isExecutionFingerprintId(row?.trueMicroFamilyId) ||
+          isExecutionFingerprintId(row?.coarseMicroFamilyId)
+        );
+      })
+      .length;
+
     const warnings = uniqueStrings([
       requestedQueryWeekKey !== PERSISTENT_LEARNING_KEY
         ? `QUERY_WEEKKEY_IGNORED_USING_PERSISTENT:${requestedQueryWeekKey}`
@@ -2750,11 +2937,14 @@ export default async function handler(req, res) {
       rawScannerFingerprintRowsHidden > 0
         ? `SCANNER_FINGERPRINT_ROWS_HIDDEN_METADATA_ONLY:${rawScannerFingerprintRowsHidden}`
         : null,
+      rawExecutionFingerprintRowsHidden > 0
+        ? `EXECUTION_FINGERPRINT_ROWS_HIDDEN_METADATA_ONLY:${rawExecutionFingerprintRowsHidden}`
+        : null,
       rankedRows.length === 0
-        ? 'NO_ANALYZE_MICRO_ROWS_AFTER_FILTERS'
+        ? 'NO_ANALYZE_TRUE_MICRO_ROWS_AFTER_FILTERS'
         : null,
       best25MicroFamilies.length === 0
-        ? 'NO_BEST25_ANALYZE_MICRO_FAMILIES_AVAILABLE'
+        ? 'NO_BEST25_ANALYZE_TRUE_MICRO_FAMILIES_AVAILABLE'
         : null
     ].filter(Boolean));
 
@@ -2786,8 +2976,13 @@ export default async function handler(req, res) {
         scannerFingerprintsMetadataOnly: true,
         scannerFingerprintLegacyFallbackRows: 0,
         rawScannerFingerprintRowsHidden,
+        rawExecutionFingerprintRowsHidden,
+        executionFingerprintsMetadataOnly: true,
         analyzeMicroFamiliesOnly: true,
         trueMicroFamilyOnly: true,
+        exactTrueMicroOnly: true,
+        trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+        learningGranularity: LEARNING_GRANULARITY,
         symbolExcludedFromFamilyId: true,
         persistentLearningKey: PERSISTENT_LEARNING_KEY,
         weekResetDisabled: true,
@@ -2846,6 +3041,7 @@ export default async function handler(req, res) {
       activeFallbackRows: activeFallbackRows.length,
       scannerFingerprintLegacyRows: 0,
       rawScannerFingerprintRowsHidden,
+      rawExecutionFingerprintRowsHidden,
 
       rawSideCounts: sideCounts(mergedRows),
       filteredSideCounts: sideCounts(rankedRows),
@@ -2880,7 +3076,7 @@ export default async function handler(req, res) {
         weekMicrosCacheHit: Boolean(weekResult.cacheHit),
         weekMicrosCacheStale: Boolean(weekResult.stale),
         weekMicrosCacheSize: cache.weekMicros.size,
-        path: 'longOnlyPersistentLearningNetOutcomeObservationFirstAnalyzeMicroOnlyScannerFingerprintMetadataOnlyBestDataFirst',
+        path: 'longOnlyPersistentLearningNetOutcomeObservationFirstAnalyzeTrueMicroOnlyFixedTaxonomyScannerFingerprintMetadataOnlyBestDataFirst',
         best25Source: 'persistentLearningMergedRowsBeforeFilters'
       },
 
