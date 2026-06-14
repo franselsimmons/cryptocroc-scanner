@@ -15,6 +15,12 @@ const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 
+const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
+const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
+const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
+const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
+const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
+
 const ROOT_KEY_PREFIXES = [
   'SCAN:',
   'LIVE:',
@@ -32,8 +38,70 @@ const BLOCKED_KEY_PREFIXES = [
   'SHORT_TRADE:',
   'SHORT_ANALYZE:',
   'SHORT_DISCORD:',
-  'SHORT_RESET:'
+  'SHORT_RESET:',
+  'SHORT_LIVE:',
+  'BEAR:',
+  'BEARISH:',
+  'SELL:'
 ];
+
+const LONG_FIXED_SETUP_TYPES = Object.freeze([
+  'BREAKOUT',
+  'RETEST',
+  'SWEEP_REVERSAL',
+  'CONTINUATION',
+  'COMPRESSION'
+]);
+
+const LONG_FIXED_REGIME_BUCKETS = Object.freeze([
+  'TREND',
+  'CHOP',
+  'SQUEEZE'
+]);
+
+const LONG_CONFIRMATION_PROFILES = Object.freeze([
+  'A_STRONG_ALIGN',
+  'B_FLOW_ALIGN',
+  'C_VOLUME_ALIGN',
+  'D_MIXED_OK',
+  'E_WEAK_CONTRA'
+]);
+
+function taxonomyFlags() {
+  return {
+    trueMicroSchema: TRUE_MICRO_SCHEMA,
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+
+    parentTrueMicroSchema: PARENT_TRUE_MICRO_SCHEMA,
+    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+
+    childTrueMicroSchema: CHILD_TRUE_MICRO_SCHEMA,
+    childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
+
+    learningGranularity: LEARNING_GRANULARITY,
+    parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
+
+    fixedTaxonomyPreferred: true,
+    trueMicroOnly: true,
+    exactTrueMicroOnly: true,
+    exactTrueMicroFamilyRequired: true,
+
+    parentLearningEnabled: true,
+    childLearningEnabled: true,
+    selectionGranularity: 'EXACT_75_CHILD',
+    fallbackRankingGranularity: 'PARENT_15_UNTIL_CHILD_MIN_COMPLETED',
+
+    selectableFamilyCount: 75,
+    parentFamilyCount: 15,
+    parentSelectable: false,
+    childSelectable: true,
+
+    setupTypes: LONG_FIXED_SETUP_TYPES,
+    regimeBuckets: LONG_FIXED_REGIME_BUCKETS,
+    confirmationProfiles: LONG_CONFIRMATION_PROFILES
+  };
+}
 
 function modeFlags() {
   return {
@@ -52,6 +120,9 @@ function modeFlags() {
     tradeSide: TARGET_TRADE_SIDE,
     positionSide: TARGET_TRADE_SIDE,
     direction: TARGET_TRADE_SIDE,
+    scannerSide: TARGET_SCANNER_SIDE,
+    actualScannerSide: TARGET_SCANNER_SIDE,
+    analysisSide: TARGET_TRADE_SIDE,
 
     longOnly: true,
     shortDisabled: true,
@@ -60,34 +131,67 @@ function modeFlags() {
 
     virtualOnly: true,
     virtualLearning: true,
+    virtualTracked: true,
     source: 'VIRTUAL',
     outcomeSource: 'VIRTUAL',
 
     noRealOrders: true,
+    noExchangeOrders: true,
     realOrdersDisabled: true,
     bitgetOrdersDisabled: true,
     exchangeOrdersDisabled: true,
+    exchangeCallsDisabled: true,
 
     noGlobalMaxOpenPositionsBlock: true,
     oneOpenPositionPerSymbol: true,
 
     manualDiscordSelectionExactTrueMicroOnly: true,
+    manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
+    discordOnlyForExactTrueMicroMatch: true,
+    discordOnlyForSelectedMicroFamilies: true,
+
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
+    scannerBucketsMetadataOnly: true,
+    legacy25BucketsMetadataOnly: true,
+
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false,
+
+    analyzeMicroFamiliesOnly: true,
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+
+    symbolExcludedFromFamilyId: true,
+    coinNameExcludedFromFamilyId: true,
+    hashesExcludedFromFamilyId: true,
 
     completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
     scoringRSource: 'netR',
+    winsLossesFlatsSource: 'netR',
     winrateDefinition: 'netR > 0',
     avgRSource: 'netR',
     totalRSource: 'netR',
     avgCostRShown: true,
+
+    rankingUsesBalancedScore: true,
+    noBareWinrateRanking: true,
+    balancedRankingFields: [
+      'balancedScore',
+      'dashboardBalancedScore',
+      'fairWinrate',
+      'totalR',
+      'avgR',
+      'avgCostR'
+    ],
 
     noResetCron: true,
     noActivateCron: true,
     noFreezeCron: true,
     manualSelectionPreserved: true,
 
-    shortRootTouched: false
+    shortRootTouched: false,
+
+    ...taxonomyFlags()
   };
 }
 
@@ -111,9 +215,6 @@ function makeRedis(url, token, label) {
   return new Redis({
     url,
     token,
-
-    // Wij serializen JSON zelf.
-    // Dit houdt locks, logs, stats en nested objects voorspelbaar.
     automaticDeserialization: false
   });
 }
@@ -151,8 +252,12 @@ function getDurableEnv() {
 let volatileRedis = null;
 let durableRedis = null;
 
+function upper(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
 function isBlockedShortKey(key = '') {
-  const value = String(key || '').trim().toUpperCase();
+  const value = upper(key);
 
   return BLOCKED_KEY_PREFIXES.some((prefix) => value.startsWith(prefix));
 }
@@ -167,20 +272,33 @@ function isLongKey(key = '') {
   return String(key || '').trim().startsWith(LONG_KEY_PREFIX);
 }
 
+function buildNamespaceError(message, payload = {}) {
+  const error = new Error(message);
+
+  error.details = {
+    ...payload,
+    namespace: LONG_NAMESPACE,
+    redisNamespace: LONG_NAMESPACE,
+    keyPrefix: LONG_KEY_PREFIX,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    targetTradeSide: TARGET_TRADE_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+    shortRootTouched: false,
+    ...taxonomyFlags()
+  };
+
+  return error;
+}
+
 function normalizeKey(key) {
   const raw = String(key || '').trim();
 
   if (!raw) return '';
 
   if (isBlockedShortKey(raw)) {
-    const error = new Error('LONG_REDIS_REFUSED_SHORT_NAMESPACE_KEY');
-
-    error.details = {
-      key: raw,
-      ...modeFlags()
-    };
-
-    throw error;
+    throw buildNamespaceError('LONG_REDIS_REFUSED_SHORT_NAMESPACE_KEY', {
+      key: raw
+    });
   }
 
   if (isLongKey(raw)) return raw;
@@ -196,19 +314,16 @@ function normalizePattern(pattern) {
   if (!raw) return '';
 
   if (isBlockedShortKey(raw)) {
-    const error = new Error('LONG_REDIS_REFUSED_SHORT_NAMESPACE_PATTERN');
-
-    error.details = {
-      pattern: raw,
-      ...modeFlags()
-    };
-
-    throw error;
+    throw buildNamespaceError('LONG_REDIS_REFUSED_SHORT_NAMESPACE_PATTERN', {
+      pattern: raw
+    });
   }
 
   if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
 
   if (isRootAppKey(raw)) return `${LONG_KEY_PREFIX}${raw}`;
+
+  if (raw === '*') return `${LONG_KEY_PREFIX}*`;
 
   return `${LONG_KEY_PREFIX}${raw}`;
 }
@@ -294,9 +409,24 @@ function withLongMeta(value) {
   };
 }
 
+function assertLongNormalizedKey(key) {
+  const value = String(key || '').trim();
+
+  if (!value.startsWith(LONG_KEY_PREFIX)) {
+    throw buildNamespaceError('LONG_REDIS_REFUSED_NON_LONG_KEY', {
+      key: value
+    });
+  }
+
+  return true;
+}
+
 async function deleteKeys(redis, keys = []) {
   const rows = Array.isArray(keys)
-    ? keys.filter(Boolean).map(normalizeKey)
+    ? keys
+      .filter(Boolean)
+      .map(normalizeKey)
+      .filter((key) => key.startsWith(LONG_KEY_PREFIX))
     : [];
 
   if (!rows.length) return 0;
@@ -351,10 +481,28 @@ export function hasRedisEnv() {
   return hasVolatileRedisEnv() && hasDurableRedisEnv();
 }
 
+export function normalizeRedisKey(key) {
+  return normalizeKey(key);
+}
+
+export function normalizeRedisPattern(pattern) {
+  return normalizePattern(pattern);
+}
+
+export function isLongRedisKey(key) {
+  return isLongKey(key);
+}
+
+export function redisModeFlags() {
+  return modeFlags();
+}
+
 export async function getJson(redis, key, fallback = null) {
   const redisKey = normalizeKey(key);
 
   if (!redis || !redisKey) return fallback;
+
+  assertLongNormalizedKey(redisKey);
 
   const value = await redis.get(redisKey);
 
@@ -368,6 +516,8 @@ export async function setJson(redis, key, value, options = undefined) {
     throw new Error('SET_LONG_JSON_INVALID_REDIS_OR_KEY');
   }
 
+  assertLongNormalizedKey(redisKey);
+
   const payload = stringifyJsonValue(withLongMeta(value), redisKey);
 
   return redis.set(redisKey, payload, options);
@@ -380,6 +530,8 @@ export async function setNxJson(redis, key, value, options = {}) {
     throw new Error('SET_NX_LONG_JSON_INVALID_REDIS_OR_KEY');
   }
 
+  assertLongNormalizedKey(redisKey);
+
   const payload = stringifyJsonValue(withLongMeta(value), redisKey);
 
   return redis.set(redisKey, payload, {
@@ -388,10 +540,22 @@ export async function setNxJson(redis, key, value, options = {}) {
   });
 }
 
+export async function delJson(redis, key) {
+  const redisKey = normalizeKey(key);
+
+  if (!redis || !redisKey) return 0;
+
+  assertLongNormalizedKey(redisKey);
+
+  return redis.del(redisKey);
+}
+
 export async function delPattern(redis, pattern, max = 5000) {
   const redisPattern = normalizePattern(pattern);
 
   if (!redis || !redisPattern) return 0;
+
+  assertLongNormalizedKey(redisPattern.replace(/\*.*$/u, '') || LONG_KEY_PREFIX);
 
   const maxDelete = normalizeMax(max, 5000);
 
@@ -428,6 +592,8 @@ export async function getKeys(redis, pattern, max = 1000) {
   const redisPattern = normalizePattern(pattern);
 
   if (!redis || !redisPattern) return [];
+
+  assertLongNormalizedKey(redisPattern.replace(/\*.*$/u, '') || LONG_KEY_PREFIX);
 
   const maxKeys = normalizeMax(max, 1000);
 
@@ -468,6 +634,8 @@ export async function pushJsonLog(redis, key, value, limit = DEFAULT_LOG_LIMIT) 
     throw new Error('PUSH_LONG_JSON_LOG_INVALID_REDIS_OR_KEY');
   }
 
+  assertLongNormalizedKey(redisKey);
+
   const safeLimit = normalizeLimit(limit, DEFAULT_LOG_LIMIT);
   const payload = stringifyJsonValue(withLongMeta(value), redisKey);
 
@@ -482,6 +650,8 @@ export async function readJsonLogs(redis, key, limit = 100) {
 
   if (!redis || !redisKey) return [];
 
+  assertLongNormalizedKey(redisKey);
+
   const safeLimit = normalizeLimit(limit, 100);
   const rows = await redis.lrange(redisKey, 0, safeLimit - 1);
 
@@ -489,7 +659,9 @@ export async function readJsonLogs(redis, key, limit = 100) {
     .map((row) => {
       if (row === null || row === undefined) return null;
 
-      if (typeof row !== 'string') return row;
+      if (typeof row !== 'string') {
+        return withLongMeta(row);
+      }
 
       const parsed = parseJsonValue(row, null);
 
@@ -498,10 +670,7 @@ export async function readJsonLogs(redis, key, limit = 100) {
           raw: row,
           ...modeFlags()
         }
-        : {
-          ...parsed,
-          ...modeFlags()
-        };
+        : withLongMeta(parsed);
     })
     .filter(Boolean);
 }
