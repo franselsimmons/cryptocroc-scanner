@@ -68,6 +68,9 @@ const EXECUTION_MICRO_HASH_LEN = 10;
 const MIN_COMPLETED_ACTIVE_LEARNING = 20;
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 
+const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
+const CLASSIFIER_VERSION = 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V2';
+
 const TRUE_VALUES = new Set(['true', '1', 'yes', 'y', 'on']);
 const FALSE_VALUES = new Set(['false', '0', 'no', 'n', 'off']);
 
@@ -1373,7 +1376,7 @@ function analyzeIdentityFlags() {
     totalRSource: 'netR',
     avgCostRShown: true,
 
-    measurementFixVersion: 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1',
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
     observationDedupeRequired: true,
     observationAlwaysCounted: false,
     seenDefinition: 'UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY',
@@ -1716,7 +1719,7 @@ async function claimDedupeKey(redis, key, ttlSec, {
     try {
       const result = await redis.set(key, value, options);
 
-      if (result === null || result === false || result === undefined) {
+      if (result === null || result === false) {
         return {
           claimed: false,
           duplicate: true,
@@ -2321,7 +2324,7 @@ function enrichWithMicroFamily(row = {}, { forcedSide = null } = {}) {
     microFamilySchema: TRUE_MICRO_SCHEMA,
     version: 'fixed-taxonomy-75-child-smart-evidence-v2',
 
-    classifierVersion: 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V2',
+    classifierVersion: CLASSIFIER_VERSION,
     classifierNoDefaultRetestSqueezeB: true,
 
     assetClass: classified.assetClass || row.assetClass || 'CRYPTO',
@@ -2703,8 +2706,8 @@ export async function saveWeekMicros(
     currentFitBlocksLearning: false,
     learningRemainsBroad: true,
 
-    classifierVersion: 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V2',
-    measurementFixVersion: 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1',
+    classifierVersion: CLASSIFIER_VERSION,
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
     noDefaultRetestSqueezeB: true,
 
     redisNamespace: LONG_NAMESPACE,
@@ -2722,8 +2725,8 @@ export async function saveWeekMicros(
     storageMode: 'TOP_MICROS_SNAPSHOT',
     targetTradeSide: TARGET_TRADE_SIDE,
     trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
-    classifierVersion: 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V2',
-    measurementFixVersion: 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1',
+    classifierVersion: CLASSIFIER_VERSION,
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX
   });
@@ -2774,8 +2777,8 @@ export async function saveWeekMicros(
     currentFitBlocksLearning: false,
     learningRemainsBroad: true,
 
-    classifierVersion: 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V2',
-    measurementFixVersion: 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1',
+    classifierVersion: CLASSIFIER_VERSION,
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
     noDefaultRetestSqueezeB: true,
 
     redisNamespace: LONG_NAMESPACE,
@@ -2925,9 +2928,9 @@ function getOrCreateMicro(micros, classified, side) {
     micro.spreadBps = classified.spreadBps;
   }
 
-  micro.classifierVersion = 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V2';
+  micro.classifierVersion = CLASSIFIER_VERSION;
   micro.noDefaultRetestSqueezeB = true;
-  micro.measurementFixVersion = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
+  micro.measurementFixVersion = MEASUREMENT_FIX_VERSION;
   micro.observationDedupeRequired = true;
   micro.seenDefinition = 'UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY';
   micro.outcomeDedupeRequired = true;
@@ -2982,10 +2985,13 @@ function buildObservationDedupeIdentity(row = {}, microFamilyId = '') {
       'UNKNOWN'
   ).trim().toUpperCase();
 
+  const entry = safeNumber(row.entry || row.entryPrice, 0);
+
   return {
     snapshotId: snapshotId || 'NO_SNAPSHOT',
     symbol: symbol || 'UNKNOWN',
-    microFamilyId
+    microFamilyId,
+    entry
   };
 }
 
@@ -3146,6 +3152,7 @@ export async function analyzeCandidatesBatch(
         observationDedupeMethod: observationClaim.method,
         observationDedupeType: observationClaim.type,
         observationSnapshotId: observationIdentity.snapshotId,
+        observationEntry: observationIdentity.entry,
 
         createdAt: batch.metrics.createdAt || now()
       }));
@@ -4035,9 +4042,9 @@ function copyMicroClassificationFields(position = {}) {
     entryCurrentFitConfidence: position.entryCurrentFitConfidence ?? position.currentMarketFitConfidence ?? null,
     entryWeatherFitMatchedFamily: position.entryWeatherFitMatchedFamily ?? null,
 
-    classifierVersion: 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V2',
+    classifierVersion: CLASSIFIER_VERSION,
     noDefaultRetestSqueezeB: true,
-    measurementFixVersion: 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1',
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
 
     currentFitSoftOnly: true,
     currentFitBlocksLearning: false,
