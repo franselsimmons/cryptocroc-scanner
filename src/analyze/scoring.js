@@ -28,7 +28,7 @@ const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
 const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
 const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 
-const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
+const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V2';
 
 const SOURCE_VIRTUAL = 'VIRTUAL';
 const SOURCE_REAL = 'REAL';
@@ -939,9 +939,11 @@ function applyLearningIdentityFlags(stats = {}, row = {}) {
   stats.measurementFixVersion = MEASUREMENT_FIX_VERSION;
   stats.seenDefinition = 'UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY';
   stats.observationDedupeRequired = true;
+  stats.observationAlwaysCounted = false;
 
   stats.defaultRanking = 'dashboardBalancedScore|balancedScore|fairWinrate|totalR|avgR|avgCostR';
   stats.bareWinrateRankingDisabled = true;
+  stats.rawWinrateRankingDisabled = true;
   stats.rankingUsesBalancedScore = true;
   stats.rankingUsesFairWinrate = true;
   stats.rankingUsesTotalR = true;
@@ -953,6 +955,12 @@ function applyLearningIdentityFlags(stats = {}, row = {}) {
   stats.learningRemainsBroad = true;
   stats.selectionWillBeAdaptive = true;
   stats.discordWillBeStrict = true;
+
+  stats.adaptiveLayerBuilt = false;
+  stats.adaptiveScoreBuilt = false;
+  stats.recentMomentumScoreBuilt = false;
+  stats.currentFitScoreBuilt = false;
+  stats.parentDiversificationBuilt = false;
 
   stats.realOrdersDisabled = true;
   stats.exchangeOrdersDisabled = true;
@@ -1222,7 +1230,7 @@ function observationDedupeKey(row = {}) {
     return normalizeDedupeKey(`${snapshotId}|${symbol}|${microId}|${entry || 'NO_ENTRY'}`);
   }
 
-  return '';
+  return normalizeDedupeKey(`NO_SNAPSHOT|${symbol}|${microId}|${entry || 'NO_ENTRY'}`);
 }
 
 function observationAlreadySeen(stats = {}, key = '') {
@@ -1530,6 +1538,7 @@ export function createMicroStats({
     observations: 0,
     observationDuplicateSkippedCount: 0,
     observationDedupeKeys: [],
+    observationAlwaysCounted: false,
 
     virtualCompleted: 0,
     realCompleted: 0,
@@ -1659,6 +1668,7 @@ export function createMicroStats({
 
     defaultRanking: 'dashboardBalancedScore|balancedScore|fairWinrate|totalR|avgR|avgCostR',
     bareWinrateRankingDisabled: true,
+    rawWinrateRankingDisabled: true,
     rankingUsesBalancedScore: true,
     rankingUsesFairWinrate: true,
     rankingUsesTotalR: true,
@@ -1670,6 +1680,12 @@ export function createMicroStats({
     learningRemainsBroad: true,
     selectionWillBeAdaptive: true,
     discordWillBeStrict: true,
+
+    adaptiveLayerBuilt: false,
+    adaptiveScoreBuilt: false,
+    recentMomentumScoreBuilt: false,
+    currentFitScoreBuilt: false,
+    parentDiversificationBuilt: false,
 
     learningStatus: 'OBSERVING',
     status: 'OBSERVING',
@@ -1840,6 +1856,12 @@ function ensureStatsShape(stats = {}) {
   stats.selectionWillBeAdaptive = true;
   stats.discordWillBeStrict = true;
 
+  stats.adaptiveLayerBuilt = false;
+  stats.adaptiveScoreBuilt = false;
+  stats.recentMomentumScoreBuilt = false;
+  stats.currentFitScoreBuilt = false;
+  stats.parentDiversificationBuilt = false;
+
   stats.createdAt ||= now();
   stats.updatedAt ||= now();
 
@@ -1864,6 +1886,9 @@ export function updateObservation(stats, row = {}) {
     stats.observationDuplicateSkippedCount = safeNumber(stats.observationDuplicateSkippedCount, 0) + 1;
     stats.observationDuplicateLastSkippedAt = now();
     stats.lastObservationDedupeKey = dedupeKey || stats.lastObservationDedupeKey || null;
+    stats.observationRecorded = false;
+    stats.observationDuplicate = true;
+    stats.observationAlwaysCounted = false;
     stats.updatedAt = now();
 
     stats.learningStatus = learningStatus(stats);
@@ -1880,6 +1905,9 @@ export function updateObservation(stats, row = {}) {
 
   stats.seen = safeNumber(stats.seen, 0) + 1;
   stats.observations = safeNumber(stats.observations, 0) + 1;
+  stats.observationRecorded = true;
+  stats.observationDuplicate = false;
+  stats.observationAlwaysCounted = false;
 
   inc(stats.counters.rsiZone, row.rsiZone);
   inc(stats.counters.flow, row.flow);
@@ -1923,6 +1951,7 @@ export function updateObservation(stats, row = {}) {
       observationDedupeKey: dedupeKey || null,
       observationRecorded: true,
       observationDuplicate: false,
+      observationAlwaysCounted: false,
 
       isMirrorMicroFamily: false,
       observationMirror: false,
@@ -2605,9 +2634,11 @@ export function refreshStats(stats) {
     measurementFixVersion: MEASUREMENT_FIX_VERSION,
     seenDefinition: 'UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY',
     observationDedupeRequired: true,
+    observationAlwaysCounted: false,
 
     defaultRanking: 'dashboardBalancedScore|balancedScore|fairWinrate|totalR|avgR|avgCostR',
     bareWinrateRankingDisabled: true,
+    rawWinrateRankingDisabled: true,
     rankingUsesBalancedScore: true,
     rankingUsesFairWinrate: true,
     rankingUsesTotalR: true,
@@ -2619,6 +2650,12 @@ export function refreshStats(stats) {
     learningRemainsBroad: true,
     selectionWillBeAdaptive: true,
     discordWillBeStrict: true,
+
+    adaptiveLayerBuilt: false,
+    adaptiveScoreBuilt: false,
+    recentMomentumScoreBuilt: false,
+    currentFitScoreBuilt: false,
+    parentDiversificationBuilt: false,
 
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
@@ -2694,7 +2731,6 @@ function compareWinrate(a, b) {
     safeNumber(b.totalR, 0) - safeNumber(a.totalR, 0) ||
     safeNumber(b.avgR, 0) - safeNumber(a.avgR, 0) ||
     safeNumber(a.avgCostR, 0) - safeNumber(b.avgCostR, 0) ||
-    safeNumber(b.winrate, 0) - safeNumber(a.winrate, 0) ||
     sortById(a, b)
   );
 }
@@ -2709,6 +2745,19 @@ function compareAvgR(a, b) {
     safeNumber(b.totalR, 0) - safeNumber(a.totalR, 0) ||
     safeNumber(b.avgR, 0) - safeNumber(a.avgR, 0) ||
     safeNumber(a.avgCostR, 0) - safeNumber(b.avgCostR, 0) ||
+    sortById(a, b)
+  );
+}
+
+function compareTotalR(a, b) {
+  return (
+    safeNumber(b.totalR, 0) - safeNumber(a.totalR, 0) ||
+    safeNumber(b.dashboardBalancedScore ?? b.balancedScore, 0) -
+      safeNumber(a.dashboardBalancedScore ?? a.balancedScore, 0) ||
+    safeNumber(b.fairWinrate, 0) - safeNumber(a.fairWinrate, 0) ||
+    safeNumber(b.avgR, 0) - safeNumber(a.avgR, 0) ||
+    safeNumber(a.avgCostR, 0) - safeNumber(b.avgCostR, 0) ||
+    safeNumber(b.sampleReliability, 0) - safeNumber(a.sampleReliability, 0) ||
     sortById(a, b)
   );
 }
@@ -2742,15 +2791,7 @@ export function rankMicros(micros = {}, mode = 'balanced') {
 
   const sorted = [...rows].sort((a, b) => {
     if (safeMode === 'totalR') {
-      return (
-        safeNumber(b.dashboardBalancedScore ?? b.balancedScore, 0) -
-          safeNumber(a.dashboardBalancedScore ?? a.balancedScore, 0) ||
-        safeNumber(b.fairWinrate, 0) - safeNumber(a.fairWinrate, 0) ||
-        safeNumber(b.totalR, 0) - safeNumber(a.totalR, 0) ||
-        safeNumber(b.avgR, 0) - safeNumber(a.avgR, 0) ||
-        safeNumber(a.avgCostR, 0) - safeNumber(b.avgCostR, 0) ||
-        sortById(a, b)
-      );
+      return compareTotalR(a, b);
     }
 
     if (safeMode === 'avgR') {
