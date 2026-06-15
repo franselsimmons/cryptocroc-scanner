@@ -416,6 +416,38 @@
       line-height: 1.48;
     }
 
+    .api-url-box {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+
+    .api-url-box code {
+      white-space: normal;
+      word-break: break-all;
+    }
+
+    .api-output-textarea {
+      width: 100%;
+      min-height: 360px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      background: #0b1020;
+      color: #e5e7eb;
+      border: 1px solid #1e293b;
+      border-radius: 16px;
+      padding: 14px;
+      white-space: pre;
+      user-select: all;
+    }
+
     .empty {
       padding: 22px;
       text-align: center;
@@ -597,7 +629,7 @@
   <main>
     <div class="tabs">
       <button type="button" class="tab active" data-tab="overview">Overview</button>
-      <button type="button" class="tab" data-tab="market">MarketWeather</button>
+      <button type="button" class="tab" data-tab="market">marketWeather.js</button>
       <button type="button" class="tab" data-tab="scanner">Scanner</button>
       <button type="button" class="tab" data-tab="trade">TradeSystem</button>
       <button type="button" class="tab" data-tab="micros">75 MicroFamilies</button>
@@ -2507,15 +2539,35 @@
     async function renderMarket() {
       showLoading("market");
 
+      const endpointUrl = marketApiUrl();
       const market = await fetchMarket();
+      const outputData = market.raw || market;
+      const outputJson = JSON.stringify(outputData ?? {}, null, 2);
 
       $("market").innerHTML = `
+        <div class="section-title">
+          <div>
+            <h2>marketWeather.js</h2>
+            <p>Bestand: <code>src/market/marketWeather.js</code> · API: <code>/api/admin/market-weather</code></p>
+          </div>
+        </div>
+
         <div class="toolbar">
-          <button type="button" id="copyMarketBtn">Copy JSON</button>
+          <button type="button" class="primary" id="copyMarketOutputBtn">Copy API output</button>
+          <button type="button" id="copyMarketUrlBtn">Copy API URL</button>
+          <button type="button" id="selectMarketOutputBtn">Select output</button>
+          <button type="button" id="openMarketApiBtn">Open API</button>
           <button type="button" id="exportMarketBtn">Export JSON</button>
         </div>
 
+        <div class="api-url-box">
+          <strong>API URL:</strong>
+          <code>${escapeHtml(endpointUrl)}</code>
+        </div>
+
         <div class="grid">
+          ${metricCard("Bestand", "marketWeather.js", "src/market/marketWeather.js")}
+          ${metricCard("API route", "/api/admin/market-weather", "admin output")}
           ${metricCard("Available", market.ok ? "YES" : "NO")}
           ${metricCard("Age", market.ageText || "-", fmtTs(market.createdAt))}
           ${metricCard("Regime", market.regime || "UNKNOWN")}
@@ -2532,21 +2584,42 @@
             <span class="pill soft">soft gate</span>
             <span class="pill active">learning not blocked</span>
             <span class="pill info">ranking influence</span>
-            <span class="pill danger">discord strict</span>
+            <span class="pill danger">discord strict later</span>
           </div>
           <div class="metric-extra">
-            Als MarketWeather ontbreekt of stale is, blijft virtual/shadow learning actief. Discord kan wel blokkeren op UNKNOWN/MISFIT.
+            MarketWeather is alleen context. Learning blijft gewoon doorlopen.
           </div>
         </div>
 
         <div class="card">
-          <h3>Raw MarketWeather</h3>
-          ${jsonBlock(market.raw || market)}
+          <h3>API output — makkelijk kopiëren</h3>
+          <textarea id="marketApiOutput" class="api-output-textarea" readonly>${escapeHtml(outputJson)}</textarea>
         </div>
       `;
 
-      $("copyMarketBtn")?.addEventListener("click", () => copyText(JSON.stringify(market.raw || market, null, 2), "MarketWeather JSON gekopieerd."));
-      $("exportMarketBtn")?.addEventListener("click", () => downloadJson("market-weather-long.json", market.raw || market));
+      $("copyMarketOutputBtn")?.addEventListener("click", () => {
+        copyText($("marketApiOutput")?.value || outputJson, "marketWeather.js API output gekopieerd.");
+      });
+
+      $("copyMarketUrlBtn")?.addEventListener("click", () => {
+        copyText(endpointUrl, "marketWeather.js API URL gekopieerd.");
+      });
+
+      $("selectMarketOutputBtn")?.addEventListener("click", () => {
+        const box = $("marketApiOutput");
+        if (!box) return;
+        box.focus();
+        box.select();
+        setMessage("API output geselecteerd. Je kunt nu kopiëren.", "ok");
+      });
+
+      $("openMarketApiBtn")?.addEventListener("click", () => {
+        window.open(endpointUrl, "_blank", "noopener,noreferrer");
+      });
+
+      $("exportMarketBtn")?.addEventListener("click", () => {
+        downloadJson("marketWeather.js-api-output.json", outputData);
+      });
     }
 
     async function renderScanner() {
