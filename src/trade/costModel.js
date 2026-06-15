@@ -1,8 +1,19 @@
 // ================= FILE: src/trade/costModel.js =================
 //
-// Turns gross LONG price moves into fee+slippage-adjusted NET outcomes.
-// Analyze learns only from netR after costs.
-// Explicit SHORT/BEAR/SELL input is rejected and never produces a learnable net outcome.
+// LONG-only cost model.
+//
+// Doel:
+// - Gross LONG price moves omzetten naar fee+slippage-adjusted NET outcomes.
+// - Analyze/scoring leert uitsluitend op netR na kosten.
+// - avgCostR wordt gevoed met echte costR.
+// - wins/losses/flats worden bepaald op netR.
+// - Explicit SHORT/BEAR/SELL input wordt geweigerd en produceert geen learnable outcome.
+//
+// Architectuur:
+// - Learning blijft breed.
+// - Selection wordt later adaptief.
+// - Discord wordt later streng.
+// - CurrentFit is zacht en blokkeert geen virtual/shadow learning.
 
 import { CONFIG } from '../config.js';
 import { safeNumber, sideToTradeSide } from '../utils.js';
@@ -22,7 +33,9 @@ const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
 const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
 const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 
-const COST_MODEL_VERSION = 'LONG_TAKER_NET_COST_V3';
+const COST_MODEL_VERSION = 'LONG_TAKER_NET_COST_MEASUREMENT_FIX_V4';
+const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
+
 const DEFAULT_SOURCE = 'VIRTUAL';
 
 const SHORT_TOKENS = new Set([
@@ -49,11 +62,50 @@ const LONG_TOKENS = new Set([
 
 function costConfig() {
   return {
-    takerFeePct: Math.max(0, safeNumber(CONFIG.cost?.takerFeePct, 0.0006)),
-    makerFeePct: Math.max(0, safeNumber(CONFIG.cost?.makerFeePct, 0.0002)),
-    marketImpactPct: Math.max(0, safeNumber(CONFIG.cost?.marketImpactPct, 0.0003)),
-    fallbackSpreadPct: Math.max(0, safeNumber(CONFIG.cost?.fallbackSpreadPct, 0.0008)),
-    maxSpreadPct: Math.max(0, safeNumber(CONFIG.cost?.maxSpreadPct, 0.05))
+    takerFeePct: Math.max(
+      0,
+      safeNumber(
+        CONFIG.long?.cost?.takerFeePct ??
+          CONFIG.cost?.takerFeePct,
+        0.0006
+      )
+    ),
+
+    makerFeePct: Math.max(
+      0,
+      safeNumber(
+        CONFIG.long?.cost?.makerFeePct ??
+          CONFIG.cost?.makerFeePct,
+        0.0002
+      )
+    ),
+
+    marketImpactPct: Math.max(
+      0,
+      safeNumber(
+        CONFIG.long?.cost?.marketImpactPct ??
+          CONFIG.cost?.marketImpactPct,
+        0.0003
+      )
+    ),
+
+    fallbackSpreadPct: Math.max(
+      0,
+      safeNumber(
+        CONFIG.long?.cost?.fallbackSpreadPct ??
+          CONFIG.cost?.fallbackSpreadPct,
+        0.0008
+      )
+    ),
+
+    maxSpreadPct: Math.max(
+      0,
+      safeNumber(
+        CONFIG.long?.cost?.maxSpreadPct ??
+          CONFIG.cost?.maxSpreadPct,
+        0.05
+      )
+    )
   };
 }
 
@@ -72,6 +124,9 @@ function cleanSideText(value = '') {
     .replaceAll('SHORT_ENABLED_FALSE', '')
     .replaceAll('SHORT_ONLY_FALSE', '')
     .replaceAll('LONG_DISABLED_FALSE', '')
+    .replaceAll('LONGDISABLED_FALSE', '')
+    .replaceAll('LONG_ENABLED_FALSE', '')
+    .replaceAll('LONG_ONLY_FALSE', '')
     .replaceAll('SHORT_DISABLED_LONG_ONLY', '')
     .replaceAll('SHORTDISABLED_LONG_ONLY', '')
     .replaceAll('BLOCK_SHORT', '')
@@ -270,6 +325,14 @@ function calcLongGrossR({ entry, initialSl, exit } = {}) {
   return (x - e) / riskDistance;
 }
 
+function isPositiveNetR(value) {
+  return safeNumber(value, 0) > 0;
+}
+
+function isNegativeNetR(value) {
+  return safeNumber(value, 0) < 0;
+}
+
 function identityFlags() {
   return {
     virtualLearning: true,
@@ -283,8 +346,12 @@ function identityFlags() {
 
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
+    scannerBucketsMetadataOnly: true,
+    legacy25BucketsMetadataOnly: true,
+
     executionFingerprintsMetadataOnly: true,
     executionFingerprintsUsedAsLearningFamily: false,
+    executionFingerprintRole: 'METADATA_ONLY',
 
     analyzeMicroFamiliesOnly: true,
     learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
@@ -301,12 +368,26 @@ function identityFlags() {
     discordOnlyForExactTrueMicroMatch: true,
 
     completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
+    completedOnlyClosedVirtualOrShadow: true,
+
     scoringRSource: 'netR',
     winsLossesFlatsSource: 'netR',
     winrateDefinition: 'netR > 0',
     avgRSource: 'netR',
     totalRSource: 'netR',
     avgCostRShown: true,
+    avgCostRSource: 'costR',
+
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
+    seenDefinition: 'UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY',
+    observationDedupeRequired: true,
+    outcomeDedupeRequired: true,
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+    selectionWillBeAdaptive: true,
+    discordWillBeStrict: true,
 
     exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
     trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
@@ -336,6 +417,7 @@ function baseLongOnlyMeta({
     source: normalizeSource(source),
 
     costModel: COST_MODEL_VERSION,
+    costModelVersion: COST_MODEL_VERSION,
     costModelApplied: !skipped,
     netCostModelApplied: !skipped,
 
@@ -376,6 +458,9 @@ function baseLongOnlyMeta({
     avgRSource: 'netR',
     totalRSource: 'netR',
     avgCostRShown: true,
+    avgCostRSource: 'costR',
+
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
 
     skipped,
     reason,
@@ -413,6 +498,7 @@ function emptyCostResult(reason = 'NON_LONG_COST_MODEL_SKIPPED', source = DEFAUL
 
     costR: 0,
     avgCostR: 0,
+    totalCostR: 0,
 
     netR: 0,
     exitR: 0,
@@ -511,6 +597,7 @@ export function roundTripCostPct(entrySpreadPct, exitSpreadPct) {
 
 export function applyCosts({
   grossMovePct,
+  grossR = null,
   riskPct,
   entrySpreadPct,
   exitSpreadPct,
@@ -546,9 +633,12 @@ export function applyCosts({
   const grossPnlPct = move * 100;
   const netPnlPct = netMovePct * 100;
 
-  const grossR = move / risk;
+  const calculatedGrossR = Number.isFinite(safeNumber(grossR, null))
+    ? safeNumber(grossR, 0)
+    : move / risk;
+
   const costR = costRatio / risk;
-  const netR = grossR - costR;
+  const netR = calculatedGrossR - costR;
 
   return {
     ...baseLongOnlyMeta({
@@ -571,30 +661,31 @@ export function applyCosts({
     netMovePct: round6(netMovePct),
     breakEvenMovePct: round6(costRatio),
 
-    feePct: round4(feeRatio * 100),
-    slippagePct: round4(slippageRatio * 100),
-    costPct: round4(costRatio * 100),
+    feePct: round6(feeRatio * 100),
+    slippagePct: round6(slippageRatio * 100),
+    costPct: round6(costRatio * 100),
 
-    grossPnlPct: round4(grossPnlPct),
-    netPnlPct: round4(netPnlPct),
+    grossPnlPct: round6(grossPnlPct),
+    netPnlPct: round6(netPnlPct),
 
-    grossR: round4(grossR),
-    rawR: round4(grossR),
-    realizedGrossR: round4(grossR),
+    grossR: round6(calculatedGrossR),
+    rawR: round6(calculatedGrossR),
+    realizedGrossR: round6(calculatedGrossR),
 
-    costR: round4(costR),
-    avgCostR: round4(costR),
+    costR: round6(costR),
+    avgCostR: round6(costR),
+    totalCostR: round6(costR),
 
-    netR: round4(netR),
-    exitR: round4(netR),
-    realizedNetR: round4(netR),
-    realizedR: round4(netR),
-    r: round4(netR),
+    netR: round6(netR),
+    exitR: round6(netR),
+    realizedNetR: round6(netR),
+    realizedR: round6(netR),
+    r: round6(netR),
 
-    win: netR > 0,
-    loss: netR < 0,
-    flat: netR === 0,
-    isWin: netR > 0
+    win: isPositiveNetR(netR),
+    loss: isNegativeNetR(netR),
+    flat: !isPositiveNetR(netR) && !isNegativeNetR(netR),
+    isWin: isPositiveNetR(netR)
   };
 }
 
@@ -626,7 +717,11 @@ export function applyCostsFromPrices({
   const t = safeNumber(tp, 0);
   const x = safeNumber(exitPrice, 0);
 
-  if (!validLongRiskShape({ entry: e, sl: s, tp: t })) {
+  if (!validLongRiskShape({
+    entry: e,
+    sl: s,
+    tp: t
+  })) {
     return emptyCostResult('INVALID_LONG_RISK_SHAPE_REQUIRES_SL_LT_ENTRY_LT_TP', source);
   }
 
@@ -644,8 +739,15 @@ export function applyCostsFromPrices({
     exit: x
   });
 
+  const grossR = calcLongGrossR({
+    entry: e,
+    initialSl: s,
+    exit: x
+  });
+
   const result = applyCosts({
     grossMovePct,
+    grossR,
     riskPct,
     entrySpreadPct,
     exitSpreadPct,
@@ -654,11 +756,7 @@ export function applyCostsFromPrices({
     source
   });
 
-  const grossR = calcLongGrossR({
-    entry: e,
-    initialSl: s,
-    exit: x
-  });
+  const netR = safeNumber(result.netR, grossR - safeNumber(result.costR, 0));
 
   return {
     ...result,
@@ -677,20 +775,32 @@ export function applyCostsFromPrices({
     riskPct: round6(riskPct),
     grossMovePct: round6(grossMovePct),
 
-    grossR: round4(grossR),
-    rawR: round4(grossR),
-    realizedGrossR: round4(grossR),
+    grossR: round6(grossR),
+    rawR: round6(grossR),
+    realizedGrossR: round6(grossR),
 
-    netR: round4(grossR - result.costR),
-    exitR: round4(grossR - result.costR),
-    realizedNetR: round4(grossR - result.costR),
-    realizedR: round4(grossR - result.costR),
-    r: round4(grossR - result.costR),
+    costR: round6(result.costR),
+    avgCostR: round6(result.costR),
+    totalCostR: round6(result.costR),
 
-    win: grossR - result.costR > 0,
-    loss: grossR - result.costR < 0,
-    flat: grossR - result.costR === 0,
-    isWin: grossR - result.costR > 0
+    netR: round6(netR),
+    exitR: round6(netR),
+    realizedNetR: round6(netR),
+    realizedR: round6(netR),
+    r: round6(netR),
+
+    win: isPositiveNetR(netR),
+    loss: isNegativeNetR(netR),
+    flat: !isPositiveNetR(netR) && !isNegativeNetR(netR),
+    isWin: isPositiveNetR(netR),
+
+    scoringRSource: 'netR',
+    winsLossesFlatsSource: 'netR',
+    winrateDefinition: 'netR > 0',
+    avgRSource: 'netR',
+    totalRSource: 'netR',
+    avgCostRShown: true,
+    avgCostRSource: 'costR'
   };
 }
 
