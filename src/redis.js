@@ -31,6 +31,12 @@ const ROOT_KEY_PREFIXES = [
   'RESET:'
 ];
 
+const PUBLIC_MARKET_KEY_PREFIXES = [
+  'MARKET:WEATHER',
+  'MARKET:UNIVERSE',
+  'MARKET:SCANNER:UNIVERSE'
+];
+
 const BLOCKED_KEY_PREFIXES = [
   `${OPPOSITE_TRADE_SIDE}:`,
   'SHORT:',
@@ -268,6 +274,15 @@ function isRootAppKey(key = '') {
   return ROOT_KEY_PREFIXES.some((prefix) => value.startsWith(prefix));
 }
 
+function isPublicMarketKey(key = '') {
+  const value = String(key || '').trim();
+
+  return PUBLIC_MARKET_KEY_PREFIXES.some((prefix) => (
+    value === prefix ||
+    value.startsWith(`${prefix}:`)
+  ));
+}
+
 function isLongKey(key = '') {
   return String(key || '').trim().startsWith(LONG_KEY_PREFIX);
 }
@@ -303,6 +318,8 @@ function normalizeKey(key) {
 
   if (isLongKey(raw)) return raw;
 
+  if (isPublicMarketKey(raw)) return raw;
+
   if (isRootAppKey(raw)) return `${LONG_KEY_PREFIX}${raw}`;
 
   return `${LONG_KEY_PREFIX}${raw}`;
@@ -320,6 +337,8 @@ function normalizePattern(pattern) {
   }
 
   if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
+
+  if (isPublicMarketKey(raw)) return raw;
 
   if (isRootAppKey(raw)) return `${LONG_KEY_PREFIX}${raw}`;
 
@@ -412,7 +431,10 @@ function withLongMeta(value) {
 function assertLongNormalizedKey(key) {
   const value = String(key || '').trim();
 
-  if (!value.startsWith(LONG_KEY_PREFIX)) {
+  if (
+    !value.startsWith(LONG_KEY_PREFIX) &&
+    !isPublicMarketKey(value)
+  ) {
     throw buildNamespaceError('LONG_REDIS_REFUSED_NON_LONG_KEY', {
       key: value
     });
@@ -426,7 +448,10 @@ async function deleteKeys(redis, keys = []) {
     ? keys
       .filter(Boolean)
       .map(normalizeKey)
-      .filter((key) => key.startsWith(LONG_KEY_PREFIX))
+      .filter((key) => (
+        key.startsWith(LONG_KEY_PREFIX) ||
+        isPublicMarketKey(key)
+      ))
     : [];
 
   if (!rows.length) return 0;
@@ -491,6 +516,10 @@ export function normalizeRedisPattern(pattern) {
 
 export function isLongRedisKey(key) {
   return isLongKey(key);
+}
+
+export function isPublicMarketRedisKey(key) {
+  return isPublicMarketKey(key);
 }
 
 export function redisModeFlags() {
@@ -574,11 +603,14 @@ export async function delPattern(redis, pattern, max = 5000) {
 
     if (!normalized.keys.length) continue;
 
-    const longOnlyKeys = normalized.keys
-      .filter((key) => String(key || '').startsWith(LONG_KEY_PREFIX));
+    const allowedKeys = normalized.keys
+      .filter((key) => (
+        String(key || '').startsWith(LONG_KEY_PREFIX) ||
+        isPublicMarketKey(key)
+      ));
 
     const remaining = Math.max(0, maxDelete - deleted);
-    const limitedKeys = longOnlyKeys.slice(0, remaining);
+    const limitedKeys = allowedKeys.slice(0, remaining);
 
     deleted += await deleteKeys(redis, limitedKeys);
 
@@ -613,7 +645,13 @@ export async function getKeys(redis, pattern, max = 1000) {
 
     for (const key of normalized.keys) {
       if (!key || seen.has(key)) continue;
-      if (!String(key).startsWith(LONG_KEY_PREFIX)) continue;
+
+      if (
+        !String(key).startsWith(LONG_KEY_PREFIX) &&
+        !isPublicMarketKey(key)
+      ) {
+        continue;
+      }
 
       seen.add(key);
       out.push(key);
