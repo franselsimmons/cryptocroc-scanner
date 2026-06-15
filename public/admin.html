@@ -21,6 +21,7 @@
       --amber: #d97706;
       --blue: #2563eb;
       --purple: #7c3aed;
+      --cyan: #0891b2;
       --shadow: 0 2px 12px rgba(15, 23, 42, 0.07);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
@@ -100,7 +101,7 @@
     }
 
     .header-inner {
-      max-width: 1500px;
+      max-width: 1540px;
       margin: 0 auto;
       display: flex;
       justify-content: space-between;
@@ -169,7 +170,7 @@
     }
 
     main {
-      max-width: 1500px;
+      max-width: 1540px;
       margin: 0 auto;
       padding: 20px;
     }
@@ -333,6 +334,10 @@
     .pill.soft { background: #e0f2fe; color: #075985; }
     .pill.observation { background: #fef9c3; color: #854d0e; }
     .pill.raw { background: #f1f5f9; color: #475569; }
+    .pill.fit { background: #dcfce7; color: #166534; }
+    .pill.weakfit { background: #ccfbf1; color: #0f766e; }
+    .pill.neutral { background: #f1f5f9; color: #475569; }
+    .pill.misfit { background: #fee2e2; color: #991b1b; }
 
     .score-bar {
       height: 8px;
@@ -363,7 +368,7 @@
     table {
       border-collapse: collapse;
       width: 100%;
-      min-width: 1320px;
+      min-width: 1560px;
       background: white;
     }
 
@@ -420,7 +425,8 @@
       background: rgba(255, 255, 255, 0.70);
     }
 
-    .coin-card {
+    .coin-card,
+    .manual-card {
       position: relative;
       overflow: hidden;
       background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
@@ -430,7 +436,8 @@
       box-shadow: var(--shadow);
     }
 
-    .coin-card::before {
+    .coin-card::before,
+    .manual-card::before {
       content: "";
       position: absolute;
       inset: 0 0 auto 0;
@@ -474,28 +481,36 @@
       margin-top: 3px;
     }
 
-    .coin-stats {
+    .coin-stats,
+    .manual-grid {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 8px;
       margin-top: 10px;
     }
 
-    .coin-stat {
+    .coin-stat,
+    .manual-stat {
       background: #f8fafc;
       border: 1px solid var(--border);
       border-radius: 14px;
       padding: 9px;
     }
 
-    .coin-stat span {
+    .coin-stat span,
+    .manual-stat span {
       display: block;
       color: var(--muted);
       font-size: 11px;
       margin-bottom: 3px;
+      font-weight: 700;
     }
 
-    .coin-stat strong { font-size: 13px; }
+    .coin-stat strong,
+    .manual-stat strong {
+      font-size: 13px;
+      word-break: break-word;
+    }
 
     .coin-foot {
       display: flex;
@@ -506,50 +521,8 @@
     }
 
     .manual-card {
-      position: relative;
-      overflow: hidden;
-      border-radius: 22px;
-      border: 1px solid var(--border);
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96));
-      box-shadow: var(--shadow);
-      padding: 16px;
-      max-width: 980px;
-    }
-
-    .manual-card::before {
-      content: "";
-      position: absolute;
-      inset: 0 0 auto 0;
-      height: 5px;
-      background: linear-gradient(90deg, #16a34a, #86efac);
-    }
-
-    .manual-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(110px, 1fr));
-      gap: 8px;
-      margin: 12px 0;
-    }
-
-    .manual-stat {
-      border: 1px solid var(--border);
-      border-radius: 15px;
-      padding: 10px;
-      background: #ffffff;
-    }
-
-    .manual-stat span {
-      display: block;
-      color: var(--muted);
-      font-size: 11px;
-      margin-bottom: 4px;
-      font-weight: 700;
-    }
-
-    .manual-stat strong {
-      display: block;
-      font-size: 15px;
-      letter-spacing: -0.02em;
+      max-width: 1100px;
+      margin-bottom: 14px;
     }
 
     .drawer {
@@ -557,7 +530,7 @@
       right: 0;
       top: 0;
       bottom: 0;
-      width: min(860px, 94vw);
+      width: min(900px, 94vw);
       background: white;
       border-left: 1px solid var(--border);
       box-shadow: -12px 0 42px rgba(15, 23, 42, 0.18);
@@ -609,13 +582,13 @@
         <div>
           <strong>LONG 75 Micro-Family Learning Admin</strong>
           <div class="brand-subtitle">
-            Scanner → Analyze 75-child trueMicroFamilyId → Virtual PositionEngine → netR outcomes → Manual exact Discord selection
+            Scanner → Analyze 75-child trueMicroFamilyId → virtual/shadow outcomes → netR scoring → adaptive selection → strict Discord
           </div>
         </div>
       </div>
 
       <div class="header-actions">
-        <div class="live-pill"><span class="live-dot"></span><span id="liveLabel">LONG-only · 75-child · virtual learning</span></div>
+        <div class="live-pill"><span class="live-dot"></span><span id="liveLabel">LONG-only · broad learning · adaptive selection</span></div>
         <button id="refreshBtn" type="button">Refresh</button>
       </div>
     </div>
@@ -624,6 +597,7 @@
   <main>
     <div class="tabs">
       <button type="button" class="tab active" data-tab="overview">Overview</button>
+      <button type="button" class="tab" data-tab="market">MarketWeather</button>
       <button type="button" class="tab" data-tab="scanner">Scanner</button>
       <button type="button" class="tab" data-tab="trade">TradeSystem</button>
       <button type="button" class="tab" data-tab="micros">75 MicroFamilies</button>
@@ -635,6 +609,7 @@
     <div id="message"></div>
 
     <section id="overview" class="panel"></section>
+    <section id="market" class="panel hidden"></section>
     <section id="scanner" class="panel hidden"></section>
     <section id="trade" class="panel hidden"></section>
     <section id="micros" class="panel hidden"></section>
@@ -661,6 +636,9 @@
     const LEARNING_GRANULARITY = "LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1";
     const PARENT_LEARNING_GRANULARITY = "LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1";
 
+    const MEASUREMENT_FIX_VERSION = "LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1";
+    const ADAPTIVE_UI_VERSION = "LONG_ADAPTIVE_UI_MARKETWEATHER_CURRENTFIT_V1";
+
     const LONG_FIXED_SETUP_TYPES = new Set([
       "BREAKOUT",
       "RETEST",
@@ -686,20 +664,22 @@
     const state = {
       activeTab: "overview",
       overview: null,
+      market: null,
       scanner: null,
       trade: null,
       micros: null,
       rotation: null,
       discord: null,
-      microMode: "balanced",
+      microMode: "adaptive",
       microSearch: "",
       apiTimeoutMs: 22000,
-      microLimit: 120,
-      bestLimit: 100
+      microLimit: 180,
+      bestLimit: 140
     };
 
     const endpoints = {
       overview: "/api/admin/overview",
+      market: "/api/admin/market-weather",
       scanner: "/api/admin/scanner",
       trade: "/api/admin/trade",
       micros: "/api/admin/micro-families",
@@ -713,8 +693,8 @@
       factoryReset: "/api/admin/factory-reset"
     };
 
-    const tabs = ["overview", "scanner", "trade", "micros", "rotation", "discord", "reset"];
-    const validMicroModes = ["balanced", "winrate", "totalR", "avgR", "directSL", "observed"];
+    const tabs = ["overview", "market", "scanner", "trade", "micros", "rotation", "discord", "reset"];
+    const validMicroModes = ["adaptive", "balanced", "winrate", "totalR", "avgR", "directSL", "observed", "cost", "currentFit"];
 
     const $ = (id) => document.getElementById(id);
 
@@ -748,6 +728,9 @@
 
     function cleanSideText(value = "") {
       return upper(value)
+        .replaceAll("SHORT_DISABLED_TRUE", "")
+        .replaceAll("SHORTDISABLED_TRUE", "")
+        .replaceAll("BLOCK_SHORT_TRUE", "")
         .replaceAll("SHORT_DISABLED_FALSE", "")
         .replaceAll("SHORTDISABLED_FALSE", "")
         .replaceAll("BLOCK_SHORT_FALSE", "")
@@ -891,8 +874,7 @@
         text.includes("_BUY") ||
         text.includes("BUY_") ||
         text.includes("|BUY|") ||
-        text.includes(":BUY") ||
-        text.includes("=BUY")
+        text.includes(":BUY")
       );
     }
 
@@ -920,8 +902,10 @@
       return (
         value.includes("_XR_") ||
         value.includes("__XR__") ||
+        value.includes("|XR|") ||
         value.includes("EXECUTION_FINGERPRINT") ||
         value.includes("EXECUTION_MICRO") ||
+        value.includes("EXECUTIONMICRO") ||
         value.includes("REFINED_EXECUTION")
       );
     }
@@ -1006,6 +990,7 @@
         input.realMicroFamilyId,
         input.executionMicroFamilyId,
         input.analyzeMicroFamilyId,
+        input.learningMicroFamilyId,
         input.id,
         input.key,
 
@@ -1120,11 +1105,28 @@
     }
 
     function uniqueStrings(values = []) {
+      const stack = Array.isArray(values) ? [...values] : [values];
+      const out = [];
+
+      while (stack.length) {
+        const value = stack.shift();
+
+        if (Array.isArray(value)) {
+          stack.unshift(...value);
+          continue;
+        }
+
+        if (typeof value === "string") {
+          out.push(...value.split(/[\s,;\n\r]+/g));
+          continue;
+        }
+
+        if (value !== undefined && value !== null) out.push(value);
+      }
+
       return [...new Set(
-        (Array.isArray(values) ? values : [values])
-          .flatMap((value) => Array.isArray(value) ? value : [value])
-          .flatMap((value) => String(value || "").split(/[\s,;\n\r]+/g))
-          .map((value) => value.trim().toUpperCase())
+        out
+          .map((value) => String(value || "").trim().toUpperCase())
           .filter(Boolean)
       )];
     }
@@ -1139,6 +1141,21 @@
     function num(value, fallback = 0) {
       const n = Number(value);
       return Number.isFinite(n) ? n : fallback;
+    }
+
+    function firstFinite(...values) {
+      for (const value of values) {
+        const n = Number(value);
+        if (Number.isFinite(n)) return n;
+      }
+
+      return null;
+    }
+
+    function clamp(value, min, max) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return min;
+      return Math.max(min, Math.min(max, n));
     }
 
     function fmt(value, decimals = 3) {
@@ -1228,15 +1245,17 @@
     }
 
     function completed(row = {}) {
+      const explicitVirtual = num(row.virtualCompleted, 0);
+      const explicitShadow = num(row.shadowCompleted, 0);
+      const closed = explicitVirtual + explicitShadow;
+
+      if (closed > 0) return closed;
+
       const outcome = Number(row.outcomeSample);
       if (Number.isFinite(outcome)) return outcome;
 
       const explicit = Number(row.completed);
       if (Number.isFinite(explicit) && explicit > 0) return explicit;
-
-      const virtualCompleted = num(row.virtualCompleted, 0);
-      const shadowCompleted = num(row.shadowCompleted, 0);
-      if (virtualCompleted + shadowCompleted > 0) return virtualCompleted + shadowCompleted;
 
       const wins = num(row.wins, 0);
       const losses = num(row.losses, 0);
@@ -1249,7 +1268,6 @@
     function observationSample(row = {}) {
       return Math.max(
         num(row.observationSample, 0),
-        num(row.winrateSample, 0),
         num(row.seen, 0),
         num(row.observations, 0),
         completed(row),
@@ -1279,6 +1297,149 @@
       if (obs > 0) return "OBSERVATION";
 
       return String(row.selectedTier || row.rotationEligibilityTier || row.eligibilityTier || row.tier || "RAW").toUpperCase();
+    }
+
+    function currentFit(row = {}) {
+      const value = upper(
+        row.currentFit ||
+        row.entryCurrentFit ||
+        row.currentMarketFit ||
+        row.fit ||
+        row.marketFit ||
+        ""
+      );
+
+      if (["MATCH", "GOOD", "FIT", "ALIGNED", "STRONG_MATCH"].includes(value)) return "MATCH";
+      if (["WEAK_MATCH", "PARTIAL_MATCH", "SOFT_MATCH"].includes(value)) return "WEAK_MATCH";
+      if (["MISFIT", "BAD", "AGAINST", "CONTRA", "NO_FIT"].includes(value)) return "MISFIT";
+      if (["NEUTRAL", "MIXED"].includes(value)) return "NEUTRAL";
+
+      const score = currentFitScore(row);
+      if (score >= 45) return "MATCH";
+      if (score >= 18) return "WEAK_MATCH";
+      if (score <= -25) return "MISFIT";
+
+      return "UNKNOWN";
+    }
+
+    function currentFitScore(row = {}) {
+      const direct = firstFinite(
+        row.currentFitScore,
+        row.entryCurrentFitScore,
+        row.currentMarketFitScore,
+        row.fitScore
+      );
+
+      if (direct !== null) return direct;
+
+      const fit = upper(row.currentFit || row.entryCurrentFit || "");
+
+      if (fit === "MATCH") return 60;
+      if (fit === "WEAK_MATCH") return 25;
+      if (fit === "NEUTRAL") return 0;
+      if (fit === "MISFIT") return -45;
+
+      return 0;
+    }
+
+    function currentFitConfidence(row = {}) {
+      return firstFinite(
+        row.currentFitConfidence,
+        row.entryCurrentFitConfidence,
+        row.currentMarketFitConfidence,
+        row.fitConfidence
+      ) ?? 0;
+    }
+
+    function currentFitPill(row = {}) {
+      const fit = currentFit(row);
+      const score = currentFitScore(row);
+      const conf = currentFitConfidence(row);
+
+      if (fit === "MATCH") return `<span class="pill fit">FIT ${escapeHtml(fmt(score, 0))}</span>`;
+      if (fit === "WEAK_MATCH") return `<span class="pill weakfit">WEAK FIT ${escapeHtml(fmt(score, 0))}</span>`;
+      if (fit === "MISFIT") return `<span class="pill misfit">MISFIT ${escapeHtml(fmt(score, 0))}</span>`;
+      if (fit === "NEUTRAL") return `<span class="pill neutral">NEUTRAL ${escapeHtml(fmt(conf, 0))}</span>`;
+
+      return '<span class="pill raw">UNKNOWN</span>';
+    }
+
+    function recentMomentumScore(row = {}) {
+      const direct = firstFinite(
+        row.recentMomentumScore,
+        row.momentumScore,
+        row.recentScore,
+        row.recentNetRScore
+      );
+
+      if (direct !== null) return direct;
+
+      const recentRows = Array.isArray(row.recentOutcomes) ? row.recentOutcomes.slice(-12) : [];
+
+      if (!recentRows.length) return 0;
+
+      const netR = recentRows.reduce((sum, outcome) => {
+        return sum + num(outcome.netR ?? outcome.exitR ?? outcome.realizedR ?? outcome.r, 0);
+      }, 0);
+
+      const directSLPenalty = recentRows.filter((outcome) => outcome.directSL || outcome.directToSL).length * 6;
+      const costPenalty = recentRows.reduce((sum, outcome) => sum + Math.max(0, num(outcome.costR, 0)), 0) * 2;
+
+      return clamp(netR * 8 - directSLPenalty - costPenalty, -80, 80);
+    }
+
+    function fairWinrate(row = {}) {
+      return num(
+        row.fairWinrate ??
+        row.sampleAdjustedWinrate ??
+        row.sampleWilsonLowerBound ??
+        row.wilsonLowerBound ??
+        row.bayesianWinrate,
+        0
+      );
+    }
+
+    function balancedScore(row = {}) {
+      return num(row.dashboardBalancedScore ?? row.balancedScore ?? row.learningQualityRank, 0);
+    }
+
+    function netTotalR(row = {}) {
+      return num(row.totalR ?? row.netTotalR ?? row.totalNetR, 0);
+    }
+
+    function netAvgR(row = {}) {
+      return num(row.avgR ?? row.avgNetR ?? row.netAvgR, 0);
+    }
+
+    function avgCostR(row = {}) {
+      return Math.max(0, num(row.avgCostR ?? row.costR, 0));
+    }
+
+    function directSLPct(row = {}) {
+      return Math.max(0, num(row.directSLPct, 0));
+    }
+
+    function sampleReliability(row = {}) {
+      return num(row.sampleReliability, 0);
+    }
+
+    function adaptiveScore(row = {}) {
+      const direct = firstFinite(
+        row.adaptiveScore,
+        row.selectionScore,
+        row.currentAdaptiveScore
+      );
+
+      if (direct !== null) return direct;
+
+      const base = balancedScore(row);
+      const fit = currentFitScore(row);
+      const momentum = recentMomentumScore(row);
+      const reliability = sampleReliability(row);
+      const directSLPenalty = directSLPct(row) * 35;
+      const costPenalty = avgCostR(row) * 8;
+
+      return base + fit * 0.35 + momentum * 0.25 + reliability * 10 - directSLPenalty - costPenalty;
     }
 
     function tierPill(value) {
@@ -1336,7 +1497,7 @@
       if (status === 409 || raw.includes("LOCK")) return "Lock actief. Vorige run is nog bezig.";
       if (status === 504 || raw.includes("504")) return "Backend timeout op deze admin-route.";
       if (status === 500) return "Backend error op deze admin-route. Check server logs.";
-      if (status === 404) return "Endpoint of micro-family detail niet gevonden.";
+      if (status === 404) return "Endpoint niet gevonden.";
 
       return raw || "Onbekende API fout.";
     }
@@ -1415,6 +1576,14 @@
       }
     }
 
+    async function optionalApi(url, fallback = null) {
+      try {
+        return await api(url, { timeoutMs: 12000 });
+      } catch {
+        return fallback;
+      }
+    }
+
     function metricCard(label, value, extra = "") {
       return `
         <div class="card metric-card">
@@ -1427,8 +1596,11 @@
       `;
     }
 
-    function scoreBar(value, max = 100) {
-      const width = Math.max(0, Math.min(100, (Number(value) / max) * 100 || 0));
+    function scoreBar(value, min = 0, max = 100) {
+      const n = Number(value);
+      const width = Number.isFinite(n)
+        ? Math.max(0, Math.min(100, ((n - min) / (max - min)) * 100))
+        : 0;
 
       return `<div class="score-bar"><span style="--w:${width.toFixed(1)}%"></span></div>`;
     }
@@ -1496,7 +1668,7 @@
       }
 
       function walk(value, depth = 0) {
-        if (!value || typeof value !== "object" || depth > 6) return;
+        if (!value || typeof value !== "object" || depth > 7) return;
         if (seenObjects.has(value)) return;
 
         seenObjects.add(value);
@@ -1528,6 +1700,7 @@
           "activeRotation",
           "active",
           "balanced",
+          "adaptive",
           "winrate",
           "totalR",
           "avgR",
@@ -1598,33 +1771,6 @@
       return [...byId.values()];
     }
 
-    function fairWinrate(row = {}) {
-      return num(
-        row.fairWinrate ??
-        row.sampleAdjustedWinrate ??
-        row.sampleWilsonLowerBound ??
-        row.wilsonLowerBound ??
-        row.bayesianWinrate,
-        0
-      );
-    }
-
-    function balancedScore(row = {}) {
-      return num(row.learningQualityRank ?? row.dashboardBalancedScore ?? row.balancedScore, 0);
-    }
-
-    function netTotalR(row = {}) {
-      return num(row.totalR ?? row.netTotalR ?? row.totalNetR, 0);
-    }
-
-    function netAvgR(row = {}) {
-      return num(row.avgR ?? row.avgNetR ?? row.netAvgR, 0);
-    }
-
-    function sampleReliability(row = {}) {
-      return num(row.sampleReliability, 0);
-    }
-
     function compareNumberDesc(a, b) {
       return num(b, 0) - num(a, 0);
     }
@@ -1644,6 +1790,8 @@
         compareNumberDesc(netAvgR(a), netAvgR(b)) ||
         compareNumberDesc(sampleReliability(a), sampleReliability(b)) ||
         compareNumberDesc(fairWinrate(a), fairWinrate(b)) ||
+        compareNumberAsc(avgCostR(a), avgCostR(b)) ||
+        compareNumberAsc(directSLPct(a), directSLPct(b)) ||
         compareNumberDesc(observationSample(a), observationSample(b)) ||
         compareNumberDesc(completed(a), completed(b)) ||
         compareMicroIds(a, b)
@@ -1651,6 +1799,28 @@
     }
 
     function compareMicroRows(a, b, mode = state.microMode) {
+      if (mode === "adaptive") {
+        return (
+          compareNumberDesc(adaptiveScore(a), adaptiveScore(b)) ||
+          compareBestDataFirst(a, b)
+        );
+      }
+
+      if (mode === "currentFit") {
+        return (
+          compareNumberDesc(currentFitScore(a), currentFitScore(b)) ||
+          compareNumberDesc(currentFitConfidence(a), currentFitConfidence(b)) ||
+          compareBestDataFirst(a, b)
+        );
+      }
+
+      if (mode === "cost") {
+        return (
+          compareNumberAsc(avgCostR(a), avgCostR(b)) ||
+          compareBestDataFirst(a, b)
+        );
+      }
+
       if (mode === "observed") {
         return (
           compareNumberDesc(observationSample(a), observationSample(b)) ||
@@ -1660,7 +1830,7 @@
 
       if (mode === "directSL") {
         return (
-          compareNumberAsc(a.directSLPct, b.directSLPct) ||
+          compareNumberAsc(directSLPct(a), directSLPct(b)) ||
           compareBestDataFirst(a, b)
         );
       }
@@ -1742,12 +1912,38 @@
         dashboardBalancedScore: balancedScore(row),
         balancedScore: num(row.balancedScore ?? row.dashboardBalancedScore ?? row.learningQualityRank, 0),
         fairWinrate: fairWinrate(row),
+        recentMomentumScore: recentMomentumScore(row),
+        currentFitScore: currentFitScore(row),
+        adaptiveScore: adaptiveScore(row),
+
+        avgCostR: avgCostR(row),
+        directSLPct: directSLPct(row),
 
         trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
         parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
         learningGranularity: LEARNING_GRANULARITY,
         parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
         selectionGranularity: "EXACT_75_CHILD",
+
+        measurementFixVersion: row.measurementFixVersion || MEASUREMENT_FIX_VERSION,
+        adaptiveUiVersion: ADAPTIVE_UI_VERSION,
+
+        completedDefinition: "CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES",
+        completedOnlyClosedVirtualOrShadow: true,
+        scoringRSource: "netR",
+        winsLossesFlatsSource: "netR",
+        avgRSource: "netR",
+        totalRSource: "netR",
+        avgCostRSource: "costR",
+        seenDefinition: "UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY",
+
+        currentFitSoftOnly: true,
+        currentFitBlocksLearning: false,
+        currentFitBlocksVirtualLearning: false,
+        currentFitBlocksShadowLearning: false,
+        learningRemainsBroad: true,
+        selectionIsAdaptive: true,
+        discordWillBeStrict: true,
 
         scannerFingerprintRole: row.scannerFingerprintRole || "METADATA_ONLY",
         scannerFingerprintsMetadataOnly: true,
@@ -1775,8 +1971,11 @@
 
     function microApiUrl() {
       const params = new URLSearchParams();
+      const apiMode = state.microMode === "adaptive" || state.microMode === "currentFit" || state.microMode === "cost"
+        ? "balanced"
+        : state.microMode;
 
-      params.set("mode", validMicroModes.includes(state.microMode) ? state.microMode : "balanced");
+      params.set("mode", apiMode);
       params.set("side", ONLY_SIDE);
       params.set("tradeSide", ONLY_SIDE);
       params.set("targetTradeSide", ONLY_SIDE);
@@ -1791,6 +1990,9 @@
       params.set("sideLimit", String(state.bestLimit));
       params.set("sideEnsureLimit", String(state.bestLimit));
       params.set("includeActiveRotation", "1");
+      params.set("includeMarketWeather", "1");
+      params.set("includeCurrentFit", "1");
+      params.set("includeAdaptive", "1");
       params.set("compact", "1");
 
       if (state.microSearch.trim()) params.set("q", state.microSearch.trim());
@@ -1810,10 +2012,137 @@
       params.set("parentTrueMicroFamilySchema", PARENT_TRUE_MICRO_SCHEMA);
       params.set("selectionGranularity", "EXACT_75_CHILD");
       params.set("includeAvailable", "1");
+      params.set("includeAdaptive", "1");
+      params.set("includeCurrentFit", "1");
       params.set("activeRowsLimit", "160");
       params.set("availableLimit", "240");
 
       return `${endpoints.rotation}?${params.toString()}`;
+    }
+
+    function marketApiUrl() {
+      const params = new URLSearchParams();
+
+      params.set("side", ONLY_SIDE);
+      params.set("tradeSide", ONLY_SIDE);
+      params.set("targetTradeSide", ONLY_SIDE);
+      params.set("dashboardSide", DASHBOARD_SIDE);
+      params.set("includeUniverse", "1");
+      params.set("includeBreadth", "1");
+      params.set("includeCurrentFit", "1");
+
+      return `${endpoints.market}?${params.toString()}`;
+    }
+
+    function extractMarketData(data = {}) {
+      const source =
+        data.marketWeather ||
+        data.weather ||
+        data.currentMarketWeather ||
+        data.latest ||
+        data.snapshot ||
+        data;
+
+      const universe =
+        data.marketUniverse ||
+        data.universe ||
+        source.universe ||
+        source.marketUniverse ||
+        {};
+
+      const createdAt = num(
+        source.createdAt ||
+        source.completedAt ||
+        source.updatedAt ||
+        source.ts ||
+        universe.createdAt ||
+        universe.updatedAt,
+        0
+      );
+
+      const regime = upper(
+        source.currentRegime ||
+        source.regime ||
+        source.marketRegime ||
+        source.breadthRegime ||
+        universe.currentRegime ||
+        universe.regime ||
+        "UNKNOWN"
+      );
+
+      const trendSide = upper(
+        source.currentTrendSide ||
+        source.trendSide ||
+        source.marketSide ||
+        source.side ||
+        source.direction ||
+        source.breadthSide ||
+        universe.currentTrendSide ||
+        universe.trendSide ||
+        "UNKNOWN"
+      );
+
+      const bullishPct = firstFinite(
+        source.bullishPct,
+        source.longPct,
+        source.upPct,
+        source.breadthBullishPct,
+        source.universeBullishPct,
+        universe.bullishPct,
+        universe.longPct,
+        universe.upPct
+      );
+
+      const bearishPct = firstFinite(
+        source.bearishPct,
+        source.shortPct,
+        source.downPct,
+        source.breadthBearishPct,
+        source.universeBearishPct,
+        universe.bearishPct,
+        universe.shortPct,
+        universe.downPct
+      );
+
+      const squeezePct = firstFinite(
+        source.squeezePct,
+        source.compressionPct,
+        source.breadthSqueezePct,
+        universe.squeezePct,
+        universe.compressionPct
+      );
+
+      const confidence = firstFinite(
+        source.confidence,
+        source.weatherConfidence,
+        source.currentTrendConfidence,
+        source.breadthConfidence,
+        universe.confidence
+      );
+
+      return {
+        raw: data,
+        source,
+        universe,
+        ok: Boolean(data && Object.keys(data).length),
+        createdAt,
+        ageText: ageText(createdAt),
+        regime,
+        trendSide,
+        bullishPct,
+        bearishPct,
+        squeezePct,
+        confidence
+      };
+    }
+
+    async function fetchMarket() {
+      const data = await optionalApi(marketApiUrl(), {});
+      const market = extractMarketData(data || {});
+
+      state.market = market;
+
+      return market;
     }
 
     function activeMicroIds() {
@@ -1880,7 +2209,7 @@
             <span class="pill raw">metadata only</span>
           </div>
 
-          ${scoreBar(score)}
+          ${scoreBar(score, 0, 100)}
 
           <div class="coin-stats">
             <div class="coin-stat"><span>1h</span><strong>${escapeHtml(fmtRawPct(row.change1h))}</strong></div>
@@ -1889,6 +2218,8 @@
             <div class="coin-stat"><span>BTC</span><strong>${escapeHtml(row.btcState || "-")}</strong></div>
             <div class="coin-stat"><span>Regime</span><strong>${escapeHtml(row.regime || "-")}</strong></div>
             <div class="coin-stat"><span>FakeBO</span><strong>${row.fakeBreakout ? "YES" : "NO"}</strong></div>
+            <div class="coin-stat"><span>Fit</span><strong>${escapeHtml(currentFit(row))}</strong></div>
+            <div class="coin-stat"><span>FitScore</span><strong>${escapeHtml(fmt(currentFitScore(row), 0))}</strong></div>
           </div>
         </article>
       `;
@@ -1915,6 +2246,7 @@
             <span class="pill long">LONG</span>
             <span class="pill purple">VIRTUAL</span>
             <span class="pill ${currentR >= 0 ? "active" : "danger"}">${escapeHtml(fmt(currentR, 2))}R</span>
+            ${currentFitPill(row)}
           </div>
 
           <div class="coin-stats">
@@ -1924,6 +2256,8 @@
             <div class="coin-stat"><span>RR</span><strong>${escapeHtml(fmt(row.rr, 2))}</strong></div>
             <div class="coin-stat"><span>MFE</span><strong>${escapeHtml(fmt(row.mfeR, 2))}R</strong></div>
             <div class="coin-stat"><span>MAE</span><strong>${escapeHtml(fmt(row.maeR, 2))}R</strong></div>
+            <div class="coin-stat"><span>CostR</span><strong>${escapeHtml(fmt(row.costR || row.avgCostR, 3))}</strong></div>
+            <div class="coin-stat"><span>DirectSL</span><strong>${row.directSL || row.directToSL ? "YES" : "NO"}</strong></div>
           </div>
 
           <div class="coin-foot">
@@ -1945,7 +2279,6 @@
         }},
         { label: "75-child true micro", render: (row) => `<button class="small" type="button" data-open-micro="${escapeAttr(microId(row))}"><code>${escapeHtml(microId(row) || "NO_75_CHILD")}</code></button>` },
         { label: "Parent 15", render: (row) => `<code>${escapeHtml(parentMicroId(row) || "NO_PARENT")}</code>` },
-        { label: "Family", render: (row) => `<code>${escapeHtml(familyId(row) || "NO_FAMILY")}</code>` },
         { label: "Side", render: () => '<span class="pill long">LONG</span>' },
         { label: "Tier", render: (row) => tierPill(tier(row)) },
         { label: "Status", render: (row) => statusPill(row) },
@@ -1955,16 +2288,19 @@
         },
         { label: "Seen", render: (row) => fmtInt(row.seen ?? row.observations) },
         { label: "Obs", render: (row) => fmtInt(row.observations ?? row.seen) },
-        { label: "Obs sample", render: (row) => fmt(observationSample(row), 2) },
+        { label: "Obs skipped", render: (row) => fmtInt(row.observationDuplicateSkippedCount) },
         { label: "Completed", render: (row) => fmt(completed(row), 2) },
         { label: "Winrate raw", render: (row) => fmtPct(row.winrate) },
         { label: "Fair WR", render: (row) => fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate ?? row.bayesianWinrate ?? row.wilsonLowerBound) },
         { label: "AvgR net", render: (row) => fmt(row.avgR, 3) },
         { label: "TotalR net", render: (row) => fmt(row.totalR, 3) },
-        { label: "PF", render: (row) => fmt(row.profitFactor, 2) },
-        { label: "AvgCostR", render: (row) => fmt(row.avgCostR, 3) },
-        { label: "DirectSL", render: (row) => fmtPct(row.directSLPct) },
-        { label: "Balanced", render: (row) => `<strong>${escapeHtml(fmt(row.dashboardBalancedScore ?? row.balancedScore, 2))}</strong>` },
+        { label: "AvgCostR", render: (row) => fmt(avgCostR(row), 3) },
+        { label: "DirectSL", render: (row) => fmtPct(directSLPct(row)) },
+        { label: "CurrentFit", render: (row) => currentFitPill(row) },
+        { label: "FitScore", render: (row) => fmt(currentFitScore(row), 1) },
+        { label: "Momentum", render: (row) => fmt(recentMomentumScore(row), 1) },
+        { label: "Adaptive", render: (row) => `<strong>${escapeHtml(fmt(adaptiveScore(row), 2))}</strong>` },
+        { label: "Balanced", render: (row) => fmt(row.dashboardBalancedScore ?? row.balancedScore, 2) },
         { label: "Actie", render: (row) => `
           <button type="button" class="small long-action" data-activate-one="${escapeAttr(microId(row))}" ${isSelectableTrueMicroId(microId(row)) ? "" : "disabled"}>Select exact</button>
           <button type="button" class="small" data-copy="${escapeAttr(microId(row))}" ${isSelectableTrueMicroId(microId(row)) ? "" : "disabled"}>Copy</button>
@@ -2070,15 +2406,17 @@
     async function renderOverview() {
       showLoading("overview");
 
-      const [data, microData] = await Promise.all([
+      const [data, microData, market] = await Promise.all([
         api(endpoints.overview).catch((error) => ({
           ok: false,
           error: friendlyApiMessage(error)
         })),
-        ensureMicrosLoaded()
+        ensureMicrosLoaded(),
+        fetchMarket()
       ]);
 
       state.overview = data;
+      state.market = market;
 
       const microRows = microData?.rows || [];
       const activeCount = uniqueStrings([
@@ -2092,6 +2430,8 @@
       const observing = microRows.filter((row) => learningStatus(row) === "OBSERVING").length;
       const early = microRows.filter((row) => learningStatus(row) === "EARLY_OUTCOMES").length;
       const active = microRows.filter((row) => learningStatus(row) === "ACTIVE_LEARNING").length;
+      const avgCost = microRows.length ? microRows.reduce((sum, row) => sum + avgCostR(row), 0) / microRows.length : 0;
+      const avgDirectSL = microRows.length ? microRows.reduce((sum, row) => sum + directSLPct(row), 0) / microRows.length : 0;
 
       $("overview").innerHTML = `
         <div class="grid">
@@ -2109,40 +2449,51 @@
           ${metricCard("OBSERVING", fmtInt(observing), "completed = 0")}
           ${metricCard("EARLY_OUTCOMES", fmtInt(early), `completed 1-${MIN_COMPLETED_ACTIVE_LEARNING - 1}`)}
           ${metricCard("ACTIVE_LEARNING", fmtInt(active), `completed ≥ ${MIN_COMPLETED_ACTIVE_LEARNING}`)}
-          ${metricCard("Ranking", "balanced", "fair winrate + netR + costR")}
+          ${metricCard("Ranking", "adaptive", "adaptive → balanced → fair → netR → cost")}
+          ${metricCard("AvgCostR", fmt(avgCost, 3), "gemiddelde over zichtbare 75-child rows")}
+          ${metricCard("Avg DirectSL", fmtPct(avgDirectSL), "directSL hoort correct te tellen")}
+          ${metricCard("Market regime", market.regime || "UNKNOWN", market.ageText)}
+          ${metricCard("Trend side", market.trendSide || "UNKNOWN", "CurrentFit is soft")}
         </div>
 
         <div class="grid-3">
           <div class="card">
-            <h3>Mode</h3>
+            <h3>Architectuurregels</h3>
             <div class="toolbar">
-              <span class="pill long">LONG ONLY</span>
-              <span class="pill purple">VIRTUAL ONLY</span>
-              <span class="pill info">NET-R OUTCOMES</span>
-              <span class="pill dark">75-CHILD EXACT</span>
+              <span class="pill long">Learning breed</span>
+              <span class="pill info">Selection adaptief</span>
+              <span class="pill danger">Discord streng</span>
+              <span class="pill soft">CurrentFit soft</span>
             </div>
             <div class="metric-extra">
-              Scanner buckets, oude 25 buckets, coinnaam, scanner fingerprints en execution hashes zijn alleen debug-metadata.
+              CurrentFit blokkeert geen virtual/shadow learning. Het beïnvloedt ranking, rotation en Discord-eligibility.
             </div>
           </div>
 
           <div class="card">
-            <h3>Selection rules</h3>
+            <h3>Meetlat</h3>
+            ${jsonBlock({
+              measurementFixVersion: MEASUREMENT_FIX_VERSION,
+              completed: "closed virtual/shadow outcomes only",
+              scoring: "netR after costs",
+              avgCostR: "costR",
+              directSL: "directToSL/directSL/SL before meaningful favorable excursion",
+              seen: "deduped unique observation key",
+              rawWinrateRanking: "disabled"
+            })}
+          </div>
+
+          <div class="card">
+            <h3>Identity</h3>
             ${jsonBlock({
               trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
               parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
               selectionGranularity: "EXACT_75_CHILD",
               discordMatch: "candidate.trueMicroFamilyId === manuallySelected75ChildId",
-              parentMatchTriggersDiscord: false
+              parentMatchTriggersDiscord: false,
+              scannerFingerprintAsLearningFamily: false,
+              executionFingerprintAsLearningFamily: false
             })}
-          </div>
-
-          <div class="card">
-            <h3>Warnings</h3>
-            ${jsonBlock([
-              ...(Array.isArray(data.warnings) ? data.warnings : []),
-              ...(Array.isArray(microData?.warnings) ? microData.warnings : [])
-            ])}
           </div>
         </div>
 
@@ -2151,6 +2502,51 @@
           ${jsonBlock(data)}
         </div>
       `;
+    }
+
+    async function renderMarket() {
+      showLoading("market");
+
+      const market = await fetchMarket();
+
+      $("market").innerHTML = `
+        <div class="toolbar">
+          <button type="button" id="copyMarketBtn">Copy JSON</button>
+          <button type="button" id="exportMarketBtn">Export JSON</button>
+        </div>
+
+        <div class="grid">
+          ${metricCard("Available", market.ok ? "YES" : "NO")}
+          ${metricCard("Age", market.ageText || "-", fmtTs(market.createdAt))}
+          ${metricCard("Regime", market.regime || "UNKNOWN")}
+          ${metricCard("Trend side", market.trendSide || "UNKNOWN")}
+          ${metricCard("Bullish breadth", market.bullishPct === null ? "-" : `${fmt(market.bullishPct, 1)}%`)}
+          ${metricCard("Bearish breadth", market.bearishPct === null ? "-" : `${fmt(market.bearishPct, 1)}%`)}
+          ${metricCard("Squeeze breadth", market.squeezePct === null ? "-" : `${fmt(market.squeezePct, 1)}%`)}
+          ${metricCard("Confidence", market.confidence === null ? "-" : fmt(market.confidence, 1))}
+        </div>
+
+        <div class="card">
+          <h3>CurrentFit policy</h3>
+          <div class="toolbar">
+            <span class="pill soft">soft gate</span>
+            <span class="pill active">learning not blocked</span>
+            <span class="pill info">ranking influence</span>
+            <span class="pill danger">discord strict</span>
+          </div>
+          <div class="metric-extra">
+            Als MarketWeather ontbreekt of stale is, blijft virtual/shadow learning actief. Discord kan wel blokkeren op UNKNOWN/MISFIT.
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Raw MarketWeather</h3>
+          ${jsonBlock(market.raw || market)}
+        </div>
+      `;
+
+      $("copyMarketBtn")?.addEventListener("click", () => copyText(JSON.stringify(market.raw || market, null, 2), "MarketWeather JSON gekopieerd."));
+      $("exportMarketBtn")?.addEventListener("click", () => downloadJson("market-weather-long.json", market.raw || market));
     }
 
     async function renderScanner() {
@@ -2304,6 +2700,9 @@
           { label: "CurrentR", render: (row) => fmt(row.currentR, 3) },
           { label: "MFE", render: (row) => fmt(row.mfeR, 3) },
           { label: "MAE", render: (row) => fmt(row.maeR, 3) },
+          { label: "CostR", render: (row) => fmt(row.costR || row.avgCostR, 3) },
+          { label: "DirectSL", render: (row) => row.directSL || row.directToSL ? '<span class="pill danger">YES</span>' : '<span class="pill active">NO</span>' },
+          { label: "CurrentFit", render: (row) => currentFitPill(row) },
           { label: "Exit flags", render: (row) => `
             ${row.tpHitNow || row.tpExitArmed ? '<span class="pill active">TP</span>' : ""}
             ${row.slHitNow || row.slExitArmed ? '<span class="pill danger">SL</span>' : ""}
@@ -2371,12 +2770,24 @@
             parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
             selectionGranularity: "EXACT_75_CHILD",
 
+            completedDefinition: "CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES",
+            scoringRSource: "netR",
+            winsLossesFlatsSource: "netR",
+            avgCostRSource: "costR",
+            seenDefinition: "UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY",
+
+            currentFitSoftOnly: true,
+            currentFitBlocksLearning: false,
+            currentFitBlocksVirtualLearning: false,
+            currentFitBlocksShadowLearning: false,
+
             longRiskShape: {
               expression: "sl < entry < tp"
             },
 
             discordOnlyForSelectedMicroFamilies: true,
             discordOnlyForExactTrueMicroMatch: true,
+            discordRequiresCurrentFit: true,
             macroMatchDoesNotTriggerDiscord: true,
             parentMacroMatchDoesNotTriggerDiscord: true,
 
@@ -2422,6 +2833,7 @@
             ${isActive ? '<span class="pill active">DISCORD ACTIVE</span>' : '<span class="pill info">NOT SELECTED</span>'}
             ${tierPill(tier(row))}
             ${statusPill(row)}
+            ${currentFitPill(row)}
             ${tooEarly(row) ? `<span class="pill warn">${escapeHtml(fmt(completed(row), 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>` : ""}
           </div>
 
@@ -2440,15 +2852,20 @@
             <div class="manual-stat"><span>Completed</span><strong>${escapeHtml(fmt(completed(row), 2))}</strong></div>
             <div class="manual-stat"><span>Status</span><strong>${escapeHtml(learningStatus(row))}</strong></div>
             <div class="manual-stat"><span>Sample</span><strong>${tooEarly(row) ? `TE VROEG ${fmt(completed(row), 0)}/${MIN_COMPLETED_ACTIVE_LEARNING}` : "OK"}</strong></div>
-            <div class="manual-stat"><span>Winrate raw</span><strong>${escapeHtml(fmtPct(row.winrate))}</strong></div>
             <div class="manual-stat"><span>Fair WR</span><strong>${escapeHtml(fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate))}</strong></div>
             <div class="manual-stat"><span>Net TotalR</span><strong>${escapeHtml(fmt(row.totalR, 3))}</strong></div>
-            <div class="manual-stat"><span>Balanced</span><strong>${escapeHtml(fmt(row.dashboardBalancedScore ?? row.balancedScore, 2))}</strong></div>
+            <div class="manual-stat"><span>AvgCostR</span><strong>${escapeHtml(fmt(avgCostR(row), 3))}</strong></div>
+            <div class="manual-stat"><span>DirectSL</span><strong>${escapeHtml(fmtPct(directSLPct(row)))}</strong></div>
+            <div class="manual-stat"><span>CurrentFit</span><strong>${escapeHtml(currentFit(row))}</strong></div>
+            <div class="manual-stat"><span>FitScore</span><strong>${escapeHtml(fmt(currentFitScore(row), 1))}</strong></div>
+            <div class="manual-stat"><span>Momentum</span><strong>${escapeHtml(fmt(recentMomentumScore(row), 1))}</strong></div>
+            <div class="manual-stat"><span>Adaptive</span><strong>${escapeHtml(fmt(adaptiveScore(row), 2))}</strong></div>
           </div>
 
           <div class="metric-extra">
             Discord wordt alleen actief voor exact deze 75-child trueMicroFamilyId.
             Parent 15, macro, scanner buckets, coinnaam en fingerprints mogen nooit Discord-match zijn.
+            CurrentFit blijft soft voor learning, maar Discord mag streng blokkeren.
           </div>
 
           <div class="toolbar">
@@ -2479,7 +2896,7 @@
       const observingRows = rows.filter((row) => learningStatus(row) === "OBSERVING");
       const earlyRows = rows.filter((row) => learningStatus(row) === "EARLY_OUTCOMES");
       const activeRows = rows.filter((row) => learningStatus(row) === "ACTIVE_LEARNING");
-      const tooEarlyRows = rows.filter(tooEarly);
+      const misfitRows = rows.filter((row) => currentFit(row) === "MISFIT");
 
       $("micros").innerHTML = `
         <div class="toolbar">
@@ -2501,11 +2918,12 @@
           <div class="toolbar">
             <span class="pill dark">75 selectable children</span>
             <span class="pill dark">15 parent context rows</span>
-            <span class="pill dark">default sort: balanced/fair/netR</span>
+            <span class="pill dark">adaptive/balanced/fair/netR/cost</span>
             <span class="pill observation">OBSERVING = completed 0</span>
             <span class="pill soft">EARLY_OUTCOMES = completed 1-19</span>
             <span class="pill active">ACTIVE_LEARNING = completed ≥ ${MIN_COMPLETED_ACTIVE_LEARNING}</span>
             <span class="pill long">scanner fingerprints hidden</span>
+            <span class="pill soft">CurrentFit soft</span>
           </div>
           <div class="metric-extra">
             Dashboard toont alleen echte Analyze 75-child trueMicroFamilyIds.
@@ -2516,7 +2934,7 @@
         <div class="section-title">
           <div>
             <h2>Manual Discord selection candidate</h2>
-            <p>Alleen exacte LONG 75-child IDs worden actief gezet.</p>
+            <p>Alleen exacte LONG 75-child IDs worden actief gezet. CurrentFit beïnvloedt Discord, niet learning.</p>
           </div>
         </div>
 
@@ -2527,7 +2945,7 @@
           ${metricCard("OBSERVING", fmtInt(observingRows.length), "completed = 0")}
           ${metricCard("EARLY_OUTCOMES", fmtInt(earlyRows.length), `completed 1-${MIN_COMPLETED_ACTIVE_LEARNING - 1}`)}
           ${metricCard("ACTIVE_LEARNING", fmtInt(activeRows.length), `completed ≥ ${MIN_COMPLETED_ACTIVE_LEARNING}`)}
-          ${metricCard("Te vroeg", fmtInt(tooEarlyRows.length), `completed < ${MIN_COMPLETED_ACTIVE_LEARNING}`)}
+          ${metricCard("CurrentFit MISFIT", fmtInt(misfitRows.length), "blocks Discord only")}
           ${metricCard("Discord active 75-child IDs", fmtInt(activeMicroIds().length))}
           ${metricCard("Parent 15 active context", fmtInt(activeParentIds().length), "does not trigger Discord")}
           ${metricCard("Outcomes", "NET R", "virtual/shadow closed outcomes")}
@@ -2549,7 +2967,9 @@
             rawScannerFingerprintRowsHidden: state.micros?.rawScannerFingerprintRowsHidden ?? null,
             trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
             parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
-            rankingPolicy: state.micros?.rankingPolicy ?? "balanced/fair/netR",
+            rankingPolicy: "adaptiveScore|balancedScore|fairWinrate|totalR|avgR|avgCostR",
+            measurementFixVersion: MEASUREMENT_FIX_VERSION,
+            adaptiveUiVersion: ADAPTIVE_UI_VERSION,
             warnings: state.micros?.warnings || [],
             error: state.micros?.error || null
           })}
@@ -2613,7 +3033,9 @@
         data.activeMacroFamilyIds || []
       ]).filter(parentIdAllowedInLongOnly);
 
-      const rows = rankMicroRows(data.activeRows || active.microFamilies || [])
+      const activeRows = rankMicroRows(data.activeRows || active.microFamilies || []);
+
+      const rows = activeRows
         .concat(
           activeIds.map((id, index) => ({
             rank: index + 1,
@@ -2634,7 +3056,7 @@
         <div class="section-title">
           <div>
             <h2>Manual Discord selection</h2>
-            <p>Geen auto-rotatie. Alleen exact geselecteerde LONG 75-child trueMicroFamilyIds.</p>
+            <p>Geen auto-rotatie. Alleen exact geselecteerde LONG 75-child trueMicroFamilyIds. CurrentFit maakt Discord strenger.</p>
           </div>
         </div>
 
@@ -2644,7 +3066,7 @@
           ${metricCard("Rotation ID", active.rotationId || "-")}
           ${metricCard("Mode", active.mode || "manual")}
           ${metricCard("Source", active.source || "-")}
-          ${metricCard("Discord alerts", activeIds.length > 0 ? "ENABLED" : "OFF")}
+          ${metricCard("Discord alerts", activeIds.length > 0 ? "STRICT" : "OFF")}
           ${metricCard("Virtual learning", "UNCHANGED")}
           ${metricCard("Auto rotation", "DISABLED")}
         </div>
@@ -2719,7 +3141,7 @@
         `Activeer Discord alerts voor ${microFamilyIds.length} exacte LONG 75-child ID(s)?\n\n` +
         `${microFamilyIds.slice(0, 8).join("\n")}` +
         `${microFamilyIds.length > 8 ? "\n..." : ""}\n\n` +
-        "Virtual learning blijft alle risk-valide LONG candidates volgen. Parent 15 matcht niet voor Discord."
+        "Virtual/shadow learning blijft breed doorlopen. CurrentFit mag Discord blokkeren."
       )) {
         return;
       }
@@ -2733,6 +3155,7 @@
           microFamilyIds,
           activeMicroFamilyIds: microFamilyIds,
           trueMicroFamilyIds: microFamilyIds,
+          childTrueMicroFamilyIds: microFamilyIds,
 
           macroFamilyIds: [],
           activeMacroFamilyIds: [],
@@ -2758,8 +3181,13 @@
           parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
           selectionGranularity: "EXACT_75_CHILD",
 
+          currentFitSoftOnly: true,
+          currentFitBlocksLearning: false,
+          selectionIsAdaptive: true,
+
           discordOnlyForSelectedMicroFamilies: true,
           discordOnlyForExactTrueMicroMatch: true,
+          discordRequiresCurrentFit: true,
           macroMatchDoesNotTriggerDiscord: true,
           parentMacroMatchDoesNotTriggerDiscord: true
         })
@@ -2782,7 +3210,7 @@
       };
 
       setMessage(
-        `Manual Discord selection opgeslagen.\nActive LONG 75-child IDs: ${activeIds.length}\nVirtual learning blijft breed doorlopen.`,
+        `Manual Discord selection opgeslagen.\nActive LONG 75-child IDs: ${activeIds.length}\nVirtual/shadow learning blijft breed doorlopen.`,
         "ok"
       );
 
@@ -2828,6 +3256,7 @@
             <span class="pill long">LONG</span>
             <span class="pill dark">75-child exact</span>
             ${statusPill(row)}
+            ${currentFitPill(row)}
             ${tooEarly(row) ? `<span class="pill warn">${escapeHtml(fmt(completed(row), 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>` : ""}
             <button type="button" class="long-action" id="activateDrawerBtn" ${isSelectableTrueMicroId(microId(row)) ? "" : "disabled"}>Select exact</button>
             <button type="button" id="copyDrawerBtn">Copy</button>
@@ -2836,12 +3265,16 @@
           <div class="grid">
             ${metricCard("Seen", fmtInt(row.seen ?? row.observations))}
             ${metricCard("Observations", fmtInt(row.observations ?? row.seen))}
+            ${metricCard("Obs dedupe skipped", fmtInt(row.observationDuplicateSkippedCount))}
             ${metricCard("Completed", fmt(completed(row), 2), tooEarly(row) ? `minimum ${MIN_COMPLETED_ACTIVE_LEARNING}` : "active learning")}
-            ${metricCard("Status", learningStatus(row))}
             ${metricCard("Winrate raw", fmtPct(row.winrate))}
             ${metricCard("Fair WR", fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate))}
             ${metricCard("AvgR net", fmt(row.avgR, 3))}
             ${metricCard("TotalR net", fmt(row.totalR, 3))}
+            ${metricCard("AvgCostR", fmt(avgCostR(row), 3))}
+            ${metricCard("DirectSL", fmtPct(directSLPct(row)))}
+            ${metricCard("CurrentFit", currentFit(row))}
+            ${metricCard("Adaptive", fmt(adaptiveScore(row), 2))}
           </div>
 
           <div class="card">
@@ -2898,9 +3331,9 @@
           ${metricCard("Entry alerts", fmtInt(logs.filter((row) => upper(row.type || row.event).includes("ENTRY")).length))}
           ${metricCard("Exit alerts", fmtInt(logs.filter((row) => upper(row.type || row.event).includes("EXIT")).length))}
           ${metricCard("Match mode", "EXACT 75-child")}
+          ${metricCard("CurrentFit", "STRICT")}
           ${metricCard("Parent match", "OFF")}
           ${metricCard("Scanner match", "OFF")}
-          ${metricCard("Execution hash match", "OFF")}
         </div>
 
         ${table(logs, [
@@ -2921,9 +3354,10 @@
 
             return `<span class="pill ${selected ? "active" : ""}">${selected ? "YES" : "NO"}</span>`;
           }},
+          { label: "CurrentFit", render: (row) => currentFitPill(row.payload || row) },
           { label: "75-child true micro", render: (row) => `<code>${escapeHtml(microId(row.payload || row) || "-")}</code>` },
           { label: "Parent 15", render: (row) => `<code>${escapeHtml(parentMicroId(row.payload || row) || "-")}</code>` },
-          { label: "Message", render: (row) => escapeHtml(row.message || row.content || row.result || "") }
+          { label: "Message", render: (row) => escapeHtml(row.message || row.content || row.result || row.reason || "") }
         ], "Geen Discord logs.")}
       `;
 
@@ -3114,10 +3548,11 @@
 
     async function refresh(tab = state.activeTab) {
       setMessage("");
-      $("liveLabel").textContent = `LONG-only · 75-child · virtual learning · ${new Date().toLocaleTimeString()}`;
+      $("liveLabel").textContent = `LONG-only · broad learning · adaptive selection · ${new Date().toLocaleTimeString()}`;
 
       try {
         if (tab === "overview") return await renderOverview();
+        if (tab === "market") return await renderMarket();
         if (tab === "scanner") return await renderScanner();
         if (tab === "trade") return await renderTrade();
         if (tab === "micros") return await renderMicros();
