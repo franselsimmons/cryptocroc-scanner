@@ -39,11 +39,13 @@ const LONG_FIXED_SETUP_TYPES = new Set([
   'COMPRESSION'
 ]);
 
-const LONG_FIXED_REGIME_BUCKETS = new Set([
+const LONG_FIXED_REGIME_ORDER = [
   'TREND',
   'CHOP',
   'SQUEEZE'
-]);
+];
+
+const LONG_FIXED_REGIME_BUCKETS = new Set(LONG_FIXED_REGIME_ORDER);
 
 const CONFIRMATION_PROFILE_ORDER = Object.freeze([
   'A_STRONG_ALIGN',
@@ -72,7 +74,7 @@ function upper(value, fallback = '') {
 function rotationNumber(key, fallback) {
   return safeNumber(
     CONFIG.long?.rotation?.[key] ??
-    CONFIG.rotation?.[key],
+      CONFIG.rotation?.[key],
     fallback
   );
 }
@@ -80,7 +82,7 @@ function rotationNumber(key, fallback) {
 function analyzeNumber(key, fallback) {
   return safeNumber(
     CONFIG.long?.analyze?.[key] ??
-    CONFIG.analyze?.[key],
+      CONFIG.analyze?.[key],
     fallback
   );
 }
@@ -88,17 +90,17 @@ function analyzeNumber(key, fallback) {
 function schemaConfig() {
   const macroSchema = String(
     CONFIG.long?.analyze?.macroSchema ??
-    CONFIG.analyze?.macroSchema ??
-    CONFIG.analyze?.legacySchema ??
-    'MF_V1'
+      CONFIG.analyze?.macroSchema ??
+      CONFIG.analyze?.legacySchema ??
+      'MF_V1'
   ).toUpperCase();
 
   const configuredLegacyMicroSchema = String(
     CONFIG.long?.analyze?.legacyMicroSchema ??
-    CONFIG.long?.analyze?.microSchema ??
-    CONFIG.analyze?.legacyMicroSchema ??
-    CONFIG.analyze?.microSchema ??
-    'MF_V2'
+      CONFIG.long?.analyze?.microSchema ??
+      CONFIG.analyze?.legacyMicroSchema ??
+      CONFIG.analyze?.microSchema ??
+      'MF_V2'
   ).toUpperCase();
 
   return {
@@ -150,6 +152,11 @@ function positive(value) {
   return Math.max(0, safeNumber(value, 0));
 }
 
+function finiteOrNull(value) {
+  const n = safeNumber(value, null);
+  return Number.isFinite(n) ? n : null;
+}
+
 function inc(obj, key, amount = 1) {
   const k = String(key || 'UNKNOWN').toUpperCase();
 
@@ -165,6 +172,48 @@ function makeCounters() {
     regime: {},
     scannerReason: {}
   };
+}
+
+function isExecutionFingerprintId(id = '') {
+  const value = upper(id);
+
+  return (
+    value.includes('_XR_') ||
+    value.includes('__XR__') ||
+    value.includes('|XR|') ||
+    value.includes('EXECUTION_FINGERPRINT') ||
+    value.includes('EXECUTION_MICRO') ||
+    value.includes('EXECUTIONMICRO') ||
+    value.includes('REFINED_EXECUTION')
+  );
+}
+
+function isScannerFamilyId(id = '') {
+  const value = upper(id);
+
+  return (
+    value.startsWith('MICRO_LONG_SCANNER__') ||
+    value.includes('MICRO_LONG_SCANNER__') ||
+    value.startsWith('LONG_SCANNER_') ||
+    value.includes('LONG_SCANNER_') ||
+    value.startsWith('MICRO_SHORT_SCANNER__') ||
+    value.includes('MICRO_SHORT_SCANNER__') ||
+    value.startsWith('SHORT_SCANNER_') ||
+    value.includes('SHORT_SCANNER_') ||
+    value.includes('__SCANNER__') ||
+    value.includes('SCANNER_GATE_PASS') ||
+    value.includes('SCANNER_GATE_FAIL')
+  );
+}
+
+function validLearningId(id = '') {
+  const value = String(id || '').trim();
+
+  if (!value) return false;
+  if (isScannerFamilyId(value)) return false;
+  if (isExecutionFingerprintId(value)) return false;
+
+  return true;
 }
 
 function parseLongTaxonomyMicroId(id = '') {
@@ -221,7 +270,7 @@ function parseLongTaxonomyMicroId(id = '') {
   let setup = null;
   let regime = null;
 
-  for (const candidateRegime of LONG_FIXED_REGIME_BUCKETS) {
+  for (const candidateRegime of LONG_FIXED_REGIME_ORDER) {
     const suffix = `_${candidateRegime}`;
 
     if (body.endsWith(suffix)) {
@@ -278,24 +327,6 @@ function isSelectableLongChildTrueMicroId(id = '') {
 
 function isParentLongTrueMicroId(id = '') {
   return parseLongTaxonomyMicroId(id).isParent === true;
-}
-
-function isRecognizedLongTaxonomyMicroId(id = '') {
-  return parseLongTaxonomyMicroId(id).valid === true;
-}
-
-function isExecutionFingerprintId(id = '') {
-  const value = upper(id);
-
-  return (
-    value.includes('_XR_') ||
-    value.includes('__XR__') ||
-    value.includes('|XR|') ||
-    value.includes('EXECUTION_FINGERPRINT') ||
-    value.includes('EXECUTION_MICRO') ||
-    value.includes('EXECUTIONMICRO') ||
-    value.includes('REFINED_EXECUTION')
-  );
 }
 
 function cleanSideText(value = '') {
@@ -385,34 +416,6 @@ function hasShortSignal(value = '') {
     'MICRO_SHORT',
     'FAMILY_SHORT'
   ]);
-}
-
-function isScannerFamilyId(id = '') {
-  const value = upper(id);
-
-  return (
-    value.startsWith('MICRO_LONG_SCANNER__') ||
-    value.includes('MICRO_LONG_SCANNER__') ||
-    value.startsWith('LONG_SCANNER_') ||
-    value.includes('LONG_SCANNER_') ||
-    value.startsWith('MICRO_SHORT_SCANNER__') ||
-    value.includes('MICRO_SHORT_SCANNER__') ||
-    value.startsWith('SHORT_SCANNER_') ||
-    value.includes('SHORT_SCANNER_') ||
-    value.includes('__SCANNER__') ||
-    value.includes('SCANNER_GATE_PASS') ||
-    value.includes('SCANNER_GATE_FAIL')
-  );
-}
-
-function validLearningId(id = '') {
-  const value = String(id || '').trim();
-
-  if (!value) return false;
-  if (isScannerFamilyId(value)) return false;
-  if (isExecutionFingerprintId(value)) return false;
-
-  return true;
 }
 
 function normalizeTradeSide(value) {
@@ -584,26 +587,26 @@ function isLongRow(row = {}) {
 function rowSchema(row = {}) {
   return String(
     row.trueMicroFamilySchema ||
-    row.childTrueMicroFamilySchema ||
-    row.exactTrueMicroFamilySchema ||
-    row.broadTrueMicroFamilySchema ||
-    row.microFamilySchema ||
-    row.schema ||
-    row.versionSchema ||
-    ''
+      row.childTrueMicroFamilySchema ||
+      row.exactTrueMicroFamilySchema ||
+      row.broadTrueMicroFamilySchema ||
+      row.microFamilySchema ||
+      row.schema ||
+      row.versionSchema ||
+      ''
   ).toUpperCase();
 }
 
 function rowMicroId(row = {}) {
   const value = String(
     row.trueMicroFamilyId ||
-    row.childTrueMicroFamilyId ||
-    row.microFamilyId ||
-    row.analyzeMicroFamilyId ||
-    row.learningMicroFamilyId ||
-    row.id ||
-    row.key ||
-    ''
+      row.childTrueMicroFamilyId ||
+      row.microFamilyId ||
+      row.analyzeMicroFamilyId ||
+      row.learningMicroFamilyId ||
+      row.id ||
+      row.key ||
+      ''
   ).trim();
 
   return validLearningId(value) ? value.toUpperCase() : '';
@@ -612,13 +615,13 @@ function rowMicroId(row = {}) {
 function rowParentTrueMicroId(row = {}) {
   const direct = String(
     row.parentTrueMicroFamilyId ||
-    row.coarseMicroFamilyId ||
-    row.baseMicroFamilyId ||
-    row.legacyMicroFamilyId ||
-    row.parentMacroFamilyId ||
-    row.parentMicroFamilyId ||
-    row.macroFamilyId ||
-    ''
+      row.coarseMicroFamilyId ||
+      row.baseMicroFamilyId ||
+      row.legacyMicroFamilyId ||
+      row.parentMacroFamilyId ||
+      row.parentMicroFamilyId ||
+      row.macroFamilyId ||
+      ''
   ).trim();
 
   const parsedDirect = parseLongTaxonomyMicroId(direct);
@@ -717,17 +720,6 @@ function definitionHasSchema(row = {}, schema) {
   }
 
   return definitionText(row).includes(`SCHEMA=${target}`);
-}
-
-function parentMacroFamilyId(row = {}) {
-  return String(
-    row.parentTrueMicroFamilyId ||
-    row.parentMacroFamilyId ||
-    row.parentMicroFamilyId ||
-    row.macroFamilyId ||
-    row.familyMacroId ||
-    ''
-  ).trim();
 }
 
 function idLooksLikeSimpleMacroFamily(id = '') {
@@ -931,6 +923,17 @@ function applyLearningIdentityFlags(stats = {}, row = {}) {
 
   stats.defaultRanking = 'dashboardBalancedScore|balancedScore|fairWinrate|totalR|avgR|avgCostR';
   stats.bareWinrateRankingDisabled = true;
+  stats.rankingUsesBalancedScore = true;
+  stats.rankingUsesFairWinrate = true;
+  stats.rankingUsesTotalR = true;
+  stats.rankingUsesAvgR = true;
+  stats.rankingUsesAvgCostR = true;
+
+  stats.currentFitSoftOnly = true;
+  stats.currentFitBlocksLearning = false;
+  stats.learningRemainsBroad = true;
+  stats.selectionWillBeAdaptive = true;
+  stats.discordWillBeStrict = true;
 
   stats.realOrdersDisabled = true;
   stats.exchangeOrdersDisabled = true;
@@ -981,7 +984,11 @@ function hasSourceBuckets(stats = {}) {
     safeNumber(stats.virtualFlats, 0) > 0 ||
     safeNumber(stats.shadowWins, 0) > 0 ||
     safeNumber(stats.shadowLosses, 0) > 0 ||
-    safeNumber(stats.shadowFlats, 0) > 0
+    safeNumber(stats.shadowFlats, 0) > 0 ||
+    safeNumber(stats.virtualTotalR, 0) !== 0 ||
+    safeNumber(stats.shadowTotalR, 0) !== 0 ||
+    safeNumber(stats.virtualTotalCostR, 0) !== 0 ||
+    safeNumber(stats.shadowTotalCostR, 0) !== 0
   );
 }
 
@@ -993,10 +1000,10 @@ function closedCompletedCount(stats = {}) {
 }
 
 function actualOutcomeCounts(stats = {}) {
-  const virtualCompleted = safeNumber(stats.virtualCompleted, 0);
-  const shadowCompleted = safeNumber(stats.shadowCompleted, 0);
-
   if (hasSourceBuckets(stats)) {
+    const virtualCompleted = safeNumber(stats.virtualCompleted, 0);
+    const shadowCompleted = safeNumber(stats.shadowCompleted, 0);
+
     const virtualWins = safeNumber(stats.virtualWins, 0);
     const virtualLosses = safeNumber(stats.virtualLosses, 0);
     const virtualFlats = safeNumber(stats.virtualFlats, 0);
@@ -1025,10 +1032,10 @@ function actualOutcomeCounts(stats = {}) {
   }
 
   return {
-    wins: 0,
-    losses: 0,
-    flats: 0,
-    completed: 0
+    wins: safeNumber(stats.wins, 0),
+    losses: safeNumber(stats.losses, 0),
+    flats: safeNumber(stats.flats, 0),
+    completed: safeNumber(stats.completed, 0)
   };
 }
 
@@ -1042,22 +1049,19 @@ function weightedCompletedCount(stats = {}) {
 function weightedSourceCounts(stats = {}) {
   const w = shadowWeight();
 
-  const wins =
-    safeNumber(stats.virtualWins, 0) +
-    safeNumber(stats.shadowWins, 0) * w;
-
-  const losses =
-    safeNumber(stats.virtualLosses, 0) +
-    safeNumber(stats.shadowLosses, 0) * w;
-
-  const flats =
-    safeNumber(stats.virtualFlats, 0) +
-    safeNumber(stats.shadowFlats, 0) * w;
-
   return {
-    wins,
-    losses,
-    flats,
+    wins:
+      safeNumber(stats.virtualWins, 0) +
+      safeNumber(stats.shadowWins, 0) * w,
+
+    losses:
+      safeNumber(stats.virtualLosses, 0) +
+      safeNumber(stats.shadowLosses, 0) * w,
+
+    flats:
+      safeNumber(stats.virtualFlats, 0) +
+      safeNumber(stats.shadowFlats, 0) * w,
+
     completed:
       safeNumber(stats.virtualCompleted, 0) +
       safeNumber(stats.shadowCompleted, 0) * w
@@ -1090,6 +1094,86 @@ function weightedSourceTotals(stats = {}) {
   };
 }
 
+function isSlExitReason(value = '') {
+  const reason = upper(value);
+
+  return [
+    'SL',
+    'HIT_SL',
+    'STOP',
+    'STOP_LOSS',
+    'STOPLOSS',
+    'STOPPED',
+    'HIT_STOP',
+    'HARD_SL',
+    'DIRECT_SL'
+  ].includes(reason) ||
+    reason.includes('STOP_LOSS') ||
+    reason.includes('STOPLOSS') ||
+    reason.includes('HIT_SL') ||
+    reason.includes('DIRECT_SL');
+}
+
+function isDirectSL(row = {}) {
+  if (
+    row.directToSL === true ||
+    row.directSL === true ||
+    row.directStopLoss === true ||
+    row.isDirectSL === true
+  ) {
+    return true;
+  }
+
+  if (!isSlExitReason(row.exitReason || row.reason)) {
+    return false;
+  }
+
+  if (
+    row.nearTpSeen === true ||
+    row.reachedHalfR === true ||
+    row.reachedOneR === true
+  ) {
+    return false;
+  }
+
+  const mfeR = safeNumber(row.mfeR, 0);
+  const maeR = safeNumber(row.maeR, 0);
+
+  return mfeR < 0.25 || maeR <= -0.8;
+}
+
+function inferCostR(row = {}, exitR = 0) {
+  const explicit = finiteOrNull(
+    row.costR ??
+      row.avgCostR ??
+      row.estimatedCostR ??
+      row.netCostR
+  );
+
+  if (explicit !== null && explicit >= 0) {
+    return explicit;
+  }
+
+  const grossR = finiteOrNull(
+    row.grossR ??
+      row.rawR ??
+      row.realizedGrossR
+  );
+
+  if (grossR !== null) {
+    return Math.max(0, grossR - safeNumber(exitR, 0));
+  }
+
+  const costPct = finiteOrNull(row.costPct);
+  const riskPct = finiteOrNull(row.riskPct);
+
+  if (costPct !== null && riskPct !== null && riskPct > 0) {
+    return Math.max(0, costPct / riskPct);
+  }
+
+  return 0;
+}
+
 function aggregateRecentOutcomes(stats = {}) {
   const statsId = rowMicroId(stats);
 
@@ -1115,7 +1199,7 @@ function aggregateRecentOutcomes(stats = {}) {
 
       const exitR = safeNumber(row.netR ?? row.exitR ?? row.realizedNetR ?? row.realizedR ?? row.r, 0);
       const pnlPct = safeNumber(row.netPnlPct ?? row.pnlPct, 0);
-      const costR = safeNumber(row.costR ?? row.avgCostR, 0);
+      const costR = inferCostR(row, exitR);
 
       const win = exitR > 0;
       const loss = exitR < 0;
@@ -1145,6 +1229,16 @@ function aggregateRecentOutcomes(stats = {}) {
       acc.totalPnlPct += pnlPct * weight;
       acc.totalCostR += costR * weight;
 
+      if (isDirectSL(row)) acc.directSLCount += weight;
+      if (row.nearTpSeen) acc.nearTpCount += weight;
+      if (row.reachedHalfR) acc.reachedHalfRCount += weight;
+      if (row.reachedOneR) acc.reachedOneRCount += weight;
+
+      if (row.beWouldExit) acc.beWouldExitCount += weight;
+      if (row.gaveBackAfterHalfR) acc.gaveBackAfterHalfRCount += weight;
+      if (row.gaveBackAfterOneR) acc.gaveBackAfterOneRCount += weight;
+      if (row.nearTpThenLoss) acc.nearTpThenLossCount += weight;
+
       return acc;
     },
     {
@@ -1162,7 +1256,17 @@ function aggregateRecentOutcomes(stats = {}) {
       totalPnlPct: 0,
       totalCostR: 0,
       grossWinR: 0,
-      grossLossR: 0
+      grossLossR: 0,
+
+      directSLCount: 0,
+      nearTpCount: 0,
+      reachedHalfRCount: 0,
+      reachedOneRCount: 0,
+
+      beWouldExitCount: 0,
+      gaveBackAfterHalfRCount: 0,
+      gaveBackAfterOneRCount: 0,
+      nearTpThenLossCount: 0
     }
   );
 }
@@ -1171,16 +1275,20 @@ function maxPositive(...values) {
   return Math.max(0, ...values.map((value) => positive(value)));
 }
 
-function preferRecentSourceOrStored(stored, source, recent) {
-  const recentValue = safeNumber(recent, 0);
+function chooseTotal({
+  sourceValue,
+  storedValue,
+  recentValue,
+  sourceCompleted,
+  storedCompleted,
+  recentCompleted,
+  allowRecentFallback = true
+}) {
+  if (sourceCompleted > 0) return safeNumber(sourceValue, 0);
+  if (storedCompleted > 0) return safeNumber(storedValue, 0);
+  if (allowRecentFallback && recentCompleted > 0) return safeNumber(recentValue, 0);
 
-  if (recentValue !== 0) return recentValue;
-
-  const sourceValue = safeNumber(source, 0);
-
-  if (sourceValue !== 0) return sourceValue;
-
-  return safeNumber(stored, 0);
+  return safeNumber(storedValue ?? sourceValue ?? recentValue, 0);
 }
 
 function sampleReliability(completed) {
@@ -1215,6 +1323,28 @@ function learningStatus(stats = {}) {
   return 'ACTIVE_LEARNING';
 }
 
+function observationIsDuplicate(row = {}) {
+  return (
+    row.observationDuplicate === true ||
+    row.observationAlreadyCounted === true ||
+    row.observationCounted === false ||
+    row.countObservation === false ||
+    row.skipObservationCount === true ||
+    row.observationSkipped === true
+  );
+}
+
+function outcomeIsDuplicate(row = {}) {
+  return (
+    row.outcomeDuplicate === true ||
+    row.outcomeAlreadyRecorded === true ||
+    row.outcomeCounted === false ||
+    row.countOutcome === false ||
+    row.skipOutcomeCount === true ||
+    row.outcomeSkipped === true
+  );
+}
+
 export function createMicroStats({
   microFamilyId,
   familyId,
@@ -1225,7 +1355,10 @@ export function createMicroStats({
   const ts = now();
 
   const parsed = parseLongTaxonomyMicroId(microFamilyId);
-  const resolvedMicroFamilyId = parsed.isChild ? parsed.childTrueMicroFamilyId : String(microFamilyId || '').trim().toUpperCase();
+  const resolvedMicroFamilyId = parsed.isChild
+    ? parsed.childTrueMicroFamilyId
+    : String(microFamilyId || '').trim().toUpperCase();
+
   const parentTrueMicroFamilyId = parsed.parentTrueMicroFamilyId || null;
 
   const inferredTradeSide = inferTradeSide({
@@ -1309,6 +1442,7 @@ export function createMicroStats({
 
     seen: 0,
     observations: 0,
+    observationDuplicateSkippedCount: 0,
 
     virtualCompleted: 0,
     realCompleted: 0,
@@ -1403,6 +1537,9 @@ export function createMicroStats({
     gaveBackAfterOneRPct: 0,
     nearTpThenLossPct: 0,
 
+    costStatsInferredFromRecent: false,
+    directSLStatsInferredFromRecent: false,
+
     scannerFingerprintRole: 'METADATA_ONLY',
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
@@ -1429,6 +1566,17 @@ export function createMicroStats({
 
     defaultRanking: 'dashboardBalancedScore|balancedScore|fairWinrate|totalR|avgR|avgCostR',
     bareWinrateRankingDisabled: true,
+    rankingUsesBalancedScore: true,
+    rankingUsesFairWinrate: true,
+    rankingUsesTotalR: true,
+    rankingUsesAvgR: true,
+    rankingUsesAvgCostR: true,
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+    selectionWillBeAdaptive: true,
+    discordWillBeStrict: true,
 
     learningStatus: 'OBSERVING',
     status: 'OBSERVING',
@@ -1479,6 +1627,7 @@ function ensureStatsShape(stats = {}) {
   const numericFields = [
     'seen',
     'observations',
+    'observationDuplicateSkippedCount',
 
     'virtualCompleted',
     'realCompleted',
@@ -1587,6 +1736,12 @@ function ensureStatsShape(stats = {}) {
   stats.realGrossWinR = 0;
   stats.realGrossLossR = 0;
 
+  stats.currentFitSoftOnly = true;
+  stats.currentFitBlocksLearning = false;
+  stats.learningRemainsBroad = true;
+  stats.selectionWillBeAdaptive = true;
+  stats.discordWillBeStrict = true;
+
   stats.createdAt ||= now();
   stats.updatedAt ||= now();
 
@@ -1601,6 +1756,19 @@ export function updateObservation(stats, row = {}) {
   }
 
   applySideIdentity(stats, row);
+
+  if (observationIsDuplicate(row)) {
+    stats.observationDuplicateSkippedCount = safeNumber(stats.observationDuplicateSkippedCount, 0) + 1;
+    stats.observationDuplicateLastSkippedAt = now();
+    stats.updatedAt = now();
+
+    stats.learningStatus = learningStatus(stats);
+    stats.status = stats.learningStatus;
+    stats.awaitingOutcomes = safeNumber(stats.completed, 0) <= 0 && safeNumber(stats.seen, 0) > 0;
+    stats.tooEarly = safeNumber(stats.completed, 0) < MIN_COMPLETED_ACTIVE;
+
+    return stats;
+  }
 
   stats.seen = safeNumber(stats.seen, 0) + 1;
   stats.observations = safeNumber(stats.observations, 0) + 1;
@@ -1639,7 +1807,14 @@ export function updateObservation(stats, row = {}) {
       rsiZone: row.rsiZone || null,
       flow: row.flow || null,
       obRelation: row.obRelation || null,
+      btcState: row.btcState || null,
+      btcRelation: row.btcRelation || null,
+      regime: row.regime || null,
       scannerReason: row.scannerReason || null,
+
+      observationDedupeKey: row.observationDedupeKey || null,
+      observationRecorded: true,
+      observationDuplicate: false,
 
       isMirrorMicroFamily: false,
       observationMirror: false,
@@ -1673,6 +1848,13 @@ export function updateOutcome(stats, row = {}, source = SOURCE_VIRTUAL) {
 
   applySideIdentity(stats, row);
 
+  if (outcomeIsDuplicate(row)) {
+    stats.outcomeDuplicateSkippedCount = safeNumber(stats.outcomeDuplicateSkippedCount, 0) + 1;
+    stats.outcomeDuplicateLastSkippedAt = now();
+    stats.updatedAt = now();
+    return refreshStats(stats);
+  }
+
   const statsId = rowMicroId(stats);
   const rowId = rowMicroId(row);
 
@@ -1690,15 +1872,15 @@ export function updateOutcome(stats, row = {}, source = SOURCE_VIRTUAL) {
 
   const exitR = safeNumber(
     row.netR ??
-    row.exitR ??
-    row.realizedNetR ??
-    row.realizedR ??
-    row.r,
+      row.exitR ??
+      row.realizedNetR ??
+      row.realizedR ??
+      row.r,
     0
   );
 
   const pnlPct = safeNumber(row.netPnlPct ?? row.pnlPct, 0);
-  const costR = safeNumber(row.costR ?? row.avgCostR, 0);
+  const costR = inferCostR(row, exitR);
 
   const win = exitR > 0;
   const loss = exitR < 0;
@@ -1753,7 +1935,9 @@ export function updateOutcome(stats, row = {}, source = SOURCE_VIRTUAL) {
   if (win) stats.grossWinR += exitR * weight;
   if (loss) stats.grossLossR += Math.abs(exitR) * weight;
 
-  if (row.directToSL) stats.directSLCount += weight;
+  const directSL = isDirectSL(row);
+
+  if (directSL) stats.directSLCount += weight;
   if (row.nearTpSeen) stats.nearTpCount += weight;
   if (row.reachedHalfR) stats.reachedHalfRCount += weight;
   if (row.reachedOneR) stats.reachedOneRCount += weight;
@@ -1783,17 +1967,18 @@ export function updateOutcome(stats, row = {}, source = SOURCE_VIRTUAL) {
     regimeBucket: row.regimeBucket || stats.regimeBucket || parsed.regimeBucket || null,
     confirmationProfile: row.confirmationProfile || stats.confirmationProfile || parsed.confirmationProfile || null,
 
-    exitReason: row.exitReason || null,
+    exitReason: row.exitReason || row.reason || null,
 
     exitR,
     netR: safeNumber(row.netR ?? exitR, exitR),
-    grossR: safeNumber(row.grossR, 0),
+    grossR: safeNumber(row.grossR ?? row.rawR ?? row.realizedGrossR, 0),
 
     pnlPct,
     netPnlPct: safeNumber(row.netPnlPct ?? pnlPct, pnlPct),
     grossPnlPct: safeNumber(row.grossPnlPct, 0),
 
     costR,
+    avgCostR: costR,
     costPct: safeNumber(row.costPct, 0),
     feePct: safeNumber(row.feePct, 0),
     slippagePct: safeNumber(row.slippagePct, 0),
@@ -1801,7 +1986,8 @@ export function updateOutcome(stats, row = {}, source = SOURCE_VIRTUAL) {
     mfeR: safeNumber(row.mfeR, 0),
     maeR: safeNumber(row.maeR, 0),
 
-    directToSL: Boolean(row.directToSL),
+    directToSL: directSL,
+    directSL,
     nearTpSeen: Boolean(row.nearTpSeen),
     reachedHalfR: Boolean(row.reachedHalfR),
     reachedOneR: Boolean(row.reachedOneR),
@@ -1813,6 +1999,13 @@ export function updateOutcome(stats, row = {}, source = SOURCE_VIRTUAL) {
     gaveBackAfterHalfR: Boolean(row.gaveBackAfterHalfR),
     gaveBackAfterOneR: Boolean(row.gaveBackAfterOneR),
     nearTpThenLoss: Boolean(row.nearTpThenLoss),
+
+    entryMarketWeather: row.entryMarketWeather || null,
+    entryCurrentRegime: row.entryCurrentRegime || row.currentRegime || null,
+    entryCurrentTrendSide: row.entryCurrentTrendSide || row.currentTrendSide || null,
+    entryCurrentFit: row.entryCurrentFit ?? row.currentFit ?? null,
+    entryCurrentFitConfidence: safeNumber(row.entryCurrentFitConfidence ?? row.currentMarketFitConfidence, null),
+    entryWeatherFitMatchedFamily: row.entryWeatherFitMatchedFamily ?? null,
 
     isMirrorMicroFamily: false,
     outcomeMirror: false,
@@ -1826,7 +2019,7 @@ export function updateOutcome(stats, row = {}, source = SOURCE_VIRTUAL) {
     ts: row.closedAt || row.completedAt || now()
   });
 
-  stats.recentOutcomes = stats.recentOutcomes.slice(-30);
+  stats.recentOutcomes = stats.recentOutcomes.slice(-50);
   stats.updatedAt = now();
 
   return refreshStats(stats);
@@ -1928,73 +2121,105 @@ function buildAvgRScore({
 export function refreshStats(stats) {
   ensureStatsShape(stats);
 
+  const hasBuckets = hasSourceBuckets(stats);
   const sourceCounts = weightedSourceCounts(stats);
   const sourceTotals = weightedSourceTotals(stats);
   const recent = aggregateRecentOutcomes(stats);
 
   const actualCounts = actualOutcomeCounts(stats);
 
-  const closedCompleted = Math.max(
-    closedCompletedCount(stats),
-    actualCounts.completed,
-    recent.actualCompleted
-  );
+  const closedCompleted = hasBuckets
+    ? closedCompletedCount(stats)
+    : Math.max(
+      safeNumber(stats.completed, 0),
+      actualCounts.completed,
+      recent.actualCompleted
+    );
 
-  const weightedCompletedForR = Math.max(
-    weightedCompletedCount(stats),
-    sourceCounts.completed,
-    recent.completed
-  );
+  const weightedCompletedForR = hasBuckets
+    ? weightedCompletedCount(stats)
+    : Math.max(
+      safeNumber(stats.completed, 0),
+      sourceCounts.completed,
+      recent.completed
+    );
 
-  const weightedWins = Math.max(
-    safeNumber(stats.wins, 0),
-    sourceCounts.wins,
-    recent.wins
-  );
+  const weightedWins = hasBuckets
+    ? sourceCounts.wins
+    : Math.max(
+      safeNumber(stats.wins, 0),
+      recent.wins
+    );
 
-  const weightedLosses = Math.max(
-    safeNumber(stats.losses, 0),
-    sourceCounts.losses,
-    recent.losses
-  );
+  const weightedLosses = hasBuckets
+    ? sourceCounts.losses
+    : Math.max(
+      safeNumber(stats.losses, 0),
+      recent.losses
+    );
 
-  const weightedFlats = Math.max(
-    safeNumber(stats.flats, 0),
-    sourceCounts.flats,
-    recent.flats
-  );
+  const weightedFlats = hasBuckets
+    ? sourceCounts.flats
+    : Math.max(
+      safeNumber(stats.flats, 0),
+      recent.flats
+    );
 
-  const totalR = preferRecentSourceOrStored(
-    stats.totalR,
-    sourceTotals.totalR,
-    recent.totalR
-  );
+  const totalR = chooseTotal({
+    sourceValue: sourceTotals.totalR,
+    storedValue: stats.totalR,
+    recentValue: recent.totalR,
+    sourceCompleted: sourceCounts.completed,
+    storedCompleted: safeNumber(stats.completed, 0),
+    recentCompleted: recent.completed
+  });
 
-  const totalPnlPct = preferRecentSourceOrStored(
-    stats.totalPnlPct,
-    sourceTotals.totalPnlPct,
-    recent.totalPnlPct
-  );
+  const totalPnlPct = chooseTotal({
+    sourceValue: sourceTotals.totalPnlPct,
+    storedValue: stats.totalPnlPct,
+    recentValue: recent.totalPnlPct,
+    sourceCompleted: sourceCounts.completed,
+    storedCompleted: safeNumber(stats.completed, 0),
+    recentCompleted: recent.completed
+  });
 
-  const totalCostR = preferRecentSourceOrStored(
-    stats.totalCostR,
-    sourceTotals.totalCostR,
-    recent.totalCostR
-  );
+  let totalCostR = chooseTotal({
+    sourceValue: sourceTotals.totalCostR,
+    storedValue: stats.totalCostR,
+    recentValue: recent.totalCostR,
+    sourceCompleted: sourceCounts.completed,
+    storedCompleted: safeNumber(stats.completed, 0),
+    recentCompleted: recent.completed
+  });
 
-  const grossWinR = maxPositive(
-    stats.grossWinR,
-    sourceTotals.grossWinR,
-    recent.grossWinR,
-    totalR > 0 && weightedLosses <= 0 ? totalR : 0
-  );
+  let costStatsInferredFromRecent = false;
 
-  const grossLossR = maxPositive(
-    stats.grossLossR,
-    sourceTotals.grossLossR,
-    recent.grossLossR,
-    totalR < 0 && weightedWins <= 0 ? Math.abs(totalR) : 0
-  );
+  if (
+    weightedCompletedForR > 0 &&
+    totalCostR <= 0 &&
+    recent.completed > 0 &&
+    recent.totalCostR > 0
+  ) {
+    const recentAvgCostR = recent.totalCostR / recent.completed;
+    totalCostR = recentAvgCostR * weightedCompletedForR;
+    costStatsInferredFromRecent = true;
+  }
+
+  const grossWinR = hasBuckets
+    ? sourceTotals.grossWinR
+    : maxPositive(
+      stats.grossWinR,
+      recent.grossWinR,
+      totalR > 0 && weightedLosses <= 0 ? totalR : 0
+    );
+
+  const grossLossR = hasBuckets
+    ? sourceTotals.grossLossR
+    : maxPositive(
+      stats.grossLossR,
+      recent.grossLossR,
+      totalR < 0 && weightedWins <= 0 ? Math.abs(totalR) : 0
+    );
 
   const winrateSample = safeNumber(actualCounts.completed, 0);
   const winrateWins = safeNumber(actualCounts.wins, 0);
@@ -2030,39 +2255,74 @@ export function refreshStats(stats) {
 
   const profitFactor =
     grossLossR > 0 ? grossWinR / grossLossR :
-    grossWinR > 0 ? 99 :
-    0;
+      grossWinR > 0 ? 99 :
+        0;
+
+  const directSLCount = safeNumber(stats.directSLCount, 0) > 0
+    ? safeNumber(stats.directSLCount, 0)
+    : recent.directSLCount;
+
+  const directSLStatsInferredFromRecent =
+    safeNumber(stats.directSLCount, 0) <= 0 && recent.directSLCount > 0;
+
+  const nearTpCount = safeNumber(stats.nearTpCount, 0) > 0
+    ? safeNumber(stats.nearTpCount, 0)
+    : recent.nearTpCount;
+
+  const reachedHalfRCount = safeNumber(stats.reachedHalfRCount, 0) > 0
+    ? safeNumber(stats.reachedHalfRCount, 0)
+    : recent.reachedHalfRCount;
+
+  const reachedOneRCount = safeNumber(stats.reachedOneRCount, 0) > 0
+    ? safeNumber(stats.reachedOneRCount, 0)
+    : recent.reachedOneRCount;
+
+  const beWouldExitCount = safeNumber(stats.beWouldExitCount, 0) > 0
+    ? safeNumber(stats.beWouldExitCount, 0)
+    : recent.beWouldExitCount;
+
+  const gaveBackAfterHalfRCount = safeNumber(stats.gaveBackAfterHalfRCount, 0) > 0
+    ? safeNumber(stats.gaveBackAfterHalfRCount, 0)
+    : recent.gaveBackAfterHalfRCount;
+
+  const gaveBackAfterOneRCount = safeNumber(stats.gaveBackAfterOneRCount, 0) > 0
+    ? safeNumber(stats.gaveBackAfterOneRCount, 0)
+    : recent.gaveBackAfterOneRCount;
+
+  const nearTpThenLossCount = safeNumber(stats.nearTpThenLossCount, 0) > 0
+    ? safeNumber(stats.nearTpThenLossCount, 0)
+    : recent.nearTpThenLossCount;
 
   const directSLPct = weightedCompletedForR > 0
-    ? safeNumber(stats.directSLCount, 0) / weightedCompletedForR
+    ? directSLCount / weightedCompletedForR
     : 0;
 
   const nearTpPct = weightedCompletedForR > 0
-    ? safeNumber(stats.nearTpCount, 0) / weightedCompletedForR
+    ? nearTpCount / weightedCompletedForR
     : 0;
 
   const reachedHalfRPct = weightedCompletedForR > 0
-    ? safeNumber(stats.reachedHalfRCount, 0) / weightedCompletedForR
+    ? reachedHalfRCount / weightedCompletedForR
     : 0;
 
   const reachedOneRPct = weightedCompletedForR > 0
-    ? safeNumber(stats.reachedOneRCount, 0) / weightedCompletedForR
+    ? reachedOneRCount / weightedCompletedForR
     : 0;
 
   const beWouldExitPct = weightedCompletedForR > 0
-    ? safeNumber(stats.beWouldExitCount, 0) / weightedCompletedForR
+    ? beWouldExitCount / weightedCompletedForR
     : 0;
 
   const gaveBackAfterHalfRPct = weightedCompletedForR > 0
-    ? safeNumber(stats.gaveBackAfterHalfRCount, 0) / weightedCompletedForR
+    ? gaveBackAfterHalfRCount / weightedCompletedForR
     : 0;
 
   const gaveBackAfterOneRPct = weightedCompletedForR > 0
-    ? safeNumber(stats.gaveBackAfterOneRCount, 0) / weightedCompletedForR
+    ? gaveBackAfterOneRCount / weightedCompletedForR
     : 0;
 
   const nearTpThenLossPct = weightedCompletedForR > 0
-    ? safeNumber(stats.nearTpThenLossCount, 0) / weightedCompletedForR
+    ? nearTpThenLossCount / weightedCompletedForR
     : 0;
 
   const avgCostR = weightedCompletedForR > 0
@@ -2162,6 +2422,16 @@ export function refreshStats(stats) {
 
     profitFactor: round4(profitFactor),
 
+    directSLCount: round4(directSLCount),
+    nearTpCount: round4(nearTpCount),
+    reachedHalfRCount: round4(reachedHalfRCount),
+    reachedOneRCount: round4(reachedOneRCount),
+
+    beWouldExitCount: round4(beWouldExitCount),
+    gaveBackAfterHalfRCount: round4(gaveBackAfterHalfRCount),
+    gaveBackAfterOneRCount: round4(gaveBackAfterOneRCount),
+    nearTpThenLossCount: round4(nearTpThenLossCount),
+
     directSLPct: round4(directSLPct),
     nearTpPct: round4(nearTpPct),
     reachedHalfRPct: round4(reachedHalfRPct),
@@ -2173,6 +2443,9 @@ export function refreshStats(stats) {
     nearTpThenLossPct: round4(nearTpThenLossPct),
 
     avgCostR: round4(avgCostR),
+    costStatsInferredFromRecent,
+    directSLStatsInferredFromRecent,
+
     balancedScore: round4(balancedScore),
     dashboardBalancedScore: round4(balancedScore),
 
@@ -2220,6 +2493,17 @@ export function refreshStats(stats) {
 
     defaultRanking: 'dashboardBalancedScore|balancedScore|fairWinrate|totalR|avgR|avgCostR',
     bareWinrateRankingDisabled: true,
+    rankingUsesBalancedScore: true,
+    rankingUsesFairWinrate: true,
+    rankingUsesTotalR: true,
+    rankingUsesAvgR: true,
+    rankingUsesAvgCostR: true,
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+    selectionWillBeAdaptive: true,
+    discordWillBeStrict: true,
 
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
