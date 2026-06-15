@@ -79,6 +79,13 @@ const DEFAULT_TRADE_EVERY_SCANNER_CANDIDATE_VIRTUAL = true;
 const DEFAULT_ALLOW_STANDARDIZED_LEARNING_RISK_FALLBACK = true;
 const DEFAULT_ALLOW_STANDARDIZED_LEARNING_RISK_VIRTUAL_ENTRIES = true;
 
+const DEFAULT_DISCORD_REQUIRE_CURRENT_FIT = true;
+const DEFAULT_DISCORD_MIN_CURRENT_FIT_CONFIDENCE = 35;
+const DEFAULT_CURRENT_FIT_MAX_WEATHER_AGE_SEC = 15 * 60;
+
+const MARKET_WEATHER_KEY = 'MARKET:WEATHER:LATEST';
+const MARKET_UNIVERSE_KEY = 'MARKET:UNIVERSE:LATEST';
+
 const FREEZE_MEASUREMENT_RECOMMENDED_DAYS = 14;
 const MIN_COMPLETED_EARLY_SIGNAL = 20;
 const MIN_COMPLETED_REASONABLE_SIGNAL = 50;
@@ -434,7 +441,12 @@ function virtualFlags(row = {}) {
 
     observationFirst: true,
     observationFirstLearning: true,
-    everyAnalyzeRowCountsSeen: true,
+    everyAnalyzeRowCountsSeen: false,
+    observationAlwaysCounted: false,
+    observationDedupeRequired: true,
+    observationDedupeEnabled: true,
+    seenDefinition: 'UNIQUE_SNAPSHOT_SYMBOL_TRUE_MICRO_OBSERVATION_ONLY',
+    observationDedupeKeySource: 'snapshotId|symbol|trueMicroFamilyId|entry',
 
     scannerFingerprintRole: 'METADATA_ONLY',
     scannerFingerprintOnlyMetadata: true,
@@ -461,21 +473,33 @@ function virtualFlags(row = {}) {
     disciplinedMeasurement: true,
     recommendedFreezeDays: FREEZE_MEASUREMENT_RECOMMENDED_DAYS,
 
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    currentFitBlocksVirtualLearning: false,
+    currentFitBlocksShadowLearning: false,
+    learningRemainsBroad: true,
+    selectionIsAdaptive: true,
+    discordWillBeStrict: true,
+
     discordOnlyForSelectedMicroFamilies: true,
     discordOnlyForExactTrueMicroMatch: true,
+    discordRequiresCurrentFit: discordRequiresCurrentFit(),
     manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
 
     completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
+    completedOnlyClosedVirtualOrShadow: true,
     scoringRSource: 'netR',
     winsLossesFlatsSource: 'netR',
     winrateDefinition: 'netR > 0',
     avgRSource: 'netR',
     totalRSource: 'netR',
     avgCostRShown: true,
+    avgCostRSource: 'costR',
 
-    defaultRanking: 'dashboardBalancedScore|balancedScore|fairWinrate',
+    defaultRanking: 'adaptiveScore|dashboardBalancedScore|balancedScore|fairWinrate|totalR|avgR|avgCostR',
     defaultRankingNeverBareWinrate: true,
     noBareWinrateRanking: true,
+    rawWinrateRankingDisabled: true,
 
     minCompletedForActiveLearning: MIN_COMPLETED_ACTIVE_LEARNING,
 
@@ -716,6 +740,33 @@ function sizingConfig() {
       0.0025
     )
   };
+}
+
+function discordRequiresCurrentFit() {
+  return cfgBoolean(
+    CONFIG.long?.trade?.discordRequiresCurrentFit ??
+      CONFIG.trade?.discordRequiresCurrentFit,
+    DEFAULT_DISCORD_REQUIRE_CURRENT_FIT
+  );
+}
+
+function discordMinCurrentFitConfidence() {
+  return clampNumber(
+    CONFIG.long?.trade?.discordMinCurrentFitConfidence ??
+      CONFIG.trade?.discordMinCurrentFitConfidence,
+    0,
+    100
+  ) || DEFAULT_DISCORD_MIN_CURRENT_FIT_CONFIDENCE;
+}
+
+function currentFitMaxWeatherAgeSec() {
+  return positiveInt(
+    CONFIG.long?.trade?.currentFitMaxWeatherAgeSec ??
+      CONFIG.trade?.currentFitMaxWeatherAgeSec,
+    DEFAULT_CURRENT_FIT_MAX_WEATHER_AGE_SEC,
+    30,
+    24 * 3600
+  );
 }
 
 function actionCounts(actions = []) {
@@ -1426,6 +1477,361 @@ function normalizeExactTrueMicroRow(row = {}) {
   };
 }
 
+function normalizeMarketRegime(value = '') {
+  const text = upper(value);
+
+  if (!text) return 'UNKNOWN';
+  if (text.includes('SQUEEZE') || text.includes('COMPRESS')) return 'SQUEEZE';
+  if (text.includes('CHOP') || text.includes('RANGE') || text.includes('SIDEWAY')) return 'CHOP';
+  if (text.includes('TREND') || text.includes('MOMENTUM') || text.includes('DIRECTION')) return 'TREND';
+
+  return 'UNKNOWN';
+}
+
+function normalizeMarketTrendSide(value = '') {
+  const side = normalizeTradeSide(value);
+
+  if (side === TARGET_TRADE_SIDE) return TARGET_TRADE_SIDE;
+  if (side === OPPOSITE_TRADE_SIDE) return OPPOSITE_TRADE_SIDE;
+
+  const text = upper(value);
+
+  if (!text) return 'UNKNOWN';
+  if (text.includes('NEUTRAL') || text.includes('MIXED') || text.includes('FLAT')) return 'NEUTRAL';
+  if (text.includes('RISK_OFF')) return OPPOSITE_TRADE_SIDE;
+  if (text.includes('RISK_ON')) return TARGET_TRADE_SIDE;
+
+  return 'UNKNOWN';
+}
+
+function firstFinite(...values) {
+  for (const value of values) {
+    const n = Number(value);
+
+    if (Number.isFinite(n)) return n;
+  }
+
+  return null;
+}
+
+function extractMarketWeatherShape(weather = {}, universe = {}) {
+  const source = weather && typeof weather === 'object' ? weather : {};
+  const universeSource = universe && typeof universe === 'object' ? universe : {};
+
+  const createdAt = safeNumber(
+    source.createdAt ??
+      source.completedAt ??
+      source.updatedAt ??
+      source.ts ??
+      universeSource.createdAt ??
+      universeSource.completedAt ??
+      universeSource.updatedAt ??
+      universeSource.ts,
+    0
+  );
+
+  const regime = normalizeMarketRegime(
+    source.currentRegime ??
+      source.regime ??
+      source.marketRegime ??
+      source.breadthRegime ??
+      source.volatilityRegime ??
+      universeSource.currentRegime ??
+      universeSource.regime
+  );
+
+  const trendSide = normalizeMarketTrendSide(
+    source.currentTrendSide ??
+      source.trendSide ??
+      source.marketSide ??
+      source.side ??
+      source.direction ??
+      source.breadthSide ??
+      source.btcTrendSide ??
+      universeSource.currentTrendSide ??
+      universeSource.trendSide ??
+      universeSource.marketSide
+  );
+
+  const bullishPct = firstFinite(
+    source.bullishPct,
+    source.longPct,
+    source.upPct,
+    source.breadthBullishPct,
+    source.universeBullishPct,
+    universeSource.bullishPct,
+    universeSource.longPct,
+    universeSource.upPct
+  );
+
+  const bearishPct = firstFinite(
+    source.bearishPct,
+    source.shortPct,
+    source.downPct,
+    source.breadthBearishPct,
+    source.universeBearishPct,
+    universeSource.bearishPct,
+    universeSource.shortPct,
+    universeSource.downPct
+  );
+
+  const squeezePct = firstFinite(
+    source.squeezePct,
+    source.compressionPct,
+    source.breadthSqueezePct,
+    universeSource.squeezePct,
+    universeSource.compressionPct
+  );
+
+  const confidence = clampNumber(
+    firstFinite(
+      source.confidence,
+      source.weatherConfidence,
+      source.currentTrendConfidence,
+      source.breadthConfidence,
+      universeSource.confidence
+    ) ?? 50,
+    0,
+    100
+  );
+
+  const stale = createdAt > 0
+    ? (now() - createdAt) / 1000 > currentFitMaxWeatherAgeSec()
+    : true;
+
+  return {
+    ok: Boolean(source && Object.keys(source).length),
+    source,
+    universe: universeSource,
+    createdAt,
+    ageSec: createdAt > 0 ? Math.round((now() - createdAt) / 1000) : null,
+    stale,
+    regime,
+    trendSide,
+    bullishPct,
+    bearishPct,
+    squeezePct,
+    confidence,
+    key: MARKET_WEATHER_KEY,
+    universeKey: MARKET_UNIVERSE_KEY
+  };
+}
+
+async function loadMarketContext() {
+  const redis = getVolatileRedis();
+
+  const [weather, universe] = await Promise.all([
+    getJson(redis, MARKET_WEATHER_KEY, null).catch(() => null),
+    getJson(redis, MARKET_UNIVERSE_KEY, null).catch(() => null)
+  ]);
+
+  return extractMarketWeatherShape(weather || {}, universe || {});
+}
+
+function scoreMarketFit(row = {}, marketContext = {}) {
+  if (!marketContext?.ok) {
+    return {
+      currentFit: 'UNKNOWN',
+      currentFitScore: 0,
+      currentFitConfidence: 0,
+      currentFitReason: 'MARKET_WEATHER_UNAVAILABLE',
+      currentFitSoftOnly: true,
+      currentFitBlocksLearning: false,
+      currentFitBlocksVirtualLearning: false,
+      currentFitBlocksShadowLearning: false
+    };
+  }
+
+  if (marketContext.stale) {
+    return {
+      currentFit: 'UNKNOWN',
+      currentFitScore: 0,
+      currentFitConfidence: 0,
+      currentFitReason: 'MARKET_WEATHER_STALE',
+      currentFitSoftOnly: true,
+      currentFitBlocksLearning: false,
+      currentFitBlocksVirtualLearning: false,
+      currentFitBlocksShadowLearning: false
+    };
+  }
+
+  const familyRegime = normalizeMarketRegime(row.regimeBucket || row.regime || row.regimeCoarse);
+  const confirmation = upper(row.confirmationProfile);
+  const marketRegime = marketContext.regime;
+  const trendSide = marketContext.trendSide;
+
+  let score = 0;
+  const reasons = [];
+
+  if (trendSide === TARGET_TRADE_SIDE) {
+    score += 30;
+    reasons.push('MARKET_TREND_LONG');
+  } else if (trendSide === 'NEUTRAL' || trendSide === 'UNKNOWN') {
+    score += 4;
+    reasons.push('MARKET_TREND_NEUTRAL_OR_UNKNOWN');
+  } else {
+    score -= 45;
+    reasons.push('MARKET_TREND_AGAINST_LONG');
+  }
+
+  if (familyRegime !== 'UNKNOWN' && marketRegime !== 'UNKNOWN') {
+    if (familyRegime === marketRegime) {
+      score += 25;
+      reasons.push('FAMILY_REGIME_MATCH');
+    } else if (
+      (familyRegime === 'TREND' && marketRegime === 'SQUEEZE') ||
+      (familyRegime === 'SQUEEZE' && marketRegime === 'TREND')
+    ) {
+      score += 8;
+      reasons.push('FAMILY_REGIME_ADJACENT');
+    } else {
+      score -= 15;
+      reasons.push('FAMILY_REGIME_MISMATCH');
+    }
+  } else {
+    reasons.push('FAMILY_OR_MARKET_REGIME_UNKNOWN');
+  }
+
+  const bullishPct = marketContext.bullishPct;
+  const bearishPct = marketContext.bearishPct;
+  const squeezePct = marketContext.squeezePct;
+
+  if (Number.isFinite(bullishPct)) {
+    if (bullishPct >= 60) {
+      score += 15;
+      reasons.push('BULLISH_BREADTH_STRONG');
+    } else if (bullishPct >= 50) {
+      score += 8;
+      reasons.push('BULLISH_BREADTH_OK');
+    } else if (bullishPct < 40) {
+      score -= 12;
+      reasons.push('BULLISH_BREADTH_WEAK');
+    }
+  }
+
+  if (Number.isFinite(bearishPct) && bearishPct >= 60) {
+    score -= 20;
+    reasons.push('BEARISH_BREADTH_STRONG');
+  }
+
+  if (familyRegime === 'SQUEEZE' && Number.isFinite(squeezePct) && squeezePct >= 40) {
+    score += 10;
+    reasons.push('SQUEEZE_BREADTH_SUPPORTS_SETUP');
+  }
+
+  if (confirmation === 'A_STRONG_ALIGN') score += 8;
+  if (confirmation === 'B_FLOW_ALIGN') score += 5;
+  if (confirmation === 'C_VOLUME_ALIGN') score += 3;
+  if (confirmation === 'E_WEAK_CONTRA') {
+    score -= 18;
+    reasons.push('WEAK_CONTRA_CONFIRMATION');
+  }
+
+  const confidence = clampNumber(
+    marketContext.confidence + Math.min(20, Math.abs(score) / 2),
+    0,
+    100
+  );
+
+  const finalScore = clampNumber(score, -100, 100);
+
+  let currentFit = 'NEUTRAL';
+
+  if (finalScore >= 45) currentFit = 'MATCH';
+  else if (finalScore >= 18) currentFit = 'WEAK_MATCH';
+  else if (finalScore <= -25) currentFit = 'MISFIT';
+
+  return {
+    currentFit,
+    currentFitScore: Number(finalScore.toFixed(4)),
+    currentFitConfidence: Number(confidence.toFixed(2)),
+    currentFitReason: reasons.join('|') || 'NO_CURRENT_FIT_REASON',
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    currentFitBlocksVirtualLearning: false,
+    currentFitBlocksShadowLearning: false
+  };
+}
+
+function attachCurrentFitContext(row = {}, marketContext = {}) {
+  const fit = scoreMarketFit(row, marketContext);
+
+  return {
+    ...row,
+
+    currentMarketWeather: marketContext?.source || null,
+    currentMarketUniverse: marketContext?.universe || null,
+    currentMarketWeatherKey: MARKET_WEATHER_KEY,
+    currentMarketUniverseKey: MARKET_UNIVERSE_KEY,
+    currentMarketWeatherAgeSec: marketContext?.ageSec ?? null,
+    currentMarketWeatherStale: Boolean(marketContext?.stale),
+
+    currentRegime: marketContext?.regime || 'UNKNOWN',
+    currentTrendSide: marketContext?.trendSide || 'UNKNOWN',
+    currentBullishPct: marketContext?.bullishPct ?? null,
+    currentBearishPct: marketContext?.bearishPct ?? null,
+    currentSqueezePct: marketContext?.squeezePct ?? null,
+
+    entryMarketWeather: marketContext?.source || null,
+    entryCurrentRegime: marketContext?.regime || 'UNKNOWN',
+    entryCurrentTrendSide: marketContext?.trendSide || 'UNKNOWN',
+    entryCurrentFit: fit.currentFit,
+    entryCurrentFitConfidence: fit.currentFitConfidence,
+    entryWeatherFitMatchedFamily: fit.currentFit === 'MATCH' || fit.currentFit === 'WEAK_MATCH',
+
+    ...fit
+  };
+}
+
+function discordCurrentFitGate(row = {}) {
+  if (!discordRequiresCurrentFit()) {
+    return {
+      ok: true,
+      reason: 'CURRENT_FIT_NOT_REQUIRED_BY_CONFIG',
+      currentFit: row.currentFit || row.entryCurrentFit || 'NOT_REQUIRED',
+      currentFitConfidence: safeNumber(row.currentFitConfidence ?? row.entryCurrentFitConfidence, 0)
+    };
+  }
+
+  const fit = upper(row.currentFit || row.entryCurrentFit);
+  const confidence = safeNumber(row.currentFitConfidence ?? row.entryCurrentFitConfidence, 0);
+
+  if (!fit || fit === 'UNKNOWN') {
+    return {
+      ok: false,
+      reason: 'DISCORD_BLOCKED_CURRENT_FIT_UNKNOWN',
+      currentFit: fit || 'UNKNOWN',
+      currentFitConfidence: confidence
+    };
+  }
+
+  if (confidence < discordMinCurrentFitConfidence()) {
+    return {
+      ok: false,
+      reason: 'DISCORD_BLOCKED_CURRENT_FIT_CONFIDENCE_TOO_LOW',
+      currentFit: fit,
+      currentFitConfidence: confidence,
+      minCurrentFitConfidence: discordMinCurrentFitConfidence()
+    };
+  }
+
+  if (fit === 'MATCH' || fit === 'WEAK_MATCH') {
+    return {
+      ok: true,
+      reason: 'DISCORD_CURRENT_FIT_OK',
+      currentFit: fit,
+      currentFitConfidence: confidence
+    };
+  }
+
+  return {
+    ok: false,
+    reason: `DISCORD_BLOCKED_CURRENT_FIT_${fit}`,
+    currentFit: fit,
+    currentFitConfidence: confidence
+  };
+}
+
 function buildAnalysisVariant(candidate = {}, side, scannerSide) {
   const tradeSide = normalizeTradeSide(side);
   const actualScannerSide = normalizeTradeSide(scannerSide);
@@ -1468,6 +1874,12 @@ function waitAction(candidate, reason, extra = {}) {
     virtualTracked: false,
     liveEligible: false,
     discordAlertEligible: false,
+
+    currentFit: candidate?.currentFit || candidate?.entryCurrentFit || null,
+    currentFitScore: candidate?.currentFitScore ?? null,
+    currentFitConfidence: candidate?.currentFitConfidence ?? candidate?.entryCurrentFitConfidence ?? null,
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
 
     ...sideFlags(),
     ...virtualFlags(candidate),
@@ -1551,9 +1963,21 @@ function buildVirtualExitAction(outcome = {}) {
     reachedOneR: Boolean(outcome.reachedOneR),
     nearTpSeen: Boolean(outcome.nearTpSeen),
 
+    directToSL: Boolean(outcome.directToSL || outcome.directSL),
+    directSL: Boolean(outcome.directSL || outcome.directToSL),
+
     tpHitNow: Boolean(outcome.tpHitNow || outcome.exitReason === 'TP'),
     slHitNow: Boolean(outcome.slHitNow || outcome.exitReason === 'SL'),
     timeStopHitNow: Boolean(outcome.timeStopHitNow || outcome.exitReason === 'TIME_STOP'),
+
+    entryMarketWeather: outcome.entryMarketWeather || null,
+    entryCurrentRegime: outcome.entryCurrentRegime || outcome.currentRegime || null,
+    entryCurrentTrendSide: outcome.entryCurrentTrendSide || outcome.currentTrendSide || null,
+    entryCurrentFit: outcome.entryCurrentFit || outcome.currentFit || null,
+    entryCurrentFitConfidence: outcome.entryCurrentFitConfidence ?? outcome.currentFitConfidence ?? null,
+    entryWeatherFitMatchedFamily: outcome.entryWeatherFitMatchedFamily ?? null,
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
 
     discordExitAlertSent: Boolean(outcome.discordExitAlertSent),
 
@@ -1703,6 +2127,7 @@ function buildSelectedAlertContext(activeRotation) {
     selectionPurpose: 'DISCORD_ALERT_ONLY',
     manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
     discordSelectionRule: 'EXACT_75_CHILD_TRUE_MICRO_FAMILY_ID_ONLY',
+    discordRequiresCurrentFit: discordRequiresCurrentFit(),
 
     ...taxonomyFlags(),
     ...isolationFlags()
@@ -2177,6 +2602,11 @@ function enrichMetricsWithScannerAndLiveGates({
     tradeEveryScannerCandidateVirtual: cfg.tradeEveryScannerCandidateVirtual,
     riskEnginePreferredButNotRequiredForLearning: true,
     standardizedLearningRiskFallbackEnabled: cfg.allowStandardizedLearningRiskFallback,
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    currentFitBlocksVirtualLearning: false,
+    currentFitBlocksShadowLearning: false,
 
     minLiveCandles15m: cfg.minLiveCandles15m,
 
@@ -2727,12 +3157,15 @@ function buildVirtualEntryAction({
   selectedWeeklyStats,
   riskFraction,
   virtualGate,
+  selectedExactMicroMatch,
   discordAlertEligible
 }) {
   const normalized = normalizeExactTrueMicroRow(row);
   const trueMicroFamilyId = getTrueMicroFamilyId(normalized);
   const parentTrueMicroFamilyId = getParentTrueMicroFamilyId(normalized);
   const parsed = parseLongTaxonomyMicroId(trueMicroFamilyId);
+  const currentFitGate = discordCurrentFitGate(row);
+  const finalDiscordAlertEligible = Boolean(discordAlertEligible && currentFitGate.ok);
 
   return {
     ...normalized,
@@ -2774,13 +3207,17 @@ function buildVirtualEntryAction({
     selectedRotationId: alertContext.rotationId,
     activeRotationId: alertContext.rotationId,
 
-    selectedMicroFamilyAlert: Boolean(discordAlertEligible),
-    discordAlertEligible: Boolean(discordAlertEligible),
-    discordAlertReason: discordAlertEligible
-      ? 'SELECTED_LONG_TRUE_MICRO_FAMILY_EXACT_75_CHILD_MATCH'
-      : alertContext.empty
-        ? 'NO_MANUAL_75_CHILD_TRUE_MICRO_FAMILY_SELECTED'
-        : 'TRUE_MICRO_FAMILY_NOT_SELECTED_FOR_DISCORD_ALERT',
+    selectedMicroFamilyAlert: Boolean(finalDiscordAlertEligible),
+    selectedExactMicroMatch: Boolean(selectedExactMicroMatch),
+    discordAlertEligible: Boolean(finalDiscordAlertEligible),
+    discordCurrentFitGate: currentFitGate,
+    discordAlertReason: finalDiscordAlertEligible
+      ? 'SELECTED_LONG_TRUE_MICRO_FAMILY_EXACT_75_CHILD_MATCH_AND_CURRENT_FIT_OK'
+      : !selectedExactMicroMatch
+        ? alertContext.empty
+          ? 'NO_MANUAL_75_CHILD_TRUE_MICRO_FAMILY_SELECTED'
+          : 'TRUE_MICRO_FAMILY_NOT_SELECTED_FOR_DISCORD_ALERT'
+        : currentFitGate.reason || 'CURRENT_FIT_BLOCKED_DISCORD_ALERT',
 
     selectedMacroFamilyId: null,
     activeMacroFamilyId: null,
@@ -2795,7 +3232,7 @@ function buildVirtualEntryAction({
 
     btcRelation: row.btcRelation,
 
-    liveEligible: Boolean(discordAlertEligible),
+    liveEligible: Boolean(finalDiscordAlertEligible),
 
     outcomeIdentityLocked: true,
     outcomeIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
@@ -2825,6 +3262,28 @@ function buildVirtualEntryAction({
     riskEngineRisk: Boolean(row.riskEngineRisk),
     standardizedLearningRisk: Boolean(row.standardizedLearningRisk),
 
+    entryMarketWeather: row.entryMarketWeather || row.currentMarketWeather || null,
+    entryCurrentRegime: row.entryCurrentRegime || row.currentRegime || null,
+    entryCurrentTrendSide: row.entryCurrentTrendSide || row.currentTrendSide || null,
+    entryCurrentFit: row.entryCurrentFit || row.currentFit || null,
+    entryCurrentFitConfidence: row.entryCurrentFitConfidence ?? row.currentFitConfidence ?? null,
+    entryWeatherFitMatchedFamily: row.entryWeatherFitMatchedFamily ?? (
+      row.currentFit === 'MATCH' ||
+      row.currentFit === 'WEAK_MATCH'
+    ),
+
+    currentMarketWeather: row.currentMarketWeather || null,
+    currentMarketWeatherAgeSec: row.currentMarketWeatherAgeSec ?? null,
+    currentMarketWeatherStale: Boolean(row.currentMarketWeatherStale),
+    currentFit: row.currentFit || row.entryCurrentFit || null,
+    currentFitScore: row.currentFitScore ?? null,
+    currentFitConfidence: row.currentFitConfidence ?? row.entryCurrentFitConfidence ?? null,
+    currentFitReason: row.currentFitReason || null,
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    currentFitBlocksVirtualLearning: false,
+    currentFitBlocksShadowLearning: false,
+
     entryRelaxationProfile: ENTRY_RELAXATION_PROFILE,
     qualityMeasurementProfile: QUALITY_MEASUREMENT_PROFILE,
 
@@ -2838,7 +3297,7 @@ function maybeSendDiscordEntryAlert(entry = {}) {
       sent: false,
       skipped: true,
       queued: false,
-      reason: entry.discordAlertReason || 'TRUE_MICRO_FAMILY_NOT_SELECTED_FOR_DISCORD_ALERT'
+      reason: entry.discordAlertReason || 'TRUE_MICRO_FAMILY_NOT_SELECTED_OR_CURRENT_FIT_BLOCKED'
     };
   }
 
@@ -2911,7 +3370,8 @@ function buildQualityAudit({
   virtualExits,
   counts,
   openPositionCountBeforeEntries,
-  openPositionCountAfterEntries
+  openPositionCountAfterEntries,
+  marketContext
 }) {
   const candidateCount = candidates.length;
   const processedCount = processed.length;
@@ -2960,9 +3420,18 @@ function buildQualityAudit({
     riskEnginePreferredButNotRequiredForLearning: true,
     standardizedLearningRiskFallbackEnabled: true,
 
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    currentFitBlocksVirtualLearning: false,
+    currentFitBlocksShadowLearning: false,
+    selectionIsAdaptive: true,
+    discordWillBeStrict: true,
+
     discordOnlyForSelectedMicroFamilies: true,
     discordOnlyForExactTrueMicroMatch: true,
     discordSelectionRule: 'EXACT_75_CHILD_TRUE_MICRO_FAMILY_ID_ONLY',
+    discordRequiresCurrentFit: discordRequiresCurrentFit(),
+    discordMinCurrentFitConfidence: discordMinCurrentFitConfidence(),
 
     completedIsPureClosedVirtualOutcome: true,
     completedComesOnlyFrom: 'TP_SL_OR_TIME_STOP',
@@ -2975,6 +3444,20 @@ function buildQualityAudit({
       reasonableSignal: MIN_COMPLETED_REASONABLE_SIGNAL,
       strongSignal: MIN_COMPLETED_STRONG_SIGNAL,
       activeLearning: MIN_COMPLETED_ACTIVE_LEARNING
+    },
+
+    marketWeather: {
+      available: Boolean(marketContext?.ok),
+      key: MARKET_WEATHER_KEY,
+      universeKey: MARKET_UNIVERSE_KEY,
+      ageSec: marketContext?.ageSec ?? null,
+      stale: Boolean(marketContext?.stale),
+      regime: marketContext?.regime || 'UNKNOWN',
+      trendSide: marketContext?.trendSide || 'UNKNOWN',
+      bullishPct: marketContext?.bullishPct ?? null,
+      bearishPct: marketContext?.bearishPct ?? null,
+      squeezePct: marketContext?.squeezePct ?? null,
+      confidence: marketContext?.confidence ?? null
     },
 
     snapshot: {
@@ -3002,6 +3485,7 @@ function buildQualityAudit({
       waitRows,
       skippedByExistingSymbol: counts.skippedByExistingSymbol || 0,
       selectedAlertMicroMatches: counts.selectedAlertMicroMatches || 0,
+      discordCurrentFitBlockedRows: counts.discordCurrentFitBlockedRows || 0,
       openPositionCountBeforeEntries,
       openPositionCountAfterEntries
     },
@@ -3021,16 +3505,18 @@ function buildQualityAudit({
     topWaitReasons: topReasonCounts(actions, 12),
 
     interpretation: {
-      healthy: 'Scanner coins worden breed virtueel getraded, Analyze zet risk-valid rows exact in een 75-child trueMicroFamilyId, completed komt later via TP/SL/TIME_STOP.',
+      healthy: 'Scanner coins worden breed virtueel getraded. Analyze zet risk-valid rows exact in een 75-child trueMicroFamilyId. completed komt later via TP/SL/TIME_STOP.',
+      currentFit: 'CurrentFit blokkeert geen virtual learning. Het beïnvloedt alleen Discord-eligibility en downstream adaptive selection.',
       ifVirtualCreatedLow: 'Meestal symbol-lock, geen exact 75-child trueMicroFamilyId, of geen geldige TP/SL fallback.',
       ifVirtualCreatedHighAndExitLow: 'Posities lopen nog; completed komt later.',
       ifRiskValidLow: 'Er is geen TP/SL beschikbaar, ook fallback kon geen prijs vinden.',
       ifAnalyzedExact75Low: 'Analyze gaf geen exact selecteerbare 75-child trueMicroFamilyId terug.',
       ifSymbolAlreadyOpenHigh: 'Eén open positie per symbol blokkeert extra entries. Dit voorkomt dubbele vervuiling.',
-      ifSnapshotAlreadyProcessedHigh: 'Geen nieuwe entries totdat scanner een nieuwe snapshot levert.'
+      ifSnapshotAlreadyProcessedHigh: 'Geen nieuwe entries totdat scanner een nieuwe snapshot levert.',
+      ifDiscordCurrentFitBlockedHigh: 'Discord is streng. Virtual learning loopt door, maar alerts wachten op betere huidige markt-fit.'
     },
 
-    measurementPrinciple: 'Alles bullish van scanner virtueel laten leren; Discord alleen voor exact geselecteerde bewezen 75-child trueMicroFamilyIds.'
+    measurementPrinciple: 'Alles bullish van scanner virtueel laten leren; Discord alleen voor exact geselecteerde bewezen 75-child trueMicroFamilyIds met geldige CurrentFit.'
   };
 }
 
@@ -3077,7 +3563,9 @@ async function saveRunMeta(result) {
       scanLatest: LONG_KEYS.scan.latest,
       tradeRunMeta: LONG_KEYS.trade.runMeta,
       tradeLastProcessedSnapshot: LONG_KEYS.trade.lastProcessedSnapshot,
-      scanSnapshotPattern: LONG_KEYS.scan.snapshotPattern()
+      scanSnapshotPattern: LONG_KEYS.scan.snapshotPattern(),
+      marketWeather: MARKET_WEATHER_KEY,
+      marketUniverse: MARKET_UNIVERSE_KEY
     },
 
     virtualExits,
@@ -3119,6 +3607,8 @@ export async function runTradeSystem(options = {}) {
   const forceProcessSnapshot = Boolean(options.forceProcessSnapshot || options.force);
   const monitorOnly = Boolean(options.monitorOnly);
 
+  const marketContext = await loadMarketContext().catch(() => extractMarketWeatherShape({}, {}));
+
   const priceFetcher = async (symbol) => fetchMidPrice(symbol);
 
   const realExits = [];
@@ -3155,6 +3645,7 @@ export async function runTradeSystem(options = {}) {
       skippedNewEntries: true,
       reason: 'MONITOR_ONLY',
       actionCounts: buildRunActionCounts(actions, virtualExits),
+      marketContext,
       monitorOpenPositions: true,
       monitorOpenPositionsFirst: true,
       processScannerSnapshot: false,
@@ -3180,6 +3671,7 @@ export async function runTradeSystem(options = {}) {
       skippedNewEntries: true,
       reason: 'NO_LONG_SCANNER_SNAPSHOT',
       actionCounts: buildRunActionCounts(actions, virtualExits),
+      marketContext,
       monitorOpenPositions: true,
       monitorOpenPositionsFirst: true,
       processScannerSnapshot: true,
@@ -3217,6 +3709,7 @@ export async function runTradeSystem(options = {}) {
       skippedNewEntries: true,
       reason: 'SNAPSHOT_TOO_STALE',
       actionCounts: buildRunActionCounts(actions, virtualExits),
+      marketContext,
       monitorOpenPositions: true,
       monitorOpenPositionsFirst: true,
       processScannerSnapshot: false,
@@ -3259,6 +3752,7 @@ export async function runTradeSystem(options = {}) {
       skippedNewEntries: true,
       reason: 'SNAPSHOT_ALREADY_PROCESSED',
       actionCounts: buildRunActionCounts(actions, virtualExits),
+      marketContext,
       monitorOpenPositions: true,
       monitorOpenPositionsFirst: true,
       processScannerSnapshot: false,
@@ -3295,7 +3789,7 @@ export async function runTradeSystem(options = {}) {
   const candidates = (Array.isArray(snapshot.candidates) ? snapshot.candidates : [])
     .filter((candidate) => candidateTradeSide(candidate) === TARGET_TRADE_SIDE)
     .slice(0, cfg.maxCandidatesPerSnapshot)
-    .map((candidate) => ({
+    .map((candidate) => attachCurrentFitContext({
       ...candidate,
       ...scannerMetadataFrom(candidate),
       ...sideFlags(),
@@ -3304,7 +3798,7 @@ export async function runTradeSystem(options = {}) {
 
       btcState: snapshot.btcState,
       regime: snapshot.regime
-    }));
+    }, marketContext));
 
   const longCandidateCount = candidates.length;
   const nonLongCandidateCount = snapshot.blockedNonLongCandidatesCount || 0;
@@ -3326,12 +3820,12 @@ export async function runTradeSystem(options = {}) {
     .flatMap((row) => Array.isArray(row?.metrics) ? row.metrics : [])
     .filter(Boolean)
     .filter(isTargetRow)
-    .map((row) => ({
+    .map((row) => attachCurrentFitContext({
       ...row,
       ...sideFlags(),
       ...isolationFlags(),
       ...virtualFlags(row)
-    }));
+    }, marketContext));
 
   const actualLiveRows = liveRows.filter(isLiveScannerRow).length;
   const mirrorRows = liveRows.filter(isMirrorAnalysisRow).length;
@@ -3369,6 +3863,11 @@ export async function runTradeSystem(options = {}) {
       bitgetOrdersDisabled: true,
       exchangeCallsDisabled: true,
 
+      observationAlwaysCounted: false,
+      observationDedupeRequired: true,
+      observationDedupeEnabled: true,
+      seenDefinition: 'UNIQUE_SNAPSHOT_SYMBOL_TRUE_MICRO_OBSERVATION_ONLY',
+
       scannerFingerprintsMetadataOnly: true,
       scannerFingerprintsUsedAsLearningFamily: false,
       executionFingerprintsMetadataOnly: true,
@@ -3396,7 +3895,16 @@ export async function runTradeSystem(options = {}) {
       parentLearningEnabled: true,
       childLearningEnabled: true,
       selectionGranularity: 'EXACT_75_CHILD',
-      fallbackRankingGranularity: 'PARENT_15_UNTIL_CHILD_MIN_COMPLETED'
+      fallbackRankingGranularity: 'PARENT_15_UNTIL_CHILD_MIN_COMPLETED',
+
+      currentMarketWeather: marketContext.source || null,
+      currentMarketUniverse: marketContext.universe || null,
+      currentMarketWeatherKey: MARKET_WEATHER_KEY,
+      currentMarketUniverseKey: MARKET_UNIVERSE_KEY,
+      currentRegime: marketContext.regime,
+      currentTrendSide: marketContext.trendSide,
+      currentFitSoftOnly: true,
+      currentFitBlocksLearning: false
     });
   } catch (error) {
     analyzeError = error?.message || String(error);
@@ -3407,13 +3915,13 @@ export async function runTradeSystem(options = {}) {
     .filter(Boolean)
     .filter(isTargetRow)
     .filter((row) => !isMirrorAnalysisRow(row))
-    .map((row) => ({
+    .map((row) => attachCurrentFitContext({
       ...normalizeExactTrueMicroRow(row),
       ...scannerMetadataFrom(row),
       ...sideFlags(),
       ...virtualFlags(row),
       ...isolationFlags()
-    }));
+    }, marketContext));
 
   const analyzedActualRows = analyzedRows.filter(isLiveScannerRow).length;
   const analyzedMirrorRows = analyzedRows.filter(isMirrorAnalysisRow).length;
@@ -3446,6 +3954,7 @@ export async function runTradeSystem(options = {}) {
   let discordAlertEligibleRows = 0;
   let discordAlertsQueued = 0;
   let discordAlertsSkippedNoSelectedMicro = 0;
+  let discordAlertsSkippedCurrentFit = 0;
 
   let selectedMicroMatchRows = 0;
   let unselectedMicroEntryRows = 0;
@@ -3488,6 +3997,8 @@ export async function runTradeSystem(options = {}) {
         virtualGate,
         virtualTracked: false,
         liveEligible: false,
+        currentFitSoftOnly: true,
+        currentFitBlocksLearning: false,
         ...sideFlags(),
         ...isolationFlags()
       });
@@ -3512,6 +4023,8 @@ export async function runTradeSystem(options = {}) {
         liveEligible: false,
         oneOpenPositionPerSymbol: true,
         globalMaxOpenPositionsBlockDisabled: true,
+        currentFitSoftOnly: true,
+        currentFitBlocksLearning: false,
         ...sideFlags(),
         ...isolationFlags()
       });
@@ -3535,14 +4048,23 @@ export async function runTradeSystem(options = {}) {
       })
       : sizing.baseRiskPct;
 
-    const discordAlertEligible = rowMatchesSelectedAlertMicro(alertContext, row);
+    const selectedExactMicroMatch = rowMatchesSelectedAlertMicro(alertContext, row);
+    const currentFitGate = discordCurrentFitGate(row);
+    const discordAlertEligible = selectedExactMicroMatch && currentFitGate.ok;
 
-    if (discordAlertEligible) {
-      discordAlertEligibleRows += 1;
+    if (selectedExactMicroMatch) {
       selectedMicroMatchRows += 1;
     } else {
       discordAlertsSkippedNoSelectedMicro += 1;
       unselectedMicroEntryRows += 1;
+    }
+
+    if (selectedExactMicroMatch && !currentFitGate.ok) {
+      discordAlertsSkippedCurrentFit += 1;
+    }
+
+    if (discordAlertEligible) {
+      discordAlertEligibleRows += 1;
     }
 
     const entry = buildVirtualEntryAction({
@@ -3551,6 +4073,7 @@ export async function runTradeSystem(options = {}) {
       selectedWeeklyStats,
       riskFraction,
       virtualGate,
+      selectedExactMicroMatch,
       discordAlertEligible
     });
 
@@ -3591,6 +4114,8 @@ export async function runTradeSystem(options = {}) {
         activeRotationId: alertContext.rotationId,
         virtualTracked: false,
         liveEligible: false,
+        currentFitSoftOnly: true,
+        currentFitBlocksLearning: false,
         ...sideFlags(),
         ...isolationFlags()
       });
@@ -3616,10 +4141,12 @@ export async function runTradeSystem(options = {}) {
       virtualCreatedRows,
       waitRows,
       skippedByExistingSymbol,
-      selectedAlertMicroMatches: selectedMicroMatchRows
+      selectedAlertMicroMatches: selectedMicroMatchRows,
+      discordCurrentFitBlockedRows: discordAlertsSkippedCurrentFit
     },
     openPositionCountBeforeEntries,
-    openPositionCountAfterEntries: openPositions.length
+    openPositionCountAfterEntries: openPositions.length,
+    marketContext
   });
 
   const lastProcessedRow = {
@@ -3654,6 +4181,18 @@ export async function runTradeSystem(options = {}) {
     ...sideFlags(),
     ...virtualFlags(),
     ...isolationFlags(),
+
+    currentMarketWeather: marketContext.source || null,
+    currentMarketUniverse: marketContext.universe || null,
+    currentMarketWeatherKey: MARKET_WEATHER_KEY,
+    currentMarketUniverseKey: MARKET_UNIVERSE_KEY,
+    currentMarketWeatherAgeSec: marketContext.ageSec,
+    currentMarketWeatherStale: marketContext.stale,
+    currentRegime: marketContext.regime,
+    currentTrendSide: marketContext.trendSide,
+    currentBullishPct: marketContext.bullishPct,
+    currentBearishPct: marketContext.bearishPct,
+    currentSqueezePct: marketContext.squeezePct,
 
     candidates: candidates.length,
     longCandidateCount,
@@ -3707,10 +4246,13 @@ export async function runTradeSystem(options = {}) {
     shadowExitRows: shadowExits.length,
     realExitRows: 0,
 
+    discordRequiresCurrentFit: discordRequiresCurrentFit(),
+    discordMinCurrentFitConfidence: discordMinCurrentFitConfidence(),
     discordAlertEligibleRows,
     discordAlertsQueued,
     discordAlertsSent: 0,
     discordAlertsSkippedNoSelectedMicro,
+    discordAlertsSkippedCurrentFit,
 
     selectedMicroMatchRows,
     selectedAlertMicroMatches: selectedMicroMatchRows,
@@ -3803,6 +4345,18 @@ export async function runTradeSystem(options = {}) {
     ...virtualFlags(),
     ...isolationFlags(),
 
+    currentMarketWeather: marketContext.source || null,
+    currentMarketUniverse: marketContext.universe || null,
+    currentMarketWeatherKey: MARKET_WEATHER_KEY,
+    currentMarketUniverseKey: MARKET_UNIVERSE_KEY,
+    currentMarketWeatherAgeSec: marketContext.ageSec,
+    currentMarketWeatherStale: marketContext.stale,
+    currentRegime: marketContext.regime,
+    currentTrendSide: marketContext.trendSide,
+    currentBullishPct: marketContext.bullishPct,
+    currentBearishPct: marketContext.bearishPct,
+    currentSqueezePct: marketContext.squeezePct,
+
     candidates: candidates.length,
     longCandidateCount,
     shortCandidateCount: 0,
@@ -3855,10 +4409,13 @@ export async function runTradeSystem(options = {}) {
     shadowExitRows: shadowExits.length,
     realExitRows: 0,
 
+    discordRequiresCurrentFit: discordRequiresCurrentFit(),
+    discordMinCurrentFitConfidence: discordMinCurrentFitConfidence(),
     discordAlertEligibleRows,
     discordAlertsQueued,
     discordAlertsSent: 0,
     discordAlertsSkippedNoSelectedMicro,
+    discordAlertsSkippedCurrentFit,
 
     selectedMicroMatchRows,
     selectedAlertMicroMatches: selectedMicroMatchRows,
