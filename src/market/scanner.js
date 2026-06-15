@@ -2,7 +2,7 @@
 
 import { CONFIG } from '../config.js';
 import { KEYS } from '../keys.js';
-import { getVolatileRedis, setJson } from '../redis.js';
+import { getVolatileRedis, getDurableRedis, setJson } from '../redis.js';
 import {
   classifyBtcState,
   mapConcurrent,
@@ -2720,6 +2720,7 @@ async function saveMarketWeather({
 
 export async function runScanner(options = {}) {
   const redis = getVolatileRedis();
+  const marketRedis = getDurableRedis();
 
   const startedAt = now();
   const snapshotId = randomId('scan_long');
@@ -2778,7 +2779,7 @@ export async function runScanner(options = {}) {
   const completedAt = now();
 
   const marketUniverseSave = await saveMarketUniverse({
-    redis,
+    redis: marketRedis,
     rows: marketUniverseRows,
     snapshotId,
     startedAt,
@@ -2788,7 +2789,7 @@ export async function runScanner(options = {}) {
   });
 
   const marketWeatherSave = await saveMarketWeather({
-    redis,
+    redis: marketRedis,
     rows: marketUniverseRows,
     snapshotId,
     startedAt,
