@@ -711,7 +711,7 @@
 
     const endpoints = {
       overview: "/api/admin/overview",
-      market: null,
+      market: "/api/admin/market-weather",
       scanner: "/api/admin/scanner",
       trade: "/api/admin/trade",
       micros: "/api/admin/micro-families",
@@ -1658,8 +1658,8 @@
 
       return `
         <div class="table-wrap">
-          <tr>
-            <thead><tr>${head}</tr></thead>
+          <table>
+            <thead><tr>${head}</table></thead>
             <tbody>${body}</tbody>
           </table>
         </div>
@@ -2053,7 +2053,17 @@
     }
 
     function marketApiUrl() {
-      return "GEEN_API_ROUTE";
+      const params = new URLSearchParams();
+
+      params.set("side", ONLY_SIDE);
+      params.set("tradeSide", ONLY_SIDE);
+      params.set("targetTradeSide", ONLY_SIDE);
+      params.set("dashboardSide", DASHBOARD_SIDE);
+      params.set("includeUniverse", "1");
+      params.set("includeBreadth", "1");
+      params.set("includeCurrentFit", "1");
+
+      return `${endpoints.market}?${params.toString()}`;
     }
 
     function extractMarketData(data = {}) {
@@ -2142,15 +2152,11 @@
         universe.confidence
       );
 
-      const available = Boolean(source.available === true || source.ok === true);
-
       return {
         raw: data,
         source,
         universe,
-        ok: available,
-        available,
-        reason: source.reason || data.reason || "GEEN_API_ROUTE",
+        ok: Boolean(data && Object.keys(data).length),
         createdAt,
         ageText: ageText(createdAt),
         regime,
@@ -2163,29 +2169,8 @@
     }
 
     async function fetchMarket() {
-      const data = {
-        ok: false,
-        available: false,
-        reason: "GEEN_API_ROUTE",
-        file: "src/market/marketWeather.js",
-        apiRoute: null,
-        uitleg: "admin.html kan src/market/marketWeather.js niet direct lezen. Er bestaat nu geen /api/admin/market-weather route.",
-        currentRegime: "UNKNOWN",
-        currentTrendSide: "UNKNOWN",
-        regime: "UNKNOWN",
-        trendSide: "UNKNOWN",
-        confidence: 0,
-        breadth: {},
-        btc: {},
-        currentFitSoftOnly: true,
-        currentFitBlocksLearning: false,
-        currentFitBlocksVirtualLearning: false,
-        currentFitBlocksShadowLearning: false,
-        learningRemainsBroad: true,
-        measurementFixVersion: MEASUREMENT_FIX_VERSION
-      };
-
-      const market = extractMarketData(data);
+      const data = await optionalApi(marketApiUrl(), {});
+      const market = extractMarketData(data || {});
 
       state.market = market;
 
@@ -2563,30 +2548,27 @@
         <div class="section-title">
           <div>
             <h2>marketWeather.js</h2>
-            <p>
-              Bestand: <code>src/market/marketWeather.js</code> ·
-              API: <code>GEEN_API_ROUTE</code>
-            </p>
+            <p>Bestand: <code>src/market/marketWeather.js</code> · API: <code>/api/admin/market-weather</code></p>
           </div>
         </div>
 
         <div class="toolbar">
-          <button type="button" class="primary" id="copyMarketOutputBtn">Copy output</button>
-          <button type="button" id="copyMarketUrlBtn">Copy status</button>
+          <button type="button" class="primary" id="copyMarketOutputBtn">Copy API output</button>
+          <button type="button" id="copyMarketUrlBtn">Copy API URL</button>
           <button type="button" id="selectMarketOutputBtn">Select output</button>
-          <button type="button" id="openMarketApiBtn" disabled>Open API</button>
+          <button type="button" id="openMarketApiBtn">Open API</button>
           <button type="button" id="exportMarketBtn">Export JSON</button>
         </div>
 
         <div class="api-url-box">
-          <strong>Status:</strong>
-          <code>GEEN_API_ROUTE — admin.html leest dit serverbestand niet direct</code>
+          <strong>API URL:</strong>
+          <code>${escapeHtml(endpointUrl)}</code>
         </div>
 
         <div class="grid">
           ${metricCard("Bestand", "marketWeather.js", "src/market/marketWeather.js")}
-          ${metricCard("API route", "GEEN_API_ROUTE", "geen route nodig zolang je geen nieuwe bestanden wil")}
-          ${metricCard("Available", market.ok ? "YES" : "NO", market.reason || "GEEN_API_ROUTE")}
+          ${metricCard("API route", "/api/admin/market-weather", "admin output")}
+          ${metricCard("Available", market.ok ? "YES" : "NO")}
           ${metricCard("Age", market.ageText || "-", fmtTs(market.createdAt))}
           ${metricCard("Regime", market.regime || "UNKNOWN")}
           ${metricCard("Trend side", market.trendSide || "UNKNOWN")}
@@ -2597,44 +2579,30 @@
         </div>
 
         <div class="card">
-          <h3>Wat betekent dit?</h3>
-          <div class="toolbar">
-            <span class="pill raw">geen api route</span>
-            <span class="pill soft">marketweather uit</span>
-            <span class="pill active">learning loopt door</span>
-            <span class="pill info">75 microfamilies blijven werken</span>
-          </div>
-          <div class="metric-extra">
-            Dit is goed zo. Je wilde geen nieuwe bestanden. Daarom toont deze pagina eerlijk dat marketWeather.js niet via een API wordt gelezen.
-            Scanner, Analyze, virtual/shadow learning, avgCostR, directSL en seen-dedupe blijven gewoon werken.
-          </div>
-        </div>
-
-        <div class="card">
           <h3>CurrentFit policy</h3>
           <div class="toolbar">
             <span class="pill soft">soft gate</span>
             <span class="pill active">learning not blocked</span>
-            <span class="pill info">ranking later</span>
+            <span class="pill info">ranking influence</span>
             <span class="pill danger">discord strict later</span>
           </div>
           <div class="metric-extra">
-            MarketWeather is nu alleen context. Geen blokkade. Geen nieuwe architectuur.
+            MarketWeather is alleen context. Learning blijft gewoon doorlopen.
           </div>
         </div>
 
         <div class="card">
-          <h3>Output — makkelijk kopiëren</h3>
+          <h3>API output — makkelijk kopiëren</h3>
           <textarea id="marketApiOutput" class="api-output-textarea" readonly>${escapeHtml(outputJson)}</textarea>
         </div>
       `;
 
       $("copyMarketOutputBtn")?.addEventListener("click", () => {
-        copyText($("marketApiOutput")?.value || outputJson, "marketWeather status gekopieerd.");
+        copyText($("marketApiOutput")?.value || outputJson, "marketWeather.js API output gekopieerd.");
       });
 
       $("copyMarketUrlBtn")?.addEventListener("click", () => {
-        copyText(endpointUrl, "marketWeather status gekopieerd.");
+        copyText(endpointUrl, "marketWeather.js API URL gekopieerd.");
       });
 
       $("selectMarketOutputBtn")?.addEventListener("click", () => {
@@ -2642,11 +2610,15 @@
         if (!box) return;
         box.focus();
         box.select();
-        setMessage("Output geselecteerd. Je kunt nu kopiëren.", "ok");
+        setMessage("API output geselecteerd. Je kunt nu kopiëren.", "ok");
+      });
+
+      $("openMarketApiBtn")?.addEventListener("click", () => {
+        window.open(endpointUrl, "_blank", "noopener,noreferrer");
       });
 
       $("exportMarketBtn")?.addEventListener("click", () => {
-        downloadJson("marketWeather-status.json", outputData);
+        downloadJson("marketWeather.js-api-output.json", outputData);
       });
     }
 
