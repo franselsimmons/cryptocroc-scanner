@@ -4,9 +4,12 @@ import { CONFIG } from '../../src/config.js';
 import { KEYS } from '../../src/keys.js';
 import {
   getDurableRedis,
+  getVolatileRedis,
+  getJson,
   setJson
 } from '../../src/redis.js';
 import { withRedisLock } from '../../src/lock.js';
+import { runScanner } from '../../src/market/scanner.js';
 import { runTradeSystem } from '../../src/trade/tradeSystem.js';
 import { sideToTradeSide } from '../../src/utils.js';
 
@@ -28,9 +31,14 @@ const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
 const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
 const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 
-const RUN_SCOPE = 'TRADE_ONLY';
-const WRITE_SCOPE = 'TRADE_AND_ANALYZE_PARTIAL_ONLY';
-const READ_SCOPE = 'READ_LONG_SCANNER_LATEST_ONLY';
+const RUN_SCOPE = 'TRADE_WITH_SCANNER_PRELOAD';
+const WRITE_SCOPE = 'SCANNER_MARKET_WEATHER_TRADE_AND_ANALYZE_PARTIAL';
+const READ_SCOPE = 'READ_LONG_SCANNER_AND_MARKET_WEATHER';
+
+const MARKET_UNIVERSE_KEY = 'MARKET:UNIVERSE:LATEST';
+const LONG_MARKET_UNIVERSE_KEY = `${LONG_KEY_PREFIX}MARKET:UNIVERSE:LATEST`;
+const MARKET_WEATHER_KEY = 'MARKET:WEATHER:LATEST';
+const LONG_MARKET_WEATHER_KEY = `${LONG_KEY_PREFIX}MARKET:WEATHER:LATEST`;
 
 const LONG_FIXED_SETUP_TYPES = new Set([
   'BREAKOUT',
@@ -110,6 +118,13 @@ const LONG_KEYS = {
         KEYS.trade?.lastProcessedSnapshot,
       'TRADE:LAST_PROCESSED_SNAPSHOT'
     )
+  },
+
+  market: {
+    universeLatest: MARKET_UNIVERSE_KEY,
+    longUniverseLatest: LONG_MARKET_UNIVERSE_KEY,
+    weatherLatest: MARKET_WEATHER_KEY,
+    longWeatherLatest: LONG_MARKET_WEATHER_KEY
   }
 };
 
@@ -159,23 +174,28 @@ function isolationFlags() {
     adminPageIsolation: true,
     doesNotOverwriteOtherAdminPages: true,
 
+    scannerPreloadBeforeTrade: true,
+    scannerPreloadRequiredForMarketWeather: true,
+
     readsScannerLatest: true,
-    scannerLatestReadOnly: true,
-    preserveScannerLatest: true,
-    preserveScannerSnapshot: true,
+    scannerLatestReadOnlyInsideTradeSystem: true,
+    preserveScannerLatest: false,
+    preserveScannerSnapshot: false,
     preserveScannerHistory: true,
 
-    scannerRunAllowed: false,
-    scannerRunDisabledInsideTradeRun: true,
-    noScannerRun: true,
-    noScannerRefresh: true,
-    noScannerLatestWrite: true,
-    noScannerSnapshotWrite: true,
+    scannerRunAllowed: true,
+    scannerRunBeforeTrade: true,
+    scannerRunDisabledInsideTradeSystem: true,
+    noInternalScannerRunInsideTradeSystem: true,
 
-    writesScanner: false,
-    writesScannerLatest: false,
-    writesScannerSnapshot: false,
+    writesScanner: true,
+    writesScannerLatest: true,
+    writesScannerSnapshot: true,
     writesScannerHistory: false,
+
+    writesMarketUniverse: true,
+    writesMarketWeather: true,
+    writesMarketWeatherInput: true,
 
     writesTrade: true,
     writesTradeRunMeta: true,
@@ -322,6 +342,12 @@ function baseFlags() {
     redisKeysSeparatedFromShortRoot: true,
     shortRootTouched: false,
 
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    currentFitBlocksVirtualLearning: false,
+    currentFitBlocksShadowLearning: false,
+    learningRemainsBroad: true,
+
     ...isolationFlags()
   };
 }
@@ -426,8 +452,8 @@ function getRunSource(req, body = {}) {
   );
 
   return manual
-    ? 'ADMIN_MANUAL_LONG_TRADE_RUN'
-    : 'CRON_OR_API_LONG_TRADE_RUN';
+    ? 'ADMIN_MANUAL_LONG_TRADE_RUN_WITH_SCANNER_PRELOAD'
+    : 'CRON_OR_API_LONG_TRADE_RUN_WITH_SCANNER_PRELOAD';
 }
 
 function cleanSideText(value = '') {
@@ -1515,8 +1541,9 @@ function sanitizeRunPayload(payload) {
     virtualLearningOnly: true,
     shadowDataMode: 'VIRTUAL_LEARNING_OUTCOMES_COUNTED',
 
-    scannerSnapshotPreserved: true,
-    scannerLatestPreserved: true,
+    scannerPreloadBeforeTrade: true,
+    scannerSnapshotPreserved: false,
+    scannerLatestPreserved: false,
     microFamiliesAppendOnly: true,
     analyzePartialOnly: true,
 
@@ -1678,7 +1705,8 @@ function responseCounts(lockResult) {
     executionFingerprintExitRows: safeNumber(payload.executionFingerprintExitRows, 0),
     executionFingerprintsUsedAsLearningFamily: 0,
 
-    scannerSnapshotPreserved: true,
+    scannerPreloadBeforeTrade: true,
+    scannerSnapshotPreserved: false,
     microFamiliesAppendOnly: true
   };
 }
@@ -1838,25 +1866,24 @@ function buildRunOptions(req, body = {}) {
       scannerLatest: LONG_KEYS.scan.latest,
       tradeLock: LONG_KEYS.trade.lock,
       tradeRunMeta: LONG_KEYS.trade.runMeta,
-      tradeLastProcessedSnapshot: LONG_KEYS.trade.lastProcessedSnapshot
+      tradeLastProcessedSnapshot: LONG_KEYS.trade.lastProcessedSnapshot,
+      marketUniverseLatest: MARKET_UNIVERSE_KEY,
+      longMarketUniverseLatest: LONG_MARKET_UNIVERSE_KEY,
+      marketWeatherLatest: MARKET_WEATHER_KEY,
+      longMarketWeatherLatest: LONG_MARKET_WEATHER_KEY
     },
 
+    scannerPreloadBeforeTrade: true,
+    marketWeatherPreloadBeforeTrade: true,
+
     scannerRunAllowed: false,
-    scannerRunDisabledInsideTradeRun: true,
+    scannerRunDisabledInsideTradeSystem: true,
     preventScannerRun: true,
     doNotRunScanner: true,
-    noScannerRun: true,
-    noScannerRefresh: true,
+    noInternalScannerRun: true,
 
     scannerLatestReadOnly: true,
     readScannerLatestOnly: true,
-    preserveScannerLatest: true,
-    preserveScannerSnapshot: true,
-    preserveScannerHistory: true,
-
-    writeScannerLatest: false,
-    writeScannerSnapshot: false,
-    writeScannerHistory: false,
 
     allowTradeWrite: true,
     allowAnalyzePartialWrite: true,
@@ -1878,7 +1905,188 @@ function buildRunOptions(req, body = {}) {
   };
 }
 
-async function persistLongRunMeta(redis, payload = {}, result = {}) {
+function buildScannerPreloadOptions(req, body = {}) {
+  return {
+    force: true,
+    forced: true,
+
+    source: 'TRADE_RUN_SCANNER_PRELOAD',
+    trigger: 'api/trade/run.js',
+    runSource: getRunSource(req, body),
+
+    targetTradeSide: TARGET_TRADE_SIDE,
+    tradeSide: TARGET_TRADE_SIDE,
+    scannerSide: TARGET_SCANNER_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+
+    longOnly: true,
+    shortDisabled: true,
+
+    keys: {
+      scanLatest: LONG_KEYS.scan.latest,
+      marketUniverseLatest: MARKET_UNIVERSE_KEY,
+      marketWeatherLatest: MARKET_WEATHER_KEY
+    },
+
+    scannerPreloadBeforeTrade: true,
+    marketWeatherPreloadBeforeTrade: true,
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true
+  };
+}
+
+function summarizeScannerPreload(scannerResult = null) {
+  if (!scannerResult || typeof scannerResult !== 'object') {
+    return {
+      ok: false,
+      reason: 'NO_SCANNER_RESULT'
+    };
+  }
+
+  return {
+    ok: scannerResult.ok !== false,
+    snapshotId: scannerResult.snapshotId || null,
+    createdAt: scannerResult.createdAt || null,
+    completedAt: scannerResult.completedAt || null,
+    durationMs: scannerResult.durationMs || null,
+
+    rawCount: safeNumber(scannerResult.rawCount, 0),
+    filteredUniverse: safeNumber(scannerResult.filteredUniverse, 0),
+
+    candidatesCount: safeNumber(scannerResult.candidatesCount, 0),
+    scannerGateCandidatesCount: safeNumber(scannerResult.scannerGateCandidatesCount, 0),
+    analyzeOnlyCandidatesCount: safeNumber(scannerResult.analyzeOnlyCandidatesCount, 0),
+
+    marketUniverseCount: safeNumber(scannerResult.marketUniverseCount, 0),
+    marketUniverseSaved: Boolean(scannerResult.marketUniverseSaved),
+    marketUniverseKeys: Array.isArray(scannerResult.marketUniverseKeys)
+      ? scannerResult.marketUniverseKeys
+      : [],
+
+    marketWeatherCount: safeNumber(scannerResult.marketWeatherCount, scannerResult.marketUniverseCount || 0),
+    marketWeatherSaved: Boolean(scannerResult.marketWeatherSaved),
+    marketWeatherKeys: Array.isArray(scannerResult.marketWeatherKeys)
+      ? scannerResult.marketWeatherKeys
+      : [],
+
+    btcState: scannerResult.btcState || null,
+    regime: scannerResult.regime || null,
+
+    topSymbols: Array.isArray(scannerResult.topSymbols)
+      ? scannerResult.topSymbols
+      : [],
+
+    scannerPreloadBeforeTrade: true
+  };
+}
+
+async function mirrorOneMarketKey({
+  volatileRedis,
+  durableRedis,
+  key
+}) {
+  const payload = await getJson(volatileRedis, key, null).catch(() => null);
+
+  if (!payload) {
+    return {
+      key,
+      ok: false,
+      reason: 'SOURCE_KEY_EMPTY'
+    };
+  }
+
+  await setJson(
+    durableRedis,
+    key,
+    {
+      ...payload,
+      mirroredFromVolatile: true,
+      mirroredToDurable: true,
+      mirroredAt: now(),
+      mirrorSourceKey: key,
+      scannerPreloadBeforeTrade: true,
+      marketWeatherPreloadBeforeTrade: true,
+      currentFitSoftOnly: true,
+      currentFitBlocksLearning: false,
+      learningRemainsBroad: true,
+      ...baseFlags()
+    }
+  );
+
+  return {
+    key,
+    ok: true
+  };
+}
+
+async function mirrorMarketCacheFromVolatileToDurable({
+  volatileRedis,
+  durableRedis
+}) {
+  const keys = [
+    MARKET_UNIVERSE_KEY,
+    LONG_MARKET_UNIVERSE_KEY,
+    MARKET_WEATHER_KEY,
+    LONG_MARKET_WEATHER_KEY
+  ];
+
+  const results = [];
+
+  for (const key of keys) {
+    results.push(await mirrorOneMarketKey({
+      volatileRedis,
+      durableRedis,
+      key
+    }));
+  }
+
+  const okKeys = results
+    .filter((row) => row.ok)
+    .map((row) => row.key);
+
+  return {
+    ok: okKeys.length > 0,
+    okKeys,
+    results,
+    marketWeatherMirrored: okKeys.includes(MARKET_WEATHER_KEY) || okKeys.includes(LONG_MARKET_WEATHER_KEY),
+    marketUniverseMirrored: okKeys.includes(MARKET_UNIVERSE_KEY) || okKeys.includes(LONG_MARKET_UNIVERSE_KEY)
+  };
+}
+
+async function runScannerPreload({
+  req,
+  body,
+  volatileRedis,
+  durableRedis
+}) {
+  const startedAt = now();
+
+  try {
+    const scannerResult = await runScanner(buildScannerPreloadOptions(req, body));
+
+    const mirror = await mirrorMarketCacheFromVolatileToDurable({
+      volatileRedis,
+      durableRedis
+    });
+
+    return {
+      ok: scannerResult?.ok !== false,
+      scanner: summarizeScannerPreload(scannerResult),
+      mirror,
+      durationMs: now() - startedAt
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error?.message || String(error),
+      durationMs: now() - startedAt,
+      scannerPreloadBeforeTrade: true
+    };
+  }
+}
+
+async function persistLongRunMeta(redis, payload = {}, result = {}, scannerPreload = null) {
   if (!payload || typeof payload !== 'object') {
     return {
       persistedLongRunMeta: false,
@@ -1892,6 +2100,8 @@ async function persistLongRunMeta(redis, payload = {}, result = {}) {
 
     ...baseFlags(),
 
+    scannerPreload,
+
     persistedAt: now(),
     persistedBy: 'api/trade/run.js',
     persistedNamespace: LONG_NAMESPACE,
@@ -1901,7 +2111,11 @@ async function persistLongRunMeta(redis, payload = {}, result = {}) {
       prefix: LONG_KEY_PREFIX,
       tradeRunMeta: LONG_KEYS.trade.runMeta,
       tradeLastProcessedSnapshot: LONG_KEYS.trade.lastProcessedSnapshot,
-      scannerLatest: LONG_KEYS.scan.latest
+      scannerLatest: LONG_KEYS.scan.latest,
+      marketUniverseLatest: MARKET_UNIVERSE_KEY,
+      longMarketUniverseLatest: LONG_MARKET_UNIVERSE_KEY,
+      marketWeatherLatest: MARKET_WEATHER_KEY,
+      longMarketWeatherLatest: LONG_MARKET_WEATHER_KEY
     },
 
     rawResultOk: result?.ok !== false
@@ -1917,6 +2131,7 @@ async function persistLongRunMeta(redis, payload = {}, result = {}) {
         snapshotId: payload.snapshotId,
         runId: payload.runId || null,
         processedAt: now(),
+        scannerPreload,
         ...baseFlags()
       }
     ).catch(() => null);
@@ -1952,9 +2167,10 @@ export default async function handler(req, res) {
   res.setHeader('X-Manual-Selection-Match-Mode', 'EXACT_TRUE_MICRO_FAMILY_ID');
   res.setHeader('X-Run-Scope', RUN_SCOPE);
   res.setHeader('X-Write-Scope', WRITE_SCOPE);
-  res.setHeader('X-Scanner-Write', 'false');
-  res.setHeader('X-Scanner-Run-Allowed', 'false');
-  res.setHeader('X-Preserve-Scanner-Latest', 'true');
+  res.setHeader('X-Scanner-Write', 'true');
+  res.setHeader('X-Scanner-Run-Allowed', 'true');
+  res.setHeader('X-Scanner-Preload-Before-Trade', 'true');
+  res.setHeader('X-MarketWeather-Preload-Before-Trade', 'true');
   res.setHeader('X-MicroFamilies-Append-Only', 'true');
   res.setHeader('X-Admin-Page-Isolation', 'true');
   res.setHeader('X-Persistent-Learning-Key', PERSISTENT_LEARNING_KEY);
@@ -1971,29 +2187,62 @@ export default async function handler(req, res) {
     const body = await readBody(req);
     const runOptions = buildRunOptions(req, body);
 
-    const redis = getDurableRedis();
+    const durableRedis = getDurableRedis();
+    const volatileRedis = getVolatileRedis();
+
     const lockKey = LONG_KEYS.trade.lock;
     const lockTtlSec = getLockTtlSec();
 
+    let scannerPreload = null;
+
     const rawResult = await withRedisLock(
-      redis,
+      durableRedis,
       lockKey,
       lockTtlSec,
-      async () => runTradeSystem(runOptions)
+      async () => {
+        scannerPreload = await runScannerPreload({
+          req,
+          body,
+          volatileRedis,
+          durableRedis
+        });
+
+        return runTradeSystem({
+          ...runOptions,
+          scannerPreloadBeforeTrade: true,
+          marketWeatherPreloadBeforeTrade: true,
+          scannerPreloadOk: scannerPreload?.ok === true,
+          marketWeatherMirroredToDurable: scannerPreload?.mirror?.marketWeatherMirrored === true,
+          marketUniverseMirroredToDurable: scannerPreload?.mirror?.marketUniverseMirrored === true
+        });
+      }
     );
 
     const payload = sanitizeRunPayload(unwrapLockResult(rawResult));
     const result = sanitizeLockResult(rawResult);
 
-    const persistence = await persistLongRunMeta(redis, payload, result);
+    const persistence = await persistLongRunMeta(
+      durableRedis,
+      payload,
+      result,
+      scannerPreload
+    );
 
     const actionCounts = responseActionCounts(rawResult);
     const counts = responseCounts(rawResult);
 
+    const scannerOk = scannerPreload?.ok === true;
+    const tradeOk = responseOk(rawResult);
+
     return res.status(200).json({
-      ok: responseOk(rawResult),
+      ok: tradeOk && scannerOk,
+      tradeOk,
+      scannerPreloadOk: scannerOk,
+
       skipped: responseSkipped(rawResult),
-      reason: responseReason(rawResult),
+      reason: !scannerOk
+        ? 'SCANNER_PRELOAD_FAILED'
+        : responseReason(rawResult),
       skipReason: payload?.skipReason || responseReason(rawResult),
 
       ...baseFlags(),
@@ -2006,6 +2255,11 @@ export default async function handler(req, res) {
       monitorOpenPositionsFirst: runOptions.monitorOpenPositionsFirst,
       monitorOpenPositions: runOptions.monitorOpenPositions,
       processScannerSnapshot: runOptions.processScannerSnapshot,
+
+      scannerPreload,
+
+      marketWeatherAvailableAfterRun: scannerPreload?.mirror?.marketWeatherMirrored === true,
+      marketUniverseAvailableAfterRun: scannerPreload?.mirror?.marketUniverseMirrored === true,
 
       runId: responseRunId(rawResult),
       snapshotId: responseSnapshotId(rawResult),
@@ -2069,10 +2323,12 @@ export default async function handler(req, res) {
       selectedTargetCandidateCount: safeNumber(payload?.selectedTargetCandidateCount, 0),
       selectedOppositeCandidateCount: 0,
 
-      scannerLatestPreserved: true,
-      scannerSnapshotPreserved: true,
+      scannerPreloadBeforeTrade: true,
+      scannerLatestPreserved: false,
+      scannerSnapshotPreserved: false,
       scannerHistoryPreserved: true,
-      scannerRunBlockedInsideTradeRun: true,
+      scannerRunBlockedInsideTradeRun: false,
+      scannerRunDisabledInsideTradeSystem: true,
 
       microFamiliesAppendOnly: true,
       analyzePartialOnly: true,
@@ -2090,10 +2346,20 @@ export default async function handler(req, res) {
         scanLatest: LONG_KEYS.scan.latest,
         tradeLock: LONG_KEYS.trade.lock,
         tradeRunMeta: LONG_KEYS.trade.runMeta,
-        tradeLastProcessedSnapshot: LONG_KEYS.trade.lastProcessedSnapshot
+        tradeLastProcessedSnapshot: LONG_KEYS.trade.lastProcessedSnapshot,
+        marketUniverseLatest: MARKET_UNIVERSE_KEY,
+        longMarketUniverseLatest: LONG_MARKET_UNIVERSE_KEY,
+        marketWeatherLatest: MARKET_WEATHER_KEY,
+        longMarketWeatherLatest: LONG_MARKET_WEATHER_KEY
       },
 
       warnings: [
+        scannerPreload?.ok === false
+          ? `SCANNER_PRELOAD_FAILED:${scannerPreload.error || 'UNKNOWN'}`
+          : null,
+        scannerPreload?.mirror?.marketWeatherMirrored !== true
+          ? 'MARKET_WEATHER_NOT_MIRRORED_TO_DURABLE'
+          : null,
         payload?.ignoredShortActions > 0
           ? `SHORT_ACTIONS_IGNORED:${payload.ignoredShortActions}`
           : null,
