@@ -1,15 +1,25 @@
 // ================= FILE: src/analyze/analyzeEngine.js =================
 //
 // LONG-only Analyze engine.
-// Fix: 75-child classification is evidence-based and no longer collapses into
-// RETEST_SQUEEZE_B_FLOW_ALIGN by default.
+//
+// Meetlat-fix:
+// - avgCostR wordt gebaseerd op echte costR.
+// - directSL wordt correct afgeleid en doorgegeven.
+// - seen-spam wordt geblokkeerd via echte observation dedupe.
+// - completed = alleen gesloten virtual/shadow outcomes.
+// - scoring gebruikt netR na kosten.
+// - wins/losses/flats worden bepaald op netR.
+//
+// Architectuur:
+// - Learning blijft breed.
+// - Selection wordt later adaptief.
+// - Discord wordt later streng.
+// - CurrentFit is zacht en blokkeert geen virtual/shadow learning.
 //
 // Core identity:
 // - Child:  MICRO_LONG_{SETUP}_{REGIME}_{CONFIRMATION}
 // - Parent: MICRO_LONG_{SETUP}_{REGIME}
 // - Scanner buckets, symbol/coin/hash and execution fingerprints are metadata only.
-// - Outcomes score on netR after costs.
-// - Completed means closed virtual/shadow outcomes.
 
 import { createHash } from 'crypto';
 import { CONFIG } from '../config.js';
@@ -226,6 +236,13 @@ function obsDedupeTtlSec() {
   return Math.max(
     60,
     Math.floor(safeNumber(CONFIG?.analyze?.obsDedupeTtlSec, 60 * 60 * 24))
+  );
+}
+
+function outcomeDedupeTtlSec() {
+  return Math.max(
+    60,
+    Math.floor(safeNumber(CONFIG?.analyze?.outcomeDedupeTtlSec, 60 * 60 * 24 * 14))
   );
 }
 
@@ -524,6 +541,12 @@ function removeSymbolTokensFromFamilyId(id = '', row = {}) {
     .replace(/^[_|:=\-\s]+|[_|:=\-\s]+$/g, '') || raw;
 }
 
+function isMicroFamilyV3Id(id = '') {
+  const value = upper(id);
+
+  return value.startsWith('MICRO_LONG_') && value.includes('_MF_V3_');
+}
+
 function normalizeAnalyzeFamilyId(id = '', row = {}, {
   allowParent = true,
   requireChild = false
@@ -570,12 +593,6 @@ function normalizeParentTrueMicroFamilyId(id = '', row = {}) {
   );
 
   return parseLongTaxonomyMicroId(child).parentTrueMicroFamilyId || '';
-}
-
-function isMicroFamilyV3Id(id = '') {
-  const value = upper(id);
-
-  return value.startsWith('MICRO_LONG_') && value.includes('_MF_V3_');
 }
 
 function normalizeSetupType(value = '') {
@@ -742,10 +759,6 @@ function hasAnyText(text = '', needles = []) {
 
 function boolish(...values) {
   return values.some((value) => bool(value, false));
-}
-
-function positiveNumber(...values) {
-  return values.some((value) => safeNumber(value, 0) > 0);
 }
 
 function realVolumeEvidence(row = {}, classified = {}) {
@@ -1360,6 +1373,19 @@ function analyzeIdentityFlags() {
     totalRSource: 'netR',
     avgCostRShown: true,
 
+    measurementFixVersion: 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1',
+    observationDedupeRequired: true,
+    observationAlwaysCounted: false,
+    seenDefinition: 'UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY',
+    outcomeDedupeRequired: true,
+    completedOnlyClosedVirtualOrShadow: true,
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+    selectionWillBeAdaptive: true,
+    discordWillBeStrict: true,
+
     statusRules: {
       OBSERVING: 'completed == 0',
       EARLY_OUTCOMES: `completed > 0 && completed < ${MIN_COMPLETED_ACTIVE_LEARNING}`,
@@ -1649,8 +1675,104 @@ function getObsLastKey(snapshotId, symbol, microFamilyId) {
   );
 }
 
+function getOutcomeLastKey(weekKey, outcomeIdentity, microFamilyId) {
+  const fromKeys =
+    typeof KEYS.analyze?.outcomeLast === 'function'
+      ? KEYS.analyze.outcomeLast(weekKey, outcomeIdentity, microFamilyId)
+      : null;
+
+  return longKey(
+    fromKeys,
+    `ANALYZE:OUTCOME_LAST:${weekKey}:${outcomeIdentity}:${microFamilyId}`
+  );
+}
+
 function getWeekMicrosTopKey(weekKey) {
   return `${getWeekMicrosBaseKey(weekKey)}:TOP`;
+}
+
+async function claimDedupeKey(redis, key, ttlSec, {
+  type = 'DEDUPE'
+} = {}) {
+  if (!key) {
+    return {
+      claimed: true,
+      duplicate: false,
+      method: 'NO_KEY',
+      key: null,
+      type
+    };
+  }
+
+  const value = String(now());
+
+  const setAttempts = [
+    { ex: ttlSec, nx: true },
+    { ex: ttlSec, NX: true },
+    { EX: ttlSec, NX: true }
+  ];
+
+  for (const options of setAttempts) {
+    try {
+      const result = await redis.set(key, value, options);
+
+      if (result === null || result === false || result === undefined) {
+        return {
+          claimed: false,
+          duplicate: true,
+          method: 'SET_NX',
+          key,
+          type
+        };
+      }
+
+      const raw = String(result).toUpperCase();
+
+      if (result === true || result === 1 || raw === 'OK' || raw === 'QUEUED') {
+        return {
+          claimed: true,
+          duplicate: false,
+          method: 'SET_NX',
+          key,
+          type
+        };
+      }
+    } catch {
+      // Try next client option shape.
+    }
+  }
+
+  try {
+    const existing = await redis.get(key).catch(() => null);
+
+    if (existing !== null && existing !== undefined) {
+      return {
+        claimed: false,
+        duplicate: true,
+        method: 'GET_THEN_SET',
+        key,
+        type
+      };
+    }
+
+    await redis.set(key, value, { ex: ttlSec }).catch(() => null);
+
+    return {
+      claimed: true,
+      duplicate: false,
+      method: 'GET_THEN_SET',
+      key,
+      type
+    };
+  } catch {
+    return {
+      claimed: true,
+      duplicate: false,
+      method: 'DEDUPE_UNAVAILABLE_FAIL_OPEN',
+      key,
+      type
+    };
+  }
 }
 
 function uniqueStrings(values = []) {
@@ -1735,6 +1857,10 @@ function compactExamples(examples = [], maxItems = 8, maxStringLength = 480) {
         regime: example.regime || null,
         scannerReason: example.scannerReason || null,
 
+        observationDedupeKey: example.observationDedupeKey || null,
+        observationRecorded: Boolean(example.observationRecorded),
+        observationDuplicate: Boolean(example.observationDuplicate),
+
         ts: safeNumber(example.ts || example.createdAt, null)
       });
     })
@@ -1773,6 +1899,7 @@ function compactRecentOutcomes(outcomes = [], maxItems = 8) {
         positionSource: outcome.positionSource || null,
 
         tradeId: outcome.tradeId || null,
+        outcomeDedupeKey: outcome.outcomeDedupeKey || null,
 
         symbol: outcome.symbol || outcome.baseSymbol || outcome.contractSymbol || null,
         contractSymbol: outcome.contractSymbol || null,
@@ -1792,7 +1919,8 @@ function compactRecentOutcomes(outcomes = [], maxItems = 8) {
         mfeR: safeNumber(outcome.mfeR, 0),
         maeR: safeNumber(outcome.maeR, 0),
 
-        directToSL: Boolean(outcome.directToSL),
+        directToSL: Boolean(outcome.directToSL || outcome.directSL),
+        directSL: Boolean(outcome.directSL || outcome.directToSL),
         nearTpSeen: Boolean(outcome.nearTpSeen),
         reachedHalfR: Boolean(outcome.reachedHalfR),
         reachedOneR: Boolean(outcome.reachedOneR),
@@ -1806,6 +1934,12 @@ function compactRecentOutcomes(outcomes = [], maxItems = 8) {
         setupType: parsed.setup || null,
         regimeBucket: parsed.regime || null,
         confirmationProfile: parsed.confirmationProfile || null,
+
+        entryMarketWeather: outcome.entryMarketWeather || null,
+        entryCurrentRegime: outcome.entryCurrentRegime || outcome.currentRegime || null,
+        entryCurrentTrendSide: outcome.entryCurrentTrendSide || outcome.currentTrendSide || null,
+        entryCurrentFit: outcome.entryCurrentFit ?? outcome.currentFit ?? null,
+        entryCurrentFitConfidence: safeNumber(outcome.entryCurrentFitConfidence ?? outcome.currentMarketFitConfidence, null),
 
         costModelApplied: Boolean(outcome.costModelApplied),
         netCostModelApplied: Boolean(outcome.netCostModelApplied),
@@ -1966,7 +2100,12 @@ function buildFixedTaxonomyDefinitionParts(row = {}, classified = {}, taxonomy =
     `CONTRA_EVIDENCE=${contra.hardContra ? 'HARD' : contra.softContra ? 'SOFT' : 'NO'}`,
 
     'VOLUME_FIELDS_ALLOWED=volBucket,volumeBucket,volumeScore,relativeVolume,volumeSpike,volumeConfirmed,quoteVolumeSpike',
-    'VOLUME_FIELDS_EXCLUDED=volatilityTier,atrPct,rangePct,realizedVolPct,volume24h'
+    'VOLUME_FIELDS_EXCLUDED=volatilityTier,atrPct,rangePct,realizedVolPct,volume24h',
+
+    'CURRENT_FIT_SOFT_ONLY=true',
+    'CURRENT_FIT_BLOCKS_LEARNING=false',
+    'LEARNING_REMAINS_BROAD=true',
+    'MEASUREMENT_FIX=avgCostR_directSL_seenDedupe'
   ]);
 }
 
@@ -2552,7 +2691,20 @@ export async function saveWeekMicros(
     learningGranularity: LEARNING_GRANULARITY,
     parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
 
+    completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
+    scoringRSource: 'netR',
+    winsLossesFlatsSource: 'netR',
+    avgCostRShown: true,
+    observationDedupeRequired: true,
+    seenDefinition: 'UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY',
+    outcomeDedupeRequired: true,
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+
     classifierVersion: 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V2',
+    measurementFixVersion: 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1',
     noDefaultRetestSqueezeB: true,
 
     redisNamespace: LONG_NAMESPACE,
@@ -2571,6 +2723,7 @@ export async function saveWeekMicros(
     targetTradeSide: TARGET_TRADE_SIDE,
     trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
     classifierVersion: 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V2',
+    measurementFixVersion: 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1',
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX
   });
@@ -2609,7 +2762,20 @@ export async function saveWeekMicros(
     learningGranularity: LEARNING_GRANULARITY,
     parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
 
+    completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
+    scoringRSource: 'netR',
+    winsLossesFlatsSource: 'netR',
+    avgCostRShown: true,
+    observationDedupeRequired: true,
+    seenDefinition: 'UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY',
+    outcomeDedupeRequired: true,
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+
     classifierVersion: 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V2',
+    measurementFixVersion: 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1',
     noDefaultRetestSqueezeB: true,
 
     redisNamespace: LONG_NAMESPACE,
@@ -2761,6 +2927,16 @@ function getOrCreateMicro(micros, classified, side) {
 
   micro.classifierVersion = 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V2';
   micro.noDefaultRetestSqueezeB = true;
+  micro.measurementFixVersion = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
+  micro.observationDedupeRequired = true;
+  micro.seenDefinition = 'UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY';
+  micro.outcomeDedupeRequired = true;
+
+  micro.currentFitSoftOnly = true;
+  micro.currentFitBlocksLearning = false;
+  micro.learningRemainsBroad = true;
+  micro.selectionWillBeAdaptive = true;
+  micro.discordWillBeStrict = true;
 
   micro.learningStatus = getLearningStatus(micro);
   micro.status = micro.learningStatus;
@@ -2785,6 +2961,31 @@ function buildAnalyzeVariants(metrics = {}) {
   return {
     primary,
     mirrors: []
+  };
+}
+
+function buildObservationDedupeIdentity(row = {}, microFamilyId = '') {
+  const snapshotId = String(
+    row.snapshotId ||
+      row.scanSnapshotId ||
+      row.scannerSnapshotId ||
+      row.batchId ||
+      row.runId ||
+      row.createdBucket ||
+      'NO_SNAPSHOT'
+  ).trim();
+
+  const symbol = String(
+    row.symbol ||
+      row.contractSymbol ||
+      row.baseSymbol ||
+      'UNKNOWN'
+  ).trim().toUpperCase();
+
+  return {
+    snapshotId: snapshotId || 'NO_SNAPSHOT',
+    symbol: symbol || 'UNKNOWN',
+    microFamilyId
   };
 }
 
@@ -2860,15 +3061,25 @@ export async function analyzeCandidatesBatch(
         classified
       );
 
+      const observationIdentity = buildObservationDedupeIdentity(batch.metrics, microFamilyId);
+
       const observationKey = getObsLastKey(
-        batch.metrics.snapshotId || 'NO_SNAPSHOT',
-        batch.metrics.symbol || batch.metrics.contractSymbol || 'UNKNOWN',
-        microFamilyId
+        observationIdentity.snapshotId,
+        observationIdentity.symbol,
+        observationIdentity.microFamilyId
       );
 
-      await redis.set(observationKey, String(now()), {
-        ex: obsDedupeTtlSec()
-      }).catch(() => null);
+      const observationClaim = await claimDedupeKey(
+        redis,
+        observationKey,
+        obsDedupeTtlSec(),
+        {
+          type: 'OBSERVATION'
+        }
+      );
+
+      const observationDuplicate = observationClaim.duplicate === true;
+      const observationRecorded = observationClaim.claimed === true && !observationDuplicate;
 
       const micro = getOrCreateMicro(
         micros,
@@ -2924,10 +3135,17 @@ export async function analyzeCandidatesBatch(
         exchangeOrder: false,
         bitgetOrderPlaced: false,
 
-        observationRecorded: true,
-        observationDuplicate: false,
-        observationAlwaysCounted: true,
+        observationRecorded,
+        observationDuplicate,
+        observationAlreadyCounted: observationDuplicate,
+        observationCounted: observationRecorded,
+        countObservation: observationRecorded,
+        skipObservationCount: observationDuplicate,
+        observationAlwaysCounted: false,
         observationDedupeKey: observationKey,
+        observationDedupeMethod: observationClaim.method,
+        observationDedupeType: observationClaim.type,
+        observationSnapshotId: observationIdentity.snapshotId,
 
         createdAt: batch.metrics.createdAt || now()
       }));
@@ -2966,9 +3184,15 @@ export async function analyzeCandidatesBatch(
           source: OBSERVATION_SOURCE,
           analysisType: 'VIRTUAL_TRADE_SETUP_OBSERVATION',
 
-          observationRecorded: true,
-          observationDuplicate: false,
-          observationAlwaysCounted: true,
+          observationRecorded,
+          observationDuplicate,
+          observationAlreadyCounted: observationDuplicate,
+          observationCounted: observationRecorded,
+          countObservation: observationRecorded,
+          skipObservationCount: observationDuplicate,
+          observationAlwaysCounted: false,
+          observationDedupeKey: observationKey,
+          observationDedupeMethod: observationClaim.method,
 
           mirrorMicroFamiliesCreated: 0,
           mirrorMicroFamilyIds: [],
@@ -3209,7 +3433,7 @@ function ensureNetOutcome(outcome = {}) {
 
     const netR = safeNumber(cost.netR, existingNetR ?? 0);
     const grossR = safeNumber(cost.grossR, existingGrossR ?? 0);
-    const costR = safeNumber(cost.costR, existingCostR ?? 0);
+    const costR = safeNumber(cost.costR, existingCostR ?? Math.max(0, grossR - netR));
 
     return withAnalyzeIdentityFlags({
       ...outcome,
@@ -3283,6 +3507,40 @@ function ensureNetOutcome(outcome = {}) {
     netCostModelApplied: Boolean(outcome.netCostModelApplied),
     costModel: outcome.costModel || 'PRECOMPUTED_NET_R'
   });
+}
+
+function buildOutcomeDedupeIdentity(outcome = {}, microFamilyId = '') {
+  const direct = String(
+    outcome.outcomeId ||
+      outcome.learningOutcomeId ||
+      outcome.closeEventId ||
+      outcome.tradeCloseId ||
+      outcome.tradeId ||
+      outcome.positionId ||
+      ''
+  ).trim();
+
+  if (direct) {
+    return hashText(`${TARGET_TRADE_SIDE}|${direct}|${microFamilyId}`, 24);
+  }
+
+  const symbol = String(outcome.symbol || outcome.contractSymbol || 'UNKNOWN').toUpperCase();
+  const openedAt = String(outcome.openedAt || outcome.createdAt || 'NO_OPEN').trim();
+  const closedAt = String(outcome.closedAt || outcome.completedAt || outcome.ts || 'NO_CLOSE').trim();
+  const exitReason = String(outcome.exitReason || outcome.reason || 'NO_REASON').trim();
+  const netR = safeNumber(outcome.netR ?? outcome.exitR, 0).toFixed(6);
+  const exitPrice = safeNumber(outcome.exit ?? outcome.exitPrice, 0).toFixed(8);
+
+  return hashText([
+    TARGET_TRADE_SIDE,
+    symbol,
+    openedAt,
+    closedAt,
+    exitReason,
+    netR,
+    exitPrice,
+    microFamilyId
+  ].join('|'), 24);
 }
 
 export async function recordOutcome(
@@ -3373,6 +3631,19 @@ export async function recordOutcome(
     row
   );
 
+  const redis = getDurableRedis();
+  const outcomeIdentity = buildOutcomeDedupeIdentity(row, microFamilyId);
+  const outcomeDedupeKey = getOutcomeLastKey(weekKey, outcomeIdentity, microFamilyId);
+
+  const outcomeClaim = await claimDedupeKey(
+    redis,
+    outcomeDedupeKey,
+    outcomeDedupeTtlSec(),
+    {
+      type: 'OUTCOME'
+    }
+  );
+
   const micros = await getWeekMicros(weekKey);
 
   const micro = getOrCreateMicro(
@@ -3387,6 +3658,68 @@ export async function recordOutcome(
     },
     TARGET_DASHBOARD_SIDE
   );
+
+  if (outcomeClaim.duplicate === true) {
+    updateOutcome(micro, withAnalyzeIdentityFlags({
+      ...row,
+
+      microFamilyId,
+      trueMicroFamilyId: microFamilyId,
+      childTrueMicroFamilyId: microFamilyId,
+      coarseMicroFamilyId: parentTrueMicroFamilyId,
+      parentTrueMicroFamilyId,
+      parentMicroFamilyId: parentTrueMicroFamilyId,
+      macroFamilyId: parentTrueMicroFamilyId,
+      parentMacroFamilyId: parentTrueMicroFamilyId,
+
+      source: src,
+      outcomeSource: OUTCOME_SOURCE,
+      outcomeDuplicate: true,
+      outcomeAlreadyRecorded: true,
+      outcomeCounted: false,
+      countOutcome: false,
+      skipOutcomeCount: true,
+      outcomeDedupeKey,
+      outcomeDedupeMethod: outcomeClaim.method
+    }), src);
+
+    Object.assign(micro, analyzeIdentityFlags());
+
+    await saveWeekMicros(
+      weekKey,
+      micros,
+      {
+        onlyIds: [microFamilyId]
+      }
+    );
+
+    return withAnalyzeIdentityFlags({
+      ...row,
+      microFamilyId,
+      trueMicroFamilyId: microFamilyId,
+      childTrueMicroFamilyId: microFamilyId,
+      coarseMicroFamilyId: parentTrueMicroFamilyId,
+      parentTrueMicroFamilyId,
+      parentMicroFamilyId: parentTrueMicroFamilyId,
+      macroFamilyId: parentTrueMicroFamilyId,
+      parentMacroFamilyId: parentTrueMicroFamilyId,
+      source: src,
+      outcomeSource: OUTCOME_SOURCE,
+      weekKey,
+      skipped: true,
+      reason: 'DUPLICATE_OUTCOME_SKIPPED',
+      outcomeDuplicate: true,
+      outcomeAlreadyRecorded: true,
+      outcomeCounted: false,
+      countOutcome: false,
+      skipOutcomeCount: true,
+      outcomeDedupeKey,
+      outcomeDedupeMethod: outcomeClaim.method,
+      recordedAt: now(),
+      mirrorOutcomeRecorded: false,
+      mirrorMicroFamilyId: null
+    });
+  }
 
   updateOutcome(micro, withAnalyzeIdentityFlags({
     ...row,
@@ -3427,15 +3760,29 @@ export async function recordOutcome(
 
     netR: safeNumber(row.netR ?? row.exitR, 0),
     exitR: safeNumber(row.exitR ?? row.netR, 0),
+    realizedNetR: safeNumber(row.realizedNetR ?? row.netR ?? row.exitR, 0),
     realizedR: safeNumber(row.realizedR ?? row.netR ?? row.exitR, 0),
     r: safeNumber(row.r ?? row.netR ?? row.exitR, 0),
 
     costR: safeNumber(row.costR, 0),
     avgCostR: safeNumber(row.avgCostR ?? row.costR, 0),
     grossR: safeNumber(row.grossR, 0),
+    rawR: safeNumber(row.rawR ?? row.grossR, 0),
+    realizedGrossR: safeNumber(row.realizedGrossR ?? row.grossR, 0),
 
     costModelApplied: Boolean(row.costModelApplied),
     netCostModelApplied: Boolean(row.netCostModelApplied),
+
+    directToSL: Boolean(row.directToSL),
+    directSL: Boolean(row.directSL || row.directToSL),
+
+    outcomeDuplicate: false,
+    outcomeAlreadyRecorded: false,
+    outcomeCounted: true,
+    countOutcome: true,
+    skipOutcomeCount: false,
+    outcomeDedupeKey,
+    outcomeDedupeMethod: outcomeClaim.method,
 
     outcomeIdentityLocked: true,
     outcomeIdentitySource: row.outcomeIdentitySource || 'POSITION_MICRO_IDENTITY'
@@ -3465,6 +3812,13 @@ export async function recordOutcome(
     outcomeSource: OUTCOME_SOURCE,
     weekKey,
     recordedAt: now(),
+    outcomeDuplicate: false,
+    outcomeAlreadyRecorded: false,
+    outcomeCounted: true,
+    countOutcome: true,
+    skipOutcomeCount: false,
+    outcomeDedupeKey,
+    outcomeDedupeMethod: outcomeClaim.method,
     mirrorOutcomeRecorded: false,
     mirrorMicroFamilyId: null
   });
@@ -3500,14 +3854,23 @@ function inferDirectToSL({ position, exitReason }) {
     'HIT_SL',
     'STOP',
     'STOP_LOSS',
-    'STOPLOSS'
-  ].includes(reason);
+    'STOPLOSS',
+    'HARD_SL',
+    'DIRECT_SL'
+  ].includes(reason) ||
+    reason.includes('STOP_LOSS') ||
+    reason.includes('STOPLOSS') ||
+    reason.includes('HIT_SL') ||
+    reason.includes('DIRECT_SL');
 
-  return Boolean(position.directToSL) ||
+  return Boolean(position.directToSL || position.directSL) ||
     (
       stoppedOut &&
-      mfeR < 0.25 &&
-      maeR <= -0.8
+      !Boolean(position.nearTpSeen || position.reachedHalfR || position.reachedOneR) &&
+      (
+        mfeR < 0.25 ||
+        maeR <= -0.8
+      )
     );
 }
 
@@ -3665,8 +4028,20 @@ function copyMicroClassificationFields(position = {}) {
     avgCostR: position.avgCostR ?? null,
     estimatedCostR: position.estimatedCostR ?? null,
 
+    entryMarketWeather: position.entryMarketWeather || null,
+    entryCurrentRegime: position.entryCurrentRegime || position.currentRegime || null,
+    entryCurrentTrendSide: position.entryCurrentTrendSide || position.currentTrendSide || null,
+    entryCurrentFit: position.entryCurrentFit ?? position.currentFit ?? null,
+    entryCurrentFitConfidence: position.entryCurrentFitConfidence ?? position.currentMarketFitConfidence ?? null,
+    entryWeatherFitMatchedFamily: position.entryWeatherFitMatchedFamily ?? null,
+
     classifierVersion: 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V2',
     noDefaultRetestSqueezeB: true,
+    measurementFixVersion: 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1',
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
 
     outcomeIdentityLocked: true,
     outcomeIdentitySource: 'POSITION_MICRO_IDENTITY',
@@ -3729,14 +4104,20 @@ export function buildOutcomeFromPosition({
     exitSpreadPct: safeNumber(position.exitSpreadPct ?? position.spreadPct, 0)
   });
 
+  const costR = safeNumber(cost.costR, 0);
+
   const netR = safeNumber(
     cost.netR,
-    grossR - safeNumber(cost.costR, 0)
+    grossR - costR
   );
 
   const closedAt = now();
   const src = normalizeSource(source);
   const classification = copyMicroClassificationFields(position);
+  const directToSL = inferDirectToSL({
+    position,
+    exitReason
+  });
 
   return withAnalyzeIdentityFlags({
     type: 'OUTCOME',
@@ -3747,6 +4128,7 @@ export function buildOutcomeFromPosition({
     strategyVersion: CONFIG.strategyVersion,
 
     tradeId: position.tradeId,
+    positionId: position.positionId || position.id || null,
 
     symbol: position.symbol,
     contractSymbol: position.contractSymbol,
@@ -3802,8 +4184,8 @@ export function buildOutcomeFromPosition({
     r: netR,
     netPnlPct: safeNumber(cost.netPnlPct, 0),
 
-    costR: safeNumber(cost.costR, 0),
-    avgCostR: safeNumber(cost.costR, 0),
+    costR,
+    avgCostR: costR,
     costPct: safeNumber(cost.costPct, 0),
     feePct: safeNumber(cost.feePct, 0),
     slippagePct: safeNumber(cost.slippagePct, 0),
@@ -3820,10 +4202,8 @@ export function buildOutcomeFromPosition({
     mfeR: safeNumber(position.mfeR, 0),
     maeR: safeNumber(position.maeR, 0),
 
-    directToSL: inferDirectToSL({
-      position,
-      exitReason
-    }),
+    directToSL,
+    directSL: directToSL,
 
     nearTpSeen: Boolean(position.nearTpSeen),
     reachedHalfR: Boolean(position.reachedHalfR),
@@ -3836,6 +4216,17 @@ export function buildOutcomeFromPosition({
     gaveBackAfterHalfR: Boolean(position.gaveBackAfterHalfR),
     gaveBackAfterOneR: Boolean(position.gaveBackAfterOneR),
     nearTpThenLoss: Boolean(position.nearTpThenLoss),
+
+    entryMarketWeather: position.entryMarketWeather || null,
+    entryCurrentRegime: position.entryCurrentRegime || position.currentRegime || null,
+    entryCurrentTrendSide: position.entryCurrentTrendSide || position.currentTrendSide || null,
+    entryCurrentFit: position.entryCurrentFit ?? position.currentFit ?? null,
+    entryCurrentFitConfidence: position.entryCurrentFitConfidence ?? position.currentMarketFitConfidence ?? null,
+    entryWeatherFitMatchedFamily: position.entryWeatherFitMatchedFamily ?? null,
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
 
     openedAt: position.openedAt || position.createdAt || null,
     closedAt,
