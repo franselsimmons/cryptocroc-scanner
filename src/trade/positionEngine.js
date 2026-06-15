@@ -40,7 +40,8 @@ const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 const POSITION_SOURCE = 'VIRTUAL';
 const OUTCOME_SOURCE = 'VIRTUAL';
 
-const COST_MODEL_VERSION = 'POSITION_ENGINE_LONG_NET_COST_V7';
+const COST_MODEL_VERSION = 'POSITION_ENGINE_LONG_NET_COST_V8';
+const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
 
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 const MIN_COMPLETED_ACTIVE_LEARNING = 20;
@@ -1185,6 +1186,18 @@ function identityFlags() {
     totalRSource: 'netR',
     avgCostRShown: true,
 
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
+    directSLDefinition: 'SL_EXIT_WITHOUT_MEANINGFUL_MFE',
+    directSLMfeThresholdR: 0.25,
+    seenDefinition: 'UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY',
+    completedOnlyClosedVirtualOrShadow: true,
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+    selectionWillBeAdaptive: true,
+    discordWillBeStrict: true,
+
     exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
     trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
     parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
@@ -1265,7 +1278,13 @@ function buildVirtualFlags(row = {}) {
     liveEligible: false,
     discordAlertEligible: Boolean(row.discordAlertEligible),
     selectedMicroFamilyAlert: Boolean(row.selectedMicroFamilyAlert),
-    selectedForDiscord: Boolean(row.selectedForDiscord || row.discordAlertEligible || row.selectedMicroFamilyAlert)
+    selectedForDiscord: Boolean(row.selectedForDiscord || row.discordAlertEligible || row.selectedMicroFamilyAlert),
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+    selectionWillBeAdaptive: true,
+    discordWillBeStrict: true
   };
 }
 
@@ -1360,8 +1379,22 @@ function calcNetCostOutcome({
     exitSpreadPct
   }) || {};
 
-  const costR = Math.max(0, safeNumber(cost.costR, 0));
-  const netR = grossR - costR;
+  const appliedGrossR = Number.isFinite(safeNumber(cost.grossR, null))
+    ? safeNumber(cost.grossR, grossR)
+    : grossR;
+
+  const costR = Math.max(
+    0,
+    safeNumber(
+      cost.costR ??
+        position.costR ??
+        position.estimatedCostR ??
+        position.avgCostR,
+      0
+    )
+  );
+
+  const netR = appliedGrossR - costR;
 
   return {
     cost,
@@ -1370,7 +1403,7 @@ function calcNetCostOutcome({
     rewardPct: calcRewardPctFromPosition(position),
     grossMovePct,
 
-    grossR,
+    grossR: appliedGrossR,
     costR,
     netR,
 
@@ -1472,11 +1505,14 @@ function applyNetCostModelToOutcome({
     costModel: COST_MODEL_VERSION,
     costModelVersion: COST_MODEL_VERSION,
 
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
+
     scoringRSource: 'netR',
     winsLossesFlatsSource: 'netR',
     winrateDefinition: 'netR > 0',
     avgRSource: 'netR',
-    totalRSource: 'netR'
+    totalRSource: 'netR',
+    avgCostRShown: true
   });
 }
 
@@ -1726,6 +1762,9 @@ export function buildOpenPositionFromEntry(entry) {
     reachedOneR: false,
     nearTpSeen: false,
 
+    directToSL: false,
+    directSL: false,
+
     beArmed: false,
     beWouldExit: false,
     beExitR: 0,
@@ -1738,6 +1777,17 @@ export function buildOpenPositionFromEntry(entry) {
     beLiveApplied: false,
     trailLiveApplied: false,
     slManagementSource: null,
+
+    entryMarketWeather: normalizedEntry.entryMarketWeather || null,
+    entryCurrentRegime: normalizedEntry.entryCurrentRegime || normalizedEntry.currentRegime || null,
+    entryCurrentTrendSide: normalizedEntry.entryCurrentTrendSide || normalizedEntry.currentTrendSide || null,
+    entryCurrentFit: normalizedEntry.entryCurrentFit ?? normalizedEntry.currentFit ?? null,
+    entryCurrentFitConfidence: normalizedEntry.entryCurrentFitConfidence ?? normalizedEntry.currentMarketFitConfidence ?? null,
+    entryWeatherFitMatchedFamily: normalizedEntry.entryWeatherFitMatchedFamily ?? null,
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
 
     validLongRiskShape: validLongRiskGeometry(normalizedEntry),
     longRiskFormula: 'sl < entry < tp',
@@ -1765,6 +1815,39 @@ async function markPriceFetchFailed(position) {
   return position;
 }
 
+function isDirectSLExit({
+  position,
+  exitReason
+} = {}) {
+  const reason = upper(exitReason);
+
+  const stoppedOut =
+    reason === 'SL' ||
+    reason === 'HIT_SL' ||
+    reason === 'STOP' ||
+    reason === 'STOP_LOSS' ||
+    reason === 'STOPLOSS' ||
+    reason === 'HARD_SL' ||
+    reason === 'DIRECT_SL';
+
+  if (!stoppedOut) return false;
+
+  if (
+    Boolean(position.nearTpSeen) ||
+    Boolean(position.reachedHalfR) ||
+    Boolean(position.reachedOneR)
+  ) {
+    return false;
+  }
+
+  const mfeR = safeNumber(position.mfeR, 0);
+  const maeR = safeNumber(position.maeR, 0);
+
+  return Boolean(position.directToSL || position.directSL) ||
+    mfeR < 0.25 ||
+    maeR <= -0.8;
+}
+
 function enrichOutcomeIdentity(outcome = {}, position = {}) {
   const identity = normalizeMicroIdentity(position);
 
@@ -1775,6 +1858,21 @@ function enrichOutcomeIdentity(outcome = {}, position = {}) {
     : 0;
 
   const exitReason = String(outcome.exitReason || '').toUpperCase();
+  const directSL = isDirectSLExit({
+    position,
+    exitReason
+  });
+
+  const outcomeIdentity = [
+    TARGET_TRADE_SIDE,
+    position.tradeId || outcome.tradeId || '',
+    position.symbol || position.contractSymbol || outcome.symbol || '',
+    openedAt || '',
+    closedAt || '',
+    exitReason || '',
+    safeNumber(outcome.exitPrice || outcome.exit, 0),
+    identity.microFamilyId
+  ].join('|');
 
   return forceLongPositionFields({
     ...outcome,
@@ -1785,6 +1883,9 @@ function enrichOutcomeIdentity(outcome = {}, position = {}) {
     positionSource: position.source || POSITION_SOURCE,
 
     tradeId: position.tradeId || outcome.tradeId || null,
+    outcomeId: outcome.outcomeId || `outcome_${randomId('long')}`,
+    outcomeIdentity,
+    outcomeIdentityHashSource: 'TRADE_ID_SYMBOL_OPEN_CLOSE_REASON_EXIT_TRUE_MICRO',
 
     activeRotationId: position.activeRotationId || null,
     selectedRotationId: position.selectedRotationId || position.activeRotationId || null,
@@ -1866,6 +1967,9 @@ function enrichOutcomeIdentity(outcome = {}, position = {}) {
     reachedOneR: Boolean(position.reachedOneR || outcome.reachedOneR),
     nearTpSeen: Boolean(position.nearTpSeen || outcome.nearTpSeen),
 
+    directToSL: directSL,
+    directSL,
+
     tpExitTriggered: exitReason === 'TP',
     slExitTriggered: exitReason === 'SL',
     timeStopExitTriggered: exitReason === 'TIME_STOP',
@@ -1883,10 +1987,26 @@ function enrichOutcomeIdentity(outcome = {}, position = {}) {
     longRiskFormula: 'sl < entry < tp',
     longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
 
+    entryMarketWeather: position.entryMarketWeather || outcome.entryMarketWeather || null,
+    entryCurrentRegime: position.entryCurrentRegime || position.currentRegime || outcome.entryCurrentRegime || outcome.currentRegime || null,
+    entryCurrentTrendSide: position.entryCurrentTrendSide || position.currentTrendSide || outcome.entryCurrentTrendSide || outcome.currentTrendSide || null,
+    entryCurrentFit: position.entryCurrentFit ?? position.currentFit ?? outcome.entryCurrentFit ?? outcome.currentFit ?? null,
+    entryCurrentFitConfidence: position.entryCurrentFitConfidence ?? position.currentMarketFitConfidence ?? outcome.entryCurrentFitConfidence ?? outcome.currentMarketFitConfidence ?? null,
+    entryWeatherFitMatchedFamily: position.entryWeatherFitMatchedFamily ?? outcome.entryWeatherFitMatchedFamily ?? null,
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
+    directSLDefinition: 'SL_EXIT_WITHOUT_MEANINGFUL_MFE',
     completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
     scoringRSource: 'netR',
     winsLossesFlatsSource: 'netR',
-    winrateDefinition: 'netR > 0'
+    winrateDefinition: 'netR > 0',
+    avgRSource: 'netR',
+    totalRSource: 'netR',
+    avgCostRShown: true
   });
 }
 
@@ -1991,6 +2111,10 @@ async function monitorOnePosition({
 
   const closedAt = timestamp;
   const exitPrice = roundPrice(price);
+  const directSL = isDirectSLExit({
+    position,
+    exitReason: exit.reason
+  });
 
   const closedPosition = forceLongPositionFields({
     ...position,
@@ -2001,7 +2125,9 @@ async function monitorOnePosition({
     exitReason: exit.reason,
     exitTrigger: exit.trigger,
     outcomeSource: OUTCOME_SOURCE,
-    source: POSITION_SOURCE
+    source: POSITION_SOURCE,
+    directToSL: directSL,
+    directSL
   });
 
   const baseOutcome = buildOutcomeFromPosition({
@@ -2021,7 +2147,9 @@ async function monitorOnePosition({
       exitReason: exit.reason,
       exitTrigger: exit.trigger,
       source: OUTCOME_SOURCE,
-      outcomeSource: OUTCOME_SOURCE
+      outcomeSource: OUTCOME_SOURCE,
+      directToSL: directSL,
+      directSL
     },
     position: closedPosition,
     exitPrice
