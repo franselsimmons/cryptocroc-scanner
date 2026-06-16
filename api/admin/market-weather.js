@@ -207,7 +207,7 @@ function normalizeWeatherForAdmin(weatherInput = {}) {
     available: ok,
 
     adminRouteVersion: ADMIN_ROUTE_VERSION,
-    file: 'src/market/marketWeather.js',
+    file: 'src/market/ marketWeather.js',
     apiRoute: '/api/admin/market-weather',
 
     currentRegime,
