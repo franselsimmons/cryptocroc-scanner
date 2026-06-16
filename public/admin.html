@@ -1610,15 +1610,53 @@
       return fallbackCurrentFitScore(row);
     }
 
+    function currentFitConfidence(row = {}) {
+      const direct = firstFinite(
+        row.currentFitConfidence,
+        row.entryCurrentFitConfidence,
+        row.currentMarketFitConfidence,
+        row.fitConfidence,
+        row.marketFitConfidence,
+        row.weatherConfidence,
+        row.currentMarketWeatherConfidence
+      );
+
+      if (direct !== null) return direct;
+
+      const score = currentFitScore(row);
+
+      if (score >= 70) return 80;
+      if (score >= 45) return 60;
+      if (score >= 20) return 40;
+      if (score <= -20) return 35;
+
+      return 0;
+    }
+
     function currentFitPill(row = {}) {
       const fit = currentFit(row);
       const score = currentFitScore(row);
       const conf = currentFitConfidence(row);
 
-      if (fit === "MATCH") return `<span class="pill fit">FIT ${escapeHtml(fmt(score, 0))}</span>`;
-      if (fit === "WEAK_MATCH") return `<span class="pill weakfit">WEAK FIT ${escapeHtml(fmt(score, 0))}</span>`;
-      if (fit === "MISFIT") return `<span class="pill misfit">MISFIT ${escapeHtml(fmt(score, 0))}</span>`;
-      if (fit === "NEUTRAL") return `<span class="pill neutral">NEUTRAL ${escapeHtml(fmt(conf, 0))}</span>`;
+      if (fit === "MATCH") {
+        return `<span class="pill fit">FIT ${escapeHtml(fmt(score, 0))}</span>`;
+      }
+
+      if (fit === "WEAK_MATCH") {
+        return `<span class="pill weakfit">WEAK FIT ${escapeHtml(fmt(score, 0))}</span>`;
+      }
+
+      if (fit === "MISFIT") {
+        return `<span class="pill misfit">MISFIT ${escapeHtml(fmt(score, 0))}</span>`;
+      }
+
+      if (fit === "NEUTRAL") {
+        return `<span class="pill neutral">NEUTRAL ${escapeHtml(fmt(conf, 0))}</span>`;
+      }
+
+      if (score !== 0) {
+        return `<span class="pill neutral">SOFT ${escapeHtml(fmt(score, 0))}</span>`;
+      }
 
       return '<span class="pill raw">UNKNOWN</span>';
     }
