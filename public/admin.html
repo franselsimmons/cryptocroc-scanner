@@ -1458,8 +1458,99 @@
       return String(row.selectedTier || row.rotationEligibilityTier || row.eligibilityTier || row.tier || "RAW").toUpperCase();
     }
 
+    function currentMarketRegimeForFit() {
+      return upper(
+        state.market?.regime ||
+        state.market?.currentRegime ||
+        state.market?.source?.currentRegime ||
+        state.market?.source?.regime ||
+        state.market?.raw?.currentRegime ||
+        state.market?.raw?.regime ||
+        ""
+      );
+    }
+
+    function currentMarketTrendForFit() {
+      const raw = upper(
+        state.market?.trendSide ||
+        state.market?.currentTrendSide ||
+        state.market?.source?.currentTrendSide ||
+        state.market?.source?.trendSide ||
+        state.market?.raw?.currentTrendSide ||
+        state.market?.raw?.trendSide ||
+        ""
+      );
+
+      if (["LONG", "BULL", "BULLISH", "BUY", "UP", "UPSIDE"].includes(raw)) return "LONG";
+      if (["SHORT", "BEAR", "BEARISH", "SELL", "DOWN", "DOWNSIDE"].includes(raw)) return "SHORT";
+      if (["NEUTRAL", "MIXED", "CHOP", "SIDEWAYS", "FLAT"].includes(raw)) return "NEUTRAL";
+
+      return raw || "UNKNOWN";
+    }
+
+    function fallbackCurrentFitScore(row = {}) {
+      const parsed = parseFixedLongTaxonomyId(microId(row));
+      if (!parsed?.isChild) return 0;
+
+      const marketRegime = currentMarketRegimeForFit();
+      const marketTrend = currentMarketTrendForFit();
+
+      let score = 0;
+      let hasSignal = false;
+
+      if (marketTrend === "LONG") {
+        score += 30;
+        hasSignal = true;
+      } else if (marketTrend === "NEUTRAL") {
+        score += 8;
+        hasSignal = true;
+      } else if (marketTrend === "SHORT") {
+        score -= 35;
+        hasSignal = true;
+      }
+
+      if (marketRegime && marketRegime !== "UNKNOWN") {
+        hasSignal = true;
+
+        if (marketRegime === parsed.regime) {
+          score += 40;
+        } else if (
+          (marketRegime === "TREND" && parsed.regime === "SQUEEZE") ||
+          (marketRegime === "SQUEEZE" && parsed.regime === "TREND")
+        ) {
+          score += 12;
+        } else {
+          score -= 10;
+        }
+      }
+
+      if (parsed.confirmation === "A_STRONG_ALIGN") score += 18;
+      if (parsed.confirmation === "B_FLOW_ALIGN") score += 14;
+      if (parsed.confirmation === "C_VOLUME_ALIGN") score += 10;
+      if (parsed.confirmation === "D_MIXED_OK") score += 4;
+      if (parsed.confirmation === "E_WEAK_CONTRA") score -= 8;
+
+      if (!hasSignal) return 0;
+
+      return clamp(score, -80, 100);
+    }
+
     function currentFit(row = {}) {
-      const value = upper(
+      const label = upper(
+        row.currentFitLabel ||
+        row.entryCurrentFitLabel ||
+        row.currentMarketFitLabel ||
+        row.fitLabel ||
+        row.marketFitLabel ||
+        ""
+      );
+
+      if (["MATCH", "GOOD", "FIT", "ALIGNED", "STRONG_MATCH"].includes(label)) return "MATCH";
+      if (["WEAK_MATCH", "PARTIAL_MATCH", "SOFT_MATCH"].includes(label)) return "WEAK_MATCH";
+      if (["MISFIT", "BAD", "AGAINST", "CONTRA", "NO_FIT"].includes(label)) return "MISFIT";
+      if (["NEUTRAL", "MIXED"].includes(label)) return "NEUTRAL";
+
+      const raw = upper(
         row.currentFit ||
         row.entryCurrentFit ||
         row.currentMarketFit ||
@@ -1468,15 +1559,17 @@
         ""
       );
 
-      if (["MATCH", "GOOD", "FIT", "ALIGNED", "STRONG_MATCH"].includes(value)) return "MATCH";
-      if (["WEAK_MATCH", "PARTIAL_MATCH", "SOFT_MATCH"].includes(value)) return "WEAK_MATCH";
-      if (["MISFIT", "BAD", "AGAINST", "CONTRA", "NO_FIT"].includes(value)) return "MISFIT";
-      if (["NEUTRAL", "MIXED"].includes(value)) return "NEUTRAL";
+      if (["MATCH", "GOOD", "FIT", "ALIGNED", "STRONG_MATCH"].includes(raw)) return "MATCH";
+      if (["WEAK_MATCH", "PARTIAL_MATCH", "SOFT_MATCH"].includes(raw)) return "WEAK_MATCH";
+      if (["MISFIT", "BAD", "AGAINST", "CONTRA", "NO_FIT"].includes(raw)) return "MISFIT";
+      if (["NEUTRAL", "MIXED"].includes(raw)) return "NEUTRAL";
 
       const score = currentFitScore(row);
-      if (score >= 45) return "MATCH";
-      if (score >= 18) return "WEAK_MATCH";
-      if (score <= -25) return "MISFIT";
+
+      if (score >= 70) return "MATCH";
+      if (score >= 45) return "WEAK_MATCH";
+      if (score >= 20) return "NEUTRAL";
+      if (score <= -20) return "MISFIT";
 
       return "UNKNOWN";
     }
@@ -1491,23 +1584,30 @@
 
       if (direct !== null) return direct;
 
-      const fit = upper(row.currentFit || row.entryCurrentFit || "");
+      const numericFit = firstFinite(
+        row.currentFit,
+        row.entryCurrentFit,
+        row.currentMarketFit,
+        row.fit,
+        row.marketFit
+      );
 
-      if (fit === "MATCH") return 60;
-      if (fit === "WEAK_MATCH") return 25;
-      if (fit === "NEUTRAL") return 0;
-      if (fit === "MISFIT") return -45;
+      if (numericFit !== null) return numericFit;
 
-      return 0;
-    }
+      const fit = upper(
+        row.currentFitLabel ||
+        row.entryCurrentFitLabel ||
+        row.currentFit ||
+        row.entryCurrentFit ||
+        ""
+      );
 
-    function currentFitConfidence(row = {}) {
-      return firstFinite(
-        row.currentFitConfidence,
-        row.entryCurrentFitConfidence,
-        row.currentMarketFitConfidence,
-        row.fitConfidence
-      ) ?? 0;
+      if (fit === "MATCH") return 80;
+      if (fit === "WEAK_MATCH") return 60;
+      if (fit === "NEUTRAL") return 40;
+      if (fit === "MISFIT") return 20;
+
+      return fallbackCurrentFitScore(row);
     }
 
     function currentFitPill(row = {}) {
@@ -2473,6 +2573,7 @@
         const id = microId(row);
         const parentId = parentMicroId(row);
         const active = activeSet.has(id);
+        const obs = observationSample(row);
 
         return `
           <tr>
@@ -2491,7 +2592,7 @@
               ? `<span class="pill warn">${escapeHtml(fmt(completed(row), 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>`
               : '<span class="pill active">OK</span>'
             }</td>
-            <td>${fmtInt(row.seen ?? row.observations)}</td>
+            <td>${fmtInt(obs)}</td>
             <td>${fmt(completed(row), 2)}</td>
             <td>${fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate ?? row.bayesianWinrate ?? row.wilsonLowerBound)}</td>
             <td>${fmt(row.avgR, 3)}</td>
@@ -2514,6 +2615,7 @@
         const id = microId(row);
         const parentId = parentMicroId(row);
         const active = activeSet.has(id);
+        const obs = observationSample(row);
 
         return `
           <article class="micro-card">
@@ -2546,13 +2648,15 @@
             </div>
 
             <div class="micro-stat-grid">
-              <div class="micro-stat-box"><span>Seen</span><strong>${escapeHtml(fmtInt(row.seen ?? row.observations))}</strong></div>
+              <div class="micro-stat-box"><span>Seen</span><strong>${escapeHtml(fmtInt(obs))}</strong></div>
               <div class="micro-stat-box"><span>Completed</span><strong>${escapeHtml(fmt(completed(row), 2))}</strong></div>
               <div class="micro-stat-box"><span>Fair WR</span><strong>${escapeHtml(fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate ?? row.bayesianWinrate ?? row.wilsonLowerBound))}</strong></div>
               <div class="micro-stat-box"><span>AvgR net</span><strong>${escapeHtml(fmt(row.avgR, 3))}</strong></div>
               <div class="micro-stat-box"><span>TotalR net</span><strong>${escapeHtml(fmt(row.totalR, 3))}</strong></div>
               <div class="micro-stat-box"><span>AvgCostR</span><strong>${escapeHtml(fmt(avgCostR(row), 3))}</strong></div>
               <div class="micro-stat-box"><span>DirectSL</span><strong>${escapeHtml(fmtPct(directSLPct(row)))}</strong></div>
+              <div class="micro-stat-box"><span>FitScore</span><strong>${escapeHtml(fmt(currentFitScore(row), 1))}</strong></div>
+              <div class="micro-stat-box"><span>CurrentFit</span><strong>${escapeHtml(currentFit(row))}</strong></div>
               <div class="micro-stat-box"><span>Adaptive</span><strong>${escapeHtml(fmt(adaptiveScore(row), 2))}</strong></div>
             </div>
 
@@ -3604,8 +3708,8 @@
           </div>
 
           <div class="grid">
-            ${metricCard("Seen", fmtInt(row.seen ?? row.observations))}
-            ${metricCard("Observations", fmtInt(row.observations ?? row.seen))}
+            ${metricCard("Seen", fmtInt(observationSample(row)))}
+            ${metricCard("Observations", fmtInt(observationSample(row)))}
             ${metricCard("Obs dedupe skipped", fmtInt(row.observationDuplicateSkippedCount))}
             ${metricCard("Completed", fmt(completed(row), 2), tooEarly(row) ? `minimum ${MIN_COMPLETED_ACTIVE_LEARNING}` : "active learning")}
             ${metricCard("Winrate raw", fmtPct(row.winrate))}
