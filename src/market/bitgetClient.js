@@ -147,6 +147,10 @@ function bitgetConfig() {
   };
 }
 
+function shouldLogSkippedSymbols() {
+  return CONFIG.bitget?.logSkippedSymbols === true;
+}
+
 function normalizeProductType(value = bitgetConfig().productType) {
   return String(value || 'USDT-FUTURES')
     .trim()
@@ -464,38 +468,7 @@ function contractBaseSymbol(row = {}) {
   return normalizeBaseSymbol(contractSymbolValue(row));
 }
 
-export async function resolveBitgetContractSymbol(symbol) {
-  const requested = normalizeContractSymbol(symbol);
-
-  if (!requested) {
-    return {
-      ok: false,
-      requestedSymbol: symbol,
-      contractSymbol: '',
-      reason: 'EMPTY_SYMBOL'
-    };
-  }
-
-  let contracts = [];
-
-  try {
-    contracts = await fetchBitgetContracts();
-  } catch (error) {
-    console.warn('BITGET_CONTRACTS_FAILED', JSON.stringify({
-      symbol: requested,
-      ...longMachineFlags(),
-      error: error?.message || String(error)
-    }));
-
-    return {
-      ok: false,
-      requestedSymbol: requested,
-      contractSymbol: '',
-      reason: 'CONTRACT_LIST_UNAVAILABLE'
-    };
-  }
-
-  const requestedBase = normalizeBaseSymbol(requested);
+function buildContractIndexes(contracts = []) {
   const validSymbols = new Set();
   const byBase = new Map();
 
@@ -515,7 +488,51 @@ export async function resolveBitgetContractSymbol(symbol) {
     }
   }
 
-  if (validSymbols.has(requested)) {
+  return {
+    validSymbols,
+    byBase
+  };
+}
+
+async function fetchContractIndexes() {
+  const contracts = await fetchBitgetContracts();
+  return buildContractIndexes(contracts);
+}
+
+export async function resolveBitgetContractSymbol(symbol) {
+  const requested = normalizeContractSymbol(symbol);
+
+  if (!requested) {
+    return {
+      ok: false,
+      requestedSymbol: symbol,
+      contractSymbol: '',
+      reason: 'EMPTY_SYMBOL'
+    };
+  }
+
+  let indexes;
+
+  try {
+    indexes = await fetchContractIndexes();
+  } catch (error) {
+    console.warn('BITGET_CONTRACTS_FAILED', JSON.stringify({
+      symbol: requested,
+      ...longMachineFlags(),
+      error: error?.message || String(error)
+    }));
+
+    return {
+      ok: false,
+      requestedSymbol: requested,
+      contractSymbol: '',
+      reason: 'CONTRACT_LIST_UNAVAILABLE'
+    };
+  }
+
+  const requestedBase = normalizeBaseSymbol(requested);
+
+  if (indexes.validSymbols.has(requested)) {
     return {
       ok: true,
       requestedSymbol: requested,
@@ -524,11 +541,11 @@ export async function resolveBitgetContractSymbol(symbol) {
     };
   }
 
-  if (requestedBase && byBase.has(requestedBase)) {
+  if (requestedBase && indexes.byBase.has(requestedBase)) {
     return {
       ok: true,
       requestedSymbol: requested,
-      contractSymbol: byBase.get(requestedBase),
+      contractSymbol: indexes.byBase.get(requestedBase),
       reason: 'BASE_MATCH'
     };
   }
@@ -539,6 +556,11 @@ export async function resolveBitgetContractSymbol(symbol) {
     contractSymbol: '',
     reason: 'BITGET_SYMBOL_NOT_USDT_FUTURES'
   };
+}
+
+export async function isBitgetUsdtFuturesSymbol(symbol) {
+  const resolved = await resolveBitgetContractSymbol(symbol);
+  return Boolean(resolved.ok && resolved.contractSymbol);
 }
 
 function isRisingTicker(change24h) {
@@ -578,6 +600,31 @@ function longCandidateMeta(change24h) {
   };
 }
 
+async function filterTickersToKnownContracts(tickers = []) {
+  let indexes;
+
+  try {
+    indexes = await fetchContractIndexes();
+  } catch (error) {
+    if (shouldLogSkippedSymbols()) {
+      console.warn('BITGET_TICKER_CONTRACT_FILTER_SKIPPED', JSON.stringify({
+        ...longMachineFlags(),
+        error: error?.message || String(error)
+      }));
+    }
+
+    return tickers;
+  }
+
+  return tickers.filter((row) => {
+    const symbol = contractSymbolValue(row);
+
+    if (!symbol) return false;
+
+    return indexes.validSymbols.has(symbol);
+  });
+}
+
 export async function fetchBitgetTickers() {
   const params = {
     productType: normalizeProductType()
@@ -588,8 +635,9 @@ export async function fetchBitgetTickers() {
     CACHE_TTL_MS.tickers,
     async () => {
       const data = await fetchJson('/api/v2/mix/market/tickers', params);
+      const tickers = Array.isArray(data) ? data : [];
 
-      return Array.isArray(data) ? data : [];
+      return filterTickersToKnownContracts(tickers);
     }
   );
 }
@@ -686,13 +734,15 @@ export async function fetchCandles(symbol, timeframe = '15m', limit = 100) {
   const resolved = await resolveBitgetContractSymbol(symbol);
 
   if (!resolved.ok || !resolved.contractSymbol) {
-    console.warn('BITGET_CANDLES_SKIPPED', JSON.stringify({
-      symbol,
-      requestedSymbol: resolved.requestedSymbol,
-      reason: resolved.reason,
-      productType: normalizeProductType(),
-      ...longMachineFlags()
-    }));
+    if (shouldLogSkippedSymbols()) {
+      console.warn('BITGET_CANDLES_SKIPPED', JSON.stringify({
+        symbol,
+        requestedSymbol: resolved.requestedSymbol,
+        reason: resolved.reason,
+        productType: normalizeProductType(),
+        ...longMachineFlags()
+      }));
+    }
 
     return [];
   }
@@ -766,13 +816,15 @@ export async function fetchOrderBook(symbol) {
   const resolved = await resolveBitgetContractSymbol(symbol);
 
   if (!resolved.ok || !resolved.contractSymbol) {
-    console.warn('BITGET_ORDERBOOK_SKIPPED', JSON.stringify({
-      symbol,
-      requestedSymbol: resolved.requestedSymbol,
-      reason: resolved.reason,
-      productType: normalizeProductType(),
-      ...longMachineFlags()
-    }));
+    if (shouldLogSkippedSymbols()) {
+      console.warn('BITGET_ORDERBOOK_SKIPPED', JSON.stringify({
+        symbol,
+        requestedSymbol: resolved.requestedSymbol,
+        reason: resolved.reason,
+        productType: normalizeProductType(),
+        ...longMachineFlags()
+      }));
+    }
 
     return null;
   }
