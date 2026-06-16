@@ -34,7 +34,8 @@ const CACHE_TTL_MS = {
   tickers: 20_000,
   candles: 45_000,
   orderBook: 4_000,
-  funding: 60_000
+  funding: 60_000,
+  contracts: 10 * 60_000
 };
 
 const MARKET_PATH_PREFIXES = [
@@ -155,7 +156,6 @@ function normalizeProductType(value = bitgetConfig().productType) {
 
 function assertMarketDataPath(path) {
   const value = String(path || '');
-
   const allowed = MARKET_PATH_PREFIXES.some((prefix) => value.startsWith(prefix));
 
   if (!allowed) {
@@ -402,6 +402,145 @@ async function fetchJson(path, params = {}, options = {}) {
   throw lastError;
 }
 
+export async function fetchBitgetContracts() {
+  const params = {
+    productType: normalizeProductType()
+  };
+
+  return withCache(
+    cacheKey('/api/v2/mix/market/contracts', params),
+    CACHE_TTL_MS.contracts,
+    async () => {
+      const data = await fetchJson('/api/v2/mix/market/contracts', params, {
+        retries: 1,
+        timeoutMs: Math.max(1500, bitgetConfig().timeoutMs)
+      });
+
+      return Array.isArray(data) ? data : [];
+    }
+  );
+}
+
+function isTradableBitgetContract(row = {}) {
+  const status = String(
+    row.status ||
+    row.symbolStatus ||
+    row.state ||
+    row.tradeStatus ||
+    ''
+  ).trim().toLowerCase();
+
+  if (!status) return true;
+
+  return !(
+    status.includes('off') ||
+    status.includes('delist') ||
+    status.includes('suspend') ||
+    status.includes('close') ||
+    status.includes('disabled')
+  );
+}
+
+function contractSymbolValue(row = {}) {
+  return normalizeContractSymbol(
+    row.symbol ||
+    row.instId ||
+    row.contractCode ||
+    row.symbolName ||
+    ''
+  );
+}
+
+function contractBaseSymbol(row = {}) {
+  const directBase = normalizeBaseSymbol(
+    row.baseCoin ||
+    row.baseSymbol ||
+    row.coin ||
+    ''
+  );
+
+  if (directBase) return directBase;
+
+  return normalizeBaseSymbol(contractSymbolValue(row));
+}
+
+export async function resolveBitgetContractSymbol(symbol) {
+  const requested = normalizeContractSymbol(symbol);
+
+  if (!requested) {
+    return {
+      ok: false,
+      requestedSymbol: symbol,
+      contractSymbol: '',
+      reason: 'EMPTY_SYMBOL'
+    };
+  }
+
+  let contracts = [];
+
+  try {
+    contracts = await fetchBitgetContracts();
+  } catch (error) {
+    console.warn('BITGET_CONTRACTS_FAILED', JSON.stringify({
+      symbol: requested,
+      ...longMachineFlags(),
+      error: error?.message || String(error)
+    }));
+
+    return {
+      ok: false,
+      requestedSymbol: requested,
+      contractSymbol: '',
+      reason: 'CONTRACT_LIST_UNAVAILABLE'
+    };
+  }
+
+  const requestedBase = normalizeBaseSymbol(requested);
+  const validSymbols = new Set();
+  const byBase = new Map();
+
+  for (const row of contracts) {
+    if (!row || typeof row !== 'object') continue;
+    if (!isTradableBitgetContract(row)) continue;
+
+    const contractSymbol = contractSymbolValue(row);
+    const base = contractBaseSymbol(row);
+
+    if (!contractSymbol) continue;
+
+    validSymbols.add(contractSymbol);
+
+    if (base && !byBase.has(base)) {
+      byBase.set(base, contractSymbol);
+    }
+  }
+
+  if (validSymbols.has(requested)) {
+    return {
+      ok: true,
+      requestedSymbol: requested,
+      contractSymbol: requested,
+      reason: 'DIRECT_MATCH'
+    };
+  }
+
+  if (requestedBase && byBase.has(requestedBase)) {
+    return {
+      ok: true,
+      requestedSymbol: requested,
+      contractSymbol: byBase.get(requestedBase),
+      reason: 'BASE_MATCH'
+    };
+  }
+
+  return {
+    ok: false,
+    requestedSymbol: requested,
+    contractSymbol: '',
+    reason: 'BITGET_SYMBOL_NOT_USDT_FUTURES'
+  };
+}
+
 function isRisingTicker(change24h) {
   return safeNumber(change24h, 0) > 0;
 }
@@ -544,11 +683,23 @@ export function normalizeGranularity(timeframe) {
 }
 
 export async function fetchCandles(symbol, timeframe = '15m', limit = 100) {
-  const contractSymbol = normalizeContractSymbol(symbol);
+  const resolved = await resolveBitgetContractSymbol(symbol);
+
+  if (!resolved.ok || !resolved.contractSymbol) {
+    console.warn('BITGET_CANDLES_SKIPPED', JSON.stringify({
+      symbol,
+      requestedSymbol: resolved.requestedSymbol,
+      reason: resolved.reason,
+      productType: normalizeProductType(),
+      ...longMachineFlags()
+    }));
+
+    return [];
+  }
+
+  const contractSymbol = resolved.contractSymbol;
   const granularity = normalizeGranularity(timeframe);
   const safeLimit = Math.max(1, Math.min(Number(limit || 100), 1000));
-
-  if (!contractSymbol) return [];
 
   const params = {
     symbol: contractSymbol,
@@ -600,6 +751,7 @@ export async function fetchCandles(symbol, timeframe = '15m', limit = 100) {
 
       console.warn('BITGET_CANDLES_FAILED', JSON.stringify({
         symbol: contractSymbol,
+        requestedSymbol: resolved.requestedSymbol,
         timeframe,
         ...longMachineFlags(),
         error: lastError?.message || 'EMPTY'
@@ -611,9 +763,21 @@ export async function fetchCandles(symbol, timeframe = '15m', limit = 100) {
 }
 
 export async function fetchOrderBook(symbol) {
-  const contractSymbol = normalizeContractSymbol(symbol);
+  const resolved = await resolveBitgetContractSymbol(symbol);
 
-  if (!contractSymbol) return null;
+  if (!resolved.ok || !resolved.contractSymbol) {
+    console.warn('BITGET_ORDERBOOK_SKIPPED', JSON.stringify({
+      symbol,
+      requestedSymbol: resolved.requestedSymbol,
+      reason: resolved.reason,
+      productType: normalizeProductType(),
+      ...longMachineFlags()
+    }));
+
+    return null;
+  }
+
+  const contractSymbol = resolved.contractSymbol;
 
   const cacheParams = {
     symbol: contractSymbol,
@@ -661,6 +825,8 @@ export async function fetchOrderBook(symbol) {
 
       console.warn('BITGET_ORDERBOOK_FAILED', JSON.stringify({
         symbol: contractSymbol,
+        requestedSymbol: resolved.requestedSymbol,
+        resolveReason: resolved.reason,
         ...longMachineFlags(),
         error: lastError?.message || 'EMPTY'
       }));
@@ -860,14 +1026,17 @@ export function analyzeOrderBook(raw) {
 }
 
 export async function fetchFunding(symbol) {
-  const contractSymbol = normalizeContractSymbol(symbol);
+  const resolved = await resolveBitgetContractSymbol(symbol);
 
-  if (!contractSymbol) {
+  if (!resolved.ok || !resolved.contractSymbol) {
     return {
       rate: 0,
       fetchFailed: true,
-      fundingBucket: 'FUNDING_SYMBOL_INVALID',
+      fundingBucket: 'FUNDING_SYMBOL_NOT_USDT_FUTURES',
       fundingBucketRole: 'DEBUG_METADATA_ONLY',
+      requestedSymbol: resolved.requestedSymbol || symbol,
+      resolvedSymbol: null,
+      reason: resolved.reason,
       trueMicroFamilyId: null,
       microFamilyId: null,
       childTrueMicroFamilyId: null,
@@ -876,6 +1045,8 @@ export async function fetchFunding(symbol) {
       ...longMachineFlags()
     };
   }
+
+  const contractSymbol = resolved.contractSymbol;
 
   const params = {
     symbol: contractSymbol,
@@ -907,6 +1078,8 @@ export async function fetchFunding(symbol) {
             rate > 0.0001 ? 'FUNDING_POS' :
             'FUNDING_FLAT',
           fundingBucketRole: 'DEBUG_METADATA_ONLY',
+          requestedSymbol: resolved.requestedSymbol,
+          resolvedSymbol: contractSymbol,
           trueMicroFamilyId: null,
           microFamilyId: null,
           childTrueMicroFamilyId: null,
@@ -917,6 +1090,7 @@ export async function fetchFunding(symbol) {
       } catch (error) {
         console.warn('BITGET_FUNDING_FAILED', JSON.stringify({
           symbol: contractSymbol,
+          requestedSymbol: resolved.requestedSymbol,
           ...longMachineFlags(),
           error: error?.message || String(error)
         }));
@@ -926,6 +1100,8 @@ export async function fetchFunding(symbol) {
           fetchFailed: true,
           fundingBucket: 'FUNDING_FETCH_FAILED',
           fundingBucketRole: 'DEBUG_METADATA_ONLY',
+          requestedSymbol: resolved.requestedSymbol,
+          resolvedSymbol: contractSymbol,
           trueMicroFamilyId: null,
           microFamilyId: null,
           childTrueMicroFamilyId: null,
