@@ -22,7 +22,7 @@ const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
-const DEFAULT_LOCK_TTL_SEC = 180;
+const DEFAULT_LOCK_TTL_SEC = 55;
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 const MIN_COMPLETED_ACTIVE_LEARNING = 20;
 
@@ -162,7 +162,7 @@ function getLockTtlSec() {
 
   if (!Number.isFinite(ttl) || ttl <= 0) return DEFAULT_LOCK_TTL_SEC;
 
-  return Math.floor(ttl);
+  return Math.min(55, Math.floor(ttl));
 }
 
 function isolationFlags() {
@@ -579,10 +579,6 @@ function isFixedLongTaxonomyParentId(id = '') {
 
 function isFixedLongTaxonomyChildId(id = '') {
   return parseLongFixedTaxonomyId(id)?.isChild === true;
-}
-
-function isFixedLongTaxonomyMicroId(id = '') {
-  return isFixedLongTaxonomyChildId(id);
 }
 
 function parentFromChildTrueMicroFamilyId(id = '') {
@@ -1144,6 +1140,198 @@ function unwrapLockResult(lockResult) {
   if (lockResult.result) return lockResult.result;
 
   return lockResult;
+}
+
+function lockSignalText(value = null) {
+  const payload = unwrapLockResult(value);
+
+  return [
+    value?.reason,
+    value?.error,
+    value?.message,
+    value?.code,
+    payload?.reason,
+    payload?.error,
+    payload?.message,
+    payload?.code,
+    typeof value === 'string' ? value : '',
+    value instanceof Error ? value.message : ''
+  ]
+    .filter(Boolean)
+    .map((part) => String(part).toUpperCase())
+    .join('|');
+}
+
+function isLockNotAcquiredSignal(value = null) {
+  const text = lockSignalText(value);
+
+  return (
+    text.includes('LOCK_NOT_ACQUIRED') ||
+    text.includes('TRADE_RUN_LOCK_ACTIVE') ||
+    text.includes('LOCK_ACTIVE') ||
+    text.includes('ALREADY_RUNNING') ||
+    text.includes('CONFLICT_LOCK') ||
+    text.includes('LOCKED')
+  );
+}
+
+function isLockNotAcquiredResult(lockResult = null) {
+  if (!lockResult || typeof lockResult !== 'object') return false;
+
+  const payload = unwrapLockResult(lockResult);
+
+  return Boolean(
+    isLockNotAcquiredSignal(lockResult) ||
+    isLockNotAcquiredSignal(payload) ||
+    (
+      lockResult.ok === false &&
+      String(lockResult.reason || '').toUpperCase().includes('LOCK')
+    ) ||
+    (
+      payload?.ok === false &&
+      String(payload.reason || payload.error || '').toUpperCase().includes('LOCK')
+    )
+  );
+}
+
+function buildLockSkippedResponse({
+  req,
+  body = {},
+  startedAt,
+  lockKey,
+  lockTtlSec,
+  rawResult = null,
+  error = null
+}) {
+  const reason = 'TRADE_RUN_LOCK_ACTIVE';
+
+  return {
+    ok: true,
+    tradeOk: true,
+    scannerPreloadOk: null,
+
+    skipped: true,
+    skippedNewEntries: true,
+    reason,
+    skipReason: reason,
+    message: 'Trade run overgeslagen: vorige LONG trade-run is nog actief.',
+
+    statusWas409Before: true,
+    httpStatusPolicy: 'LOCK_CONFLICT_RETURNS_200_SKIPPED',
+
+    ...baseFlags(),
+
+    runSource: getRunSource(req, body),
+
+    lock: {
+      key: lockKey,
+      ttlSec: lockTtlSec,
+      active: true,
+      reason
+    },
+
+    runId: null,
+    snapshotId: null,
+
+    entryRows: 0,
+    waitRows: 0,
+    virtualCreatedRows: 0,
+    virtualExitRows: 0,
+    shadowExitRows: 0,
+
+    entryRowsList: [],
+    waitRowsList: [],
+    virtualCreatedRowsList: [],
+    virtualExits: [],
+    shadowExits: [],
+    realExits: [],
+
+    actionCounts: {
+      ...baseFlags()
+    },
+
+    counts: {
+      ...baseFlags(),
+      candidates: 0,
+      processed: 0,
+      entries: 0,
+      waits: 0,
+      observations: 0,
+      virtualExits: 0,
+      virtualExitRows: 0,
+      shadowExits: 0,
+      shadowExitRows: 0,
+      realExits: 0,
+      realExitRows: 0
+    },
+
+    activeMicroFamilyIds: [],
+    activeMacroFamilyIds: [],
+    selectedMicroFamilyIds: [],
+    selectedMacroFamilyIds: [],
+
+    scannerPreloadBeforeTrade: true,
+    scannerLatestPreserved: true,
+    scannerSnapshotPreserved: true,
+    scannerHistoryPreserved: true,
+
+    microFamiliesAppendOnly: true,
+    analyzePartialOnly: true,
+    analyzeFullOverwriteDisabled: true,
+
+    rotationPreserved: true,
+    manualSelectionPreserved: true,
+    discordSelectionPreserved: true,
+
+    longKeys: {
+      namespace: LONG_NAMESPACE,
+      prefix: LONG_KEY_PREFIX,
+      scanLatest: LONG_KEYS.scan.latest,
+      tradeLock: LONG_KEYS.trade.lock,
+      tradeRunMeta: LONG_KEYS.trade.runMeta,
+      tradeLastProcessedSnapshot: LONG_KEYS.trade.lastProcessedSnapshot,
+      marketUniverseLatest: MARKET_UNIVERSE_KEY,
+      longMarketUniverseLatest: LONG_MARKET_UNIVERSE_KEY,
+      marketWeatherLatest: MARKET_WEATHER_KEY,
+      longMarketWeatherLatest: LONG_MARKET_WEATHER_KEY
+    },
+
+    warnings: [
+      'TRADE_RUN_SKIPPED_BECAUSE_LOCK_ACTIVE',
+      'NO_ERROR_FOR_CRON',
+      'PREVIOUS_RUN_PROBABLY_STILL_ACTIVE_OR_LOCK_TTL_NOT_EXPIRED'
+    ],
+
+    rawLockResult: rawResult || undefined,
+    rawError: error
+      ? {
+          message: error?.message || String(error),
+          reason: error?.reason || null,
+          code: error?.code || null
+        }
+      : undefined,
+
+    durationMs: now() - startedAt,
+    completedAt: now(),
+
+    run: {
+      ok: true,
+      skipped: true,
+      reason,
+      actions: [],
+      virtualExits: [],
+      shadowExits: [],
+      realExits: [],
+      ...baseFlags()
+    },
+
+    result: {
+      ok: true,
+      skipped: true,
+      reason,
+      ...baseFlags()
+    }
+  };
 }
 
 function responseOk(lockResult) {
@@ -1714,14 +1902,6 @@ function responseCounts(lockResult) {
 function resolveStatus(error) {
   if (Number.isFinite(error?.statusCode)) return error.statusCode;
 
-  if (
-    error?.reason === 'LOCK_NOT_ACQUIRED' ||
-    error?.message === 'LOCK_NOT_ACQUIRED' ||
-    String(error?.message || '').includes('LOCK')
-  ) {
-    return 409;
-  }
-
   return 500;
 }
 
@@ -2178,13 +2358,14 @@ export default async function handler(req, res) {
   res.setHeader('X-Short-Root-Touched', 'false');
 
   const startedAt = now();
+  let body = {};
 
   try {
     if (!isAllowedMethod(req.method)) {
       return methodNotAllowed(res);
     }
 
-    const body = await readBody(req);
+    body = await readBody(req);
     const runOptions = buildRunOptions(req, body);
 
     const durableRedis = getDurableRedis();
@@ -2217,6 +2398,17 @@ export default async function handler(req, res) {
         });
       }
     );
+
+    if (isLockNotAcquiredResult(rawResult)) {
+      return res.status(200).json(buildLockSkippedResponse({
+        req,
+        body,
+        startedAt,
+        lockKey,
+        lockTtlSec,
+        rawResult
+      }));
+    }
 
     const payload = sanitizeRunPayload(unwrapLockResult(rawResult));
     const result = sanitizeLockResult(rawResult);
@@ -2395,6 +2587,21 @@ export default async function handler(req, res) {
       result
     });
   } catch (error) {
+    const durableRedis = getDurableRedis();
+    const lockKey = LONG_KEYS.trade.lock;
+    const lockTtlSec = getLockTtlSec();
+
+    if (isLockNotAcquiredSignal(error)) {
+      return res.status(200).json(buildLockSkippedResponse({
+        req,
+        body,
+        startedAt,
+        lockKey,
+        lockTtlSec,
+        error
+      }));
+    }
+
     return res.status(resolveStatus(error)).json({
       ok: false,
 
