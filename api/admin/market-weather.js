@@ -1,23 +1,8 @@
 // ================= FILE: api/admin/market-weather.js =================
 //
-// Admin API voor MarketWeather.
-//
-// Doel:
-// - admin.html kan GEEN src/market/marketWeather.js direct lezen.
-// - Deze route geeft MarketWeather via /api/admin/market-weather.
-// - Geen learning blokkeren.
-// - Geen adaptiveScore activeren.
-// - Geen reset.
-// - Alleen marktcontext + CurrentFit metadata tonen.
-
-import {
-  getMarketWeather,
-  loadMarketWeather,
-  buildMarketWeather,
-  marketWeatherIdentityFlags
-} from '../../src/market/marketWeather.js';
-
-import { getDurableRedis } from '../../src/redis.js';
+// Veilige admin route voor MarketWeather.
+// Deze route mag nooit stil {} teruggeven.
+// Als import/build faalt, krijg je de echte fout in JSON.
 
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
@@ -36,10 +21,13 @@ const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_
 const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 
 const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
-const ADMIN_ROUTE_VERSION = 'LONG_ADMIN_MARKET_WEATHER_ROUTE_V1';
+const ADMIN_ROUTE_VERSION = 'LONG_ADMIN_MARKET_WEATHER_SAFE_ROUTE_V1';
 
-function now() {
-  return Date.now();
+function sendJson(res, statusCode, data) {
+  res.statusCode = statusCode;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.end(JSON.stringify(data, null, 2));
 }
 
 function bool(value, fallback = false) {
@@ -73,40 +61,20 @@ function firstFinite(...values) {
   return null;
 }
 
-function ageMsFromTs(ts) {
-  const n = Number(ts);
+function normalizeRegime(value) {
+  const raw = upper(value);
 
-  if (!Number.isFinite(n) || n <= 0) return null;
+  if (raw.includes('TREND')) return 'TREND';
+  if (raw.includes('SQUEEZE')) return 'SQUEEZE';
+  if (raw.includes('COMPRESSION')) return 'SQUEEZE';
+  if (raw.includes('CHOP')) return 'CHOP';
+  if (raw.includes('RANGE')) return 'CHOP';
+  if (raw.includes('SIDEWAYS')) return 'CHOP';
 
-  return Math.max(0, now() - n);
+  return raw || 'UNKNOWN';
 }
 
-function asQuery(req) {
-  if (req?.query && typeof req.query === 'object') return req.query;
-
-  try {
-    const url = new URL(req.url || '', 'http://localhost');
-    return Object.fromEntries(url.searchParams.entries());
-  } catch {
-    return {};
-  }
-}
-
-function methodAllowed(req) {
-  const method = String(req?.method || 'GET').toUpperCase();
-  return method === 'GET' || method === 'POST' || method === 'OPTIONS';
-}
-
-function sendJson(res, statusCode, payload) {
-  res.statusCode = statusCode;
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
-  res.end(JSON.stringify(payload, null, 2));
-}
-
-function normalizeTrendSideForAdmin(value) {
+function normalizeTrendSide(value) {
   const raw = upper(value);
 
   if (['LONG', 'BULL', 'BULLISH', 'BUY', 'UP', 'UPSIDE'].includes(raw)) return 'LONG';
@@ -117,7 +85,7 @@ function normalizeTrendSideForAdmin(value) {
 }
 
 function dashboardTrendSide(value) {
-  const side = normalizeTrendSideForAdmin(value);
+  const side = normalizeTrendSide(value);
 
   if (side === 'LONG') return 'BULL';
   if (side === 'SHORT') return 'BEAR';
@@ -126,122 +94,71 @@ function dashboardTrendSide(value) {
   return 'UNKNOWN';
 }
 
-function normalizeRegime(value) {
-  const raw = upper(value);
-
-  if (raw.includes('TREND')) return 'TREND';
-  if (raw.includes('SQUEEZE') || raw.includes('COMPRESSION')) return 'SQUEEZE';
-  if (raw.includes('CHOP') || raw.includes('RANGE') || raw.includes('SIDEWAYS')) return 'CHOP';
-
-  return raw || 'UNKNOWN';
-}
-
-function normalizeBreadthPct(value) {
+function pct(value) {
   const n = Number(value);
 
   if (!Number.isFinite(n)) return null;
-
   if (Math.abs(n) <= 1) return Number((n * 100).toFixed(2));
 
   return Number(n.toFixed(2));
 }
 
-function deriveBreadth(weather = {}) {
-  const breadth = weather.breadth || {};
-
-  const bullishPct = firstFinite(
-    weather.bullishPct,
-    weather.longPct,
-    weather.upPct,
-    weather.breadthBullishPct,
-    breadth.bullishPct,
-    breadth.longPct,
-    breadth.upPct,
-    breadth.advancePct,
-    breadth.advanceRatio
-  );
-
-  const bearishPct = firstFinite(
-    weather.bearishPct,
-    weather.shortPct,
-    weather.downPct,
-    weather.breadthBearishPct,
-    breadth.bearishPct,
-    breadth.shortPct,
-    breadth.downPct,
-    breadth.declinePct,
-    breadth.declineRatio
-  );
-
-  const neutralPct = firstFinite(
-    weather.neutralPct,
-    weather.flatPct,
-    breadth.neutralPct,
-    breadth.flatPct,
-    breadth.neutralRatio
-  );
-
-  const squeezePct = firstFinite(
-    weather.squeezePct,
-    weather.compressionPct,
-    breadth.squeezePct,
-    breadth.compressionPct
-  );
-
+function makeFallbackWeather(reason = 'NO_MARKET_WEATHER') {
   return {
-    bullishPct: normalizeBreadthPct(bullishPct),
-    bearishPct: normalizeBreadthPct(bearishPct),
-    neutralPct: normalizeBreadthPct(neutralPct),
-    squeezePct: normalizeBreadthPct(squeezePct)
+    ok: false,
+    available: false,
+    reason,
+
+    currentRegime: 'UNKNOWN',
+    regime: 'UNKNOWN',
+
+    currentTrendSide: 'UNKNOWN',
+    trendSide: 'UNKNOWN',
+    marketTrendSide: 'UNKNOWN',
+
+    confidence: 0,
+    weatherConfidence: 0,
+    currentMarketFitConfidence: 0,
+
+    bullishPct: null,
+    bearishPct: null,
+    neutralPct: null,
+    squeezePct: null,
+
+    sampleSize: 0,
+    universeSize: 0,
+    universeCount: 0,
+    count: 0,
+
+    breadth: {},
+    btc: {},
+    symbols: [],
+    rows: [],
+    universe: []
   };
 }
 
-function safeWeatherObject(weather = {}) {
-  if (!weather || typeof weather !== 'object') return {};
+function normalizeWeatherForAdmin(weatherInput = {}) {
+  const weather = weatherInput && typeof weatherInput === 'object'
+    ? weatherInput
+    : makeFallbackWeather('INVALID_WEATHER');
 
-  return weather;
-}
-
-function normalizeForAdmin(weatherInput = {}) {
-  const weather = safeWeatherObject(weatherInput);
-  const flags = marketWeatherIdentityFlags();
-
-  const generatedAt = firstFinite(
-    weather.generatedAt,
-    weather.updatedAt,
-    weather.savedAt,
-    weather.loadedAt,
-    weather.completedAt,
-    weather.createdAt,
-    weather.ts
-  );
-
-  const updatedAt = firstFinite(
-    weather.updatedAt,
-    weather.savedAt,
-    weather.generatedAt,
-    weather.loadedAt,
-    weather.completedAt,
-    weather.createdAt,
-    weather.ts
-  );
-
-  const ageMs = firstFinite(weather.ageMs, ageMsFromTs(generatedAt), ageMsFromTs(updatedAt));
+  const breadth = weather.breadth || {};
 
   const currentRegime = normalizeRegime(
     weather.currentRegime ||
-      weather.regime ||
-      weather.marketRegime ||
-      weather.breadthRegime
+    weather.regime ||
+    weather.marketRegime ||
+    weather.breadthRegime
   );
 
-  const currentTrendSide = normalizeTrendSideForAdmin(
+  const currentTrendSide = normalizeTrendSide(
     weather.currentTrendSide ||
-      weather.trendSide ||
-      weather.marketTrendSide ||
-      weather.marketSide ||
-      weather.side ||
-      weather.direction
+    weather.trendSide ||
+    weather.marketTrendSide ||
+    weather.marketSide ||
+    weather.side ||
+    weather.direction
   );
 
   const confidence = Math.max(
@@ -266,53 +183,32 @@ function normalizeForAdmin(weatherInput = {}) {
     0
   );
 
-  const breadthPct = deriveBreadth(weather);
+  const createdAt = firstFinite(
+    weather.generatedAt,
+    weather.updatedAt,
+    weather.savedAt,
+    weather.loadedAt,
+    weather.completedAt,
+    weather.createdAt,
+    weather.ts
+  );
 
   const ok =
-    weather.ok !== false &&
-    weather.available !== false &&
-    (
-      sampleSize > 0 ||
-      currentRegime !== 'UNKNOWN' ||
-      currentTrendSide !== 'UNKNOWN'
-    );
+    weather.ok === true ||
+    weather.available === true ||
+    sampleSize > 0 ||
+    currentRegime !== 'UNKNOWN' ||
+    currentTrendSide !== 'UNKNOWN';
 
-  const available = ok;
-
-  const normalized = {
+  return {
     ...weather,
 
     ok,
-    available,
+    available: ok,
 
     adminRouteVersion: ADMIN_ROUTE_VERSION,
-
     file: 'src/market/marketWeather.js',
     apiRoute: '/api/admin/market-weather',
-
-    targetTradeSide: TARGET_TRADE_SIDE,
-    targetDashboardSide: TARGET_DASHBOARD_SIDE,
-    targetScannerSide: TARGET_SCANNER_SIDE,
-    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
-
-    longOnly: true,
-    shortDisabled: true,
-    shortOnly: false,
-    longDisabled: false,
-
-    redisNamespace: LONG_NAMESPACE,
-    redisKeyPrefix: LONG_KEY_PREFIX,
-    persistentLearningKey: PERSISTENT_LEARNING_KEY,
-
-    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
-    exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
-    childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
-    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
-
-    learningGranularity: LEARNING_GRANULARITY,
-    parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
-
-    measurementFixVersion: MEASUREMENT_FIX_VERSION,
 
     currentRegime,
     regime: currentRegime,
@@ -325,20 +221,53 @@ function normalizeForAdmin(weatherInput = {}) {
     weatherConfidence: confidence,
     currentMarketFitConfidence: confidence,
 
-    bullishPct: breadthPct.bullishPct,
-    bearishPct: breadthPct.bearishPct,
-    neutralPct: breadthPct.neutralPct,
-    squeezePct: breadthPct.squeezePct,
+    bullishPct: pct(firstFinite(
+      weather.bullishPct,
+      weather.longPct,
+      weather.upPct,
+      weather.breadthBullishPct,
+      breadth.bullishPct,
+      breadth.longPct,
+      breadth.upPct,
+      breadth.advancePct,
+      breadth.advanceRatio
+    )),
+
+    bearishPct: pct(firstFinite(
+      weather.bearishPct,
+      weather.shortPct,
+      weather.downPct,
+      weather.breadthBearishPct,
+      breadth.bearishPct,
+      breadth.shortPct,
+      breadth.downPct,
+      breadth.declinePct,
+      breadth.declineRatio
+    )),
+
+    neutralPct: pct(firstFinite(
+      weather.neutralPct,
+      weather.flatPct,
+      breadth.neutralPct,
+      breadth.flatPct,
+      breadth.neutralRatio
+    )),
+
+    squeezePct: pct(firstFinite(
+      weather.squeezePct,
+      weather.compressionPct,
+      breadth.squeezePct,
+      breadth.compressionPct
+    )),
 
     sampleSize,
     universeSize: num(weather.universeSize ?? weather.universeCount ?? weather.count, sampleSize),
     universeCount: num(weather.universeCount ?? weather.universeSize ?? weather.count, sampleSize),
     count: num(weather.count ?? sampleSize, sampleSize),
 
-    generatedAt: generatedAt || null,
-    updatedAt: updatedAt || generatedAt || null,
-    createdAt: generatedAt || updatedAt || null,
-    ageMs,
+    createdAt: createdAt || null,
+    updatedAt: firstFinite(weather.updatedAt, weather.savedAt, weather.generatedAt, createdAt) || null,
+    generatedAt: firstFinite(weather.generatedAt, weather.updatedAt, weather.savedAt, createdAt) || null,
 
     currentFitSoftOnly: true,
     currentFitBlocksLearning: false,
@@ -351,33 +280,16 @@ function normalizeForAdmin(weatherInput = {}) {
     recentMomentumScoreBuilt: false,
     parentDiversificationBuilt: false,
 
-    avgCostRRequiredBeforeAdaptiveSelection: true,
-    directSLRequiredBeforeAdaptiveSelection: true,
-    observationDedupeRequiredBeforeAdaptiveSelection: true,
-
-    identityFlags: flags
+    measurementFixVersion: MEASUREMENT_FIX_VERSION
   };
-
-  if (!normalized.ok) {
-    normalized.reason = normalized.reason || 'NO_VALID_MARKET_WEATHER';
-  }
-
-  return normalized;
 }
 
-function buildResponse({
-  weather,
-  source = 'UNKNOWN',
-  refreshed = false,
-  loadedOnly = false,
-  query = {}
-} = {}) {
-  const normalized = normalizeForAdmin(weather);
+function buildResponse(weather, extra = {}) {
+  const normalized = normalizeWeatherForAdmin(weather);
 
-  const marketUniverse =
-    normalized.marketUniverse ||
-    normalized.universe ||
-    normalized.rows ||
+  const universe =
+    Array.isArray(normalized.universe) ? normalized.universe :
+    Array.isArray(normalized.rows) ? normalized.rows :
     [];
 
   return {
@@ -388,9 +300,7 @@ function buildResponse({
     adminRouteVersion: ADMIN_ROUTE_VERSION,
     file: 'src/market/marketWeather.js',
 
-    source,
-    refreshed,
-    loadedOnly,
+    ...extra,
 
     currentRegime: normalized.currentRegime,
     currentTrendSide: normalized.currentTrendSide,
@@ -412,12 +322,16 @@ function buildResponse({
     universeCount: normalized.universeCount,
     count: normalized.count,
 
-    generatedAt: normalized.generatedAt,
-    updatedAt: normalized.updatedAt,
     createdAt: normalized.createdAt,
-    ageMs: normalized.ageMs,
+    updatedAt: normalized.updatedAt,
+    generatedAt: normalized.generatedAt,
 
-    measurementFixVersion: MEASUREMENT_FIX_VERSION,
+    breadth: normalized.breadth || {},
+    btc: normalized.btc || {},
+    symbols: normalized.symbols || [],
+
+    marketUniverse: universe,
+    universe,
 
     currentFitSoftOnly: true,
     currentFitBlocksLearning: false,
@@ -435,8 +349,14 @@ function buildResponse({
     scannerSide: TARGET_SCANNER_SIDE,
     oppositeTradeSide: OPPOSITE_TRADE_SIDE,
 
+    longOnly: true,
+    shortDisabled: true,
+
     trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
     parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+
     learningGranularity: LEARNING_GRANULARITY,
     parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
 
@@ -444,12 +364,7 @@ function buildResponse({
     redisKeyPrefix: LONG_KEY_PREFIX,
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
 
-    request: {
-      includeUniverse: bool(query.includeUniverse, false),
-      includeBreadth: bool(query.includeBreadth, false),
-      includeCurrentFit: bool(query.includeCurrentFit, false),
-      refresh: bool(query.refresh, false)
-    },
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
 
     marketWeather: normalized,
     weather: normalized,
@@ -457,100 +372,106 @@ function buildResponse({
     latest: normalized,
     snapshot: normalized,
 
-    marketUniverse,
-    universe: marketUniverse,
-
     raw: normalized
   };
 }
 
 export default async function handler(req, res) {
-  if (!methodAllowed(req)) {
+  const method = String(req?.method || 'GET').toUpperCase();
+
+  if (method === 'OPTIONS') {
+    res.setHeader('Allow', 'GET, POST, OPTIONS');
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (!['GET', 'POST'].includes(method)) {
     return sendJson(res, 405, {
       ok: false,
-      error: 'METHOD_NOT_ALLOWED',
-      allowed: ['GET', 'POST', 'OPTIONS']
+      available: false,
+      error: 'METHOD_NOT_ALLOWED'
     });
   }
-
-  if (String(req.method || '').toUpperCase() === 'OPTIONS') {
-    res.setHeader('Allow', 'GET, POST, OPTIONS');
-    return sendJson(res, 200, {
-      ok: true
-    });
-  }
-
-  const query = asQuery(req);
-
-  const refresh = bool(query.refresh, false) || bool(query.force, false);
-  const save = query.save === undefined ? true : bool(query.save, true);
-  const allowStale = query.allowStale === undefined ? true : bool(query.allowStale, true);
-  const loadOnly = bool(query.loadOnly, false);
 
   try {
-    const redis = getDurableRedis();
+    const query = req?.query || {};
+    const refresh = bool(query.refresh, false) || bool(query.force, false);
+    const save = query.save === undefined ? true : bool(query.save, true);
 
-    let weather;
-    let source = 'getMarketWeather';
+    let marketModule;
+    let redisModule;
 
-    if (loadOnly) {
-      weather = await loadMarketWeather({
-        redis
-      });
-
-      source = 'loadMarketWeather';
-    } else if (refresh) {
-      weather = await buildMarketWeather({
-        redis,
-        save
-      });
-
-      source = 'buildMarketWeather';
-    } else {
-      weather = await getMarketWeather({
-        redis,
-        refresh: false,
-        save,
-        allowStale
-      });
-
-      source = 'getMarketWeather';
+    try {
+      marketModule = await import('../../src/market/marketWeather.js');
+    } catch (error) {
+      return sendJson(res, 200, buildResponse(makeFallbackWeather('IMPORT_MARKET_WEATHER_FAILED'), {
+        importOk: false,
+        importError: error?.message || String(error),
+        importStack: process.env.NODE_ENV === 'production' ? undefined : error?.stack
+      }));
     }
 
-    const response = buildResponse({
-      weather,
+    try {
+      redisModule = await import('../../src/redis.js');
+    } catch (error) {
+      return sendJson(res, 200, buildResponse(makeFallbackWeather('IMPORT_REDIS_FAILED'), {
+        importOk: false,
+        importError: error?.message || String(error),
+        importStack: process.env.NODE_ENV === 'production' ? undefined : error?.stack
+      }));
+    }
+
+    const redis = redisModule.getDurableRedis
+      ? redisModule.getDurableRedis()
+      : undefined;
+
+    let weather;
+    let source;
+
+    try {
+      if (refresh && typeof marketModule.buildMarketWeather === 'function') {
+        weather = await marketModule.buildMarketWeather({
+          redis,
+          save
+        });
+
+        source = 'buildMarketWeather';
+      } else if (typeof marketModule.getMarketWeather === 'function') {
+        weather = await marketModule.getMarketWeather({
+          redis,
+          refresh: false,
+          save,
+          allowStale: true
+        });
+
+        source = 'getMarketWeather';
+      } else if (typeof marketModule.loadMarketWeather === 'function') {
+        weather = await marketModule.loadMarketWeather({
+          redis
+        });
+
+        source = 'loadMarketWeather';
+      } else {
+        weather = makeFallbackWeather('NO_MARKET_WEATHER_EXPORT_FOUND');
+        source = 'fallback';
+      }
+    } catch (error) {
+      return sendJson(res, 200, buildResponse(makeFallbackWeather('MARKET_WEATHER_FUNCTION_FAILED'), {
+        importOk: true,
+        source: 'error',
+        functionError: error?.message || String(error),
+        functionStack: process.env.NODE_ENV === 'production' ? undefined : error?.stack
+      }));
+    }
+
+    return sendJson(res, 200, buildResponse(weather, {
+      importOk: true,
       source,
-      refreshed: refresh,
-      loadedOnly: loadOnly,
-      query
-    });
-
-    return sendJson(res, 200, response);
+      refreshed: refresh
+    }));
   } catch (error) {
-    return sendJson(res, 500, {
-      ok: false,
-      available: false,
-
-      error: 'MARKET_WEATHER_ADMIN_ROUTE_ERROR',
-      message: error?.message || String(error),
-
-      route: '/api/admin/market-weather',
-      file: 'src/market/marketWeather.js',
-      adminRouteVersion: ADMIN_ROUTE_VERSION,
-
-      currentRegime: 'UNKNOWN',
-      currentTrendSide: 'UNKNOWN',
-      regime: 'UNKNOWN',
-      trendSide: 'UNKNOWN',
-      confidence: 0,
-
-      currentFitSoftOnly: true,
-      currentFitBlocksLearning: false,
-      currentFitBlocksVirtualLearning: false,
-      currentFitBlocksShadowLearning: false,
-      learningRemainsBroad: true,
-
-      measurementFixVersion: MEASUREMENT_FIX_VERSION
-    });
+    return sendJson(res, 200, buildResponse(makeFallbackWeather('ADMIN_ROUTE_FAILED'), {
+      routeError: error?.message || String(error),
+      routeStack: process.env.NODE_ENV === 'production' ? undefined : error?.stack
+    }));
   }
 }
