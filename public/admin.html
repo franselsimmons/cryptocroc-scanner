@@ -447,6 +447,134 @@
       user-select: all;
     }
 
+    .api-output-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+
+    .api-output-head h3 {
+      margin: 0;
+    }
+
+    .copy-big {
+      background: var(--dark);
+      color: white;
+      border-color: var(--dark);
+      font-weight: 800;
+    }
+
+    .micro-desktop-table table {
+      min-width: 1180px;
+    }
+
+    .micro-id-cell {
+      max-width: 360px;
+      white-space: normal;
+      word-break: break-word;
+    }
+
+    .micro-id-cell code {
+      white-space: normal;
+      word-break: break-all;
+      line-height: 1.5;
+    }
+
+    .micro-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .micro-mobile-cards {
+      display: none;
+    }
+
+    .micro-card {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 14px;
+      box-shadow: var(--shadow);
+      margin-bottom: 12px;
+    }
+
+    .micro-card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .micro-card-title {
+      font-size: 18px;
+      font-weight: 900;
+      letter-spacing: -0.03em;
+    }
+
+    .micro-id-button {
+      width: 100%;
+      text-align: left;
+      padding: 10px;
+      border-radius: 14px;
+      margin: 8px 0;
+      background: #f8fafc;
+    }
+
+    .micro-id-button code {
+      white-space: normal;
+      word-break: break-all;
+      line-height: 1.55;
+      font-size: 12px;
+    }
+
+    .micro-stat-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .micro-stat-box {
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 9px;
+    }
+
+    .micro-stat-box span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+
+    .micro-stat-box strong {
+      display: block;
+      font-size: 14px;
+      word-break: break-word;
+    }
+
+    @media (max-width: 720px) {
+      .micro-desktop-table {
+        display: none;
+      }
+
+      .micro-mobile-cards {
+        display: block;
+      }
+
+      .api-output-textarea {
+        min-height: 420px;
+        font-size: 11px;
+      }
+    }
+
     .empty {
       padding: 22px;
       text-align: center;
@@ -1657,7 +1785,7 @@
 
       return `
         <div class="table-wrap">
-          </table>
+          <table>
             <thead><tr>${head}</tr></thead>
             <tbody>${body}</tbody>
           </table>
@@ -2335,44 +2463,140 @@
     }
 
     function microTable(rows = []) {
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return `<div class="empty">Geen geldige LONG 75-child Analyze micro-families.</div>`;
+      }
+
       const activeSet = new Set(activeMicroIds());
 
-      return table(rows, [
-        { label: "Rank", render: (row, index) => escapeHtml(row.rank ?? index + 1) },
-        { label: "Discord", render: (row) => {
-          const active = activeSet.has(microId(row));
+      const desktopRows = rows.map((row, index) => {
+        const id = microId(row);
+        const parentId = parentMicroId(row);
+        const active = activeSet.has(id);
 
-          return `<span class="pill ${active ? "active" : ""}">${active ? "EXACT ACTIVE" : "OFF"}</span>`;
-        }},
-        { label: "75-child true micro", render: (row) => `<button class="small" type="button" data-open-micro="${escapeAttr(microId(row))}"><code>${escapeHtml(microId(row) || "NO_75_CHILD")}</code></button>` },
-        { label: "Parent 15", render: (row) => `<code>${escapeHtml(parentMicroId(row) || "NO_PARENT")}</code>` },
-        { label: "Side", render: () => '<span class="pill long">LONG</span>' },
-        { label: "Tier", render: (row) => tierPill(tier(row)) },
-        { label: "Status", render: (row) => statusPill(row) },
-        { label: "Te vroeg", render: (row) => tooEarly(row)
-          ? `<span class="pill warn">${escapeHtml(fmt(completed(row), 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>`
-          : '<span class="pill active">OK</span>'
-        },
-        { label: "Seen", render: (row) => fmtInt(row.seen ?? row.observations) },
-        { label: "Obs", render: (row) => fmtInt(row.observations ?? row.seen) },
-        { label: "Obs skipped", render: (row) => fmtInt(row.observationDuplicateSkippedCount) },
-        { label: "Completed", render: (row) => fmt(completed(row), 2) },
-        { label: "Winrate raw", render: (row) => fmtPct(row.winrate) },
-        { label: "Fair WR", render: (row) => fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate ?? row.bayesianWinrate ?? row.wilsonLowerBound) },
-        { label: "AvgR net", render: (row) => fmt(row.avgR, 3) },
-        { label: "TotalR net", render: (row) => fmt(row.totalR, 3) },
-        { label: "AvgCostR", render: (row) => fmt(avgCostR(row), 3) },
-        { label: "DirectSL", render: (row) => fmtPct(directSLPct(row)) },
-        { label: "CurrentFit", render: (row) => currentFitPill(row) },
-        { label: "FitScore", render: (row) => fmt(currentFitScore(row), 1) },
-        { label: "Momentum", render: (row) => fmt(recentMomentumScore(row), 1) },
-        { label: "Adaptive", render: (row) => `<strong>${escapeHtml(fmt(adaptiveScore(row), 2))}</strong>` },
-        { label: "Balanced", render: (row) => fmt(row.dashboardBalancedScore ?? row.balancedScore, 2) },
-        { label: "Actie", render: (row) => `
-          <button type="button" class="small long-action" data-activate-one="${escapeAttr(microId(row))}" ${isSelectableTrueMicroId(microId(row)) ? "" : "disabled"}>Select exact</button>
-          <button type="button" class="small" data-copy="${escapeAttr(microId(row))}" ${isSelectableTrueMicroId(microId(row)) ? "" : "disabled"}>Copy</button>
-        ` }
-      ], "Geen geldige LONG 75-child Analyze micro-families.");
+        return `
+          <tr>
+            <td><strong>${escapeHtml(row.rank ?? index + 1)}</strong></td>
+            <td><span class="pill ${active ? "active" : ""}">${active ? "ACTIVE" : "OFF"}</span></td>
+            <td class="micro-id-cell">
+              <button class="small" type="button" data-open-micro="${escapeAttr(id)}">
+                <code>${escapeHtml(id || "NO_75_CHILD")}</code>
+              </button>
+            </td>
+            <td class="micro-id-cell"><code>${escapeHtml(parentId || "NO_PARENT")}</code></td>
+            <td><span class="pill long">LONG</span></td>
+            <td>${tierPill(tier(row))}</td>
+            <td>${statusPill(row)}</td>
+            <td>${tooEarly(row)
+              ? `<span class="pill warn">${escapeHtml(fmt(completed(row), 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>`
+              : '<span class="pill active">OK</span>'
+            }</td>
+            <td>${fmtInt(row.seen ?? row.observations)}</td>
+            <td>${fmt(completed(row), 2)}</td>
+            <td>${fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate ?? row.bayesianWinrate ?? row.wilsonLowerBound)}</td>
+            <td>${fmt(row.avgR, 3)}</td>
+            <td>${fmt(row.totalR, 3)}</td>
+            <td>${fmt(avgCostR(row), 3)}</td>
+            <td>${fmtPct(directSLPct(row))}</td>
+            <td>${currentFitPill(row)}</td>
+            <td><strong>${escapeHtml(fmt(adaptiveScore(row), 2))}</strong></td>
+            <td>
+              <div class="micro-actions">
+                <button type="button" class="small long-action" data-activate-one="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Select exact</button>
+                <button type="button" class="small" data-copy="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Copy</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join("");
+
+      const mobileCards = rows.map((row, index) => {
+        const id = microId(row);
+        const parentId = parentMicroId(row);
+        const active = activeSet.has(id);
+
+        return `
+          <article class="micro-card">
+            <div class="micro-card-top">
+              <div>
+                <div class="micro-card-title">#${escapeHtml(row.rank ?? index + 1)}</div>
+                <div class="metric-extra">75-child true micro</div>
+              </div>
+              <div class="toolbar" style="margin:0">
+                <span class="pill ${active ? "active" : ""}">${active ? "ACTIVE" : "OFF"}</span>
+                <span class="pill long">LONG</span>
+              </div>
+            </div>
+
+            <button class="micro-id-button" type="button" data-open-micro="${escapeAttr(id)}">
+              <code>${escapeHtml(id || "NO_75_CHILD")}</code>
+            </button>
+
+            <div class="metric-extra">Parent 15</div>
+            <code>${escapeHtml(parentId || "NO_PARENT")}</code>
+
+            <div class="toolbar">
+              ${tierPill(tier(row))}
+              ${statusPill(row)}
+              ${tooEarly(row)
+                ? `<span class="pill warn">${escapeHtml(fmt(completed(row), 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>`
+                : '<span class="pill active">OK</span>'
+              }
+              ${currentFitPill(row)}
+            </div>
+
+            <div class="micro-stat-grid">
+              <div class="micro-stat-box"><span>Seen</span><strong>${escapeHtml(fmtInt(row.seen ?? row.observations))}</strong></div>
+              <div class="micro-stat-box"><span>Completed</span><strong>${escapeHtml(fmt(completed(row), 2))}</strong></div>
+              <div class="micro-stat-box"><span>Fair WR</span><strong>${escapeHtml(fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate ?? row.bayesianWinrate ?? row.wilsonLowerBound))}</strong></div>
+              <div class="micro-stat-box"><span>AvgR net</span><strong>${escapeHtml(fmt(row.avgR, 3))}</strong></div>
+              <div class="micro-stat-box"><span>TotalR net</span><strong>${escapeHtml(fmt(row.totalR, 3))}</strong></div>
+              <div class="micro-stat-box"><span>AvgCostR</span><strong>${escapeHtml(fmt(avgCostR(row), 3))}</strong></div>
+              <div class="micro-stat-box"><span>DirectSL</span><strong>${escapeHtml(fmtPct(directSLPct(row)))}</strong></div>
+              <div class="micro-stat-box"><span>Adaptive</span><strong>${escapeHtml(fmt(adaptiveScore(row), 2))}</strong></div>
+            </div>
+
+            <div class="toolbar">
+              <button type="button" class="long-action" data-activate-one="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Select exact</button>
+              <button type="button" data-copy="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Copy</button>
+            </div>
+          </article>
+        `;
+      }).join("");
+
+      return `
+        <div class="table-wrap micro-desktop-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Discord</th>
+                <th>75-child true micro</th>
+                <th>Parent 15</th>
+                <th>Side</th>
+                <th>Tier</th>
+                <th>Status</th>
+                <th>Sample</th>
+                <th>Seen</th>
+                <th>Completed</th>
+                <th>Fair WR</th>
+                <th>AvgR</th>
+                <th>TotalR</th>
+                <th>AvgCostR</th>
+                <th>DirectSL</th>
+                <th>CurrentFit</th>
+                <th>Adaptive</th>
+                <th>Actie</th>
+              </tr>
+            </thead>
+            <tbody>${desktopRows}</tbody>
+          </table>
+        </div>
+
+        <div class="micro-mobile-cards">
+          ${mobileCards}
+        </div>
+      `;
     }
 
     function bindMicroEvents() {
@@ -2627,14 +2851,22 @@
         </div>
 
         <div class="card">
-          <h3>API output — makkelijk kopiëren</h3>
+          <div class="api-output-head">
+            <h3>API output — makkelijk kopiëren</h3>
+            <button type="button" class="copy-big" id="copyMarketOutputBtn2">Kopieer alles</button>
+          </div>
+
           <textarea id="marketApiOutput" class="api-output-textarea" readonly>${escapeHtml(outputJson)}</textarea>
         </div>
       `;
 
-      $("copyMarketOutputBtn")?.addEventListener("click", () => {
-        copyText($("marketApiOutput")?.value || outputJson, "marketWeather.js API output gekopieerd.");
-      });
+      function copyMarketOutput() {
+        const box = $("marketApiOutput");
+        copyText(box?.value || outputJson, "marketWeather.js API output volledig gekopieerd.");
+      }
+
+      $("copyMarketOutputBtn")?.addEventListener("click", copyMarketOutput);
+      $("copyMarketOutputBtn2")?.addEventListener("click", copyMarketOutput);
 
       $("copyMarketUrlBtn")?.addEventListener("click", () => {
         copyText(endpointUrl, "marketWeather.js API URL gekopieerd.");
@@ -2643,6 +2875,7 @@
       $("selectMarketOutputBtn")?.addEventListener("click", () => {
         const box = $("marketApiOutput");
         if (!box) return;
+
         box.focus();
         box.select();
         setMessage("API output geselecteerd. Je kunt nu kopiëren.", "ok");
