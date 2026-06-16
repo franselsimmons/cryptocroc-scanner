@@ -2188,7 +2188,7 @@
           status: error?.status || 0,
           message: friendlyApiMessage(error),
           rawError: error?.message || String(error),
-          file: "src/market/ marketWeather.js",
+          file: "src/market/marketWeather.js",
           apiRoute: "/api/admin/market-weather",
           currentRegime: "UNKNOWN",
           currentTrendSide: "UNKNOWN",
@@ -2583,7 +2583,7 @@
         <div class="section-title">
           <div>
             <h2>marketWeather.js</h2>
-            <p>Bestand: <code>src/market/ marketWeather.js</code> · API: <code>/api/admin/market-weather</code></p>
+            <p>Bestand: <code>src/market/marketWeather.js</code> · API: <code>/api/admin/market-weather</code></p>
           </div>
         </div>
 
@@ -2601,7 +2601,7 @@
         </div>
 
         <div class="grid">
-          ${metricCard("Bestand", "marketWeather.js", "src/market/ marketWeather.js")}
+          ${metricCard("Bestand", "marketWeather.js", "src/market/marketWeather.js")}
           ${metricCard("API route", "/api/admin/market-weather", "admin output")}
           ${metricCard("Available", market.ok ? "YES" : "NO")}
           ${metricCard("Age", market.ageText || "-", fmtTs(market.createdAt))}
