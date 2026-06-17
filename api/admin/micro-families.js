@@ -1167,21 +1167,70 @@ function getAvgR(row = {}) {
   return getTotalR(row) / completed;
 }
 
+function hasCostEvidence(row = {}) {
+  if (!row || typeof row !== 'object') return false;
+
+  if (hasValue(row.virtualTotalCostR) && num(row.virtualTotalCostR, 0) > 0) return true;
+  if (hasValue(row.shadowTotalCostR) && num(row.shadowTotalCostR, 0) > 0) return true;
+  if (hasValue(row.totalCostR) && num(row.totalCostR, 0) > 0) return true;
+  if (hasValue(row.totalNetCostR) && num(row.totalNetCostR, 0) > 0) return true;
+  if (hasValue(row.avgCostR) && num(row.avgCostR, 0) > 0) return true;
+  if (hasValue(row.costR) && num(row.costR, 0) > 0) return true;
+  if (hasValue(row.netCostR) && num(row.netCostR, 0) > 0) return true;
+  if (hasValue(row.estimatedCostR) && num(row.estimatedCostR, 0) > 0) return true;
+
+  if (Array.isArray(row.recentOutcomes)) {
+    return row.recentOutcomes.some((outcome) => (
+      outcome &&
+      (
+        num(outcome.costR, 0) > 0 ||
+        num(outcome.avgCostR, 0) > 0 ||
+        num(outcome.totalCostR, 0) > 0 ||
+        num(outcome.netCostR, 0) > 0 ||
+        num(outcome.estimatedCostR, 0) > 0
+      )
+    ));
+  }
+
+  return false;
+}
+
 function getTotalCostR(row = {}) {
   const completed = getCompletedSample(row);
 
   if (completed <= 0) return 0;
 
   const virtualShadowCost =
-    num(row.virtualTotalCostR, 0) +
-    num(row.shadowTotalCostR, 0);
+    Math.max(0, num(row.virtualTotalCostR, 0)) +
+    Math.max(0, num(row.shadowTotalCostR, 0));
 
-  if (virtualShadowCost > 0 || hasVirtualShadowOutcomeFields(row)) return virtualShadowCost;
+  if (virtualShadowCost > 0) {
+    return virtualShadowCost;
+  }
 
-  if (hasValue(row.totalCostR)) return num(row.totalCostR, 0);
-  if (hasValue(row.totalNetCostR)) return num(row.totalNetCostR, 0);
-  if (hasValue(row.costR) && completed === 1) return num(row.costR, 0);
-  if (hasValue(row.avgCostR)) return num(row.avgCostR, 0) * completed;
+  if (hasValue(row.totalCostR) && num(row.totalCostR, 0) > 0) {
+    return Math.max(0, num(row.totalCostR, 0));
+  }
+
+  if (hasValue(row.totalNetCostR) && num(row.totalNetCostR, 0) > 0) {
+    return Math.max(0, num(row.totalNetCostR, 0));
+  }
+
+  if (hasValue(row.avgCostR) && num(row.avgCostR, 0) > 0) {
+    return Math.max(0, num(row.avgCostR, 0)) * completed;
+  }
+
+  if (hasValue(row.costR) && num(row.costR, 0) > 0) {
+    return Math.max(0, num(row.costR, 0)) * completed;
+  }
+
+  if (hasValue(row.netCostR) && num(row.netCostR, 0) > 0) {
+    return Math.max(0, num(row.netCostR, 0)) * completed;
+  }
+
+  if (hasValue(row.estimatedCostR) && num(row.estimatedCostR, 0) > 0) {
+    return Math.max(0, num(row.estimatedCostR, 0)) * completed;
+  }
 
   if (Array.isArray(row.recentOutcomes) && row.recentOutcomes.length > 0) {
     const relevant = row.recentOutcomes
@@ -1189,22 +1238,24 @@ function getTotalCostR(row = {}) {
       .filter(isLongRow)
       .filter((outcome) => ['VIRTUAL', 'SHADOW', ''].includes(upper(outcome.source || 'VIRTUAL')));
 
-    const totalRecentCostR = relevant.reduce((sum, outcome) => {
-      const costR = Math.max(
+    const costs = relevant
+      .map((outcome) => Math.max(
         0,
         num(
           outcome.costR ??
             outcome.avgCostR ??
-            outcome.totalCostR,
+            outcome.totalCostR ??
+            outcome.netCostR ??
+            outcome.estimatedCostR,
           0
         )
-      );
+      ))
+      .filter((costR) => costR > 0);
 
-      return sum + costR;
-    }, 0);
+    if (costs.length > 0) {
+      const avgRecentCostR = costs.reduce((sum, costR) => sum + costR, 0) / costs.length;
 
-    if (totalRecentCostR > 0 && relevant.length > 0) {
-      return (totalRecentCostR / relevant.length) * completed;
+      return avgRecentCostR * completed;
     }
   }
 
@@ -1216,11 +1267,35 @@ function getAvgCostR(row = {}) {
 
   if (completed <= 0) return 0;
 
-  if (hasValue(row.avgCostR) && !hasVirtualShadowOutcomeFields(row)) {
+  const totalCostR = getTotalCostR(row);
+
+  if (totalCostR > 0) {
+    return Math.max(0, totalCostR / completed);
+  }
+
+  if (hasValue(row.avgCostR) && num(row.avgCostR, 0) > 0) {
     return Math.max(0, num(row.avgCostR, 0));
   }
 
-  return Math.max(0, getTotalCostR(row) / completed);
+  if (hasValue(row.costR) && num(row.costR, 0) > 0) {
+    return Math.max(0, num(row.costR, 0));
+  }
+
+  if (hasValue(row.netCostR) && num(row.netCostR, 0) > 0) {
+    return Math.max(0, num(row.netCostR, 0));
+  }
+
+  if (hasValue(row.estimatedCostR) && num(row.estimatedCostR, 0) > 0) {
+    return Math.max(0, num(row.estimatedCostR, 0));
+  }
+
+  return 0;
+}
+
+function costFixSource(row = {}) {
+  return hasCostEvidence(row)
+    ? 'costR_or_avgCostR_fallback/closedCompleted'
+    : 'none';
 }
 
 function getPositiveR(row = {}, aggregateKey, realKey = null, shadowKey = null) {
@@ -2144,7 +2219,7 @@ function buildRawMicroRow(row = {}, key = '', index = 0) {
     totalCostR: round(totalCostR, 4),
     avgCostR: round(getAvgCostR(row), 4),
 
-    avgCostRFixSource: totalCostR > 0 ? 'totalCostR/closedCompleted' : 'none',
+    avgCostRFixSource: costFixSource(row),
     directSLFixSource: directSLCount > 0 ? 'directSLCount/closedCompleted' : 'none',
 
     balancedScore: round(row.balancedScore, 4),
@@ -2283,7 +2358,7 @@ function decorateMicroRow(row = {}, marketWeather = null) {
 
     minCompletedForActiveLearning: MIN_COMPLETED_ACTIVE_LEARNING,
 
-    avgCostRFixSource: getTotalCostR(row) > 0 ? 'totalCostR/closedCompleted' : 'none',
+    avgCostRFixSource: costFixSource(row),
     directSLFixSource: getDirectSLCount(row) > 0 ? 'directSLCount/closedCompleted' : 'none'
   };
 }
@@ -2675,6 +2750,7 @@ function normalizeMicroRow(
 
     totalCostR: round(getTotalCostR(row), 4),
     avgCostR: round(getAvgCostR(row), 4),
+    avgCostRFixSource: costFixSource(row),
 
     balancedScore: round(row.balancedScore, 4),
     dashboardBalancedScore: round(row.dashboardBalancedScore ?? getDashboardBalancedScore(row, winrate), 4),
@@ -2823,6 +2899,7 @@ function compactBestRow(row) {
 
     totalCostR: round(getTotalCostR(row), 4),
     avgCostR: round(getAvgCostR(row), 4),
+    avgCostRFixSource: costFixSource(row),
 
     balancedScore: round(row.balancedScore, 4),
     dashboardBalancedScore: round(row.dashboardBalancedScore, 4),
@@ -3679,10 +3756,12 @@ export default async function handler(req, res) {
     const activeMacroSet = new Set(activeMacroFamilyIds);
 
     const taxonomyRows = filters.includeEmpty
-      ? generateLongTaxonomyRows().map((row, index) => decorateMicroRow(
-        buildRawMicroRow(row, row.trueMicroFamilyId, index),
-        marketWeather
-      )).filter(Boolean)
+      ? generateLongTaxonomyRows()
+        .map((row, index) => decorateMicroRow(
+          buildRawMicroRow(row, row.trueMicroFamilyId, index),
+          marketWeather
+        ))
+        .filter(Boolean)
       : [];
 
     const weekRows = buildRowsFromMicros(weekResult.micros, marketWeather);
@@ -3894,8 +3973,8 @@ export default async function handler(req, res) {
 
       measurementPolicy: {
         version: MEASUREMENT_FIX_VERSION,
-        avgCostR: 'avgCostR = totalCostR / closedVirtualShadowCompleted',
-        totalCostR: 'virtualTotalCostR + shadowTotalCostR, fallback totalCostR, fallback avgCostR * completed',
+        avgCostR: 'avgCostR = totalCostR / closedVirtualShadowCompleted, fallback avgCostR/costR/recentOutcomes.costR',
+        totalCostR: 'virtualTotalCostR + shadowTotalCostR when > 0, fallback totalCostR, fallback avgCostR * completed, fallback costR * completed, fallback recentOutcomes.costR * completed',
         directSL: 'directSLCount / closedVirtualShadowCompleted',
         seen: 'seen and observations come only from unique observation dedupe keys',
         completed: 'closed VIRTUAL + SHADOW outcomes only',
@@ -4111,7 +4190,7 @@ export default async function handler(req, res) {
         weekMicrosCacheHit: Boolean(weekResult.cacheHit),
         weekMicrosCacheStale: Boolean(weekResult.stale),
         weekMicrosCacheSize: cache.weekMicros.size,
-        path: 'longOnly75ChildPersistentLearningNetOutcomeObservationFirstAnalyzeTrueMicroOnlyScannerFingerprintMetadataOnlyCurrentFitMarketWeather',
+        path: 'longOnly75ChildPersistentLearningNetOutcomeObservationFirstAnalyzeTrueMicroOnlyScannerFingerprintMetadataOnlyCurrentFitMarketWeatherAvgCostRFallbackFix',
         best75Source: 'persistentLearningMergedRowsBeforeFilters'
       },
 
