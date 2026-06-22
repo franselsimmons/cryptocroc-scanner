@@ -1650,11 +1650,58 @@
     }
 
     function activeMicroIds() {
-      return uniqueStrings([state.rotation?.activeMicroFamilyIds || [], state.rotation?.activeRotation?.activeMicroFamilyIds || [], state.rotation?.activeRotation?.microFamilyIds || [], state.rotation?.activeRotation?.trueMicroFamilyIds || [], state.rotation?.active?.activeMicroFamilyIds || [], state.rotation?.active?.microFamilyIds || [], state.rotation?.active?.trueMicroFamilyIds || [], state.micros?.activeMicroFamilyIds || [], state.micros?.activeRotation?.activeMicroFamilyIds || [], state.micros?.activeRotation?.microFamilyIds || [], state.micros?.activeRotation?.trueMicroFamilyIds || [], state.overview?.activeMicroFamilyIds || [], state.trade?.activeMicroFamilyIds || []]).filter(idAllowedInLongOnly);
+      return uniqueStrings([
+        state.rotation?.activeMicroFamilyIds || [],
+        state.rotation?.activeRotation?.activeMicroFamilyIds || [],
+        state.rotation?.activeRotation?.microFamilyIds || [],
+        state.rotation?.activeRotation?.trueMicroFamilyIds || [],
+        state.rotation?.active?.activeMicroFamilyIds || [],
+        state.rotation?.active?.microFamilyIds || [],
+        state.rotation?.active?.trueMicroFamilyIds || [],
+        state.micros?.activeMicroFamilyIds || [],
+        state.micros?.activeRotation?.activeMicroFamilyIds || [],
+        state.micros?.activeRotation?.microFamilyIds || [],
+        state.micros?.activeRotation?.trueMicroFamilyIds || [],
+        state.overview?.activeMicroFamilyIds || [],
+        state.trade?.activeMicroFamilyIds || []
+      ])
+        .filter(idAllowedInLongOnly)
+        .slice(0, MAX_ACTIVE_DISCORD_MICRO_FAMILIES);
     }
 
     function activeParentIds() {
       return uniqueStrings([state.rotation?.activeMacroFamilyIds || [], state.rotation?.activeRotation?.activeMacroFamilyIds || [], state.rotation?.activeRotation?.macroFamilyIds || [], state.rotation?.active?.activeMacroFamilyIds || [], state.rotation?.active?.macroFamilyIds || [], state.micros?.activeMacroFamilyIds || [], state.micros?.activeRotation?.activeMacroFamilyIds || [], state.micros?.activeRotation?.macroFamilyIds || [], state.overview?.activeMacroFamilyIds || [], state.trade?.activeMacroFamilyIds || []]).filter(parentIdAllowedInLongOnly);
+    }
+
+    function extractActiveRotationPayload(data = {}) {
+      if (data?.active && typeof data.active === "object") return data.active;
+      if (data?.activeRotation && typeof data.activeRotation === "object") return data.activeRotation;
+      if (
+        data?.manualOnly === true ||
+        Array.isArray(data?.microFamilies) ||
+        Array.isArray(data?.activeMicroFamilyIds) ||
+        Array.isArray(data?.microFamilyIds) ||
+        Array.isArray(data?.trueMicroFamilyIds)
+      ) {
+        return data;
+      }
+      return {};
+    }
+    function extractActiveMicroIdsFromPayload(data = {}, fallbackIds = []) {
+      const active = extractActiveRotationPayload(data);
+      return uniqueStrings([
+        active?.activeMicroFamilyIds || [],
+        active?.microFamilyIds || [],
+        active?.trueMicroFamilyIds || [],
+        active?.childTrueMicroFamilyIds || [],
+        data?.activeMicroFamilyIds || [],
+        data?.microFamilyIds || [],
+        data?.trueMicroFamilyIds || [],
+        data?.childTrueMicroFamilyIds || [],
+        fallbackIds || []
+      ])
+        .filter(idAllowedInLongOnly)
+        .slice(0, MAX_ACTIVE_DISCORD_MICRO_FAMILIES);
     }
 
     function longRows(rows = []) {
@@ -1769,18 +1816,28 @@
           const slotNumber = Number(btn.dataset.activateSlot || 1);
           const id = btn.dataset.activateId || "";
           const ids = setManualSelectionSlot(slotNumber, id);
-          activateSelectedMicroFamilies(ids);
+          activateSelectedMicroFamilies(ids, {
+            replaceSelection: ids.length >= MAX_ACTIVE_DISCORD_MICRO_FAMILIES
+          });
         });
       });
       document.querySelectorAll("[data-clear-slot]").forEach((btn) => {
         btn.addEventListener("click", () => {
           const slotNumber = Number(btn.dataset.clearSlot || 2);
           const ids = clearManualSelectionSlot(slotNumber);
-          activateSelectedMicroFamilies(ids);
+          activateSelectedMicroFamilies(ids, {
+            replaceSelection: true
+          });
         });
       });
-      document.querySelectorAll("[data-copy]").forEach((btn) => btn.addEventListener("click", () => copyText(btn.dataset.copy, "75-child trueMicroFamilyId gekopieerd.")));
-      document.querySelectorAll("[data-open-micro]").forEach((btn) => btn.addEventListener("click", () => openMicro(btn.dataset.openMicro)));
+      document.querySelectorAll("[data-copy]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          copyText(btn.dataset.copy, "75-child trueMicroFamilyId gekopieerd.");
+        });
+      });
+      document.querySelectorAll("[data-open-micro]").forEach((btn) => {
+        btn.addEventListener("click", () => openMicro(btn.dataset.openMicro));
+      });
     }
 
     async function copyText(text, message = "Gekopieerd.") {
@@ -1947,7 +2004,14 @@
       $("microSearch")?.addEventListener("change", (event) => { state.microSearch = event.target.value; renderMicros(); });
       $("microSearch")?.addEventListener("keydown", (event) => { if (event.key === "Enter") { state.microSearch = event.target.value; renderMicros(); } });
       $("copyVisibleIdsBtn")?.addEventListener("click", () => { const ids = uniqueStrings(rows.map(microId)).filter(idAllowedInLongOnly); copyText(JSON.stringify(ids, null, 2), `Visible ${ids.length} LONG 75-child IDs gekopieerd.`); });
-      $("activateVisibleIdsBtn")?.addEventListener("click", () => { const ids = uniqueStrings(rows.map(microId)).filter(idAllowedInLongOnly).slice(0, MAX_ACTIVE_DISCORD_MICRO_FAMILIES); activateSelectedMicroFamilies(ids); });
+      $("activateVisibleIdsBtn")?.addEventListener("click", () => {
+        const ids = uniqueStrings(rows.map(microId))
+          .filter(idAllowedInLongOnly)
+          .slice(0, MAX_ACTIVE_DISCORD_MICRO_FAMILIES);
+        activateSelectedMicroFamilies(ids, {
+          replaceSelection: true
+        });
+      });
       $("exportMicrosBtn")?.addEventListener("click", () => downloadJson("long-75-child-micro-families.json", state.micros));
       bindMicroEvents();
     }
@@ -1967,7 +2031,9 @@
           .filter(idAllowedInLongOnly)
           .slice(0, MAX_ACTIVE_DISCORD_MICRO_FAMILIES);
         state.manualSelectionSlots = normalizeManualSelectionSlots(ids);
-        activateSelectedMicroFamilies(ids);
+        activateSelectedMicroFamilies(ids, {
+          replaceSelection: true
+        });
       });
       $("clearManualBtn")?.addEventListener("click", () => { $("manualMicroIds").value = ""; });
       $("copyActiveBtn")?.addEventListener("click", () => copyText(JSON.stringify(activeIds, null, 2), "Active 75-child IDs gekopieerd."));
@@ -1975,26 +2041,106 @@
       bindMicroEvents();
     }
 
-    async function activateSelectedMicroFamilies(ids = []) {
+    async function activateSelectedMicroFamilies(ids = [], options = {}) {
       const allRequestedIds = uniqueStrings(ids);
       const validIds = allRequestedIds.filter(idAllowedInLongOnly);
       const microFamilyIds = validIds.slice(0, MAX_ACTIVE_DISCORD_MICRO_FAMILIES);
       const rejectedIds = allRequestedIds.filter((id) => !idAllowedInLongOnly(id));
       const ignoredExtraIds = validIds.slice(MAX_ACTIVE_DISCORD_MICRO_FAMILIES);
+      const replaceSelection =
+        options.replaceSelection === true ||
+        options.replaceExisting === true ||
+        options.overwrite === true ||
+        microFamilyIds.length >= MAX_ACTIVE_DISCORD_MICRO_FAMILIES;
       state.manualSelectionSlots = normalizeManualSelectionSlots(microFamilyIds);
-
       if (!microFamilyIds.length) {
-        setMessage(rejectedIds.length ? `Geen geldige LONG 75-child trueMicroFamilyId geselecteerd.\nGeweigerd: ${rejectedIds.join(", ")}` : "Geen geldige LONG 75-child trueMicroFamilyId geselecteerd.", "warn");
+        setMessage(
+          rejectedIds.length
+            ? `Geen geldige LONG 75-child trueMicroFamilyId geselecteerd.\nGeweigerd: ${rejectedIds.join(", ")}`
+            : "Geen geldige LONG 75-child trueMicroFamilyId geselecteerd.",
+          "warn"
+        );
         return;
       }
-
-      if (!confirm(`Activeer Discord alerts voor ${microFamilyIds.length} van maximaal ${MAX_ACTIVE_DISCORD_MICRO_FAMILIES} exacte LONG 75-child ID(s)?\n\n${microFamilyIds.join("\n")}${ignoredExtraIds.length ? `\n\nGenegeerd boven limiet:\n${ignoredExtraIds.join("\n")}` : ""}\n\nVirtual/shadow learning blijft breed doorlopen. CurrentFit mag Discord blokkeren.`)) return;
-
-      const data = await api(endpoints.rotation, { method: "POST", timeoutMs: 28000, body: JSON.stringify({ action: "activateSelectedMicroFamilies", microFamilyIds, activeMicroFamilyIds: microFamilyIds, trueMicroFamilyIds: microFamilyIds, childTrueMicroFamilyIds: microFamilyIds, macroFamilyIds: [], activeMacroFamilyIds: [], side: DASHBOARD_SIDE, tradeSide: ONLY_SIDE, positionSide: ONLY_SIDE, direction: ONLY_SIDE, targetTradeSide: ONLY_SIDE, dashboardSide: DASHBOARD_SIDE, longOnly: true, shortDisabled: true, disableShort: true, manualOnly: true, adminSelected: true, autoRotation: false, trueMicroFamilySchema: TRUE_MICRO_SCHEMA, parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA, learningGranularity: LEARNING_GRANULARITY, parentLearningGranularity: PARENT_LEARNING_GRANULARITY, selectionGranularity: "EXACT_75_CHILD", currentFitSoftOnly: true, currentFitBlocksLearning: false, selectionIsAdaptive: true, discordOnlyForSelectedMicroFamilies: true, discordOnlyForExactTrueMicroMatch: true, discordRequiresCurrentFit: true, macroMatchDoesNotTriggerDiscord: true, parentMacroMatchDoesNotTriggerDiscord: true }) });
-      const active = data.active || data.activeRotation || {};
-      const activeIds = uniqueStrings([active.activeMicroFamilyIds || [], active.microFamilyIds || [], active.trueMicroFamilyIds || [], data.activeMicroFamilyIds || []]).filter(idAllowedInLongOnly);
-      state.rotation = { ...(state.rotation || {}), ...data, active, activeRotation: active, activeMicroFamilyIds: activeIds };
-      setMessage(`Manual Discord selection opgeslagen.\nActive LONG 75-child IDs: ${activeIds.length}/${MAX_ACTIVE_DISCORD_MICRO_FAMILIES}\nVirtual/shadow learning blijft breed doorlopen.`, "ok");
+      if (!confirm(
+        `Activeer Discord alerts voor ${microFamilyIds.length} van maximaal ${MAX_ACTIVE_DISCORD_MICRO_FAMILIES} exacte LONG 75-child ID(s)?\n\n` +
+        `${microFamilyIds.join("\n")}` +
+        `${ignoredExtraIds.length ? `\n\nGenegeerd boven limiet:\n${ignoredExtraIds.join("\n")}` : ""}\n\n` +
+        `Mode: ${replaceSelection ? "REPLACE selectie" : "APPEND aan bestaande selectie"}\n\n` +
+        "Virtual/shadow learning blijft breed doorlopen. CurrentFit mag Discord blokkeren."
+      )) {
+        return;
+      }
+      const data = await api(endpoints.rotation, {
+        method: "POST",
+        timeoutMs: 28000,
+        body: JSON.stringify({
+          action: "activateSelectedMicroFamilies",
+          microFamilyIds,
+          activeMicroFamilyIds: microFamilyIds,
+          trueMicroFamilyIds: microFamilyIds,
+          childTrueMicroFamilyIds: microFamilyIds,
+          maxActiveMicroFamilies: MAX_ACTIVE_DISCORD_MICRO_FAMILIES,
+          maxManualMicroFamilies: MAX_ACTIVE_DISCORD_MICRO_FAMILIES,
+          maxSelectedMicroFamilies: MAX_ACTIVE_DISCORD_MICRO_FAMILIES,
+          replaceSelection,
+          replaceExisting: replaceSelection,
+          overwrite: replaceSelection,
+          appendSelection: !replaceSelection,
+          macroFamilyIds: [],
+          activeMacroFamilyIds: [],
+          side: DASHBOARD_SIDE,
+          tradeSide: ONLY_SIDE,
+          positionSide: ONLY_SIDE,
+          direction: ONLY_SIDE,
+          targetTradeSide: ONLY_SIDE,
+          dashboardSide: DASHBOARD_SIDE,
+          longOnly: true,
+          shortDisabled: true,
+          disableShort: true,
+          manualOnly: true,
+          adminSelected: true,
+          autoRotation: false,
+          trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+          parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+          learningGranularity: LEARNING_GRANULARITY,
+          parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
+          selectionGranularity: "EXACT_75_CHILD",
+          currentFitSoftOnly: true,
+          currentFitBlocksLearning: false,
+          selectionIsAdaptive: true,
+          discordOnlyForSelectedMicroFamilies: true,
+          discordOnlyForExactTrueMicroMatch: true,
+          discordRequiresCurrentFit: true,
+          macroMatchDoesNotTriggerDiscord: true,
+          parentMacroMatchDoesNotTriggerDiscord: true
+        })
+      });
+      const active = extractActiveRotationPayload(data);
+      const activeIds = extractActiveMicroIdsFromPayload(data, microFamilyIds);
+      state.manualSelectionSlots = normalizeManualSelectionSlots(activeIds);
+      state.rotation = {
+        ...(state.rotation || {}),
+        ...data,
+        active,
+        activeRotation: active,
+        activeMicroFamilyIds: activeIds
+      };
+      if (state.micros) {
+        state.micros = {
+          ...state.micros,
+          activeRotation: active,
+          activeMicroFamilyIds: activeIds
+        };
+      }
+      setMessage(
+        `Manual Discord selection opgeslagen.\n` +
+        `Active LONG 75-child IDs: ${activeIds.length}/${MAX_ACTIVE_DISCORD_MICRO_FAMILIES}\n` +
+        `${activeIds.join("\n")}\n` +
+        `Mode: ${replaceSelection ? "replace" : "append"}\n` +
+        `Virtual/shadow learning blijft breed doorlopen.`,
+        "ok"
+      );
       if (state.activeTab === "rotation") await renderRotation();
       if (state.activeTab === "micros") await renderMicros();
     }
