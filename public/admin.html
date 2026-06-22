@@ -1716,7 +1716,6 @@
       return `<div class="micro-desktop-table">${table(rows, cols, "Geen geldige LONG 75-child Analyze micro-families.")}</div><div class="micro-mobile-list">${mobileCards}</div>`;
     }
 
-    // NIEUW: lokale slot-helper functies (vervanging van oude currentManualSelectionSlots etc.)
     function normalizeManualSelectionSlots(ids = []) {
       const slots = Array.isArray(ids) ? [...ids] : [ids];
       const cleanSlots = slots
@@ -1762,6 +1761,166 @@
       slots[index] = "";
       state.manualSelectionSlots = normalizeManualSelectionSlots(slots);
       return manualSelectionIdsFromSlots(state.manualSelectionSlots);
+    }
+
+    function bindMicroEvents() {
+      document.querySelectorAll("[data-activate-slot]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const slotNumber = Number(btn.dataset.activateSlot || 1);
+          const id = btn.dataset.activateId || "";
+          const ids = setManualSelectionSlot(slotNumber, id);
+          activateSelectedMicroFamilies(ids);
+        });
+      });
+      document.querySelectorAll("[data-clear-slot]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const slotNumber = Number(btn.dataset.clearSlot || 2);
+          const ids = clearManualSelectionSlot(slotNumber);
+          activateSelectedMicroFamilies(ids);
+        });
+      });
+      document.querySelectorAll("[data-copy]").forEach((btn) => btn.addEventListener("click", () => copyText(btn.dataset.copy, "75-child trueMicroFamilyId gekopieerd.")));
+      document.querySelectorAll("[data-open-micro]").forEach((btn) => btn.addEventListener("click", () => openMicro(btn.dataset.openMicro)));
+    }
+
+    async function copyText(text, message = "Gekopieerd.") {
+      const value = String(text ?? "");
+      try {
+        if (!navigator.clipboard || !window.isSecureContext) throw new Error("Clipboard API niet beschikbaar.");
+        await navigator.clipboard.writeText(value);
+        setMessage(message, "ok");
+        return true;
+      } catch {
+        const area = document.createElement("textarea");
+        area.value = value;
+        area.setAttribute("readonly", "");
+        area.style.position = "fixed";
+        area.style.left = "-9999px";
+        area.style.top = "0";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.focus();
+        area.select();
+        area.setSelectionRange(0, area.value.length);
+        let copied = false;
+        try { copied = document.execCommand("copy"); } catch { copied = false; }
+        area.remove();
+        if (copied) {
+          setMessage(message, "ok");
+          return true;
+        }
+        setMessage("Automatisch kopiëren lukte niet. Selecteer de output en kopieer handmatig.", "warn");
+        return false;
+      }
+    }
+
+    function downloadJson(filename, data) {
+      const blob = new Blob([JSON.stringify(data ?? {}, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+
+    async function fetchMicros() {
+      const data = await api(microApiUrl(), { timeoutMs: 22000 });
+      const rawRows = extractMicroRowsFromApiPayload(data);
+      const rows = rankMicroRows(rawRows, state.microMode);
+      return { ...data, rows, rawExtractedRows: rawRows.length, activeMicroFamilyIds: uniqueStrings([data.activeMicroFamilyIds || [], data.selectedMicroFamilyIds || [], data.activeRotation?.activeMicroFamilyIds || [], data.activeRotation?.microFamilyIds || [], data.activeRotation?.trueMicroFamilyIds || []]).filter(idAllowedInLongOnly), activeMacroFamilyIds: uniqueStrings([data.activeMacroFamilyIds || [], data.selectedMacroFamilyIds || [], data.activeRotation?.activeMacroFamilyIds || [], data.activeRotation?.macroFamilyIds || []]).filter(parentIdAllowedInLongOnly) };
+    }
+
+    function currentMicroRows() {
+      const rows = state.micros?.rows || [];
+      const search = state.microSearch.trim().toLowerCase();
+      const filtered = search ? rows.filter((row) => JSON.stringify(row).toLowerCase().includes(search)) : rows;
+      return rankMicroRows(filtered, state.microMode);
+    }
+
+    async function ensureMicrosLoaded() {
+      if (state.micros?.rows?.length) return state.micros;
+      try { state.micros = await fetchMicros(); } catch { state.micros = state.micros || { rows: [] }; }
+      return state.micros;
+    }
+
+    async function renderOverview() {
+      showLoading("overview");
+      const [data, microData, market] = await Promise.all([
+        api(endpoints.overview).catch((error) => ({ ok: false, error: friendlyApiMessage(error) })),
+        ensureMicrosLoaded(),
+        fetchMarket()
+      ]);
+
+      state.overview = data;
+      state.market = market;
+
+      const microRows = microData?.rows || [];
+      const activeCount = uniqueStrings([data.activeMicroFamilyIds || [], data.activeRotation?.activeMicroFamilyIds || [], data.activeRotation?.microFamilyIds || [], data.activeRotation?.trueMicroFamilyIds || [], microData?.activeMicroFamilyIds || []]).filter(idAllowedInLongOnly).length;
+      const observing = microRows.filter((row) => learningStatus(row) === "OBSERVING").length;
+      const early = microRows.filter((row) => learningStatus(row) === "EARLY_OUTCOMES").length;
+      const active = microRows.filter((row) => learningStatus(row) === "ACTIVE_LEARNING").length;
+      const avgCost = microRows.length ? microRows.reduce((sum, row) => sum + avgCostR(row), 0) / microRows.length : 0;
+      const avgDirectSL = microRows.length ? microRows.reduce((sum, row) => sum + directSLPct(row), 0) / microRows.length : 0;
+
+      $("overview").innerHTML = `<div class="grid">${metricCard("Learning key", PERSISTENT_LEARNING_KEY)}${metricCard("Redis namespace", LONG_KEY_PREFIX)}${metricCard("Selectable children", "75", "5 setups × 3 regimes × 5 confirmations")}${metricCard("Parent families", "15", "metadata/context, not Discord match")}${metricCard("Discord selected 75-child IDs", fmtInt(activeCount))}${metricCard("Open virtual positions", fmtInt(data.openPositions || data.positionsCount))}${metricCard("Scanner LONG candidates", fmtInt(data.longScannerCandidates || data.scannerCandidates || data.latestScan?.longCandidatesCount))}${metricCard("Analyze 75-child rows", fmtInt(microRows.length || data.currentWeekMicroFamilies))}</div><div class="grid">${metricCard("OBSERVING", fmtInt(observing), "completed = 0")}${metricCard("EARLY_OUTCOMES", fmtInt(early), `completed 1-${MIN_COMPLETED_ACTIVE_LEARNING - 1}`)}${metricCard("ACTIVE_LEARNING", fmtInt(active), `completed ≥ ${MIN_COMPLETED_ACTIVE_LEARNING}`)}${metricCard("Ranking", "adaptive", "adaptive → balanced → fair → netR → cost")}${metricCard("AvgCostR", fmt(avgCost, 3), "gemiddelde over zichtbare 75-child rows")}${metricCard("Avg DirectSL", fmtPct(avgDirectSL), "directSL hoort correct te tellen")}${metricCard("Market regime", market.regime || "UNKNOWN", market.ageText)}${metricCard("Trend side", market.trendSide || "UNKNOWN", "CurrentFit is soft")}</div><div class="grid-3"><div class="card"><h3>Architectuurregels</h3><div class="toolbar"><span class="pill long">Learning breed</span><span class="pill info">Selection adaptief</span><span class="pill danger">Discord streng</span><span class="pill soft">CurrentFit soft</span></div><div class="metric-extra">CurrentFit blokkeert geen virtual/shadow learning. Het beïnvloedt ranking, rotation en Discord-eligibility.</div></div><div class="card"><h3>Meetlat</h3>${jsonBlock({ measurementFixVersion: MEASUREMENT_FIX_VERSION, completed: "closed virtual/shadow outcomes only", scoring: "netR after costs", avgCostR: "costR", directSL: "directToSL/directSL/SL before meaningful favorable excursion", seen: "deduped unique observation key", rawWinrateRanking: "disabled" })}</div><div class="card"><h3>Identity</h3>${jsonBlock({ trueMicroFamilySchema: TRUE_MICRO_SCHEMA, parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA, selectionGranularity: "EXACT_75_CHILD", discordMatch: "candidate.trueMicroFamilyId === manuallySelected75ChildId", parentMatchTriggersDiscord: false, scannerFingerprintAsLearningFamily: false, executionFingerprintAsLearningFamily: false })}</div></div><div class="card"><h3>Overview raw</h3>${jsonBlock(data)}</div>`;
+    }
+
+    async function renderMarket() {
+      showLoading("market");
+      const endpointUrl = marketApiUrl();
+      const market = await fetchMarket();
+      const outputData = market.raw || market;
+      const outputJson = JSON.stringify(outputData ?? {}, null, 2);
+
+      $("market").innerHTML = `<div class="section-title"><div><h2>marketWeather.js</h2><p>Bestand: <code>src/market/marketWeather.js</code> · API: <code>/api/admin/market-weather</code></p></div></div><div class="toolbar"><button type="button" class="primary" id="copyMarketOutputBtn">Copy API output</button><button type="button" id="copyMarketUrlBtn">Copy API URL</button><button type="button" id="selectMarketOutputBtn">Select output</button><button type="button" id="openMarketApiBtn">Open API</button><button type="button" id="exportMarketBtn">Export JSON</button></div><div class="api-url-box"><strong>API URL:</strong><code>${escapeHtml(endpointUrl)}</code></div><div class="grid">${metricCard("Bestand", "marketWeather.js", "src/market/marketWeather.js")}${metricCard("API route", "/api/admin/market-weather", "admin output")}${metricCard("Available", market.ok ? "YES" : "NO")}${metricCard("Age", market.ageText || "-", fmtTs(market.createdAt))}${metricCard("Regime", market.regime || "UNKNOWN")}${metricCard("Trend side", market.trendSide || "UNKNOWN")}${metricCard("Bullish breadth", market.bullishPct === null ? "-" : `${fmt(market.bullishPct, 1)}%`)}${metricCard("Bearish breadth", market.bearishPct === null ? "-" : `${fmt(market.bearishPct, 1)}%`)}${metricCard("Squeeze breadth", market.squeezePct === null ? "-" : `${fmt(market.squeezePct, 1)}%`)}${metricCard("Confidence", market.confidence === null ? "-" : fmt(market.confidence, 1))}</div><div class="card"><h3>CurrentFit policy</h3><div class="toolbar"><span class="pill soft">soft gate</span><span class="pill active">learning not blocked</span><span class="pill info">ranking influence</span><span class="pill danger">discord strict later</span></div><div class="metric-extra">MarketWeather is alleen context. Learning blijft gewoon doorlopen.</div></div><div class="card api-output-card"><h3>API output — makkelijk kopiëren</h3><div class="toolbar"><button type="button" class="primary api-output-copy-btn" id="copyMarketOutputBtnBottom">Kopieer volledige API output</button></div><textarea id="marketApiOutput" class="api-output-textarea" readonly>${escapeHtml(outputJson)}</textarea></div>`;
+
+      const copyOutput = () => copyText($("marketApiOutput")?.value || outputJson, "Volledige marketWeather API output gekopieerd.");
+      $("copyMarketOutputBtn")?.addEventListener("click", copyOutput);
+      $("copyMarketOutputBtnBottom")?.addEventListener("click", copyOutput);
+      $("copyMarketUrlBtn")?.addEventListener("click", () => copyText(endpointUrl, "marketWeather.js API URL gekopieerd."));
+      $("selectMarketOutputBtn")?.addEventListener("click", () => { const box = $("marketApiOutput"); if (!box) return; box.focus(); box.select(); box.setSelectionRange(0, box.value.length); setMessage("API output geselecteerd. Je kunt nu kopiëren.", "ok"); });
+      $("openMarketApiBtn")?.addEventListener("click", () => window.open(endpointUrl, "_blank", "noopener,noreferrer"));
+      $("exportMarketBtn")?.addEventListener("click", () => downloadJson("marketWeather.js-api-output.json", outputData));
+    }
+
+    async function renderScanner() {
+      showLoading("scanner");
+      const data = await api(endpoints.scanner);
+      state.scanner = data;
+      const snapshot = data.snapshot || data.latest || {};
+      const candidates = longRows(snapshot.candidates || data.candidates || []);
+      $("scanner").innerHTML = `<div class="toolbar"><button type="button" class="primary" id="runScannerBtn">Run Scanner now</button><button type="button" id="copyScannerBtn">Copy JSON</button></div><div class="grid">${metricCard("Snapshot ID", snapshot.snapshotId || data.snapshotId || "-")}${metricCard("Age", ageText(snapshot.createdAt), fmtTs(snapshot.createdAt))}${metricCard("LONG candidates", fmtInt(candidates.length))}${metricCard("Scanner gate", fmtInt(candidates.filter((row) => row.scannerGatePassed).length))}${metricCard("Analyze-only", fmtInt(candidates.filter((row) => row.analyzeOnly || row.discoveryOnly || row.tradeDiscoveryOnly).length))}${metricCard("Ignored SHORT", fmtInt(snapshot.rawShortCandidatesIgnored || data.rawOppositeCount || 0))}${metricCard("Learning identity", "Analyze only")}${metricCard("Scanner IDs", "metadata only")}</div><div class="section-title"><div><h2>Scanner LONG candidates</h2><p>Scanner zoekt bullish coins. Scanner schrijft geen learning family, geen trade, geen Discord.</p></div></div><div class="coin-grid">${candidates.slice(0, 12).map(coinCard).join("") || '<div class="empty">Geen LONG scanner candidates.</div>'}</div>${table(candidates, [{ label: "Symbol", render: (row) => escapeHtml(baseSymbol(row)) }, { label: "Contract", render: (row) => escapeHtml(row.contractSymbol || `${baseSymbol(row)}USDT`) }, { label: "Side", render: () => '<span class="pill long">LONG</span>' }, { label: "Role", render: () => '<span class="pill raw">scanner metadata</span>' }, { label: "Price", render: (row) => fmtPrice(row.price) }, { label: "Score", render: (row) => fmt(row.scannerScore ?? row.moveScore, 2) }, { label: "1h", render: (row) => fmtRawPct(row.change1h) }, { label: "24h", render: (row) => fmtRawPct(row.change24h) }, { label: "Vol24h", render: (row) => fmtMoney(row.volume24h || row.quoteVolume24h) }, { label: "BTC", render: (row) => escapeHtml(row.btcState || "-") }, { label: "Regime", render: (row) => escapeHtml(row.regime || "-") }, { label: "Reason", render: (row) => escapeHtml(row.scannerReason || row.reason || "-") }], "Geen LONG scanner candidates.")}`;
+      $("runScannerBtn")?.addEventListener("click", runScannerNow);
+      $("copyScannerBtn")?.addEventListener("click", () => copyText(JSON.stringify(data, null, 2), "Scanner JSON gekopieerd."));
+    }
+
+    async function runScannerNow() {
+      try {
+        const data = await api(endpoints.runScanner, { method: "POST", timeoutMs: 30000, body: JSON.stringify({ force: true, forced: true, targetTradeSide: ONLY_SIDE, tradeSide: ONLY_SIDE, side: DASHBOARD_SIDE, scannerSide: DASHBOARD_SIDE, direction: ONLY_SIDE, longOnly: true, shortDisabled: true, disableShort: true, scannerOnly: true, scannerDecidesTrade: false, scannerDoesNotTrade: true, scannerDoesNotSelectMicroFamilies: true, scannerDoesNotSendDiscord: true, scannerFingerprintRole: "METADATA_ONLY", scannerFingerprintsMetadataOnly: true, scannerFingerprintsUsedAsLearningFamily: false, noTradeExecution: true, noDiscord: true, noMicroFamilySelection: true, persistentLearningKey: PERSISTENT_LEARNING_KEY, redisNamespace: LONG_NAMESPACE, redisKeyPrefix: LONG_KEY_PREFIX }) });
+        setMessage(`Scanner klaar. LONG candidates=${data.longCandidatesCount || data.candidatesCount || 0}`, "ok");
+        await renderScanner();
+      } catch (error) { setMessage(friendlyApiMessage(error), "warn"); }
+    }
+
+    async function renderTrade() {
+      showLoading("trade");
+      const data = await api(endpoints.trade);
+      state.trade = data;
+      const positions = longRows(data.positions || data.openPositions || data.virtualPositions || []);
+      const runMeta = data.runMeta || data.lastRunMeta || data.tradeMeta || {};
+      $("trade").innerHTML = `<div class="toolbar"><button type="button" class="primary" id="runTradeBtn">Run TradeSystem now</button><button type="button" id="copyTradeBtn">Copy JSON</button></div><div class="grid">${metricCard("Open virtual LONG", fmtInt(positions.length))}${metricCard("Scanner/trade sync", data.scannerAndTradeInSync ? "YES" : "NO")}${metricCard("Last processed", data.lastProcessedSnapshotId || data.lastProcessed?.snapshotId || "-")}${metricCard("Latest scanner", data.latestScannerSnapshotId || "-")}${metricCard("Active 75-child IDs", fmtInt((data.activeMicroFamilyIds || []).filter(idAllowedInLongOnly).length))}${metricCard("Parent IDs", fmtInt((data.activeMacroFamilyIds || []).filter(parentIdAllowedInLongOnly).length))}${metricCard("Last run", fmtTs(runMeta.completedAt || runMeta.startedAt))}${metricCard("Orders", "0", "exchange disabled")}</div><div class="section-title"><div><h2>Open virtual LONG positions</h2><p>Risk moet zijn: sl &lt; entry &lt; tp. Exit: price &gt;= tp, price &lt;= sl, of TIME_STOP.</p></div></div><div class="coin-grid">${positions.slice(0, 12).map(positionCard).join("") || '<div class="empty">Geen open virtual LONG posities.</div>'}</div>${table(positions, [{ label: "Symbol", render: (row) => escapeHtml(baseSymbol(row)) }, { label: "Source", render: () => '<span class="pill purple">VIRTUAL</span>' }, { label: "Side", render: () => '<span class="pill long">LONG</span>' }, { label: "Entry", render: (row) => fmtPrice(row.entry) }, { label: "SL", render: (row) => fmtPrice(row.sl || row.stopLoss) }, { label: "TP", render: (row) => fmtPrice(row.tp || row.takeProfit) }, { label: "RR", render: (row) => fmt(row.rr, 2) }, { label: "CurrentR", render: (row) => fmt(row.currentR, 3) }, { label: "MFE", render: (row) => fmt(row.mfeR, 3) }, { label: "MAE", render: (row) => fmt(row.maeR, 3) }, { label: "CostR", render: (row) => fmt(row.costR || row.avgCostR, 3) }, { label: "DirectSL", render: (row) => row.directSL || row.directToSL ? '<span class="pill danger">YES</span>' : '<span class="pill active">NO</span>' }, { label: "CurrentFit", render: (row) => currentFitPill(row) }, { label: "Exit flags", render: (row) => `${row.tpHitNow || row.tpExitArmed ? '<span class="pill active">TP</span>' : ""}${row.slHitNow || row.slExitArmed ? '<span class="pill danger">SL</span>' : ""}${row.timeStopHitNow || row.timeStopExitArmed ? '<span class="pill warn">TIME</span>' : ""}` || "-" }, { label: "75-child true micro", render: (row) => `<code>${escapeHtml(microId(row) || "NO_75_CHILD")}</code>` }, { label: "Parent 15", render: (row) => `<code>${escapeHtml(parentMicroId(row) || "NO_PARENT")}</code>` }, { label: "Opened", render: (row) => fmtTs(row.openedAt || row.createdAt) }], "Geen open virtual LONG posities.")}<div class="card"><h3>Run meta</h3>${jsonBlock(runMeta)}</div>`;
+      $("runTradeBtn")?.addEventListener("click", runTradeNow);
+      $("copyTradeBtn")?.addEventListener("click", () => copyText(JSON.stringify(data, null, 2), "Trade JSON gekopieerd."));
+    }
+
+    async function runTradeNow() {
+      try {
+        const data = await api(endpoints.runTrade, { method: "POST", timeoutMs: 30000, body: JSON.stringify({ force: true, forced: true, forceProcessSnapshot: true, monitorOpenPositionsFirst: true, monitorOpenPositions: true, processScannerSnapshot: true, targetTradeSide: ONLY_SIDE, tradeSide: ONLY_SIDE, side: DASHBOARD_SIDE, positionSide: ONLY_SIDE, direction: ONLY_SIDE, longOnly: true, shortDisabled: true, disableShort: true, virtualOnly: true, virtualTracked: true, source: "VIRTUAL", outcomeSource: "VIRTUAL", realOrdersDisabled: true, exchangeOrdersDisabled: true, bitgetOrdersDisabled: true, noExchangeOrders: true, noRealOrders: true, allowLearningWithoutActiveRotation: true, ignoreMaxOpenPositionsForLearning: true, ignoreGlobalMaxOpenPositions: true, oneOpenPositionPerSymbol: true, maxOneOpenPositionPerSymbol: true, trueMicroFamilySchema: TRUE_MICRO_SCHEMA, parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA, learningGranularity: LEARNING_GRANULARITY, parentLearningGranularity: PARENT_LEARNING_GRANULARITY, selectionGranularity: "EXACT_75_CHILD", completedDefinition: "CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES", scoringRSource: "netR", winsLossesFlatsSource: "netR", avgCostRSource: "costR", seenDefinition: "UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY", currentFitSoftOnly: true, currentFitBlocksLearning: false, currentFitBlocksVirtualLearning: false, currentFitBlocksShadowLearning: false, longRiskShape: { expression: "sl < entry < tp" }, discordOnlyForSelectedMicroFamilies: true, discordOnlyForExactTrueMicroMatch: true, discordRequiresCurrentFit: true, macroMatchDoesNotTriggerDiscord: true, parentMacroMatchDoesNotTriggerDiscord: true, persistentLearningKey: PERSISTENT_LEARNING_KEY, redisNamespace: LONG_NAMESPACE, redisKeyPrefix: LONG_KEY_PREFIX }) });
+        const counts = data.counts || {};
+        setMessage(`TradeSystem klaar.\nEntries=${counts.entries || data.entryRows || 0}, waits=${counts.waits || data.waitRows || 0}, virtualExits=${counts.virtualExits || data.virtualExitRows || 0}.`, "ok");
+        await renderTrade();
+      } catch (error) { setMessage(friendlyApiMessage(error), "warn"); }
     }
 
     function manualCard(row) {
