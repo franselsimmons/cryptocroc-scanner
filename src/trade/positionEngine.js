@@ -40,22 +40,32 @@ const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 const POSITION_SOURCE = 'VIRTUAL';
 const OUTCOME_SOURCE = 'VIRTUAL';
 
-const COST_MODEL_VERSION = 'POSITION_ENGINE_LONG_NET_COST_V8';
-const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
+const COST_MODEL_VERSION = 'POSITION_ENGINE_LONG_NET_COST_V9';
+const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_FAST_OPEN_POSITION_MONITOR_V2';
 
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 const MIN_COMPLETED_ACTIVE_LEARNING = 20;
 
-const DEFAULT_OPEN_POSITION_FETCH_LIMIT = 120;
-const DEFAULT_MONITOR_POSITION_LIMIT = 40;
-const DEFAULT_MONITOR_RUNTIME_MS = 2600;
+const DEFAULT_OPEN_POSITION_SCAN_LIMIT = 150;
+const DEFAULT_OPEN_POSITION_HYDRATE_LIMIT = 0;
+const DEFAULT_OPEN_POSITION_READ_CONCURRENCY = 3;
+const DEFAULT_OPEN_POSITION_KEYS_TIMEOUT_MS = 450;
+const DEFAULT_OPEN_POSITION_READ_TIMEOUT_MS = 650;
+const DEFAULT_OPEN_POSITION_DIRECT_READ_TIMEOUT_MS = 250;
+
+const DEFAULT_MONITOR_POSITION_LIMIT = 30;
+const DEFAULT_MONITOR_BATCH_SIZE = 30;
+const DEFAULT_MONITOR_CONCURRENCY = 2;
+const DEFAULT_MONITOR_RUNTIME_MS = 3000;
 const DEFAULT_MONITOR_GET_OPEN_TIMEOUT_MS = 900;
-const DEFAULT_MONITOR_POSITION_TIMEOUT_MS = 650;
-const DEFAULT_MONITOR_PRICE_FETCH_TIMEOUT_MS = 250;
-const DEFAULT_SAVE_OPEN_POSITION_TIMEOUT_MS = 800;
+const DEFAULT_MONITOR_ONE_POSITION_TIMEOUT_MS = 650;
+const DEFAULT_MONITOR_PRICE_FETCH_TIMEOUT_MS = 350;
+
+const DEFAULT_SAVE_OPEN_POSITION_TIMEOUT_MS = 900;
+const DEFAULT_SAVE_OPEN_POSITION_READ_TIMEOUT_MS = 250;
 const DEFAULT_RECORD_OUTCOME_TIMEOUT_MS = 1200;
-const DEFAULT_DISCORD_EXIT_TIMEOUT_MS = 1200;
-const DEFAULT_OPEN_POSITION_MAX_BYTES = 450_000;
+const DEFAULT_DISCORD_EXIT_TIMEOUT_MS = 900;
+const DEFAULT_OPEN_POSITION_MAX_BYTES = 220_000;
 
 const LONG_FIXED_SETUP_TYPES = new Set([
   'BREAKOUT',
@@ -109,7 +119,7 @@ const HEAVY_FIELD_RE =
   /^(raw|rows?|candles?|klines?|ohlcv|orderbook|orderBook|book|bids|asks|universe|symbols|candidates|allCandidates|filteredUniverse|marketUniverse|snapshot|fullSnapshot|latestSnapshot|debug|trace|logs?|messages?|payload|html|body|largeRows|largeSymbols)$/i;
 
 const HEAVY_FIELD_CONTAINS_RE =
-  /(candles|klines|orderbook|universe|snapshot|debug|trace|rawRows|rawPayload|largeRows|largeSymbols)/i;
+  /(candles|klines|orderbook|universe|snapshot|debug|trace|rawRows|rawPayload|largeRows|largeSymbols|dedupeKeys)/i;
 
 function now() {
   return Date.now();
@@ -125,11 +135,18 @@ function finiteNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function clampInt(value, fallback, min, max) {
+  const n = Math.floor(safeNumber(value, fallback));
+
+  return Math.max(min, Math.min(max, n));
+}
+
 function namespacedLongKey(key, fallback) {
   const raw = String(key || fallback || '').trim();
 
   if (!raw) return `${LONG_KEY_PREFIX}MISSING_KEY`;
   if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
+  if (raw.startsWith('SHORT:')) return `${LONG_KEY_PREFIX}${raw.slice('SHORT:'.length)}`;
 
   return `${LONG_KEY_PREFIX}${raw}`;
 }
@@ -191,116 +208,170 @@ const LONG_KEYS = {
 
 function tradeConfig() {
   return {
-    dataConcurrency: Math.max(
+    dataConcurrency: clampInt(
+      CONFIG.long?.trade?.dataConcurrency ??
+        CONFIG.trade?.dataConcurrency,
+      DEFAULT_OPEN_POSITION_READ_CONCURRENCY,
       1,
-      Math.floor(safeNumber(
-        CONFIG.long?.trade?.dataConcurrency ??
-          CONFIG.trade?.dataConcurrency,
-        3
-      ))
+      5
     ),
 
-    positionTimeStopMin: Math.max(
+    positionTimeStopMin: clampInt(
+      CONFIG.long?.trade?.positionTimeStopMin ??
+        CONFIG.trade?.positionTimeStopMin,
+      DEFAULT_POSITION_TIME_STOP_MIN,
       1,
-      safeNumber(
-        CONFIG.long?.trade?.positionTimeStopMin ??
-          CONFIG.trade?.positionTimeStopMin,
-        DEFAULT_POSITION_TIME_STOP_MIN
-      )
+      7 * 24 * 60
     ),
 
-    openPositionFetchLimit: Math.max(
-      1,
-      Math.floor(safeNumber(
+    openPositionScanLimit: clampInt(
+      CONFIG.long?.trade?.openPositionScanLimit ??
         CONFIG.long?.trade?.openPositionFetchLimit ??
-          CONFIG.trade?.openPositionFetchLimit,
-        DEFAULT_OPEN_POSITION_FETCH_LIMIT
-      ))
-    ),
-
-    monitorPositionLimit: Math.max(
+        CONFIG.trade?.openPositionScanLimit ??
+        CONFIG.trade?.openPositionFetchLimit,
+      DEFAULT_OPEN_POSITION_SCAN_LIMIT,
       1,
-      Math.floor(safeNumber(
-        CONFIG.long?.trade?.monitorPositionLimit ??
-          CONFIG.trade?.monitorPositionLimit,
-        DEFAULT_MONITOR_POSITION_LIMIT
-      ))
+      1000
     ),
 
-    monitorRuntimeMs: Math.max(
+    openPositionHydrateLimit: clampInt(
+      CONFIG.long?.trade?.openPositionHydrateLimit ??
+        CONFIG.trade?.openPositionHydrateLimit,
+      DEFAULT_OPEN_POSITION_HYDRATE_LIMIT,
+      0,
+      250
+    ),
+
+    openPositionReadConcurrency: clampInt(
+      CONFIG.long?.trade?.openPositionReadConcurrency ??
+        CONFIG.trade?.openPositionReadConcurrency,
+      DEFAULT_OPEN_POSITION_READ_CONCURRENCY,
+      1,
+      6
+    ),
+
+    openPositionKeysTimeoutMs: clampInt(
+      CONFIG.long?.trade?.openPositionKeysTimeoutMs ??
+        CONFIG.trade?.openPositionKeysTimeoutMs,
+      DEFAULT_OPEN_POSITION_KEYS_TIMEOUT_MS,
+      100,
+      2000
+    ),
+
+    openPositionReadTimeoutMs: clampInt(
+      CONFIG.long?.trade?.openPositionReadTimeoutMs ??
+        CONFIG.trade?.openPositionReadTimeoutMs,
+      DEFAULT_OPEN_POSITION_READ_TIMEOUT_MS,
+      100,
+      2500
+    ),
+
+    openPositionDirectReadTimeoutMs: clampInt(
+      CONFIG.long?.trade?.openPositionDirectReadTimeoutMs ??
+        CONFIG.trade?.openPositionDirectReadTimeoutMs,
+      DEFAULT_OPEN_POSITION_DIRECT_READ_TIMEOUT_MS,
+      100,
+      1500
+    ),
+
+    monitorPositionLimit: clampInt(
+      CONFIG.long?.trade?.monitorPositionLimit ??
+        CONFIG.trade?.monitorPositionLimit,
+      DEFAULT_MONITOR_POSITION_LIMIT,
+      1,
+      250
+    ),
+
+    monitorBatchSize: clampInt(
+      CONFIG.long?.trade?.monitorBatchSize ??
+        CONFIG.trade?.monitorBatchSize,
+      DEFAULT_MONITOR_BATCH_SIZE,
+      1,
+      250
+    ),
+
+    monitorConcurrency: clampInt(
+      CONFIG.long?.trade?.monitorConcurrency ??
+        CONFIG.trade?.monitorConcurrency,
+      DEFAULT_MONITOR_CONCURRENCY,
+      1,
+      4
+    ),
+
+    monitorRuntimeMs: clampInt(
+      CONFIG.long?.trade?.monitorRuntimeMs ??
+        CONFIG.trade?.monitorRuntimeMs,
+      DEFAULT_MONITOR_RUNTIME_MS,
       500,
-      Math.floor(safeNumber(
-        CONFIG.long?.trade?.monitorRuntimeMs ??
-          CONFIG.trade?.monitorRuntimeMs,
-        DEFAULT_MONITOR_RUNTIME_MS
-      ))
+      15000
     ),
 
-    monitorGetOpenTimeoutMs: Math.max(
+    monitorGetOpenTimeoutMs: clampInt(
+      CONFIG.long?.trade?.monitorGetOpenTimeoutMs ??
+        CONFIG.trade?.monitorGetOpenTimeoutMs,
+      DEFAULT_MONITOR_GET_OPEN_TIMEOUT_MS,
       200,
-      Math.floor(safeNumber(
-        CONFIG.long?.trade?.monitorGetOpenTimeoutMs ??
-          CONFIG.trade?.monitorGetOpenTimeoutMs,
-        DEFAULT_MONITOR_GET_OPEN_TIMEOUT_MS
-      ))
+      3000
     ),
 
-    monitorPositionTimeoutMs: Math.max(
+    monitorPositionTimeoutMs: clampInt(
+      CONFIG.long?.trade?.monitorPositionTimeoutMs ??
+        CONFIG.trade?.monitorPositionTimeoutMs,
+      DEFAULT_MONITOR_ONE_POSITION_TIMEOUT_MS,
       150,
-      Math.floor(safeNumber(
-        CONFIG.long?.trade?.monitorPositionTimeoutMs ??
-          CONFIG.trade?.monitorPositionTimeoutMs,
-        DEFAULT_MONITOR_POSITION_TIMEOUT_MS
-      ))
+      2500
     ),
 
-    monitorPriceFetchTimeoutMs: Math.max(
+    monitorPriceFetchTimeoutMs: clampInt(
+      CONFIG.long?.trade?.monitorPriceFetchTimeoutMs ??
+        CONFIG.trade?.monitorPriceFetchTimeoutMs,
+      DEFAULT_MONITOR_PRICE_FETCH_TIMEOUT_MS,
       75,
-      Math.floor(safeNumber(
-        CONFIG.long?.trade?.monitorPriceFetchTimeoutMs ??
-          CONFIG.trade?.monitorPriceFetchTimeoutMs,
-        DEFAULT_MONITOR_PRICE_FETCH_TIMEOUT_MS
-      ))
+      2500
     ),
 
-    saveOpenPositionTimeoutMs: Math.max(
+    saveOpenPositionTimeoutMs: clampInt(
+      CONFIG.long?.trade?.saveOpenPositionTimeoutMs ??
+        CONFIG.trade?.saveOpenPositionTimeoutMs,
+      DEFAULT_SAVE_OPEN_POSITION_TIMEOUT_MS,
       150,
-      Math.floor(safeNumber(
-        CONFIG.long?.trade?.saveOpenPositionTimeoutMs ??
-          CONFIG.trade?.saveOpenPositionTimeoutMs,
-        DEFAULT_SAVE_OPEN_POSITION_TIMEOUT_MS
-      ))
+      3000
     ),
 
-    recordOutcomeTimeoutMs: Math.max(
-      250,
-      Math.floor(safeNumber(
-        CONFIG.long?.trade?.recordOutcomeTimeoutMs ??
-          CONFIG.trade?.recordOutcomeTimeoutMs,
-        DEFAULT_RECORD_OUTCOME_TIMEOUT_MS
-      ))
+    saveOpenPositionReadTimeoutMs: clampInt(
+      CONFIG.long?.trade?.saveOpenPositionReadTimeoutMs ??
+        CONFIG.trade?.saveOpenPositionReadTimeoutMs,
+      DEFAULT_SAVE_OPEN_POSITION_READ_TIMEOUT_MS,
+      75,
+      1500
     ),
 
-    discordExitTimeoutMs: Math.max(
+    recordOutcomeTimeoutMs: clampInt(
+      CONFIG.long?.trade?.recordOutcomeTimeoutMs ??
+        CONFIG.trade?.recordOutcomeTimeoutMs,
+      DEFAULT_RECORD_OUTCOME_TIMEOUT_MS,
       250,
-      Math.floor(safeNumber(
-        CONFIG.long?.trade?.discordExitTimeoutMs ??
-          CONFIG.trade?.discordExitTimeoutMs,
-        DEFAULT_DISCORD_EXIT_TIMEOUT_MS
-      ))
+      5000
+    ),
+
+    discordExitTimeoutMs: clampInt(
+      CONFIG.long?.trade?.discordExitTimeoutMs ??
+        CONFIG.trade?.discordExitTimeoutMs,
+      DEFAULT_DISCORD_EXIT_TIMEOUT_MS,
+      250,
+      5000
     ),
 
     persistNoPriceFailures:
       CONFIG.long?.trade?.persistNoPriceFailures === true ||
       CONFIG.trade?.persistNoPriceFailures === true,
 
-    openPositionMaxBytes: Math.max(
+    openPositionMaxBytes: clampInt(
+      CONFIG.long?.trade?.openPositionMaxBytes ??
+        CONFIG.trade?.openPositionMaxBytes,
+      DEFAULT_OPEN_POSITION_MAX_BYTES,
       50_000,
-      Math.floor(safeNumber(
-        CONFIG.long?.trade?.openPositionMaxBytes ??
-          CONFIG.trade?.openPositionMaxBytes,
-        DEFAULT_OPEN_POSITION_MAX_BYTES
-      ))
+      950_000
     )
   };
 }
@@ -340,6 +411,27 @@ function clonePlainObject(value) {
   return JSON.parse(JSON.stringify(value ?? null));
 }
 
+function withTimeout(promise, ms, fallback) {
+  let timer = null;
+
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+
+  return Promise.race([
+    Promise.resolve(promise)
+      .then((value) => {
+        if (timer) clearTimeout(timer);
+        return value;
+      })
+      .catch((error) => {
+        if (timer) clearTimeout(timer);
+        throw error;
+      }),
+    timeout
+  ]);
+}
+
 function jsonSizeBytes(value) {
   try {
     return Buffer.byteLength(JSON.stringify(value ?? null), 'utf8');
@@ -348,7 +440,7 @@ function jsonSizeBytes(value) {
   }
 }
 
-function compactString(value, maxLength = 1200) {
+function compactString(value, maxLength = 900) {
   const text = String(value ?? '');
 
   if (text.length <= maxLength) return text;
@@ -369,14 +461,14 @@ function compactValue(value, depth = 0, seen = new WeakSet()) {
 
   if (type === 'number') return Number.isFinite(value) ? value : 0;
   if (type === 'boolean') return value;
-  if (type === 'string') return compactString(value, depth <= 1 ? 1800 : 700);
+  if (type === 'string') return compactString(value, depth <= 1 ? 1200 : 420);
   if (type !== 'object') return value;
 
   if (seen.has(value)) return '[Circular]';
   seen.add(value);
 
   if (Array.isArray(value)) {
-    const limit = depth <= 1 ? 30 : 12;
+    const limit = depth <= 1 ? 20 : 8;
 
     return value
       .slice(0, limit)
@@ -391,7 +483,7 @@ function compactValue(value, depth = 0, seen = new WeakSet()) {
       continue;
     }
 
-    if (depth >= 4 && item && typeof item === 'object') {
+    if (depth >= 3 && item && typeof item === 'object') {
       out[`${key}OmittedForRedisDepth`] = true;
       continue;
     }
@@ -669,14 +761,8 @@ function normalizeTradeSide(value) {
   if (longHit && !shortHit) return TARGET_TRADE_SIDE;
 
   if (longHit && shortHit) {
-    if (normalized.includes('TRADE_SIDE_LONG') || normalized.includes('TRADESIDE_LONG')) {
-      return TARGET_TRADE_SIDE;
-    }
-
-    if (normalized.includes('TRADE_SIDE_SHORT') || normalized.includes('TRADESIDE_SHORT')) {
-      return OPPOSITE_TRADE_SIDE;
-    }
-
+    if (normalized.includes('TRADE_SIDE_LONG') || normalized.includes('TRADESIDE_LONG')) return TARGET_TRADE_SIDE;
+    if (normalized.includes('TRADE_SIDE_SHORT') || normalized.includes('TRADESIDE_SHORT')) return OPPOSITE_TRADE_SIDE;
     if (normalized.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
     if (normalized.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
   }
@@ -690,7 +776,6 @@ function normalizedTextParts(row = {}) {
     row.microDefinition,
     row.macroDefinition,
     row.parentDefinition,
-
     ...(Array.isArray(row.definitionParts) ? row.definitionParts : []),
     ...(Array.isArray(row.microDefinitionParts) ? row.microDefinitionParts : []),
     ...(Array.isArray(row.macroDefinitionParts) ? row.macroDefinitionParts : []),
@@ -706,28 +791,23 @@ function idText(row = {}) {
     row.familyId,
     row.family,
     row.baseFamilyId,
-
     row.childTrueMicroFamilyId,
     row.trueMicroFamilyId,
     row.microFamilyId,
     row.analyzeMicroFamilyId,
     row.learningMicroFamilyId,
     row.fixedTaxonomyMicroFamilyId,
-
     row.coarseMicroFamilyId,
     row.baseMicroFamilyId,
     row.legacyMicroFamilyId,
-
     row.scannerMicroFamilyId,
     row.scannerFamilyId,
     row.executionMicroFamilyId,
-
     row.parentTrueMicroFamilyId,
     row.macroFamilyId,
     row.parentMacroFamilyId,
     row.parentMicroFamilyId,
     row.parentFamilyId,
-
     row.id,
     row.key
   ]
@@ -878,13 +958,8 @@ function inferPositionTradeSide(row = {}) {
     return fromDefinitions;
   }
 
-  if (row.longOnly === true && row.shortDisabled === true) {
-    return TARGET_TRADE_SIDE;
-  }
-
-  if (row.shortOnly === true || row.longDisabled === true) {
-    return OPPOSITE_TRADE_SIDE;
-  }
+  if (row.longOnly === true && row.shortDisabled === true) return TARGET_TRADE_SIDE;
+  if (row.shortOnly === true || row.longDisabled === true) return OPPOSITE_TRADE_SIDE;
 
   return 'UNKNOWN';
 }
@@ -1060,9 +1135,9 @@ function normalizeMicroIdentity(row = {}) {
 
     scannerMicroFamilyId: scannerId,
     scannerFamilyId: row.scannerFamilyId || null,
-    scannerDefinition: row.scannerDefinition || null,
+    scannerDefinition: row.scannerDefinition ? compactString(row.scannerDefinition, 420) : null,
     scannerDefinitionParts: Array.isArray(row.scannerDefinitionParts)
-      ? row.scannerDefinitionParts.slice(0, 30)
+      ? row.scannerDefinitionParts.slice(0, 10).map((part) => compactString(part, 180))
       : [],
 
     executionMicroFamilyId: executionId,
@@ -1253,13 +1328,8 @@ function applyLiveStopManagement(position) {
   position.slMovedAt = now();
   position.liveManaged = true;
 
-  if (source === 'BE') {
-    position.beLiveApplied = true;
-  }
-
-  if (source === 'TRAIL') {
-    position.trailLiveApplied = true;
-  }
+  if (source === 'BE') position.beLiveApplied = true;
+  if (source === 'TRAIL') position.trailLiveApplied = true;
 
   return position;
 }
@@ -1469,6 +1539,54 @@ function buildVirtualFlags(row = {}) {
   };
 }
 
+function symbolFromOpenKey(key = '') {
+  const raw = String(key || '').trim();
+  const part = raw.split(':').pop();
+
+  return storageSymbol(part);
+}
+
+function buildKeyOnlyOpenPosition(key) {
+  const symbol = symbolFromOpenKey(key);
+
+  if (!symbol) return null;
+
+  return forceLongPositionFields({
+    symbol,
+    baseSymbol: symbol,
+    contractSymbol: null,
+    status: 'OPEN',
+    source: POSITION_SOURCE,
+    outcomeSource: OUTCOME_SOURCE,
+    positionSource: POSITION_SOURCE,
+
+    openPositionKey: key,
+    openPositionKeyOnly: true,
+    monitorEligible: false,
+    learningIdentityMissingForKeyOnly: true,
+    keyOnlyOpenPositionUsedForEntryBudget: true,
+
+    entry: 0,
+    sl: 0,
+    tp: 0,
+    initialSl: 0,
+    openedAt: 0,
+    createdAt: 0,
+    updatedAt: 0
+  });
+}
+
+function isValidHydratedOpenPosition(row = {}) {
+  return Boolean(
+    row &&
+    typeof row === 'object' &&
+    String(row.status || 'OPEN').toUpperCase() === 'OPEN' &&
+    isLongPosition(row) &&
+    !isScannerFamilyRow(row) &&
+    isExactLongChildTrueMicroId(rowMicroId(row))
+  );
+}
+
 function minimalOpenPositionRow(row = {}) {
   return forceLongPositionFields({
     tradeId: row.tradeId || null,
@@ -1493,6 +1611,7 @@ function minimalOpenPositionRow(row = {}) {
     openedAt: safeNumber(row.openedAt || row.createdAt, 0),
     createdAt: safeNumber(row.createdAt || row.openedAt, 0),
     updatedAt: safeNumber(row.updatedAt, now()),
+    lastSavedAt: now(),
 
     closedAt: row.closedAt || null,
     completedAt: row.completedAt || null,
@@ -1558,7 +1677,15 @@ function minimalOpenPositionRow(row = {}) {
 
     scannerMicroFamilyId: row.scannerMicroFamilyId || null,
     scannerFamilyId: row.scannerFamilyId || null,
+    scannerDefinition: row.scannerDefinition ? compactString(row.scannerDefinition, 320) : null,
+    scannerDefinitionParts: Array.isArray(row.scannerDefinitionParts)
+      ? row.scannerDefinitionParts.slice(0, 8).map((part) => compactString(part, 160))
+      : [],
+
     executionMicroFamilyId: row.executionMicroFamilyId || null,
+    executionFingerprintParts: Array.isArray(row.executionFingerprintParts)
+      ? row.executionFingerprintParts.slice(0, 8).map((part) => compactString(part, 160))
+      : [],
 
     activeRotationId: row.activeRotationId || null,
     selectedRotationId: row.selectedRotationId || row.activeRotationId || null,
@@ -1601,24 +1728,13 @@ function minimalOpenPositionRow(row = {}) {
 
     compactedForRedis: true,
     compactedForPositionEngine: true,
-    compactVersion: 'LONG_OPEN_POSITION_COMPACT_V2',
+    compactVersion: 'LONG_OPEN_POSITION_COMPACT_V3',
     compactedAt: now()
   });
 }
 
 function compactOpenPositionRow(row = {}) {
   const cfg = tradeConfig();
-
-  const compacted = compactValue(forceLongPositionFields(row));
-
-  compacted.compactedForRedis = true;
-  compacted.compactedForPositionEngine = true;
-  compacted.compactVersion = 'LONG_OPEN_POSITION_COMPACT_V2';
-  compacted.compactedAt = now();
-
-  if (jsonSizeBytes(compacted) <= cfg.openPositionMaxBytes) {
-    return compacted;
-  }
 
   const minimal = minimalOpenPositionRow(row);
 
@@ -1632,30 +1748,97 @@ function compactOpenPositionRow(row = {}) {
     entryMarketWeather: null,
     scannerDefinition: null,
     scannerDefinitionParts: [],
+    executionFingerprintParts: [],
     compactEmergencyMinimal: true,
     compactedAt: now()
   };
 }
 
-function withTimeout(promise, ms, fallback) {
-  let timer = null;
+async function readOpenPositionRows(keys = [], cfg = tradeConfig()) {
+  if (!Array.isArray(keys) || !keys.length) return [];
 
-  const timeout = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(fallback), ms);
+  const rows = await mapConcurrent(
+    keys,
+    Math.max(1, Math.min(cfg.openPositionReadConcurrency, 6)),
+    async (key) => {
+      const row = await withTimeout(
+        getJson(getDurableRedis(), key, null).catch(() => null),
+        cfg.openPositionReadTimeoutMs,
+        null
+      ).catch(() => null);
+
+      if (!row) return null;
+
+      return {
+        ...row,
+        openPositionKey: key,
+        openPositionKeyOnly: false,
+        monitorEligible: true
+      };
+    }
+  );
+
+  return rows
+    .filter(isValidHydratedOpenPosition)
+    .map(forceLongPositionFields);
+}
+
+async function readOpenPositionDirect(symbol, timeoutMs = DEFAULT_OPEN_POSITION_DIRECT_READ_TIMEOUT_MS) {
+  const keySymbol = storageSymbol(symbol);
+
+  if (!keySymbol) return null;
+
+  const key = LONG_KEYS.trade.open(keySymbol);
+
+  if (!key) return null;
+
+  const timeoutMarker = {
+    __timeout: true,
+    symbol: keySymbol,
+    key
+  };
+
+  const row = await withTimeout(
+    getJson(getDurableRedis(), key, null).catch(() => null),
+    timeoutMs,
+    timeoutMarker
+  ).catch(() => null);
+
+  if (row?.__timeout) return row;
+  if (!row) return null;
+
+  return {
+    ...row,
+    openPositionKey: key,
+    openPositionKeyOnly: false
+  };
+}
+
+function duplicateSkippedRow({
+  existing = {},
+  attempted = {},
+  reason = 'OPEN_POSITION_SYMBOL_ALREADY_OPEN_LONG_ONLY',
+  timeout = false
+} = {}) {
+  const keySymbol = storageSymbol(attempted) || storageSymbol(existing);
+
+  return forceLongPositionFields({
+    ...(existing || {}),
+    symbol: existing.symbol || keySymbol,
+    baseSymbol: existing.baseSymbol || keySymbol,
+    status: 'OPEN',
+
+    alreadyOpen: true,
+    duplicateOpenPositionSkipped: true,
+    skippedByExistingSymbol: true,
+    saveOpenPositionSkipped: true,
+    attemptedTradeId: attempted.tradeId || null,
+    existingTradeId: existing.tradeId || null,
+    attemptedAt: now(),
+    reason,
+    saveOpenPositionReadTimeout: Boolean(timeout),
+    openPositionKeyOnly: Boolean(existing.openPositionKeyOnly || timeout)
   });
-
-  return Promise.race([
-    Promise.resolve(promise)
-      .then((value) => {
-        if (timer) clearTimeout(timer);
-        return value;
-      })
-      .catch((error) => {
-        if (timer) clearTimeout(timer);
-        throw error;
-      }),
-    timeout
-  ]);
 }
 
 async function saveOpenPositionWithTimeout(position, timeoutMs) {
@@ -1676,6 +1859,417 @@ async function saveOpenPositionWithTimeout(position, timeoutMs) {
       error: 'SAVE_OPEN_POSITION_TIMEOUT'
     }
   );
+}
+
+export async function getOpenPositions(options = {}) {
+  const cfg = tradeConfig();
+  const redis = getDurableRedis();
+
+  const requireFullRows =
+    options.requireFullRows === true ||
+    options.monitorMode === true ||
+    options.forMonitor === true;
+
+  const includeKeyOnly =
+    options.includeKeyOnly !== false &&
+    requireFullRows !== true;
+
+  const limit = clampInt(
+    options.limit ?? options.openPositionScanLimit,
+    cfg.openPositionScanLimit,
+    1,
+    1000
+  );
+
+  const keysTimeoutMs = clampInt(
+    options.keysTimeoutMs,
+    cfg.openPositionKeysTimeoutMs,
+    100,
+    3000
+  );
+
+  const keys = await withTimeout(
+    getKeys(redis, LONG_KEYS.trade.openPattern, limit).catch(() => []),
+    keysTimeoutMs,
+    []
+  ).catch(() => []);
+
+  const uniqueKeys = [...new Set(keys || [])].slice(0, limit);
+
+  if (!uniqueKeys.length) return [];
+
+  const hydrateLimit = requireFullRows
+    ? clampInt(options.hydrateLimit ?? limit, limit, 1, limit)
+    : clampInt(
+        options.hydrateLimit,
+        cfg.openPositionHydrateLimit,
+        0,
+        uniqueKeys.length
+      );
+
+  const hydrated = hydrateLimit > 0
+    ? await readOpenPositionRows(uniqueKeys.slice(0, hydrateLimit), cfg)
+    : [];
+
+  if (requireFullRows) {
+    return hydrated
+      .sort((a, b) => (
+        safeNumber(a.openedAt || a.createdAt, 0) -
+        safeNumber(b.openedAt || b.createdAt, 0)
+      ));
+  }
+
+  const hydratedSymbols = new Set(
+    hydrated
+      .map((row) => storageSymbol(row))
+      .filter(Boolean)
+  );
+
+  const keyOnlyRows = includeKeyOnly
+    ? uniqueKeys
+        .map(buildKeyOnlyOpenPosition)
+        .filter(Boolean)
+        .filter((row) => !hydratedSymbols.has(storageSymbol(row)))
+    : [];
+
+  return [
+    ...hydrated,
+    ...keyOnlyRows
+  ]
+    .filter(Boolean)
+    .filter((row) => String(row.status || 'OPEN').toUpperCase() === 'OPEN')
+    .filter(isLongPosition)
+    .sort((a, b) => (
+      safeNumber(a.openedAt || a.createdAt, 0) -
+      safeNumber(b.openedAt || b.createdAt, 0)
+    ));
+}
+
+export async function getOpenPosition(symbol, options = {}) {
+  const cfg = tradeConfig();
+  const row = await readOpenPositionDirect(
+    symbol,
+    clampInt(
+      options.timeoutMs,
+      cfg.openPositionDirectReadTimeoutMs,
+      75,
+      2000
+    )
+  );
+
+  if (row?.__timeout) return null;
+  if (!row) return null;
+  if (!isValidHydratedOpenPosition(row)) return null;
+
+  return forceLongPositionFields(row);
+}
+
+export async function saveOpenPosition(position) {
+  assertLongInput(position, 'SAVE_OPEN_POSITION');
+
+  const cfg = tradeConfig();
+  const keySymbol = storageSymbol(position);
+
+  if (!keySymbol) {
+    throw new Error('OPEN_POSITION_SYMBOL_MISSING');
+  }
+
+  const existing = await readOpenPositionDirect(
+    keySymbol,
+    cfg.saveOpenPositionReadTimeoutMs
+  );
+
+  if (existing?.__timeout) {
+    return duplicateSkippedRow({
+      existing: buildKeyOnlyOpenPosition(existing.key),
+      attempted: position,
+      reason: 'OPEN_POSITION_SYMBOL_ALREADY_OPEN_LONG_ONLY_READ_TIMEOUT_SAFE_SKIP',
+      timeout: true
+    });
+  }
+
+  if (
+    existing &&
+    existing.tradeId &&
+    position.tradeId &&
+    existing.tradeId !== position.tradeId
+  ) {
+    return duplicateSkippedRow({
+      existing,
+      attempted: position,
+      reason: 'OPEN_POSITION_SYMBOL_ALREADY_OPEN_LONG_ONLY'
+    });
+  }
+
+  const normalized = forceLongPositionFields(position);
+  const identity = normalizeMicroIdentity(normalized);
+
+  const row = forceLongPositionFields({
+    ...normalized,
+    ...identity,
+    ...buildVirtualFlags(normalized),
+
+    symbol: normalized.symbol || keySymbol,
+    baseSymbol: normalized.baseSymbol || keySymbol,
+    contractSymbol: normalized.contractSymbol || null,
+
+    status: normalized.status || 'OPEN',
+
+    strategyVersion: normalized.strategyVersion || CONFIG.strategyVersion,
+
+    updatedAt: now(),
+    lastSavedAt: now()
+  });
+
+  assertPositionPersistable(row);
+
+  const compacted = compactOpenPositionRow(row);
+
+  await setJson(
+    getDurableRedis(),
+    LONG_KEYS.trade.open(keySymbol),
+    compacted
+  );
+
+  return compacted;
+}
+
+export async function deleteOpenPosition(symbol) {
+  const keySymbol = storageSymbol(symbol);
+
+  if (!keySymbol) return 0;
+
+  const key = LONG_KEYS.trade.open(keySymbol);
+
+  if (!key) return 0;
+
+  return getDurableRedis().del(key);
+}
+
+export function updatePathMetrics(position, price) {
+  const cfg = manageConfig();
+
+  if (!isLongPosition(position)) {
+    position.updatedAt = now();
+    position.longOnly = true;
+    position.shortDisabled = true;
+    position.shortOnly = false;
+    position.longDisabled = false;
+    position.liveManagementSkippedReason = 'NON_LONG_POSITION_IGNORED';
+
+    return position;
+  }
+
+  const current = safeNumber(price, 0);
+  const entry = safeNumber(position.entry, 0);
+  const initialSl = safeNumber(position.initialSl || position.sl, 0);
+  const tp = safeNumber(position.tp, 0);
+
+  if (entry <= 0 || initialSl <= 0 || tp <= 0 || current <= 0 || initialSl >= entry || tp <= entry) {
+    return forceLongPositionFields({
+      ...position,
+      updatedAt: now()
+    });
+  }
+
+  const riskDist = entry - initialSl;
+  const rewardDist = tp - entry;
+
+  const directionalMove = current - entry;
+  const currentR = directionalMove / riskDist;
+  const tpProgress = directionalMove / rewardDist;
+
+  position.lastPrice = current;
+  position.currentPrice = current;
+  position.currentR = round4(currentR);
+
+  position.mfeR = round4(Math.max(
+    safeNumber(position.mfeR, 0),
+    position.currentR
+  ));
+
+  position.maeR = round4(Math.min(
+    safeNumber(position.maeR, 0),
+    position.currentR
+  ));
+
+  position.maxTpProgress = round4(Math.max(
+    safeNumber(position.maxTpProgress, 0),
+    tpProgress
+  ));
+
+  position.ticksObserved = safeNumber(position.ticksObserved, 0) + 1;
+
+  if (currentR > 0) position.favorableTicks = safeNumber(position.favorableTicks, 0) + 1;
+  if (currentR < 0) position.adverseTicks = safeNumber(position.adverseTicks, 0) + 1;
+
+  if (position.mfeR >= 0.5) position.reachedHalfR = true;
+  if (position.mfeR >= 1.0) position.reachedOneR = true;
+  if (tpProgress >= 0.8) position.nearTpSeen = true;
+
+  if (position.mfeR >= cfg.beArmR) {
+    position.beArmed = true;
+
+    if (currentR <= cfg.beLockR && !position.beWouldExit) {
+      position.beWouldExit = true;
+      position.beExitR = cfg.beLockR;
+      position.beWouldExitAt = now();
+    }
+  }
+
+  if (position.reachedHalfR && currentR < 0) position.gaveBackAfterHalfR = true;
+  if (position.reachedOneR && currentR < cfg.trailLockR) position.gaveBackAfterOneR = true;
+  if (position.nearTpSeen && currentR < 0) position.nearTpThenLoss = true;
+
+  applyLiveStopManagement(position);
+
+  Object.assign(position, forceLongPositionFields(position));
+
+  position.updatedAt = now();
+
+  return position;
+}
+
+export function buildOpenPositionFromEntry(entry) {
+  assertLongInput(entry, 'BUILD_OPEN_POSITION_FROM_ENTRY');
+
+  const normalizedEntry = forceLongPositionFields(entry);
+  const keySymbol = storageSymbol(normalizedEntry);
+  const openedAt = now();
+  const identity = normalizeMicroIdentity(normalizedEntry);
+
+  const position = forceLongPositionFields({
+    ...normalizedEntry,
+    ...identity,
+    ...buildVirtualFlags(normalizedEntry),
+
+    tradeId: normalizedEntry.tradeId || randomId('trade_long'),
+
+    symbol: normalizedEntry.symbol || keySymbol,
+    baseSymbol: normalizedEntry.baseSymbol || keySymbol,
+    contractSymbol: normalizedEntry.contractSymbol || null,
+
+    status: 'OPEN',
+
+    strategyVersion: normalizedEntry.strategyVersion || CONFIG.strategyVersion,
+
+    openedAt,
+    createdAt: openedAt,
+    updatedAt: openedAt,
+
+    initialSl: normalizedEntry.initialSl || normalizedEntry.sl,
+
+    currentR: 0,
+    mfeR: 0,
+    maeR: 0,
+    maxTpProgress: 0,
+
+    ticksObserved: 0,
+    favorableTicks: 0,
+    adverseTicks: 0,
+
+    priceFetchFailures: 0,
+    lastPriceFetchFailedAt: null,
+
+    reachedHalfR: false,
+    reachedOneR: false,
+    nearTpSeen: false,
+
+    directToSL: false,
+    directSL: false,
+
+    beArmed: false,
+    beWouldExit: false,
+    beExitR: 0,
+
+    gaveBackAfterHalfR: false,
+    gaveBackAfterOneR: false,
+    nearTpThenLoss: false,
+
+    liveManaged: false,
+    beLiveApplied: false,
+    trailLiveApplied: false,
+    slManagementSource: null,
+
+    entryMarketWeather: compactValue(normalizedEntry.entryMarketWeather || null),
+    entryCurrentRegime: normalizedEntry.entryCurrentRegime || normalizedEntry.currentRegime || null,
+    entryCurrentTrendSide: normalizedEntry.entryCurrentTrendSide || normalizedEntry.currentTrendSide || null,
+    entryCurrentFit: normalizedEntry.entryCurrentFit ?? normalizedEntry.currentFit ?? null,
+    entryCurrentFitConfidence: normalizedEntry.entryCurrentFitConfidence ?? normalizedEntry.currentMarketFitConfidence ?? null,
+    entryWeatherFitMatchedFamily: normalizedEntry.entryWeatherFitMatchedFamily ?? null,
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+
+    validLongRiskShape: validLongRiskGeometry(normalizedEntry),
+    longRiskFormula: 'sl < entry < tp',
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longExitRules: {
+      tp: 'price >= tp',
+      sl: 'price <= sl',
+      timeStop: 'TIME_STOP'
+    }
+  });
+
+  assertPositionPersistable(position);
+
+  return position;
+}
+
+async function markPriceFetchFailed(position, options = {}) {
+  const cfg = tradeConfig();
+
+  const updated = forceLongPositionFields({
+    ...position,
+    priceFetchFailures: safeNumber(position.priceFetchFailures, 0) + 1,
+    lastPriceFetchFailedAt: now(),
+    updatedAt: now()
+  });
+
+  const persist =
+    options.persist === true ||
+    cfg.persistNoPriceFailures === true;
+
+  if (!persist) return updated;
+
+  await saveOpenPositionWithTimeout(updated, cfg.saveOpenPositionTimeoutMs);
+
+  return updated;
+}
+
+function isDirectSLExit({
+  position,
+  exitReason
+} = {}) {
+  const reason = upper(exitReason);
+
+  const stoppedOut =
+    reason === 'SL' ||
+    reason === 'HIT_SL' ||
+    reason === 'STOP' ||
+    reason === 'STOP_LOSS' ||
+    reason === 'STOPLOSS' ||
+    reason === 'HARD_SL' ||
+    reason === 'DIRECT_SL';
+
+  if (!stoppedOut) return false;
+
+  if (
+    Boolean(position.nearTpSeen) ||
+    Boolean(position.reachedHalfR) ||
+    Boolean(position.reachedOneR)
+  ) {
+    return false;
+  }
+
+  const mfeR = safeNumber(position.mfeR, 0);
+  const maeR = safeNumber(position.maeR, 0);
+
+  return Boolean(position.directToSL || position.directSL) ||
+    mfeR < 0.25 ||
+    maeR <= -0.8;
 }
 
 function calcGrossMovePctFromPosition({
@@ -1909,360 +2503,6 @@ function applyNetCostModelToOutcome({
   });
 }
 
-export async function getOpenPositions(options = {}) {
-  const cfg = tradeConfig();
-  const redis = getDurableRedis();
-
-  const limit = Math.max(
-    1,
-    Math.floor(safeNumber(options.limit, cfg.openPositionFetchLimit))
-  );
-
-  const keys = await getKeys(redis, LONG_KEYS.trade.openPattern, limit);
-
-  if (!keys.length) return [];
-
-  const rows = await mapConcurrent(
-    keys,
-    Math.max(1, Math.min(cfg.dataConcurrency, 5)),
-    async (key) => getJson(redis, key, null).catch(() => null)
-  );
-
-  return rows
-    .filter(Boolean)
-    .filter((row) => String(row.status || 'OPEN').toUpperCase() === 'OPEN')
-    .filter(isLongPosition)
-    .filter((row) => !isScannerFamilyRow(row))
-    .filter((row) => isExactLongChildTrueMicroId(rowMicroId(row)))
-    .sort((a, b) => (
-      safeNumber(a.openedAt || a.createdAt, 0) -
-      safeNumber(b.openedAt || b.createdAt, 0)
-    ));
-}
-
-export async function getOpenPosition(symbol) {
-  const keySymbol = storageSymbol(symbol);
-
-  if (!keySymbol) return null;
-
-  const row = await getJson(
-    getDurableRedis(),
-    LONG_KEYS.trade.open(keySymbol),
-    null
-  );
-
-  if (!row) return null;
-  if (String(row.status || 'OPEN').toUpperCase() !== 'OPEN') return null;
-  if (!isLongPosition(row)) return null;
-  if (isScannerFamilyRow(row)) return null;
-  if (!isExactLongChildTrueMicroId(rowMicroId(row))) return null;
-
-  return row;
-}
-
-export async function saveOpenPosition(position) {
-  assertLongInput(position, 'SAVE_OPEN_POSITION');
-
-  const keySymbol = storageSymbol(position);
-
-  if (!keySymbol) {
-    throw new Error('OPEN_POSITION_SYMBOL_MISSING');
-  }
-
-  const existing = await getOpenPosition(keySymbol);
-
-  if (
-    existing &&
-    existing.tradeId &&
-    position.tradeId &&
-    existing.tradeId !== position.tradeId
-  ) {
-    throw new Error('OPEN_POSITION_SYMBOL_ALREADY_OPEN_LONG_ONLY');
-  }
-
-  const normalized = forceLongPositionFields(position);
-  const identity = normalizeMicroIdentity(normalized);
-
-  const row = forceLongPositionFields({
-    ...normalized,
-    ...identity,
-    ...buildVirtualFlags(normalized),
-
-    symbol: normalized.symbol || keySymbol,
-    baseSymbol: normalized.baseSymbol || keySymbol,
-    contractSymbol: normalized.contractSymbol || null,
-
-    status: normalized.status || 'OPEN',
-
-    strategyVersion: normalized.strategyVersion || CONFIG.strategyVersion,
-
-    updatedAt: now()
-  });
-
-  assertPositionPersistable(row);
-
-  const compacted = compactOpenPositionRow(row);
-
-  await setJson(
-    getDurableRedis(),
-    LONG_KEYS.trade.open(keySymbol),
-    compacted
-  );
-
-  return compacted;
-}
-
-export async function deleteOpenPosition(symbol) {
-  const keySymbol = storageSymbol(symbol);
-
-  if (!keySymbol) return 0;
-
-  const key = LONG_KEYS.trade.open(keySymbol);
-
-  if (!key) return 0;
-
-  return getDurableRedis().del(key);
-}
-
-export function updatePathMetrics(position, price) {
-  const cfg = manageConfig();
-
-  if (!isLongPosition(position)) {
-    position.updatedAt = now();
-    position.longOnly = true;
-    position.shortDisabled = true;
-    position.shortOnly = false;
-    position.longDisabled = false;
-    position.liveManagementSkippedReason = 'NON_LONG_POSITION_IGNORED';
-
-    return position;
-  }
-
-  const current = safeNumber(price, 0);
-  const entry = safeNumber(position.entry, 0);
-  const initialSl = safeNumber(position.initialSl || position.sl, 0);
-  const tp = safeNumber(position.tp, 0);
-
-  if (entry <= 0 || initialSl <= 0 || tp <= 0 || current <= 0 || initialSl >= entry || tp <= entry) {
-    return forceLongPositionFields({
-      ...position,
-      updatedAt: now()
-    });
-  }
-
-  const riskDist = entry - initialSl;
-  const rewardDist = tp - entry;
-
-  const directionalMove = current - entry;
-  const currentR = directionalMove / riskDist;
-  const tpProgress = directionalMove / rewardDist;
-
-  position.lastPrice = current;
-  position.currentPrice = current;
-  position.currentR = round4(currentR);
-
-  position.mfeR = round4(Math.max(
-    safeNumber(position.mfeR, 0),
-    position.currentR
-  ));
-
-  position.maeR = round4(Math.min(
-    safeNumber(position.maeR, 0),
-    position.currentR
-  ));
-
-  position.maxTpProgress = round4(Math.max(
-    safeNumber(position.maxTpProgress, 0),
-    tpProgress
-  ));
-
-  position.ticksObserved = safeNumber(position.ticksObserved, 0) + 1;
-
-  if (currentR > 0) {
-    position.favorableTicks = safeNumber(position.favorableTicks, 0) + 1;
-  }
-
-  if (currentR < 0) {
-    position.adverseTicks = safeNumber(position.adverseTicks, 0) + 1;
-  }
-
-  if (position.mfeR >= 0.5) position.reachedHalfR = true;
-  if (position.mfeR >= 1.0) position.reachedOneR = true;
-  if (tpProgress >= 0.8) position.nearTpSeen = true;
-
-  if (position.mfeR >= cfg.beArmR) {
-    position.beArmed = true;
-
-    if (currentR <= cfg.beLockR && !position.beWouldExit) {
-      position.beWouldExit = true;
-      position.beExitR = cfg.beLockR;
-      position.beWouldExitAt = now();
-    }
-  }
-
-  if (position.reachedHalfR && currentR < 0) {
-    position.gaveBackAfterHalfR = true;
-  }
-
-  if (position.reachedOneR && currentR < cfg.trailLockR) {
-    position.gaveBackAfterOneR = true;
-  }
-
-  if (position.nearTpSeen && currentR < 0) {
-    position.nearTpThenLoss = true;
-  }
-
-  applyLiveStopManagement(position);
-
-  Object.assign(position, forceLongPositionFields(position));
-
-  position.updatedAt = now();
-
-  return position;
-}
-
-export function buildOpenPositionFromEntry(entry) {
-  assertLongInput(entry, 'BUILD_OPEN_POSITION_FROM_ENTRY');
-
-  const normalizedEntry = forceLongPositionFields(entry);
-  const keySymbol = storageSymbol(normalizedEntry);
-  const openedAt = now();
-  const identity = normalizeMicroIdentity(normalizedEntry);
-
-  const position = forceLongPositionFields({
-    ...normalizedEntry,
-    ...identity,
-    ...buildVirtualFlags(normalizedEntry),
-
-    tradeId: normalizedEntry.tradeId || randomId('trade_long'),
-
-    symbol: normalizedEntry.symbol || keySymbol,
-    baseSymbol: normalizedEntry.baseSymbol || keySymbol,
-    contractSymbol: normalizedEntry.contractSymbol || null,
-
-    status: 'OPEN',
-
-    strategyVersion: normalizedEntry.strategyVersion || CONFIG.strategyVersion,
-
-    openedAt,
-    createdAt: openedAt,
-    updatedAt: openedAt,
-
-    initialSl: normalizedEntry.initialSl || normalizedEntry.sl,
-
-    currentR: 0,
-    mfeR: 0,
-    maeR: 0,
-    maxTpProgress: 0,
-
-    ticksObserved: 0,
-    favorableTicks: 0,
-    adverseTicks: 0,
-
-    priceFetchFailures: 0,
-    lastPriceFetchFailedAt: null,
-
-    reachedHalfR: false,
-    reachedOneR: false,
-    nearTpSeen: false,
-
-    directToSL: false,
-    directSL: false,
-
-    beArmed: false,
-    beWouldExit: false,
-    beExitR: 0,
-
-    gaveBackAfterHalfR: false,
-    gaveBackAfterOneR: false,
-    nearTpThenLoss: false,
-
-    liveManaged: false,
-    beLiveApplied: false,
-    trailLiveApplied: false,
-    slManagementSource: null,
-
-    entryMarketWeather: normalizedEntry.entryMarketWeather || null,
-    entryCurrentRegime: normalizedEntry.entryCurrentRegime || normalizedEntry.currentRegime || null,
-    entryCurrentTrendSide: normalizedEntry.entryCurrentTrendSide || normalizedEntry.currentTrendSide || null,
-    entryCurrentFit: normalizedEntry.entryCurrentFit ?? normalizedEntry.currentFit ?? null,
-    entryCurrentFitConfidence: normalizedEntry.entryCurrentFitConfidence ?? normalizedEntry.currentMarketFitConfidence ?? null,
-    entryWeatherFitMatchedFamily: normalizedEntry.entryWeatherFitMatchedFamily ?? null,
-
-    currentFitSoftOnly: true,
-    currentFitBlocksLearning: false,
-    learningRemainsBroad: true,
-
-    validLongRiskShape: validLongRiskGeometry(normalizedEntry),
-    longRiskFormula: 'sl < entry < tp',
-    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
-    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
-    longExitRules: {
-      tp: 'price >= tp',
-      sl: 'price <= sl',
-      timeStop: 'TIME_STOP'
-    }
-  });
-
-  assertPositionPersistable(position);
-
-  return position;
-}
-
-async function markPriceFetchFailed(position, options = {}) {
-  const cfg = tradeConfig();
-
-  const updated = forceLongPositionFields({
-    ...position,
-    priceFetchFailures: safeNumber(position.priceFetchFailures, 0) + 1,
-    lastPriceFetchFailedAt: now(),
-    updatedAt: now()
-  });
-
-  const persist =
-    options.persist === true ||
-    cfg.persistNoPriceFailures === true;
-
-  if (!persist) return updated;
-
-  await saveOpenPositionWithTimeout(updated, cfg.saveOpenPositionTimeoutMs);
-
-  return updated;
-}
-
-function isDirectSLExit({
-  position,
-  exitReason
-} = {}) {
-  const reason = upper(exitReason);
-
-  const stoppedOut =
-    reason === 'SL' ||
-    reason === 'HIT_SL' ||
-    reason === 'STOP' ||
-    reason === 'STOP_LOSS' ||
-    reason === 'STOPLOSS' ||
-    reason === 'HARD_SL' ||
-    reason === 'DIRECT_SL';
-
-  if (!stoppedOut) return false;
-
-  if (
-    Boolean(position.nearTpSeen) ||
-    Boolean(position.reachedHalfR) ||
-    Boolean(position.reachedOneR)
-  ) {
-    return false;
-  }
-
-  const mfeR = safeNumber(position.mfeR, 0);
-  const maeR = safeNumber(position.maeR, 0);
-
-  return Boolean(position.directToSL || position.directSL) ||
-    mfeR < 0.25 ||
-    maeR <= -0.8;
-}
-
 function enrichOutcomeIdentity(outcome = {}, position = {}) {
   const identity = normalizeMicroIdentity(position);
 
@@ -2338,7 +2578,7 @@ function enrichOutcomeIdentity(outcome = {}, position = {}) {
     scannerFamilyId: position.scannerFamilyId || identity.scannerFamilyId || null,
     scannerDefinition: position.scannerDefinition || identity.scannerDefinition || null,
     scannerDefinitionParts: Array.isArray(position.scannerDefinitionParts)
-      ? position.scannerDefinitionParts.slice(0, 30)
+      ? position.scannerDefinitionParts.slice(0, 10).map((part) => compactString(part, 180))
       : identity.scannerDefinitionParts || [],
 
     executionMicroFamilyId: position.executionMicroFamilyId || identity.executionMicroFamilyId || null,
@@ -2507,199 +2747,218 @@ async function monitorOnePosition({
 }) {
   const cfg = tradeConfig();
 
-  if (!isLongPosition(position)) {
-    return {
-      type: 'IGNORED_NON_LONG',
-      position,
-      outcome: null
-    };
-  }
-
-  if (isScannerFamilyRow(position)) {
-    return {
-      type: 'IGNORED_SCANNER_FINGERPRINT_POSITION',
-      position,
-      outcome: null
-    };
-  }
-
-  if (!isExactLongChildTrueMicroId(rowMicroId(position))) {
-    return {
-      type: 'IGNORED_NON_EXACT_75_CHILD_POSITION',
-      position,
-      outcome: null
-    };
-  }
-
-  const effectivePriceFetcher =
-    typeof priceFetcher === 'function'
-      ? priceFetcher
-      : async () => 0;
-
-  const fetchSymbol = position.contractSymbol || position.symbol;
-
-  const fetchedPrice = await withTimeout(
-    effectivePriceFetcher(fetchSymbol).catch(() => 0),
-    Math.max(
-      50,
-      Math.floor(safeNumber(
-        options.priceFetchTimeoutMs,
-        cfg.monitorPriceFetchTimeoutMs
-      ))
-    ),
-    0
-  ).catch(() => 0);
-
-  let workingPosition = position;
-  const livePrice = safeNumber(fetchedPrice, 0);
-  const fallbackPrice = safeNumber(
-    livePrice ||
-      position.currentPrice ||
-      position.lastPrice ||
-      position.entry,
-    0
-  );
-
-  if (livePrice <= 0) {
-    workingPosition = await markPriceFetchFailed(position, {
-      persist: options.persistNoPriceFailures === true
-    });
-
-    const fallbackExit = detectExit({
-      position: workingPosition,
-      price: fallbackPrice,
-      timestamp
-    });
-
-    if (!fallbackExit.shouldExit) {
+  try {
+    if (!isLongPosition(position)) {
       return {
-        type: 'NO_PRICE',
-        position: workingPosition,
+        type: 'IGNORED_NON_LONG',
+        position,
         outcome: null
       };
     }
-  } else {
-    workingPosition.priceFetchFailures = 0;
-    workingPosition.lastPriceFetchFailedAt = null;
 
-    updatePathMetrics(workingPosition, livePrice);
-  }
+    if (position.openPositionKeyOnly) {
+      return {
+        type: 'IGNORED_KEY_ONLY_POSITION',
+        position,
+        outcome: null
+      };
+    }
 
-  const priceForExit = livePrice > 0 ? livePrice : fallbackPrice;
+    if (isScannerFamilyRow(position)) {
+      return {
+        type: 'IGNORED_SCANNER_FINGERPRINT_POSITION',
+        position,
+        outcome: null
+      };
+    }
 
-  const exit = detectExit({
-    position: workingPosition,
-    price: priceForExit,
-    timestamp
-  });
+    if (!isExactLongChildTrueMicroId(rowMicroId(position))) {
+      return {
+        type: 'IGNORED_NON_EXACT_75_CHILD_POSITION',
+        position,
+        outcome: null
+      };
+    }
 
-  if (!exit.shouldExit) {
-    const saveResult = await saveOpenPositionWithTimeout(
-      workingPosition,
-      Math.max(
-        150,
-        Math.floor(safeNumber(
-          options.saveOpenPositionTimeoutMs,
-          cfg.saveOpenPositionTimeoutMs
-        ))
-      )
+    const effectivePriceFetcher =
+      typeof priceFetcher === 'function'
+        ? priceFetcher
+        : async () => 0;
+
+    const fetchSymbol = position.contractSymbol || position.symbol;
+
+    const fetchedPrice = await withTimeout(
+      effectivePriceFetcher(fetchSymbol).catch(() => 0),
+      clampInt(
+        options.priceFetchTimeoutMs,
+        cfg.monitorPriceFetchTimeoutMs,
+        50,
+        3000
+      ),
+      0
+    ).catch(() => 0);
+
+    let workingPosition = position;
+    const livePrice = safeNumber(fetchedPrice, 0);
+    const fallbackPrice = safeNumber(
+      livePrice ||
+        position.currentPrice ||
+        position.lastPrice ||
+        position.entry,
+      0
     );
 
-    return {
-      type: saveResult.ok ? 'UPDATED' : 'UPDATED_SAVE_FAILED',
-      position: saveResult.row || workingPosition,
-      outcome: null,
-      saveResult
-    };
-  }
+    if (livePrice <= 0) {
+      workingPosition = await markPriceFetchFailed(position, {
+        persist: options.persistNoPriceFailures === true
+      });
 
-  const closedAt = timestamp;
-  const exitPrice = roundPrice(priceForExit);
-  const directSL = isDirectSLExit({
-    position: workingPosition,
-    exitReason: exit.reason
-  });
+      const fallbackExit = detectExit({
+        position: workingPosition,
+        price: fallbackPrice,
+        timestamp
+      });
 
-  const closedPosition = forceLongPositionFields({
-    ...workingPosition,
-    status: 'CLOSED',
-    closedAt,
-    completedAt: closedAt,
-    exitPrice,
-    exitReason: exit.reason,
-    exitTrigger: exit.trigger,
-    outcomeSource: OUTCOME_SOURCE,
-    source: POSITION_SOURCE,
-    directToSL: directSL,
-    directSL
-  });
+      if (!fallbackExit.shouldExit) {
+        return {
+          type: 'NO_PRICE',
+          position: workingPosition,
+          outcome: null
+        };
+      }
+    } else {
+      workingPosition.priceFetchFailures = 0;
+      workingPosition.lastPriceFetchFailedAt = null;
 
-  const baseOutcome = buildOutcomeFromPosition({
-    position: closedPosition,
-    exitPrice,
-    exitReason: exit.reason,
-    source: OUTCOME_SOURCE
-  });
+      updatePathMetrics(workingPosition, livePrice);
+    }
 
-  const netOutcome = applyNetCostModelToOutcome({
-    outcome: {
-      ...baseOutcome,
+    const priceForExit = livePrice > 0 ? livePrice : fallbackPrice;
+
+    const exit = detectExit({
+      position: workingPosition,
+      price: priceForExit,
+      timestamp
+    });
+
+    if (!exit.shouldExit) {
+      const saveResult = await saveOpenPositionWithTimeout(
+        workingPosition,
+        clampInt(
+          options.saveOpenPositionTimeoutMs,
+          cfg.saveOpenPositionTimeoutMs,
+          150,
+          3000
+        )
+      );
+
+      return {
+        type: saveResult.ok ? 'UPDATED' : 'UPDATED_SAVE_FAILED',
+        position: saveResult.row || workingPosition,
+        outcome: null,
+        saveResult
+      };
+    }
+
+    const closedAt = timestamp;
+    const exitPrice = roundPrice(priceForExit);
+    const directSL = isDirectSLExit({
+      position: workingPosition,
+      exitReason: exit.reason
+    });
+
+    const closedPosition = forceLongPositionFields({
+      ...workingPosition,
       status: 'CLOSED',
       closedAt,
       completedAt: closedAt,
       exitPrice,
       exitReason: exit.reason,
       exitTrigger: exit.trigger,
-      source: OUTCOME_SOURCE,
       outcomeSource: OUTCOME_SOURCE,
+      source: POSITION_SOURCE,
       directToSL: directSL,
       directSL
-    },
-    position: closedPosition,
-    exitPrice
-  });
+    });
 
-  const outcome = enrichOutcomeIdentity(netOutcome, closedPosition);
+    const baseOutcome = buildOutcomeFromPosition({
+      position: closedPosition,
+      exitPrice,
+      exitReason: exit.reason,
+      source: OUTCOME_SOURCE
+    });
 
-  const analyzeOutcome = clonePlainObject(outcome);
-  const discordOutcome = clonePlainObject(outcome);
+    const netOutcome = applyNetCostModelToOutcome({
+      outcome: {
+        ...baseOutcome,
+        status: 'CLOSED',
+        closedAt,
+        completedAt: closedAt,
+        exitPrice,
+        exitReason: exit.reason,
+        exitTrigger: exit.trigger,
+        source: OUTCOME_SOURCE,
+        outcomeSource: OUTCOME_SOURCE,
+        directToSL: directSL,
+        directSL
+      },
+      position: closedPosition,
+      exitPrice
+    });
 
-  const recordResult = await safeRecordOutcome(
-    analyzeOutcome,
-    Math.max(
-      250,
-      Math.floor(safeNumber(
+    const outcome = enrichOutcomeIdentity(netOutcome, closedPosition);
+
+    const analyzeOutcome = clonePlainObject(outcome);
+    const discordOutcome = clonePlainObject(outcome);
+
+    const recordResult = await safeRecordOutcome(
+      analyzeOutcome,
+      clampInt(
         options.recordOutcomeTimeoutMs,
-        cfg.recordOutcomeTimeoutMs
-      ))
-    )
-  );
+        cfg.recordOutcomeTimeoutMs,
+        250,
+        5000
+      )
+    );
 
-  await deleteOpenPosition(closedPosition.symbol || closedPosition.contractSymbol);
+    const deleteResult = await deleteOpenPosition(
+      closedPosition.symbol || closedPosition.contractSymbol
+    ).catch((error) => ({
+      ok: false,
+      error: error?.message || String(error)
+    }));
 
-  const discordResult = await safeSendExitAlert(
-    closedPosition,
-    discordOutcome,
-    Math.max(
-      250,
-      Math.floor(safeNumber(
+    const discordResult = await safeSendExitAlert(
+      closedPosition,
+      discordOutcome,
+      clampInt(
         options.discordExitTimeoutMs,
-        cfg.discordExitTimeoutMs
-      ))
-    )
-  );
+        cfg.discordExitTimeoutMs,
+        250,
+        5000
+      )
+    );
 
-  return {
-    type: 'EXIT',
-    position: closedPosition,
-    outcome: {
-      ...discordOutcome,
-      recordOutcomeResult: recordResult,
-      recordOutcomeOk: Boolean(recordResult.ok),
-      discordExitAlertResult: discordResult,
-      discordExitAlertSent: Boolean(discordResult.sent)
-    }
-  };
+    return {
+      type: 'EXIT',
+      position: closedPosition,
+      outcome: {
+        ...discordOutcome,
+        recordOutcomeResult: recordResult,
+        recordOutcomeOk: Boolean(recordResult.ok),
+        openPositionDeleteResult: deleteResult,
+        discordExitAlertResult: discordResult,
+        discordExitAlertSent: Boolean(discordResult.sent)
+      }
+    };
+  } catch (error) {
+    return {
+      type: 'POSITION_MONITOR_ERROR',
+      position,
+      outcome: null,
+      error: error?.message || String(error)
+    };
+  }
 }
 
 export async function monitorOpenPositions({
@@ -2716,39 +2975,51 @@ export async function monitorOpenPositions({
   const cfg = tradeConfig();
   const startedAt = now();
 
-  const effectiveRuntimeMs = Math.max(
+  const effectiveRuntimeMs = clampInt(
+    runtimeMs,
+    cfg.monitorRuntimeMs,
     500,
-    Math.floor(safeNumber(runtimeMs, cfg.monitorRuntimeMs))
+    15000
   );
 
-  const effectiveLimit = Math.max(
+  const effectiveLimit = clampInt(
+    limit,
+    Math.min(cfg.monitorPositionLimit, cfg.monitorBatchSize),
     1,
-    Math.floor(safeNumber(limit, cfg.monitorPositionLimit))
+    250
   );
 
-  const effectiveConcurrency = Math.max(
+  const effectiveConcurrency = clampInt(
+    cfg.monitorConcurrency,
+    DEFAULT_MONITOR_CONCURRENCY,
     1,
-    Math.min(
-      Math.floor(safeNumber(cfg.dataConcurrency, 2)),
-      4
-    )
+    4
   );
 
   const positions = await withTimeout(
     getOpenPositions({
-      limit: effectiveLimit
+      requireFullRows: true,
+      includeKeyOnly: false,
+      monitorMode: true,
+      limit: Math.min(cfg.openPositionScanLimit, effectiveLimit),
+      hydrateLimit: effectiveLimit,
+      keysTimeoutMs: cfg.monitorGetOpenTimeoutMs
     }),
     cfg.monitorGetOpenTimeoutMs,
     []
   ).catch(() => []);
 
-  if (!positions.length) return [];
+  const hydratedPositions = positions
+    .filter(Boolean)
+    .filter((row) => !row.openPositionKeyOnly)
+    .slice(0, effectiveLimit);
 
-  const bounded = positions.slice(0, effectiveLimit);
+  if (!hydratedPositions.length) return [];
+
   const timestamp = now();
 
   const results = await mapConcurrent(
-    bounded,
+    hydratedPositions,
     effectiveConcurrency,
     async (position) => {
       const elapsed = now() - startedAt;
@@ -2766,7 +3037,12 @@ export async function monitorOpenPositions({
         150,
         Math.min(
           remaining,
-          Math.floor(safeNumber(positionTimeoutMs, cfg.monitorPositionTimeoutMs))
+          clampInt(
+            positionTimeoutMs,
+            cfg.monitorPositionTimeoutMs,
+            150,
+            3000
+          )
         )
       );
 
@@ -2782,12 +3058,7 @@ export async function monitorOpenPositions({
             discordExitTimeoutMs,
             persistNoPriceFailures
           }
-        }).catch((error) => ({
-          type: 'POSITION_MONITOR_FAILED',
-          position,
-          outcome: null,
-          error: error?.message || String(error)
-        })),
+        }),
         perPositionTimeout,
         {
           type: 'POSITION_MONITOR_TIMEOUT',
