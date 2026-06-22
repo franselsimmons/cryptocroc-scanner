@@ -152,7 +152,7 @@ function fmtPrice(value) {
   if (n >= 1000) return n.toFixed(2);
   if (n >= 1) return n.toFixed(6);
 
-  return n.toFixed(10);
+  return n.toFixed(10).replace(/0+$/, '').replace(/\.$/, '');
 }
 
 function fmtPct(value) {
@@ -692,6 +692,38 @@ function discordColorForResult(value) {
   return 0x94a3b8;
 }
 
+function extractEntryPrice(payload = {}) {
+  return (
+    payload.entry ??
+    payload.entryPrice ??
+    payload.open ??
+    payload.openPrice ??
+    payload.price ??
+    null
+  );
+}
+
+function extractTpPrice(payload = {}) {
+  return (
+    payload.tp ??
+    payload.takeProfit ??
+    payload.target ??
+    payload.targetPrice ??
+    null
+  );
+}
+
+function extractSlPrice(payload = {}) {
+  return (
+    payload.sl ??
+    payload.initialSl ??
+    payload.stopLoss ??
+    payload.stop ??
+    payload.stopPrice ??
+    null
+  );
+}
+
 function extractExitPrice(outcome = {}) {
   return (
     outcome.exit ??
@@ -713,6 +745,30 @@ function extractResultR(outcome = {}) {
     outcome.r ??
     null
   );
+}
+
+function normalizeExitType(outcome = {}) {
+  const raw = upper(
+    outcome.exitType ||
+      outcome.exitReason ||
+      outcome.reason ||
+      outcome.closeReason ||
+      outcome.status ||
+      ''
+  );
+
+  if (raw.includes('TAKE_PROFIT') || raw.includes('TAKEPROFIT') || raw.includes('TP')) return 'TP';
+  if (raw.includes('STOP_LOSS') || raw.includes('STOPLOSS') || raw.includes('SL') || raw.includes('STOP')) return 'SL';
+  if (raw.includes('TIME')) return 'TIME';
+
+  const exitPrice = safeNumber(extractExitPrice(outcome), NaN);
+  const tp = safeNumber(extractTpPrice(outcome), NaN);
+  const sl = safeNumber(extractSlPrice(outcome), NaN);
+
+  if (Number.isFinite(exitPrice) && Number.isFinite(tp) && exitPrice >= tp) return 'TP';
+  if (Number.isFinite(exitPrice) && Number.isFinite(sl) && exitPrice <= sl) return 'SL';
+
+  return 'EXIT';
 }
 
 function trueMicroFamilyId(payload = {}) {
@@ -891,9 +947,9 @@ function isAnalysisOnlyPayload(payload = {}) {
 }
 
 function hasValidLongTradeShape(entry = {}) {
-  const entryPrice = safeNumber(entry.entry, 0);
-  const sl = safeNumber(entry.sl ?? entry.stopLoss, 0);
-  const tp = safeNumber(entry.tp ?? entry.takeProfit, 0);
+  const entryPrice = safeNumber(extractEntryPrice(entry), 0);
+  const sl = safeNumber(extractSlPrice(entry), 0);
+  const tp = safeNumber(extractTpPrice(entry), 0);
 
   if (entryPrice <= 0) return false;
   if (sl <= 0 || sl >= entryPrice) return false;
@@ -1070,10 +1126,10 @@ function compactPayload(payload = {}) {
     executionFingerprintRole: 'METADATA_ONLY',
     scannerFingerprintRole: payload.scannerFingerprintRole || 'METADATA_ONLY',
 
-    entry: payload.entry ?? null,
+    entry: extractEntryPrice(payload),
     exit: extractExitPrice(payload),
-    sl: payload.sl ?? null,
-    tp: payload.tp ?? null,
+    sl: extractSlPrice(payload),
+    tp: extractTpPrice(payload),
     rr: payload.rr ?? null,
 
     currentPrice: payload.currentPrice ?? payload.lastPrice ?? null,
@@ -1286,63 +1342,16 @@ export async function sendEntryAlert(entry = {}) {
   const symbol = normalizeBaseSymbol(entry.symbol || entry.contractSymbol);
   const side = normalizeSideLabel(entry);
 
-  const stats = weeklyStats(entry);
-  const sample = completedSample(entry);
-  const wr = bestWinrate(entry);
-  const avgR = statValue(entry, 'avgR');
-  const totalR = statValue(entry, 'totalR');
-  const profitFactor = statValue(entry, 'profitFactor');
-  const directSLPct = statValue(entry, 'directSLPct');
-  const sampleReliability = statValue(entry, 'sampleReliability');
-  const avgCostR = statValue(entry, 'avgCostR');
-  const parsed = parseLongTaxonomyMicroId(trueMicroFamilyId(entry));
-
   const content = {
-    username: 'Micro-Family Trader',
+    username: 'Trade Alerts',
     embeds: [
       {
-        title: `${symbol || 'UNKNOWN'} ${side} VIRTUAL SNIPER ENTRY`,
+        title: `${symbol || 'UNKNOWN'} ${side} ENTRY`,
         color: discordColorForSide(entry),
-        description: truncate(entryReasonText(entry), 300),
         fields: [
-          field('Source', SOURCE_VIRTUAL, true),
-          field('Entry', fmtPrice(entry.entry), true),
-          field('TP', fmtPrice(entry.tp), true),
-          field('SL', fmtPrice(entry.sl), true),
-          field('RR', fmtR(entry.rr), true),
-          field('Risk', fmtPct(entry.riskPct), true),
-          field('Spread', fmtPct(entry.spreadPct ?? entry.liveSpreadPct), true),
-
-          field('True micro 75-child', trueMicroFamilyId(entry) || 'NA', false),
-          field('Parent 15', parentTrueMicroFamilyId(entry) || 'NA', false),
-          field('Setup', parsed.setupType || entry.setupType || 'NA', true),
-          field('Regime', parsed.regimeBucket || entry.regimeBucket || 'NA', true),
-          field('Confirmation', parsed.confirmationProfile || entry.confirmationProfile || 'NA', true),
-
-          field('Fingerprint metadata', fingerprint(entry), true),
-          field('Rotation', entry.activeRotationId || entry.rotationId || 'NA', true),
-          field('Match', entry.rotationMatchType || 'TRUE_MICRO_EXACT_75_CHILD', true),
-
-          field('Winrate fair', fmtPctSmart(wr), true),
-          field('Completed', fmtNumber(sample, 2), true),
-          field('Reliability', fmtPctSmart(sampleReliability), true),
-          field('Avg R', fmtR(avgR), true),
-          field('Total R', fmtR(totalR), true),
-          field('Avg cost', fmtR(avgCostR), true),
-          field('Profit factor', fmtNumber(profitFactor, 2), true),
-          field('Direct SL', fmtPctSmart(directSLPct), true),
-
-          field(
-            'Confluence',
-            [
-              `RSI=${entry.rsiZone || stats.rsiZone || 'NA'}`,
-              `FLOW=${entry.flow || stats.flow || 'NA'}`,
-              `OB=${entry.obRelation || stats.obRelation || 'NA'}`,
-              `BTC=${entry.btcRelation || stats.btcRelation || 'NA'}`,
-              `REGIME=${entry.regime || stats.regime || 'NA'}`
-            ].join(' | '),
-            false
-          )
+          field('Entry', fmtPrice(extractEntryPrice(entry)), true),
+          field('TP', fmtPrice(extractTpPrice(entry)), true),
+          field('SL', fmtPrice(extractSlPrice(entry)), true)
         ],
         timestamp: nowIso()
       }
@@ -1382,33 +1391,20 @@ export async function sendExitAlert(outcome = {}) {
   const side = normalizeSideLabel(outcome);
   const exitPrice = extractExitPrice(outcome);
   const resultR = extractResultR(outcome);
-  const parsed = parseLongTaxonomyMicroId(trueMicroFamilyId(outcome));
+  const exitType = normalizeExitType(outcome);
 
   const content = {
-    username: 'Micro-Family Trader',
+    username: 'Trade Alerts',
     embeds: [
       {
-        title: `${symbol || 'UNKNOWN'} ${side} VIRTUAL EXIT`,
+        title: `${symbol || 'UNKNOWN'} ${side} EXIT — ${exitType}`,
         color: discordColorForResult(resultR),
         fields: [
-          field('Source', SOURCE_VIRTUAL, true),
+          field('Entry', fmtPrice(extractEntryPrice(outcome)), true),
           field('Exit', fmtPrice(exitPrice), true),
-          field('Result net', fmtR(resultR), true),
-          field('Reason', outcome.exitReason || 'EXIT', true),
-          field('Cost', fmtR(outcome.costR), true),
-          field('PnL net', fmtPct(outcome.pnlPct ?? outcome.netPnlPct), true),
-          field('Gross R', fmtR(outcome.grossR), true),
-          field('MFE', fmtR(outcome.mfeR), true),
-          field('MAE', fmtR(outcome.maeR), true),
-
-          field('True micro 75-child', trueMicroFamilyId(outcome) || 'NA', false),
-          field('Parent 15', parentTrueMicroFamilyId(outcome) || 'NA', false),
-          field('Setup', parsed.setupType || outcome.setupType || 'NA', true),
-          field('Regime', parsed.regimeBucket || outcome.regimeBucket || 'NA', true),
-          field('Confirmation', parsed.confirmationProfile || outcome.confirmationProfile || 'NA', true),
-
-          field('Fingerprint metadata', fingerprint(outcome), true),
-          field('Rotation', outcome.activeRotationId || outcome.rotationId || 'NA', true)
+          field('TP', fmtPrice(extractTpPrice(outcome)), true),
+          field('SL', fmtPrice(extractSlPrice(outcome)), true),
+          field('Exit type', exitType, true)
         ],
         timestamp: nowIso()
       }
