@@ -4,11 +4,13 @@
 //
 // Fixes:
 // - Geen observationDedupeKeys/outcomeDedupeKeys meer in LONG:ANALYZE:WEEK:*:MICROS.
-// - Micro rows worden allowlist-compact opgeslagen.
+// - Micro rows worden compact allowlist-only opgeslagen.
 // - Full micros write is fail-soft bij Upstash max request size.
 // - Top micros + meta blijven altijd compact.
 // - Learning identity blijft exact true 75-child micro-family.
 // - Scanner/execution fingerprints blijven metadata only.
+// - Oude bloat in bestaande micros wordt bij lezen/schrijven genormaliseerd.
+// - recordOutcome/analyzeCandidatesBatch schrijven alleen compact rows terug.
 
 import { createHash } from 'crypto';
 import { CONFIG } from '../config.js';
@@ -57,12 +59,15 @@ const EXECUTION_MICRO_HASH_LEN = 10;
 const MIN_COMPLETED_ACTIVE_LEARNING = 20;
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 
-const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
-const CLASSIFIER_VERSION = 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V2';
-const STORAGE_COMPACTION_VERSION = 'LONG_ANALYZE_MICROS_COMPACT_NO_DEDUPE_ARRAYS_V2';
+const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V2';
+const CLASSIFIER_VERSION = 'LONG_STRICT_EVIDENCE_DISTRIBUTION_V3';
+const STORAGE_COMPACTION_VERSION = 'LONG_ANALYZE_MICROS_COMPACT_NO_DEDUPE_ARRAYS_V3';
 
 const MAX_REDIS_PAYLOAD_BYTES = 8_500_000;
 const TOP_MICROS_LIMIT = 300;
+const REDUCED_MICROS_LIMIT = 75;
+const EMERGENCY_MICROS_LIMIT = 25;
+const LAST_RESORT_MICROS_LIMIT = 10;
 
 const TRUE_VALUES = new Set(['true', '1', 'yes', 'y', 'on']);
 const FALSE_VALUES = new Set(['false', '0', 'no', 'n', 'off']);
@@ -92,6 +97,28 @@ const CONFIRMATION_PROFILE_ORDER = Object.freeze([
 const LONG_FIXED_SETUP_TYPES = new Set(SETUP_ORDER);
 const LONG_FIXED_REGIME_BUCKETS = new Set(REGIME_ORDER);
 const LONG_CONFIRMATION_PROFILES = new Set(CONFIRMATION_PROFILE_ORDER);
+
+const LONG_DIRECT = new Set([
+  'LONG',
+  'BULL',
+  'BULLISH',
+  'BUY',
+  'BID',
+  'UP',
+  'UPSIDE',
+  'GREEN'
+]);
+
+const SHORT_DIRECT = new Set([
+  'SHORT',
+  'BEAR',
+  'BEARISH',
+  'SELL',
+  'ASK',
+  'DOWN',
+  'DOWNSIDE',
+  'RED'
+]);
 
 const LEGACY_SETUP_ALIASES = {
   BO: 'BREAKOUT',
@@ -169,26 +196,6 @@ const LEGACY_CONFIRMATION_ALIASES = {
   CONTRA: 'E_WEAK_CONTRA'
 };
 
-const REAL_VOLUME_FIELDS = Object.freeze([
-  'volBucket',
-  'volumeBucket',
-  'volumeScore',
-  'relativeVolume',
-  'volumeSpike',
-  'volumeConfirmed',
-  'quoteVolumeSpike'
-]);
-
-const NOT_VOLUME_FIELDS = Object.freeze([
-  'volatilityTier',
-  'atrPct',
-  'rangePct',
-  'realizedVolPct',
-  'volume24h',
-  'tickerVolume24h',
-  'candleVolume24h'
-]);
-
 const BLOAT_KEYS = new Set([
   'raw',
   'payload',
@@ -201,6 +208,7 @@ const BLOAT_KEYS = new Set([
   'response',
   'stack',
   'html',
+
   'candles',
   'candles15m',
   'candles1h',
@@ -208,6 +216,7 @@ const BLOAT_KEYS = new Set([
   'candles1d',
   'klines',
   'ohlcv',
+
   'orderBook',
   'rawOrderBook',
   'orderbook',
@@ -217,6 +226,7 @@ const BLOAT_KEYS = new Set([
   'prices',
   'history',
   'marketData',
+
   'scannerRows',
   'scannerCandidates',
   'candidates',
@@ -226,7 +236,6 @@ const BLOAT_KEYS = new Set([
   'marketUniverse',
   'marketWeatherRows',
 
-  // Critical Upstash fix:
   'observationDedupeKeys',
   'outcomeDedupeKeys',
   'seenDedupeKeys',
@@ -291,6 +300,12 @@ function upper(value) {
   return String(value || '').trim().toUpperCase();
 }
 
+function number(value, fallback = 0) {
+  const n = Number(value);
+
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function bool(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
   if (typeof value === 'boolean') return value;
@@ -309,6 +324,7 @@ function longKey(key, fallback = null) {
 
   if (!raw) return null;
   if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
+  if (raw.startsWith('SHORT:')) return `${LONG_KEY_PREFIX}${raw.slice('SHORT:'.length)}`;
 
   return `${LONG_KEY_PREFIX}${raw}`;
 }
@@ -325,14 +341,14 @@ function normalizeSource(source) {
 function obsDedupeTtlSec() {
   return Math.max(
     60,
-    Math.floor(safeNumber(CONFIG?.analyze?.obsDedupeTtlSec, 60 * 60 * 24))
+    Math.floor(number(CONFIG?.long?.analyze?.obsDedupeTtlSec ?? CONFIG?.analyze?.obsDedupeTtlSec, 60 * 60 * 24))
   );
 }
 
 function outcomeDedupeTtlSec() {
   return Math.max(
     60,
-    Math.floor(safeNumber(CONFIG?.analyze?.outcomeDedupeTtlSec, 60 * 60 * 24 * 14))
+    Math.floor(number(CONFIG?.long?.analyze?.outcomeDedupeTtlSec ?? CONFIG?.analyze?.outcomeDedupeTtlSec, 60 * 60 * 24 * 14))
   );
 }
 
@@ -368,32 +384,8 @@ function sideTextToTradeSide(value) {
 
   if (direct === TARGET_TRADE_SIDE) return TARGET_TRADE_SIDE;
   if (direct === OPPOSITE_TRADE_SIDE) return OPPOSITE_TRADE_SIDE;
-
-  if ([
-    'LONG',
-    'BULL',
-    'BULLISH',
-    'BUY',
-    'BID',
-    'UP',
-    'UPSIDE',
-    'GREEN'
-  ].includes(raw)) {
-    return TARGET_TRADE_SIDE;
-  }
-
-  if ([
-    'SHORT',
-    'BEAR',
-    'BEARISH',
-    'SELL',
-    'ASK',
-    'DOWN',
-    'DOWNSIDE',
-    'RED'
-  ].includes(raw)) {
-    return OPPOSITE_TRADE_SIDE;
-  }
+  if (LONG_DIRECT.has(raw)) return TARGET_TRADE_SIDE;
+  if (SHORT_DIRECT.has(raw)) return OPPOSITE_TRADE_SIDE;
 
   const normalized = raw
     .replace(/[^A-Z0-9]+/g, '_')
@@ -758,6 +750,16 @@ function firstNormalizedRegime(...values) {
   return null;
 }
 
+function firstNormalizedConfirmation(...values) {
+  for (const value of values) {
+    const confirmation = normalizeConfirmationProfile(value);
+
+    if (confirmation) return confirmation;
+  }
+
+  return null;
+}
+
 function exactChildIdentityFromSource(row = {}, classified = {}) {
   const candidates = [
     row.childTrueMicroFamilyId,
@@ -869,10 +871,10 @@ function realVolumeEvidence(row = {}, classified = {}) {
       'VOL_EXP_LOW'
     ]);
 
-  const volumeScore = safeNumber(row.volumeScore ?? classified.volumeScore, 0);
-  const relativeVolume = safeNumber(row.relativeVolume ?? classified.relativeVolume, 0);
-  const volumeSpike = safeNumber(row.volumeSpike ?? classified.volumeSpike, 0);
-  const quoteVolumeSpike = safeNumber(row.quoteVolumeSpike ?? classified.quoteVolumeSpike, 0);
+  const volumeScore = number(row.volumeScore ?? classified.volumeScore, 0);
+  const relativeVolume = number(row.relativeVolume ?? classified.relativeVolume, 0);
+  const volumeSpike = number(row.volumeSpike ?? classified.volumeSpike, 0);
+  const quoteVolumeSpike = number(row.quoteVolumeSpike ?? classified.quoteVolumeSpike, 0);
 
   const confirmed = boolish(
     row.volumeConfirmed,
@@ -895,9 +897,7 @@ function realVolumeEvidence(row = {}, classified = {}) {
     volumeScore,
     relativeVolume,
     volumeSpike,
-    quoteVolumeSpike,
-    fieldsUsed: REAL_VOLUME_FIELDS,
-    fieldsNotUsed: NOT_VOLUME_FIELDS
+    quoteVolumeSpike
   };
 }
 
@@ -917,7 +917,7 @@ function bullishFlowEvidence(row = {}, classified = {}) {
     classified.btcRelation
   );
 
-  const flowScore = safeNumber(
+  const flowScore = number(
     row.flowScore ??
       row.flowStrength ??
       row.momentumScore ??
@@ -928,8 +928,8 @@ function bullishFlowEvidence(row = {}, classified = {}) {
   );
 
   const positiveChange =
-    safeNumber(row.change1h ?? classified.change1h, 0) > 0.15 ||
-    safeNumber(row.change24h ?? classified.change24h, 0) > 0.5;
+    number(row.change1h ?? classified.change1h, 0) > 0.15 ||
+    number(row.change24h ?? classified.change24h, 0) > 0.5;
 
   const explicitBullish =
     hasAnyText(flowText, [
@@ -996,12 +996,7 @@ function structureEvidence(row = {}, classified = {}) {
     classified.liquiditySweep,
     classified.stopRun,
     classified.reversalSetup
-  ) || hasAnyText(text, [
-    'SWEEP',
-    'LIQUIDITY',
-    'STOP_RUN',
-    'REVERSAL'
-  ]);
+  ) || hasAnyText(text, ['SWEEP', 'LIQUIDITY', 'STOP_RUN', 'REVERSAL']);
 
   const retest = boolish(
     row.retestConfirmed,
@@ -1012,11 +1007,7 @@ function structureEvidence(row = {}, classified = {}) {
     classified.pullbackConfirmed,
     classified.retestSetup,
     classified.pullbackSetup
-  ) || hasAnyText(text, [
-    'RETEST',
-    'PULLBACK',
-    'PULL_BACK'
-  ]);
+  ) || hasAnyText(text, ['RETEST', 'PULLBACK', 'PULL_BACK']);
 
   const compression = boolish(
     row.squeezeBreak,
@@ -1029,12 +1020,7 @@ function structureEvidence(row = {}, classified = {}) {
     classified.volCompression,
     classified.rangeCompression,
     classified.compressionSetup
-  ) || hasAnyText(text, [
-    'COMPRESSION_SETUP',
-    'SQUEEZE_SETUP',
-    'COIL',
-    'TIGHT_RANGE_SETUP'
-  ]);
+  ) || hasAnyText(text, ['COMPRESSION_SETUP', 'SQUEEZE_SETUP', 'COIL', 'TIGHT_RANGE_SETUP']);
 
   const breakout = boolish(
     row.breakoutConfirmed,
@@ -1053,11 +1039,7 @@ function structureEvidence(row = {}, classified = {}) {
     row.trendContinuation,
     classified.continuationSetup,
     classified.trendContinuation
-  ) || hasAnyText(text, [
-    'CONTINUATION',
-    'TREND_CONT',
-    'MOMENTUM_CONT'
-  ]);
+  ) || hasAnyText(text, ['CONTINUATION', 'TREND_CONT', 'MOMENTUM_CONT']);
 
   return {
     sweep,
@@ -1115,7 +1097,7 @@ function contraEvidence(row = {}, classified = {}) {
   const softContra = Boolean(
     !hardContra &&
     (
-      safeNumber(row.confluence ?? row.sniperScore ?? classified.confluence, 0) < 35 ||
+      number(row.confluence ?? row.sniperScore ?? classified.confluence, 0) < 35 ||
       hasAnyText(text, ['WEAK', 'LOW_CONFLUENCE'])
     )
   );
@@ -1202,12 +1184,7 @@ function inferRegimeBucket(row = {}, classified = {}) {
         classified.volumeBucket,
         text
       ),
-      [
-        'SQUEEZE',
-        'VOL_SQUEEZE',
-        'TIGHT_RANGE',
-        'COMPRESSION_REGIME'
-      ]
+      ['SQUEEZE', 'VOL_SQUEEZE', 'TIGHT_RANGE', 'COMPRESSION_REGIME']
     );
 
   if (explicitSqueeze) return 'SQUEEZE';
@@ -1222,49 +1199,29 @@ function inferRegimeBucket(row = {}, classified = {}) {
       classified.sidewaysRegime
     ) ||
     hasAnyText(
-      valueText(
-        row.regime,
-        row.regimeCoarse,
-        classified.regime,
-        classified.regimeCoarse,
-        text
-      ),
-      [
-        'CHOP',
-        'RANGE',
-        'SIDEWAYS',
-        'RANGING',
-        'MEAN_REVERT'
-      ]
+      valueText(row.regime, row.regimeCoarse, classified.regime, classified.regimeCoarse, text),
+      ['CHOP', 'RANGE', 'SIDEWAYS', 'RANGING', 'MEAN_REVERT']
     );
 
   if (explicitChop) return 'CHOP';
 
   const flow = bullishFlowEvidence(row, classified);
-  const trendText =
-    hasAnyText(
-      valueText(
-        row.regime,
-        row.regimeCoarse,
-        row.flow,
-        row.flowCoarse,
-        row.momentumBucket,
-        classified.regime,
-        classified.regimeCoarse,
-        classified.flow,
-        classified.flowCoarse,
-        classified.momentumBucket,
-        text
-      ),
-      [
-        'TREND',
-        'TRENDING',
-        'IMPULSE',
-        'MOM_WITH',
-        'FLOW_WITH',
-        'BUILDING'
-      ]
-    );
+  const trendText = hasAnyText(
+    valueText(
+      row.regime,
+      row.regimeCoarse,
+      row.flow,
+      row.flowCoarse,
+      row.momentumBucket,
+      classified.regime,
+      classified.regimeCoarse,
+      classified.flow,
+      classified.flowCoarse,
+      classified.momentumBucket,
+      text
+    ),
+    ['TREND', 'TRENDING', 'IMPULSE', 'MOM_WITH', 'FLOW_WITH', 'BUILDING']
+  );
 
   if (flow.evidence || trendText) return 'TREND';
 
@@ -1275,7 +1232,16 @@ function inferConfirmationProfile(row = {}, classified = {}) {
   const exact = exactChildIdentityFromSource(row, classified);
   if (exact?.confirmationProfile) return exact.confirmationProfile;
 
-  const confluence = safeNumber(
+  const direct = firstNormalizedConfirmation(
+    classified.confirmationProfile,
+    row.confirmationProfile,
+    classified.profile,
+    row.profile
+  );
+
+  if (direct) return direct;
+
+  const confluence = number(
     row.confluence ??
       row.sniperScore ??
       classified.confluence ??
@@ -1291,17 +1257,9 @@ function inferConfirmationProfile(row = {}, classified = {}) {
   if (contra.hardContra) return 'E_WEAK_CONTRA';
   if (contra.softContra && confluence < 35) return 'E_WEAK_CONTRA';
 
-  if (structure.any && flow.evidence && volume.evidence) {
-    return 'A_STRONG_ALIGN';
-  }
-
-  if (flow.evidence) {
-    return 'B_FLOW_ALIGN';
-  }
-
-  if (volume.evidence) {
-    return 'C_VOLUME_ALIGN';
-  }
+  if (structure.any && flow.evidence && volume.evidence) return 'A_STRONG_ALIGN';
+  if (flow.evidence) return 'B_FLOW_ALIGN';
+  if (volume.evidence) return 'C_VOLUME_ALIGN';
 
   return 'D_MIXED_OK';
 }
@@ -1482,6 +1440,7 @@ function analyzeIdentityFlags() {
 
     virtualLearning: true,
     virtualOnly: true,
+    virtualTracked: true,
     realOrdersDisabled: true,
     bitgetOrdersDisabled: true,
     exchangeCallsDisabled: true,
@@ -1770,9 +1729,7 @@ function getWeekMicrosTopKey(weekKey) {
   return `${getWeekMicrosBaseKey(weekKey)}:TOP`;
 }
 
-async function claimDedupeKey(redis, key, ttlSec, {
-  type = 'DEDUPE'
-} = {}) {
+async function claimDedupeKey(redis, key, ttlSec, { type = 'DEDUPE' } = {}) {
   if (!key) {
     return {
       claimed: true,
@@ -1888,6 +1845,143 @@ function compactDefinitionParts(parts = [], maxItems = 32, maxStringLength = 240
   return uniqueStrings(parts)
     .slice(0, maxItems)
     .map((part) => truncateString(part, maxStringLength))
+    .filter(Boolean);
+}
+
+function compactExamples(examples = [], maxItems = 3, maxStringLength = 220) {
+  if (!Array.isArray(examples) || maxItems <= 0) return [];
+
+  return examples
+    .slice(-maxItems)
+    .map((example) => {
+      if (!example || typeof example !== 'object') {
+        return example ? truncateString(example, maxStringLength) : null;
+      }
+
+      const childId = normalizeChildTrueMicroFamilyId(
+        example.trueMicroFamilyId || example.microFamilyId || example.childTrueMicroFamilyId,
+        example
+      );
+
+      const parentId = normalizeParentTrueMicroFamilyId(
+        example.parentTrueMicroFamilyId || example.coarseMicroFamilyId || childId,
+        example
+      );
+
+      const parsed = parseLongTaxonomyMicroId(childId);
+
+      return withAnalyzeIdentityFlags({
+        symbol: example.symbol || example.baseSymbol || example.contractSymbol || null,
+        side: TARGET_DASHBOARD_SIDE,
+        tradeSide: TARGET_TRADE_SIDE,
+        source: example.source || OBSERVATION_SOURCE,
+
+        microFamilyId: childId || null,
+        trueMicroFamilyId: childId || null,
+        childTrueMicroFamilyId: childId || null,
+        coarseMicroFamilyId: parentId || null,
+        parentTrueMicroFamilyId: parentId || null,
+
+        setupType: parsed.setup || example.setupType || null,
+        regimeBucket: parsed.regime || example.regimeBucket || null,
+        confirmationProfile: parsed.confirmationProfile || example.confirmationProfile || null,
+
+        rsiZone: example.rsiZone || null,
+        flow: example.flow || null,
+        obRelation: example.obRelation || null,
+        btcRelation: example.btcRelation || null,
+        regime: example.regime || null,
+
+        observationRecorded: Boolean(example.observationRecorded),
+        observationDuplicate: Boolean(example.observationDuplicate),
+
+        ts: number(example.ts || example.createdAt, null)
+      });
+    })
+    .filter(Boolean);
+}
+
+function compactRecentOutcomes(outcomes = [], maxItems = 5) {
+  if (!Array.isArray(outcomes) || maxItems <= 0) return [];
+
+  return outcomes
+    .slice(-maxItems)
+    .map((outcome) => {
+      if (!outcome || typeof outcome !== 'object') return null;
+      if (inferTradeSide(outcome) !== TARGET_TRADE_SIDE) return null;
+
+      const childId = normalizeChildTrueMicroFamilyId(
+        outcome.trueMicroFamilyId || outcome.microFamilyId || outcome.childTrueMicroFamilyId,
+        outcome
+      );
+
+      if (!childId) return null;
+
+      const parentId = normalizeParentTrueMicroFamilyId(
+        outcome.parentTrueMicroFamilyId || outcome.coarseMicroFamilyId || childId,
+        outcome
+      );
+
+      const parsed = parseLongTaxonomyMicroId(childId);
+
+      return withAnalyzeIdentityFlags({
+        source: normalizeSource(outcome.source || OUTCOME_SOURCE),
+        positionSource: outcome.positionSource || null,
+
+        tradeId: outcome.tradeId || null,
+
+        symbol: outcome.symbol || outcome.baseSymbol || outcome.contractSymbol || null,
+        contractSymbol: outcome.contractSymbol || null,
+
+        side: TARGET_DASHBOARD_SIDE,
+        tradeSide: TARGET_TRADE_SIDE,
+
+        exitReason: outcome.exitReason || outcome.reason || null,
+
+        exitR: number(outcome.exitR ?? outcome.netR, 0),
+        netR: number(outcome.netR ?? outcome.exitR, 0),
+        grossR: number(outcome.grossR, 0),
+
+        costR: number(outcome.costR, 0),
+        avgCostR: number(outcome.avgCostR ?? outcome.costR, 0),
+
+        mfeR: number(outcome.mfeR, 0),
+        maeR: number(outcome.maeR, 0),
+
+        directToSL: Boolean(outcome.directToSL || outcome.directSL),
+        directSL: Boolean(outcome.directSL || outcome.directToSL),
+        nearTpSeen: Boolean(outcome.nearTpSeen),
+        reachedHalfR: Boolean(outcome.reachedHalfR),
+        reachedOneR: Boolean(outcome.reachedOneR),
+
+        microFamilyId: childId,
+        trueMicroFamilyId: childId,
+        childTrueMicroFamilyId: childId,
+        coarseMicroFamilyId: parentId,
+        parentTrueMicroFamilyId: parentId,
+
+        setupType: parsed.setup || null,
+        regimeBucket: parsed.regime || null,
+        confirmationProfile: parsed.confirmationProfile || null,
+
+        entryCurrentRegime: outcome.entryCurrentRegime || outcome.currentRegime || null,
+        entryCurrentTrendSide: outcome.entryCurrentTrendSide || outcome.currentTrendSide || null,
+        entryCurrentFit: outcome.entryCurrentFit ?? outcome.currentFit ?? null,
+        entryCurrentFitConfidence: number(outcome.entryCurrentFitConfidence ?? outcome.currentMarketFitConfidence, null),
+
+        costModelApplied: Boolean(outcome.costModelApplied),
+        netCostModelApplied: Boolean(outcome.netCostModelApplied),
+        costModel: outcome.costModel || null,
+
+        ts: number(
+          outcome.ts ||
+            outcome.closedAt ||
+            outcome.completedAt ||
+            outcome.updatedAt,
+          now()
+        )
+      });
+    })
     .filter(Boolean);
 }
 
@@ -2194,10 +2288,7 @@ function enrichWithMicroFamily(row = {}, { forcedSide = null } = {}) {
     ...safeClassifyMicro(classifyInput)
   });
 
-  const taxonomy = extractFixedTaxonomyMicroId(
-    classifyInput,
-    rawClassified
-  );
+  const taxonomy = extractFixedTaxonomyMicroId(classifyInput, rawClassified);
 
   if (!taxonomy || !taxonomy.trueMicroFamilyId || !taxonomy.parentTrueMicroFamilyId) {
     return null;
@@ -2222,7 +2313,12 @@ function enrichWithMicroFamily(row = {}, { forcedSide = null } = {}) {
     32,
     220
   );
-  const parentDefinitionParts = compactDefinitionParts(buildParentDefinitionParts(taxonomy), 16, 180);
+
+  const parentDefinitionParts = compactDefinitionParts(
+    buildParentDefinitionParts(taxonomy),
+    16,
+    180
+  );
 
   return withAnalyzeIdentityFlags({
     ...stripBulkyFields(row),
@@ -2290,10 +2386,11 @@ function enrichWithMicroFamily(row = {}, { forcedSide = null } = {}) {
 
     schema: TRUE_MICRO_SCHEMA,
     microFamilySchema: TRUE_MICRO_SCHEMA,
-    version: 'fixed-taxonomy-75-child-smart-evidence-v2',
+    version: 'fixed-taxonomy-75-child-smart-evidence-v3',
 
     classifierVersion: CLASSIFIER_VERSION,
     classifierNoDefaultRetestSqueezeB: true,
+    noDefaultRetestSqueezeB: true,
 
     assetClass: classified.assetClass || row.assetClass || 'CRYPTO',
 
@@ -2360,7 +2457,7 @@ function enrichWithMicroFamily(row = {}, { forcedSide = null } = {}) {
 }
 
 function getLearningStatus(row = {}) {
-  const completed = safeNumber(row.completed || row.outcomeSample, 0);
+  const completed = number(row.completed || row.outcomeSample, 0);
 
   if (completed >= MIN_COMPLETED_ACTIVE_LEARNING) return 'ACTIVE_LEARNING';
   if (completed > 0) return 'EARLY_OUTCOMES';
@@ -2368,147 +2465,34 @@ function getLearningStatus(row = {}) {
   return 'OBSERVING';
 }
 
-function compactExamples(examples = [], maxItems = 3, maxStringLength = 220) {
-  if (!Array.isArray(examples) || maxItems <= 0) return [];
+function purgeBloatKeys(row = {}) {
+  if (!row || typeof row !== 'object') return row;
 
-  return examples
-    .slice(-maxItems)
-    .map((example) => {
-      if (!example || typeof example !== 'object') {
-        return example ? truncateString(example, maxStringLength) : null;
-      }
+  const next = { ...row };
 
-      const childId = normalizeChildTrueMicroFamilyId(
-        example.trueMicroFamilyId || example.microFamilyId || example.childTrueMicroFamilyId,
-        example
-      );
+  for (const key of BLOAT_KEYS) {
+    delete next[key];
+  }
 
-      const parentId = normalizeParentTrueMicroFamilyId(
-        example.parentTrueMicroFamilyId || example.coarseMicroFamilyId || childId,
-        example
-      );
+  delete next.observationDedupeKeys;
+  delete next.outcomeDedupeKeys;
+  delete next.seenDedupeKeys;
+  delete next.completedDedupeKeys;
+  delete next.dedupeKeys;
+  delete next.observationKeys;
+  delete next.outcomeKeys;
+  delete next.seenKeys;
+  delete next.completedKeys;
+  delete next.allObservationDedupeKeys;
+  delete next.allOutcomeDedupeKeys;
 
-      const parsed = parseLongTaxonomyMicroId(childId);
-
-      return withAnalyzeIdentityFlags({
-        symbol: example.symbol || example.baseSymbol || example.contractSymbol || null,
-        side: TARGET_DASHBOARD_SIDE,
-        tradeSide: TARGET_TRADE_SIDE,
-        source: example.source || OBSERVATION_SOURCE,
-
-        microFamilyId: childId || null,
-        trueMicroFamilyId: childId || null,
-        childTrueMicroFamilyId: childId || null,
-        coarseMicroFamilyId: parentId || null,
-        parentTrueMicroFamilyId: parentId || null,
-
-        setupType: parsed.setup || example.setupType || null,
-        regimeBucket: parsed.regime || example.regimeBucket || null,
-        confirmationProfile: parsed.confirmationProfile || example.confirmationProfile || null,
-
-        rsiZone: example.rsiZone || null,
-        flow: example.flow || null,
-        obRelation: example.obRelation || null,
-        btcRelation: example.btcRelation || null,
-        regime: example.regime || null,
-
-        observationRecorded: Boolean(example.observationRecorded),
-        observationDuplicate: Boolean(example.observationDuplicate),
-
-        ts: safeNumber(example.ts || example.createdAt, null)
-      });
-    })
-    .filter(Boolean);
-}
-
-function compactRecentOutcomes(outcomes = [], maxItems = 5) {
-  if (!Array.isArray(outcomes) || maxItems <= 0) return [];
-
-  return outcomes
-    .slice(-maxItems)
-    .map((outcome) => {
-      if (!outcome || typeof outcome !== 'object') return null;
-      if (inferTradeSide(outcome) !== TARGET_TRADE_SIDE) return null;
-
-      const childId = normalizeChildTrueMicroFamilyId(
-        outcome.trueMicroFamilyId || outcome.microFamilyId || outcome.childTrueMicroFamilyId,
-        outcome
-      );
-
-      if (!childId) return null;
-
-      const parentId = normalizeParentTrueMicroFamilyId(
-        outcome.parentTrueMicroFamilyId || outcome.coarseMicroFamilyId || childId,
-        outcome
-      );
-
-      const parsed = parseLongTaxonomyMicroId(childId);
-
-      return withAnalyzeIdentityFlags({
-        source: normalizeSource(outcome.source || OUTCOME_SOURCE),
-        positionSource: outcome.positionSource || null,
-
-        tradeId: outcome.tradeId || null,
-
-        symbol: outcome.symbol || outcome.baseSymbol || outcome.contractSymbol || null,
-        contractSymbol: outcome.contractSymbol || null,
-
-        side: TARGET_DASHBOARD_SIDE,
-        tradeSide: TARGET_TRADE_SIDE,
-
-        exitReason: outcome.exitReason || outcome.reason || null,
-
-        exitR: safeNumber(outcome.exitR ?? outcome.netR, 0),
-        netR: safeNumber(outcome.netR ?? outcome.exitR, 0),
-        grossR: safeNumber(outcome.grossR, 0),
-
-        costR: safeNumber(outcome.costR, 0),
-        avgCostR: safeNumber(outcome.avgCostR ?? outcome.costR, 0),
-
-        mfeR: safeNumber(outcome.mfeR, 0),
-        maeR: safeNumber(outcome.maeR, 0),
-
-        directToSL: Boolean(outcome.directToSL || outcome.directSL),
-        directSL: Boolean(outcome.directSL || outcome.directToSL),
-        nearTpSeen: Boolean(outcome.nearTpSeen),
-        reachedHalfR: Boolean(outcome.reachedHalfR),
-        reachedOneR: Boolean(outcome.reachedOneR),
-
-        microFamilyId: childId,
-        trueMicroFamilyId: childId,
-        childTrueMicroFamilyId: childId,
-        coarseMicroFamilyId: parentId,
-        parentTrueMicroFamilyId: parentId,
-
-        setupType: parsed.setup || null,
-        regimeBucket: parsed.regime || null,
-        confirmationProfile: parsed.confirmationProfile || null,
-
-        entryCurrentRegime: outcome.entryCurrentRegime || outcome.currentRegime || null,
-        entryCurrentTrendSide: outcome.entryCurrentTrendSide || outcome.currentTrendSide || null,
-        entryCurrentFit: outcome.entryCurrentFit ?? outcome.currentFit ?? null,
-        entryCurrentFitConfidence: safeNumber(outcome.entryCurrentFitConfidence ?? outcome.currentMarketFitConfidence, null),
-
-        costModelApplied: Boolean(outcome.costModelApplied),
-        netCostModelApplied: Boolean(outcome.netCostModelApplied),
-        costModel: outcome.costModel || null,
-
-        ts: safeNumber(
-          outcome.ts ||
-            outcome.closedAt ||
-            outcome.completedAt ||
-            outcome.updatedAt,
-          now()
-        )
-      });
-    })
-    .filter(Boolean);
+  return next;
 }
 
 function compactMicroForStorage(row = {}) {
   if (!row || typeof row !== 'object') return null;
 
-  const stripped = stripBulkyFields(row);
+  const stripped = purgeBloatKeys(stripBulkyFields(row));
   const refreshed = refreshStats(withAnalyzeIdentityFlags(stripped));
 
   const trueMicroFamilyId = normalizeChildTrueMicroFamilyId(
@@ -2641,7 +2625,7 @@ function compactMicroForStorage(row = {}) {
 
     schema: TRUE_MICRO_SCHEMA,
     microFamilySchema: TRUE_MICRO_SCHEMA,
-    version: 'fixed-taxonomy-75-child-smart-evidence-v2',
+    version: 'fixed-taxonomy-75-child-smart-evidence-v3',
     classifierVersion: CLASSIFIER_VERSION,
     classifierNoDefaultRetestSqueezeB: true,
     noDefaultRetestSqueezeB: true,
@@ -2688,35 +2672,39 @@ function compactMicroForStorage(row = {}) {
 
   for (const field of NUMERIC_MICRO_FIELDS) {
     if (refreshed[field] !== undefined && refreshed[field] !== null && refreshed[field] !== '') {
-      compact[field] = safeNumber(refreshed[field], 0);
+      compact[field] = number(refreshed[field], 0);
     }
   }
 
-  const finalRow = refreshStats(compact);
+  const finalRow = purgeBloatKeys(refreshStats(compact));
   const learningStatus = getLearningStatus(finalRow);
 
-  return withAnalyzeIdentityFlags({
+  return purgeBloatKeys(withAnalyzeIdentityFlags({
     ...finalRow,
 
     learningStatus,
     status: learningStatus,
-    tooEarly: safeNumber(finalRow.completed, 0) < MIN_COMPLETED_ACTIVE_LEARNING,
-    tooEarlyReason: safeNumber(finalRow.completed, 0) < MIN_COMPLETED_ACTIVE_LEARNING
-      ? `completed ${safeNumber(finalRow.completed, 0)}/${MIN_COMPLETED_ACTIVE_LEARNING}`
+    tooEarly: number(finalRow.completed, 0) < MIN_COMPLETED_ACTIVE_LEARNING,
+    tooEarlyReason: number(finalRow.completed, 0) < MIN_COMPLETED_ACTIVE_LEARNING
+      ? `completed ${number(finalRow.completed, 0)}/${MIN_COMPLETED_ACTIVE_LEARNING}`
       : null,
 
-    observationDedupeKeys: undefined,
-    outcomeDedupeKeys: undefined,
-    dedupeKeys: undefined
-  });
+    dedupeArraysStoredInMicros: false,
+    observationDedupeKeysStoredInMicros: false,
+    outcomeDedupeKeysStoredInMicros: false
+  }));
 }
 
 function normalizeMicros(micros = {}) {
+  const entries = Object.entries(micros || {});
+
+  if (!entries.length) return {};
+
   return Object.fromEntries(
-    Object.entries(micros || {})
+    entries
       .map(([id, row]) => {
         const microFamilyId = normalizeChildTrueMicroFamilyId(
-          row?.trueMicroFamilyId || row?.microFamilyId || id,
+          row?.trueMicroFamilyId || row?.microFamilyId || row?.childTrueMicroFamilyId || id,
           row || {}
         );
 
@@ -2732,10 +2720,7 @@ function normalizeMicros(micros = {}) {
         if (!compact) return null;
         if (!isLongOnlyRow(compact)) return null;
 
-        return [
-          microFamilyId,
-          compact
-        ];
+        return [microFamilyId, compact];
       })
       .filter(Boolean)
   );
@@ -2746,45 +2731,46 @@ function compareTopMicros(a = {}, b = {}) {
   const br = refreshStats(b);
 
   return (
-    safeNumber(br.dashboardBalancedScore ?? br.balancedScore, 0) -
-    safeNumber(ar.dashboardBalancedScore ?? ar.balancedScore, 0) ||
+    number(br.dashboardBalancedScore ?? br.balancedScore, 0) -
+    number(ar.dashboardBalancedScore ?? ar.balancedScore, 0) ||
 
-    safeNumber(br.fairWinrate ?? br.sampleAdjustedWinrate ?? br.wilsonLowerBound, 0) -
-    safeNumber(ar.fairWinrate ?? ar.sampleAdjustedWinrate ?? ar.wilsonLowerBound, 0) ||
+    number(br.fairWinrate ?? br.sampleAdjustedWinrate ?? br.wilsonLowerBound, 0) -
+    number(ar.fairWinrate ?? ar.sampleAdjustedWinrate ?? ar.wilsonLowerBound, 0) ||
 
-    safeNumber(br.totalR ?? br.netTotalR, 0) -
-    safeNumber(ar.totalR ?? ar.netTotalR, 0) ||
+    number(br.totalR ?? br.netTotalR, 0) -
+    number(ar.totalR ?? ar.netTotalR, 0) ||
 
-    safeNumber(br.avgR ?? br.netAvgR, 0) -
-    safeNumber(ar.avgR ?? ar.netAvgR, 0) ||
+    number(br.avgR ?? br.netAvgR, 0) -
+    number(ar.avgR ?? ar.netAvgR, 0) ||
 
-    safeNumber(ar.avgCostR ?? ar.totalCostR, 0) -
-    safeNumber(br.avgCostR ?? br.totalCostR, 0) ||
+    number(ar.avgCostR ?? ar.totalCostR, 0) -
+    number(br.avgCostR ?? br.totalCostR, 0) ||
 
-    safeNumber(br.completed, 0) -
-    safeNumber(ar.completed, 0) ||
+    number(br.completed, 0) -
+    number(ar.completed, 0) ||
 
-    safeNumber(br.seen ?? br.observations, 0) -
-    safeNumber(ar.seen ?? ar.observations, 0) ||
+    number(br.seen ?? br.observations, 0) -
+    number(ar.seen ?? ar.observations, 0) ||
 
     String(ar.microFamilyId || '').localeCompare(String(br.microFamilyId || ''))
   );
 }
 
 function selectTopMicrosObject(micros = {}, limit = TOP_MICROS_LIMIT) {
-  const safeLimit = Math.max(1, Math.floor(safeNumber(limit, TOP_MICROS_LIMIT)));
-  const normalized = normalizeMicros(micros);
+  const safeLimit = Math.max(1, Math.floor(number(limit, TOP_MICROS_LIMIT)));
+
+  const rows = Object.values(normalizeMicros(micros))
+    .filter(Boolean)
+    .filter(isLongOnlyRow)
+    .filter((row) => isFixedTaxonomyChildMicroId(row.trueMicroFamilyId || row.microFamilyId))
+    .sort(compareTopMicros)
+    .slice(0, safeLimit);
 
   return Object.fromEntries(
-    Object.values(normalized)
-      .filter(Boolean)
-      .filter(isLongOnlyRow)
-      .filter((row) => isFixedTaxonomyChildMicroId(row.trueMicroFamilyId || row.microFamilyId))
-      .sort(compareTopMicros)
-      .slice(0, safeLimit)
+    rows
       .map((row) => [
         row.trueMicroFamilyId || row.microFamilyId,
-        withAnalyzeIdentityFlags(row)
+        purgeBloatKeys(withAnalyzeIdentityFlags(row))
       ])
       .filter(([id]) => Boolean(id))
   );
@@ -2799,23 +2785,26 @@ function payloadBytes(payload) {
 }
 
 function isPayloadTooLargeError(error) {
-  const message = String(error?.message || error || '');
+  const message = String(error?.message || error || '').toLowerCase();
 
   return (
     message.includes('max request size exceeded') ||
-    message.includes('ERR max request size exceeded') ||
+    message.includes('err max request size exceeded') ||
+    message.includes('request size') ||
+    message.includes('too large') ||
     message.includes('10485760') ||
-    message.includes('PayloadTooLarge')
+    message.includes('payloadtoolarge')
   );
 }
 
 function buildWeekPayload(weekKey, rows, extra = {}) {
-  const ids = Object.keys(rows || {});
+  const safeRows = normalizeMicros(rows || {});
+  const ids = Object.keys(safeRows);
 
   return {
     weekKey,
     updatedAt: now(),
-    rows,
+    rows: safeRows,
     count: ids.length,
 
     targetTradeSide: TARGET_TRADE_SIDE,
@@ -2936,6 +2925,124 @@ function buildWeekMetaPayload(weekKey, rows, extra = {}) {
   };
 }
 
+async function writeJsonFailSoft(redis, key, payload) {
+  try {
+    await setJson(redis, key, payload);
+
+    return {
+      ok: true,
+      key,
+      bytes: payloadBytes(payload)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      key,
+      bytes: payloadBytes(payload),
+      payloadTooLarge: isPayloadTooLargeError(error),
+      error: error?.message || String(error)
+    };
+  }
+}
+
+async function writeRowsWithFallback(redis, key, weekKey, rows, {
+  mode = 'FULL',
+  limits = [TOP_MICROS_LIMIT, REDUCED_MICROS_LIMIT, EMERGENCY_MICROS_LIMIT, LAST_RESORT_MICROS_LIMIT]
+} = {}) {
+  const normalized = normalizeMicros(rows || {});
+  const count = Object.keys(normalized).length;
+
+  let candidateRows = normalized;
+  let payload = buildWeekPayload(weekKey, candidateRows, {
+    storageMode: mode,
+    originalCount: count,
+    fallbackLevel: 'FULL'
+  });
+
+  if (payloadBytes(payload) <= MAX_REDIS_PAYLOAD_BYTES) {
+    const result = await writeJsonFailSoft(redis, key, payload);
+
+    if (result.ok || !result.payloadTooLarge) return result;
+  }
+
+  for (const limit of limits) {
+    candidateRows = selectTopMicrosObject(normalized, limit);
+    payload = buildWeekPayload(weekKey, candidateRows, {
+      storageMode: `${mode}_TOP_${limit}_COMPACT_ROWS`,
+      originalCount: count,
+      reducedBecausePayloadTooLarge: true,
+      fallbackLimit: limit
+    });
+
+    const result = await writeJsonFailSoft(redis, key, payload);
+
+    if (result.ok) {
+      return {
+        ...result,
+        fallbackLimit: limit,
+        originalCount: count,
+        storedCount: Object.keys(candidateRows).length
+      };
+    }
+
+    if (!result.payloadTooLarge) return result;
+  }
+
+  const emptyPayload = buildWeekPayload(weekKey, {}, {
+    storageMode: `${mode}_EMPTY_LAST_RESORT_AFTER_PAYLOAD_LIMIT`,
+    originalCount: count,
+    reducedBecausePayloadTooLarge: true,
+    lastResort: true
+  });
+
+  return writeJsonFailSoft(redis, key, emptyPayload);
+}
+
+async function writeTopMicros(redis, weekKey, rows) {
+  const normalized = normalizeMicros(rows || {});
+  const key = getWeekMicrosTopKey(weekKey);
+
+  for (const limit of [TOP_MICROS_LIMIT, REDUCED_MICROS_LIMIT, EMERGENCY_MICROS_LIMIT, LAST_RESORT_MICROS_LIMIT]) {
+    const topRows = selectTopMicrosObject(normalized, limit);
+    const payload = {
+      weekKey,
+      updatedAt: now(),
+      rows: topRows,
+      count: Object.keys(topRows).length,
+      storageMode: `TOP_MICROS_SNAPSHOT_${limit}`,
+      targetTradeSide: TARGET_TRADE_SIDE,
+      trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+      classifierVersion: CLASSIFIER_VERSION,
+      measurementFixVersion: MEASUREMENT_FIX_VERSION,
+      storageCompactionVersion: STORAGE_COMPACTION_VERSION,
+      dedupeArraysStoredInMicros: false,
+      redisNamespace: LONG_NAMESPACE,
+      redisKeyPrefix: LONG_KEY_PREFIX
+    };
+
+    const result = await writeJsonFailSoft(redis, key, payload);
+
+    if (result.ok || !result.payloadTooLarge) {
+      return {
+        ...result,
+        storedCount: Object.keys(topRows).length,
+        limit
+      };
+    }
+  }
+
+  return writeJsonFailSoft(redis, key, {
+    weekKey,
+    updatedAt: now(),
+    rows: {},
+    count: 0,
+    storageMode: 'TOP_MICROS_EMPTY_LAST_RESORT',
+    targetTradeSide: TARGET_TRADE_SIDE,
+    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+    storageCompactionVersion: STORAGE_COMPACTION_VERSION
+  });
+}
+
 export async function getWeekMicros(weekKey = PERSISTENT_LEARNING_KEY) {
   const redis = getDurableRedis();
 
@@ -3007,76 +3114,55 @@ export async function saveWeekMicros(
     ? await getWeekMicros(weekKey).catch(() => ({}))
     : {};
 
-  const mergedInput = {
-    ...(existing || {}),
-    ...(micros || {})
-  };
+  const incoming = normalizeMicros(micros || {});
+  const onlySet = Array.isArray(onlyIds) && onlyIds.length
+    ? new Set(onlyIds.map((id) => normalizeChildTrueMicroFamilyId(id)).filter(Boolean))
+    : null;
 
-  const clean = normalizeMicros(mergedInput);
+  const filteredIncoming = onlySet
+    ? Object.fromEntries(
+        Object.entries(incoming)
+          .filter(([id]) => onlySet.has(id))
+      )
+    : incoming;
+
+  const clean = normalizeMicros({
+    ...(existing || {}),
+    ...(filteredIncoming || {})
+  });
+
   const ids = Object.keys(clean);
 
   if (!ids.length && !allowEmptyFullSave) {
     return existing || {};
   }
 
-  const topRows = selectTopMicrosObject(clean, TOP_MICROS_LIMIT);
-
-  let payload = buildWeekPayload(weekKey, clean);
-
-  if (payloadBytes(payload) > MAX_REDIS_PAYLOAD_BYTES) {
-    const reducedRows = selectTopMicrosObject(clean, 75);
-
-    payload = buildWeekPayload(weekKey, reducedRows, {
-      storageMode: 'FULL_PAYLOAD_REDUCED_TO_75_COMPACT_ROWS',
-      originalCount: ids.length,
-      reducedBecausePayloadTooLarge: true
-    });
-  }
-
-  let fullWriteOk = true;
-  let fullWriteError = null;
-
-  try {
-    await setJson(redis, getWeekMicrosBaseKey(weekKey), payload);
-  } catch (error) {
-    if (!isPayloadTooLargeError(error)) {
-      throw error;
-    }
-
-    fullWriteOk = false;
-    fullWriteError = error?.message || String(error);
-
-    const emergencyRows = selectTopMicrosObject(clean, 25);
-
-    await setJson(redis, getWeekMicrosBaseKey(weekKey), buildWeekPayload(weekKey, emergencyRows, {
-      storageMode: 'EMERGENCY_TOP_25_ONLY_AFTER_UPSTASH_PAYLOAD_LIMIT',
-      originalCount: ids.length,
-      baseWritePayloadTooLarge: true,
-      baseWriteError: truncateString(fullWriteError, 500)
-    }));
-  }
-
-  await setJson(redis, getWeekMicrosTopKey(weekKey), {
+  const baseWrite = await writeRowsWithFallback(
+    redis,
+    getWeekMicrosBaseKey(weekKey),
     weekKey,
-    updatedAt: now(),
-    rows: topRows,
-    count: Object.keys(topRows).length,
-    storageMode: 'TOP_MICROS_SNAPSHOT',
-    targetTradeSide: TARGET_TRADE_SIDE,
-    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
-    classifierVersion: CLASSIFIER_VERSION,
-    measurementFixVersion: MEASUREMENT_FIX_VERSION,
-    storageCompactionVersion: STORAGE_COMPACTION_VERSION,
-    dedupeArraysStoredInMicros: false,
-    redisNamespace: LONG_NAMESPACE,
-    redisKeyPrefix: LONG_KEY_PREFIX
+    clean,
+    {
+      mode: 'FULL_MICROS_COMPACT'
+    }
+  );
+
+  const topWrite = await writeTopMicros(redis, weekKey, clean);
+
+  const meta = buildWeekMetaPayload(weekKey, clean, {
+    fullWriteOk: Boolean(baseWrite.ok),
+    fullWriteError: baseWrite.ok ? null : truncateString(baseWrite.error, 500),
+    fullWritePayloadTooLarge: Boolean(baseWrite.payloadTooLarge),
+    fullWriteBytes: baseWrite.bytes ?? null,
+    fullWriteStorageMode: baseWrite.fallbackLimit
+      ? `TOP_${baseWrite.fallbackLimit}_FALLBACK`
+      : 'FULL_OR_REDUCED',
+    topWriteOk: Boolean(topWrite.ok),
+    topWriteError: topWrite.ok ? null : truncateString(topWrite.error, 500),
+    topMicros: topWrite.storedCount ?? 0
   });
 
-  await setJson(redis, getWeekMetaKey(weekKey), buildWeekMetaPayload(weekKey, clean, {
-    fullWriteOk,
-    fullWriteError: fullWriteError ? truncateString(fullWriteError, 500) : null,
-    topMicros: Object.keys(topRows).length
-  }));
+  await writeJsonFailSoft(redis, getWeekMetaKey(weekKey), meta);
 
   return clean;
 }
@@ -3196,7 +3282,7 @@ function getOrCreateMicro(micros, classified, side) {
 
   micro.schema = TRUE_MICRO_SCHEMA;
   micro.microFamilySchema = TRUE_MICRO_SCHEMA;
-  micro.version = 'fixed-taxonomy-75-child-smart-evidence-v2';
+  micro.version = 'fixed-taxonomy-75-child-smart-evidence-v3';
 
   micro.parentDefinition ||= classified.parentDefinition || '';
   micro.parentDefinitionParts = compactDefinitionParts(
@@ -3253,9 +3339,7 @@ function getOrCreateMicro(micros, classified, side) {
   micro.selectionWillBeAdaptive = true;
   micro.discordWillBeStrict = true;
 
-  delete micro.observationDedupeKeys;
-  delete micro.outcomeDedupeKeys;
-  delete micro.dedupeKeys;
+  Object.assign(micro, purgeBloatKeys(micro));
 
   micro.storageCompactionVersion = STORAGE_COMPACTION_VERSION;
   micro.dedupeArraysStoredInMicros = false;
@@ -3264,9 +3348,9 @@ function getOrCreateMicro(micros, classified, side) {
 
   micro.learningStatus = getLearningStatus(micro);
   micro.status = micro.learningStatus;
-  micro.tooEarly = safeNumber(micro.completed, 0) < MIN_COMPLETED_ACTIVE_LEARNING;
+  micro.tooEarly = number(micro.completed, 0) < MIN_COMPLETED_ACTIVE_LEARNING;
   micro.tooEarlyReason = micro.tooEarly
-    ? `completed ${safeNumber(micro.completed, 0)}/${MIN_COMPLETED_ACTIVE_LEARNING}`
+    ? `completed ${number(micro.completed, 0)}/${MIN_COMPLETED_ACTIVE_LEARNING}`
     : null;
 
   return micro;
@@ -3306,7 +3390,7 @@ function buildObservationDedupeIdentity(row = {}, microFamilyId = '') {
       'UNKNOWN'
   ).trim().toUpperCase();
 
-  const entry = safeNumber(row.entry || row.entryPrice, 0);
+  const entry = number(row.entry || row.entryPrice, 0);
 
   return {
     snapshotId: snapshotId || 'NO_SNAPSHOT',
@@ -3379,9 +3463,7 @@ export async function analyzeCandidatesBatch(
       redis,
       observationKey,
       obsDedupeTtlSec(),
-      {
-        type: 'OBSERVATION'
-      }
+      { type: 'OBSERVATION' }
     );
 
     const observationDuplicate = observationClaim.duplicate === true;
@@ -3458,7 +3540,7 @@ export async function analyzeCandidatesBatch(
     }));
 
     Object.assign(micro, analyzeIdentityFlags());
-    micros[microFamilyId] = compactMicroForStorage(micro) || micro;
+    micros[microFamilyId] = compactMicroForStorage(micro) || purgeBloatKeys(micro);
 
     actuallyTouchedIds.add(microFamilyId);
 
@@ -3678,7 +3760,7 @@ function calcRiskPct({ entry, sl }) {
 }
 
 function ensureNetOutcome(outcome = {}) {
-  const existingNetR = safeNumber(
+  const existingNetR = number(
     outcome.netR ??
       outcome.exitR ??
       outcome.realizedNetR ??
@@ -3687,24 +3769,24 @@ function ensureNetOutcome(outcome = {}) {
     null
   );
 
-  const existingGrossR = safeNumber(
+  const existingGrossR = number(
     outcome.grossR ??
       outcome.rawR ??
       outcome.realizedGrossR,
     null
   );
 
-  const existingCostR = safeNumber(
+  const existingCostR = number(
     outcome.costR ??
       outcome.avgCostR ??
       outcome.totalCostR,
     null
   );
 
-  const entry = safeNumber(outcome.entry, 0);
-  const exit = safeNumber(outcome.exit ?? outcome.exitPrice, 0);
-  const initialSl = safeNumber(outcome.initialSl || outcome.sl, 0);
-  const tp = safeNumber(outcome.tp, 0);
+  const entry = number(outcome.entry, 0);
+  const exit = number(outcome.exit ?? outcome.exitPrice, 0);
+  const initialSl = number(outcome.initialSl || outcome.sl, 0);
+  const tp = number(outcome.tp, 0);
 
   const validLongRiskShape =
     entry > 0 &&
@@ -3714,20 +3796,20 @@ function ensureNetOutcome(outcome = {}) {
     entry < tp;
 
   const riskPct =
-    safeNumber(outcome.riskPct, 0) ||
+    number(outcome.riskPct, 0) ||
     calcRiskPct({
       entry,
       sl: initialSl
     });
 
-  const grossMovePct = safeNumber(
+  const grossMovePct = number(
     outcome.grossMovePct,
     entry > 0 && exit > 0
       ? calcGrossMovePct({
-        side: TARGET_TRADE_SIDE,
-        entry,
-        exit
-      })
+          side: TARGET_TRADE_SIDE,
+          entry,
+          exit
+        })
       : null
   );
 
@@ -3740,13 +3822,13 @@ function ensureNetOutcome(outcome = {}) {
       tradeSide: TARGET_TRADE_SIDE,
       grossMovePct,
       riskPct,
-      entrySpreadPct: safeNumber(outcome.entrySpreadPct ?? outcome.spreadPct, 0),
-      exitSpreadPct: safeNumber(outcome.exitSpreadPct ?? outcome.spreadPct, 0)
-    });
+      entrySpreadPct: number(outcome.entrySpreadPct ?? outcome.spreadPct, 0),
+      exitSpreadPct: number(outcome.exitSpreadPct ?? outcome.spreadPct, 0)
+    }) || {};
 
-    const netR = safeNumber(cost.netR, existingNetR ?? 0);
-    const grossR = safeNumber(cost.grossR, existingGrossR ?? 0);
-    const costR = safeNumber(cost.costR, existingCostR ?? Math.max(0, grossR - netR));
+    const netR = number(cost.netR, existingNetR ?? 0);
+    const grossR = number(cost.grossR, existingGrossR ?? 0);
+    const costR = number(cost.costR, existingCostR ?? Math.max(0, grossR - netR));
 
     return withAnalyzeIdentityFlags({
       ...outcome,
@@ -3759,21 +3841,21 @@ function ensureNetOutcome(outcome = {}) {
       grossR,
       rawR: grossR,
       realizedGrossR: grossR,
-      grossPnlPct: safeNumber(cost.grossPnlPct, 0),
+      grossPnlPct: number(cost.grossPnlPct, 0),
 
       netR,
       exitR: netR,
       realizedNetR: netR,
       realizedR: netR,
       r: netR,
-      pnlPct: safeNumber(cost.netPnlPct, 0),
-      netPnlPct: safeNumber(cost.netPnlPct, 0),
+      pnlPct: number(cost.netPnlPct, 0),
+      netPnlPct: number(cost.netPnlPct, 0),
 
       costR,
       avgCostR: costR,
-      costPct: safeNumber(cost.costPct, 0),
-      feePct: safeNumber(cost.feePct, 0),
-      slippagePct: safeNumber(cost.slippagePct, 0),
+      costPct: number(cost.costPct, 0),
+      feePct: number(cost.feePct, 0),
+      slippagePct: number(cost.slippagePct, 0),
 
       win: netR > 0,
       loss: netR < 0,
@@ -3786,9 +3868,9 @@ function ensureNetOutcome(outcome = {}) {
     });
   }
 
-  const fallbackNetR = safeNumber(existingNetR, 0);
-  const fallbackGrossR = safeNumber(existingGrossR, fallbackNetR);
-  const fallbackCostR = safeNumber(
+  const fallbackNetR = number(existingNetR, 0);
+  const fallbackGrossR = number(existingGrossR, fallbackNetR);
+  const fallbackCostR = number(
     existingCostR,
     Math.max(0, fallbackGrossR - fallbackNetR)
   );
@@ -3841,8 +3923,8 @@ function buildOutcomeDedupeIdentity(outcome = {}, microFamilyId = '') {
   const openedAt = String(outcome.openedAt || outcome.createdAt || 'NO_OPEN').trim();
   const closedAt = String(outcome.closedAt || outcome.completedAt || outcome.ts || 'NO_CLOSE').trim();
   const exitReason = String(outcome.exitReason || outcome.reason || 'NO_REASON').trim();
-  const netR = safeNumber(outcome.netR ?? outcome.exitR, 0).toFixed(6);
-  const exitPrice = safeNumber(outcome.exit ?? outcome.exitPrice, 0).toFixed(8);
+  const netR = number(outcome.netR ?? outcome.exitR, 0).toFixed(6);
+  const exitPrice = number(outcome.exit ?? outcome.exitPrice, 0).toFixed(8);
 
   return hashText([
     TARGET_TRADE_SIDE,
@@ -3952,9 +4034,7 @@ export async function recordOutcome(
     redis,
     outcomeDedupeKey,
     outcomeDedupeTtlSec(),
-    {
-      type: 'OUTCOME'
-    }
+    { type: 'OUTCOME' }
   );
 
   if (outcomeClaim.duplicate === true) {
@@ -4038,17 +4118,17 @@ export async function recordOutcome(
     exchangeOrder: false,
     bitgetOrderPlaced: false,
 
-    netR: safeNumber(row.netR ?? row.exitR, 0),
-    exitR: safeNumber(row.exitR ?? row.netR, 0),
-    realizedNetR: safeNumber(row.realizedNetR ?? row.netR ?? row.exitR, 0),
-    realizedR: safeNumber(row.realizedR ?? row.netR ?? row.exitR, 0),
-    r: safeNumber(row.r ?? row.netR ?? row.exitR, 0),
+    netR: number(row.netR ?? row.exitR, 0),
+    exitR: number(row.exitR ?? row.netR, 0),
+    realizedNetR: number(row.realizedNetR ?? row.netR ?? row.exitR, 0),
+    realizedR: number(row.realizedR ?? row.netR ?? row.exitR, 0),
+    r: number(row.r ?? row.netR ?? row.exitR, 0),
 
-    costR: safeNumber(row.costR, 0),
-    avgCostR: safeNumber(row.avgCostR ?? row.costR, 0),
-    grossR: safeNumber(row.grossR, 0),
-    rawR: safeNumber(row.rawR ?? row.grossR, 0),
-    realizedGrossR: safeNumber(row.realizedGrossR ?? row.grossR, 0),
+    costR: number(row.costR, 0),
+    avgCostR: number(row.avgCostR ?? row.costR, 0),
+    grossR: number(row.grossR, 0),
+    rawR: number(row.rawR ?? row.grossR, 0),
+    realizedGrossR: number(row.realizedGrossR ?? row.grossR, 0),
 
     costModelApplied: Boolean(row.costModelApplied),
     netCostModelApplied: Boolean(row.netCostModelApplied),
@@ -4069,7 +4149,7 @@ export async function recordOutcome(
   }), src);
 
   Object.assign(micro, analyzeIdentityFlags());
-  micros[microFamilyId] = compactMicroForStorage(micro) || micro;
+  micros[microFamilyId] = compactMicroForStorage(micro) || purgeBloatKeys(micro);
 
   await saveWeekMicros(
     weekKey,
@@ -4127,8 +4207,8 @@ function calcLongGrossR({ entry, initialSl, exit }) {
 function inferDirectToSL({ position, exitReason }) {
   const reason = upper(exitReason);
 
-  const mfeR = safeNumber(position.mfeR, 0);
-  const maeR = safeNumber(position.maeR, 0);
+  const mfeR = number(position.mfeR, 0);
+  const maeR = number(position.maeR, 0);
 
   const stoppedOut = [
     'SL',
@@ -4230,7 +4310,7 @@ function copyMicroClassificationFields(position = {}) {
 
     schema: TRUE_MICRO_SCHEMA,
     microFamilySchema: TRUE_MICRO_SCHEMA,
-    version: 'fixed-taxonomy-75-child-smart-evidence-v2',
+    version: 'fixed-taxonomy-75-child-smart-evidence-v3',
 
     assetClass: position.assetClass || null,
 
@@ -4324,10 +4404,10 @@ export function buildOutcomeFromPosition({
     throw new Error('POSITION_REQUIRED_FOR_OUTCOME');
   }
 
-  const entry = safeNumber(position.entry, 0);
-  const initialSl = safeNumber(position.initialSl || position.sl, 0);
-  const exit = safeNumber(exitPrice, 0);
-  const tp = safeNumber(position.tp, 0);
+  const entry = number(position.entry, 0);
+  const initialSl = number(position.initialSl || position.sl, 0);
+  const exit = number(exitPrice, 0);
+  const tp = number(position.tp, 0);
 
   const validLongRiskShape =
     entry > 0 &&
@@ -4337,7 +4417,7 @@ export function buildOutcomeFromPosition({
     entry < tp;
 
   const riskPct =
-    safeNumber(position.riskPct, 0) ||
+    number(position.riskPct, 0) ||
     calcRiskPct({
       entry,
       sl: initialSl
@@ -4351,10 +4431,10 @@ export function buildOutcomeFromPosition({
 
   const grossR = validLongRiskShape
     ? calcLongGrossR({
-      entry,
-      initialSl,
-      exit
-    })
+        entry,
+        initialSl,
+        exit
+      })
     : 0;
 
   const cost = applyCosts({
@@ -4362,13 +4442,13 @@ export function buildOutcomeFromPosition({
     tradeSide: TARGET_TRADE_SIDE,
     grossMovePct,
     riskPct,
-    entrySpreadPct: safeNumber(position.spreadPct, 0),
-    exitSpreadPct: safeNumber(position.exitSpreadPct ?? position.spreadPct, 0)
-  });
+    entrySpreadPct: number(position.spreadPct, 0),
+    exitSpreadPct: number(position.exitSpreadPct ?? position.spreadPct, 0)
+  }) || {};
 
-  const costR = safeNumber(cost.costR, 0);
+  const costR = number(cost.costR, 0);
 
-  const netR = safeNumber(
+  const netR = number(
     cost.netR,
     grossR - costR
   );
@@ -4422,10 +4502,10 @@ export function buildOutcomeFromPosition({
     entry,
     exit,
     exitPrice: exit,
-    sl: safeNumber(position.sl, 0),
+    sl: number(position.sl, 0),
     initialSl,
     tp,
-    rr: safeNumber(position.rr, 0),
+    rr: number(position.rr, 0),
     riskPct,
 
     validLongRiskShape,
@@ -4436,21 +4516,21 @@ export function buildOutcomeFromPosition({
     grossR,
     rawR: grossR,
     realizedGrossR: grossR,
-    grossPnlPct: safeNumber(cost.grossPnlPct, grossMovePct),
+    grossPnlPct: number(cost.grossPnlPct, grossMovePct),
 
     exitR: netR,
-    pnlPct: safeNumber(cost.netPnlPct, 0),
+    pnlPct: number(cost.netPnlPct, 0),
     netR,
     realizedNetR: netR,
     realizedR: netR,
     r: netR,
-    netPnlPct: safeNumber(cost.netPnlPct, 0),
+    netPnlPct: number(cost.netPnlPct, 0),
 
     costR,
     avgCostR: costR,
-    costPct: safeNumber(cost.costPct, 0),
-    feePct: safeNumber(cost.feePct, 0),
-    slippagePct: safeNumber(cost.slippagePct, 0),
+    costPct: number(cost.costPct, 0),
+    feePct: number(cost.feePct, 0),
+    slippagePct: number(cost.slippagePct, 0),
 
     win: netR > 0,
     loss: netR < 0,
@@ -4461,8 +4541,8 @@ export function buildOutcomeFromPosition({
     netCostModelApplied: true,
     costModel: 'APPLY_COSTS_NET_R_V1',
 
-    mfeR: safeNumber(position.mfeR, 0),
-    maeR: safeNumber(position.maeR, 0),
+    mfeR: number(position.mfeR, 0),
+    maeR: number(position.maeR, 0),
 
     directToSL,
     directSL: directToSL,
@@ -4473,7 +4553,7 @@ export function buildOutcomeFromPosition({
 
     beArmed: Boolean(position.beArmed),
     beWouldExit: Boolean(position.beWouldExit),
-    beExitR: safeNumber(position.beExitR, 0),
+    beExitR: number(position.beExitR, 0),
 
     gaveBackAfterHalfR: Boolean(position.gaveBackAfterHalfR),
     gaveBackAfterOneR: Boolean(position.gaveBackAfterOneR),
