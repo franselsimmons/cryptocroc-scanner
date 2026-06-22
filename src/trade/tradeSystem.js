@@ -49,10 +49,21 @@ const READ_SCOPE = 'READ_LONG_SCANNER_AND_MARKET_WEATHER';
 const LONG_MARKET_WEATHER_KEY = `${LONG_KEY_PREFIX}MARKET:WEATHER:LATEST`;
 const LONG_MARKET_UNIVERSE_KEY = `${LONG_KEY_PREFIX}MARKET:UNIVERSE:LATEST`;
 
+const LONG_DISCORD_SELECTED_MICROS_KEY = `${LONG_KEY_PREFIX}DISCORD:SELECTED_MICROS`;
+const LONG_DISCORD_SELECTION_FALLBACK_KEYS = Object.freeze([
+  `${LONG_KEY_PREFIX}DISCORD:SELECTED_MICROS`,
+  `${LONG_KEY_PREFIX}DISCORD:SELECTION`,
+  `${LONG_KEY_PREFIX}MANUAL:SELECTED_MICROS`,
+  `${LONG_KEY_PREFIX}MANUAL_SELECTION`,
+  `${LONG_KEY_PREFIX}ROTATION:ACTIVE`,
+  `${LONG_KEY_PREFIX}ANALYZE:ROTATION:ACTIVE`
+]);
+
 const DEFAULT_MAX_CANDIDATES_PER_SNAPSHOT = 12;
 const DEFAULT_HARD_MAX_CANDIDATES_PER_SNAPSHOT = 12;
 const DEFAULT_MONITOR_TIMEOUT_MS = 2500;
 const DEFAULT_ROTATION_TIMEOUT_MS = 800;
+const DEFAULT_DISCORD_SELECTION_CACHE_TIMEOUT_MS = 300;
 const DEFAULT_OPEN_POSITION_LOAD_TIMEOUT_MS = 900;
 const DEFAULT_SAVE_POSITION_TIMEOUT_MS = 1200;
 const DEFAULT_MAX_RUNTIME_MS = 26000;
@@ -219,6 +230,15 @@ function tradeConfig(options = {}) {
       DEFAULT_ROTATION_TIMEOUT_MS,
       250,
       1500
+    ),
+
+    discordSelectionCacheTimeoutMs: clampInt(
+      options.discordSelectionCacheTimeoutMs ??
+        CONFIG.long?.trade?.discordSelectionCacheTimeoutMs ??
+        CONFIG.trade?.discordSelectionCacheTimeoutMs,
+      DEFAULT_DISCORD_SELECTION_CACHE_TIMEOUT_MS,
+      100,
+      1000
     ),
 
     openPositionLoadTimeoutMs: clampInt(
@@ -403,7 +423,10 @@ function isolationFlags() {
     oneOpenPositionPerSymbol: true,
     maxOneOpenPositionPerSymbol: true,
 
-    shortRootTouched: false
+    shortRootTouched: false,
+
+    discordSelectionCacheKey: LONG_DISCORD_SELECTED_MICROS_KEY,
+    discordSelectionCacheReadOnlyInsideTradeSystem: true
   };
 }
 
@@ -1077,26 +1100,169 @@ function hasOpenSymbol(openSymbolSet, row = {}) {
   return rowSymbolKeys(row).some((key) => openSymbolSet.has(key));
 }
 
-function buildSelectedAlertContext(activeRotation = null) {
-  const ids = [
-    ...(Array.isArray(activeRotation?.microFamilyIds) ? activeRotation.microFamilyIds : []),
-    ...(Array.isArray(activeRotation?.activeMicroFamilyIds) ? activeRotation.activeMicroFamilyIds : []),
-    ...(Array.isArray(activeRotation?.trueMicroFamilyIds) ? activeRotation.trueMicroFamilyIds : []),
-    ...(Array.isArray(activeRotation?.childTrueMicroFamilyIds) ? activeRotation.childTrueMicroFamilyIds : []),
-    ...(Array.isArray(activeRotation?.microFamilies)
-      ? activeRotation.microFamilies.map((row) => row.trueMicroFamilyId || row.microFamilyId || row.childTrueMicroFamilyId)
-      : [])
-  ]
-    .map((id) => upper(id))
-    .filter(isSelectableTrueMicroId);
+function collectSelectedIds(source, out = []) {
+  if (!source) return out;
 
-  const selectedMicroFamilyIds = [...new Set(ids)];
+  if (typeof source === 'string') {
+    out.push(source);
+    return out;
+  }
+
+  if (Array.isArray(source)) {
+    for (const item of source) collectSelectedIds(item, out);
+    return out;
+  }
+
+  if (typeof source !== 'object') return out;
+
+  const directFields = [
+    source.trueMicroFamilyId,
+    source.childTrueMicroFamilyId,
+    source.microFamilyId,
+    source.learningMicroFamilyId,
+    source.analyzeMicroFamilyId,
+    source.fixedTaxonomyMicroFamilyId,
+    source.id,
+    source.key
+  ];
+
+  for (const value of directFields) {
+    if (value) out.push(value);
+  }
+
+  const arrayFields = [
+    source.selectedTrueMicroFamilyIds,
+    source.activeTrueMicroFamilyIds,
+    source.trueMicroFamilyIds,
+    source.childTrueMicroFamilyIds,
+    source.selectedMicroFamilyIds,
+    source.activeMicroFamilyIds,
+    source.microFamilyIds,
+    source.selectedIds,
+    source.ids,
+    source.microFamilies,
+    source.selectedMicroFamilies,
+    source.activeMicroFamilies,
+    source.rows,
+    source.selectedRows,
+    source.selection,
+    source.selected
+  ];
+
+  for (const value of arrayFields) {
+    if (Array.isArray(value)) collectSelectedIds(value, out);
+  }
+
+  return out;
+}
+
+function normalizeSelectedMicroIds(value = {}) {
+  return [...new Set(
+    collectSelectedIds(value)
+      .map((id) => upper(id))
+      .filter(isSelectableTrueMicroId)
+  )];
+}
+
+function discordSelectionKeys() {
+  return [...new Set([
+    namespacedLongKey(
+      KEYS.long?.discord?.selectedMicros ||
+        KEYS.discord?.longSelectedMicros ||
+        KEYS.discord?.selectedLongMicros,
+      'DISCORD:SELECTED_MICROS'
+    ),
+    namespacedLongKey(
+      KEYS.long?.manual?.selectedMicros ||
+        KEYS.manual?.longSelectedMicros ||
+        KEYS.manualSelection?.longSelectedMicros,
+      'MANUAL:SELECTED_MICROS'
+    ),
+    namespacedLongKey(
+      KEYS.long?.rotation?.active ||
+        KEYS.rotation?.longActive ||
+        KEYS.rotation?.active,
+      'ROTATION:ACTIVE'
+    ),
+    ...LONG_DISCORD_SELECTION_FALLBACK_KEYS
+  ].filter(Boolean))];
+}
+
+async function loadDiscordSelectionCacheFast(cfg, runtimeWarnings) {
+  const redis = getDurableRedis();
+  const keys = discordSelectionKeys();
+
+  for (const key of keys) {
+    const payload = await withTimeout(
+      getJson(redis, key, null).catch(() => null),
+      cfg.discordSelectionCacheTimeoutMs,
+      null
+    );
+
+    const selectedTrueMicroFamilyIds = normalizeSelectedMicroIds(payload || {});
+
+    if (selectedTrueMicroFamilyIds.length > 0) {
+      return {
+        ok: true,
+        source: key,
+        discordSelectionSource: key,
+        discordSelectionCacheHit: true,
+        discordSelectionCacheKey: key,
+        rotationId: payload?.rotationId || payload?.selectedRotationId || payload?.activeRotationId || null,
+        selectedRotationId: payload?.selectedRotationId || payload?.rotationId || payload?.activeRotationId || null,
+        activeRotationId: payload?.activeRotationId || payload?.rotationId || payload?.selectedRotationId || null,
+        selectedTrueMicroFamilyIds,
+        activeTrueMicroFamilyIds: selectedTrueMicroFamilyIds,
+        trueMicroFamilyIds: selectedTrueMicroFamilyIds,
+        childTrueMicroFamilyIds: selectedTrueMicroFamilyIds,
+        selectedMicroFamilyIds: selectedTrueMicroFamilyIds,
+        activeMicroFamilyIds: selectedTrueMicroFamilyIds,
+        microFamilyIds: selectedTrueMicroFamilyIds,
+        manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
+        discordSelectionRule: 'EXACT_75_CHILD_TRUE_MICRO_FAMILY_ID_ONLY',
+        selectionGranularity: 'EXACT_75_CHILD',
+        trueMicroFamilySchema: TRUE_MICRO_SCHEMA
+      };
+    }
+  }
+
+  runtimeWarnings.push('DISCORD_SELECTION_CACHE_EMPTY_TRYING_ROTATION_FALLBACK');
+
+  return null;
+}
+
+function buildSelectedAlertContext(activeRotation = null) {
+  const selectedMicroFamilyIds = normalizeSelectedMicroIds(activeRotation || {});
   const selectedMicroSet = new Set(selectedMicroFamilyIds);
 
   return {
-    rotationId: activeRotation?.rotationId || null,
+    rotationId:
+      activeRotation?.rotationId ||
+      activeRotation?.selectedRotationId ||
+      activeRotation?.activeRotationId ||
+      null,
+
+    activeRotationId:
+      activeRotation?.activeRotationId ||
+      activeRotation?.rotationId ||
+      activeRotation?.selectedRotationId ||
+      null,
+
+    selectedRotationId:
+      activeRotation?.selectedRotationId ||
+      activeRotation?.rotationId ||
+      activeRotation?.activeRotationId ||
+      null,
+
+    discordSelectionSource: activeRotation?.discordSelectionSource || activeRotation?.source || null,
+    discordSelectionCacheHit: Boolean(activeRotation?.discordSelectionCacheHit),
+    discordSelectionCacheKey: activeRotation?.discordSelectionCacheKey || null,
+
     selectedMicroFamilyIds,
     selectedTrueMicroFamilyIds: selectedMicroFamilyIds,
+    activeMicroFamilyIds: selectedMicroFamilyIds,
+    activeTrueMicroFamilyIds: selectedMicroFamilyIds,
+
     selectedMicroSet,
     selectedParentTrueMicroFamilyIds: [...new Set(selectedMicroFamilyIds.map(parentFromChild).filter(Boolean))],
     empty: selectedMicroFamilyIds.length === 0,
@@ -1295,8 +1461,12 @@ function buildVirtualEntryAction({
     action: 'VIRTUAL_ENTRY',
     reason: virtualGate.reason || 'LONG_VIRTUAL_LEARNING_STANDARDIZED_TP_SL',
 
-    selectedRotationId: alertContext.rotationId,
-    activeRotationId: alertContext.rotationId,
+    selectedRotationId: alertContext.selectedRotationId || alertContext.rotationId,
+    activeRotationId: alertContext.activeRotationId || alertContext.rotationId,
+
+    discordSelectionSource: alertContext.discordSelectionSource || null,
+    discordSelectionCacheHit: Boolean(alertContext.discordSelectionCacheHit),
+    discordSelectionCacheKey: alertContext.discordSelectionCacheKey || null,
 
     selectedMicroFamilyAlert: Boolean(finalDiscordAlertEligible),
     selectedExactMicroMatch: Boolean(selectedExactMicroMatch),
@@ -1552,6 +1722,13 @@ function compactRunForRedis(result = {}) {
     activeTrueMicroFamilyIds: Array.isArray(result.activeTrueMicroFamilyIds) ? result.activeTrueMicroFamilyIds : [],
     selectedTrueMicroFamilyIds: Array.isArray(result.selectedTrueMicroFamilyIds) ? result.selectedTrueMicroFamilyIds : [],
 
+    activeMicroFamilies: safeNumber(result.activeMicroFamilies, 0),
+    selectedMicroFamilies: safeNumber(result.selectedMicroFamilies, 0),
+
+    discordSelectionSource: result.discordSelectionSource || null,
+    discordSelectionCacheHit: Boolean(result.discordSelectionCacheHit),
+    discordSelectionCacheKey: result.discordSelectionCacheKey || null,
+
     marketContext: result.marketContext || null,
     currentMarketWeather: result.currentMarketWeather || null,
     qualityAudit: result.qualityAudit || null,
@@ -1631,6 +1808,13 @@ async function loadOpenPositionsFast(cfg, runtimeWarnings) {
 }
 
 async function loadRotationFast(cfg, runtimeWarnings) {
+  const cachedSelection = await loadDiscordSelectionCacheFast(cfg, runtimeWarnings).catch(() => null);
+
+  if (cachedSelection?.ok) {
+    runtimeWarnings.push(`DISCORD_SELECTION_CACHE_HIT:${cachedSelection.discordSelectionCacheKey || cachedSelection.source}`);
+    return cachedSelection;
+  }
+
   const result = await withTimeout(
     getActiveRotation({
       weekKey: PERSISTENT_LEARNING_KEY,
@@ -1660,7 +1844,27 @@ async function loadRotationFast(cfg, runtimeWarnings) {
     return null;
   }
 
-  return result || null;
+  const selectedTrueMicroFamilyIds = normalizeSelectedMicroIds(result || {});
+
+  if (selectedTrueMicroFamilyIds.length <= 0) {
+    runtimeWarnings.push('ROTATION_LOAD_EMPTY_DISCORD_SELECTION');
+    return null;
+  }
+
+  return {
+    ...(result || {}),
+    ok: true,
+    source: 'getActiveRotation:fallback',
+    discordSelectionSource: 'getActiveRotation:fallback',
+    discordSelectionCacheHit: false,
+    selectedTrueMicroFamilyIds,
+    activeTrueMicroFamilyIds: selectedTrueMicroFamilyIds,
+    selectedMicroFamilyIds: selectedTrueMicroFamilyIds,
+    activeMicroFamilyIds: selectedTrueMicroFamilyIds,
+    trueMicroFamilyIds: selectedTrueMicroFamilyIds,
+    childTrueMicroFamilyIds: selectedTrueMicroFamilyIds,
+    microFamilyIds: selectedTrueMicroFamilyIds
+  };
 }
 
 async function monitorPositionsFast({
@@ -2155,20 +2359,24 @@ export async function runTradeSystem(options = {}) {
     currentMarketWeather: marketContext.source,
     currentMarketUniverse: null,
 
-    activeRotationId: alertContext.rotationId,
-    selectedRotationId: alertContext.rotationId,
+    activeRotationId: alertContext.activeRotationId || alertContext.rotationId,
+    selectedRotationId: alertContext.selectedRotationId || alertContext.rotationId,
 
-    activeMicroFamilyIds: alertContext.selectedMicroFamilyIds,
+    activeMicroFamilyIds: alertContext.activeMicroFamilyIds,
     selectedMicroFamilyIds: alertContext.selectedMicroFamilyIds,
-    activeTrueMicroFamilyIds: alertContext.selectedTrueMicroFamilyIds,
+    activeTrueMicroFamilyIds: alertContext.activeTrueMicroFamilyIds,
     selectedTrueMicroFamilyIds: alertContext.selectedTrueMicroFamilyIds,
-    activeMacroFamilyIds: [],
-    selectedMacroFamilyIds: [],
+    activeMacroFamilyIds: alertContext.selectedParentTrueMicroFamilyIds,
+    selectedMacroFamilyIds: alertContext.selectedParentTrueMicroFamilyIds,
 
     activeMicroFamilies: alertContext.selectedMicroFamilyIds.length,
     selectedMicroFamilies: alertContext.selectedMicroFamilyIds.length,
-    activeMacroFamilies: 0,
-    selectedMacroFamilies: 0,
+    activeMacroFamilies: alertContext.selectedParentTrueMicroFamilyIds.length,
+    selectedMacroFamilies: alertContext.selectedParentTrueMicroFamilyIds.length,
+
+    discordSelectionSource: alertContext.discordSelectionSource,
+    discordSelectionCacheHit: alertContext.discordSelectionCacheHit,
+    discordSelectionCacheKey: alertContext.discordSelectionCacheKey,
 
     scannerSnapshotStats: {
       candidatesCount: snapshot.candidatesCount || allLongCandidates.length,
