@@ -1598,6 +1598,22 @@
       return `${endpoints.market}?${params.toString()}`;
     }
 
+    function scannerApiUrl() {
+      const params = new URLSearchParams();
+      params.set("side", ONLY_SIDE);
+      params.set("tradeSide", ONLY_SIDE);
+      params.set("targetTradeSide", ONLY_SIDE);
+      params.set("dashboardSide", DASHBOARD_SIDE);
+      params.set("redisNamespace", LONG_NAMESPACE);
+      params.set("redisKeyPrefix", LONG_KEY_PREFIX);
+      params.set("persistentLearningKey", PERSISTENT_LEARNING_KEY);
+      params.set("includeSnapshot", "1");
+      params.set("includeCandidates", "1");
+      params.set("includeLatest", "1");
+      params.set("compact", "1");
+      return `${endpoints.scanner}?${params.toString()}`;
+    }
+
     function extractMarketData(data = {}) {
       const source = data.marketWeather || data.weather || data.currentMarketWeather || data.latest || data.snapshot || data;
       const universe = data.marketUniverse || data.universe || source.universe || source.marketUniverse || {};
@@ -1687,6 +1703,7 @@
       }
       return {};
     }
+
     function extractActiveMicroIdsFromPayload(data = {}, fallbackIds = []) {
       const active = extractActiveRotationPayload(data);
       return uniqueStrings([
@@ -1719,6 +1736,138 @@
       const symbol = baseSymbol(row);
       const currentR = num(row.currentR, 0);
       return `<article class="coin-card"><div class="coin-head"><div><div class="coin-symbol">${escapeHtml(symbol)}</div><div class="coin-name">${escapeHtml(row.contractSymbol || `${symbol}USDT`)}</div></div><div class="coin-price"><strong>${escapeHtml(fmt(currentR, 3))}R</strong><span>current R</span></div></div><div class="coin-foot"><span class="pill long">LONG</span><span class="pill purple">VIRTUAL</span><span class="pill ${currentR >= 0 ? "active" : "danger"}">${escapeHtml(fmt(currentR, 2))}R</span>${currentFitPill(row)}</div><div class="coin-stats"><div class="coin-stat"><span>Entry</span><strong>${escapeHtml(fmtPrice(row.entry))}</strong></div><div class="coin-stat"><span>SL</span><strong>${escapeHtml(fmtPrice(row.sl || row.stopLoss))}</strong></div><div class="coin-stat"><span>TP</span><strong>${escapeHtml(fmtPrice(row.tp || row.takeProfit))}</strong></div><div class="coin-stat"><span>RR</span><strong>${escapeHtml(fmt(row.rr, 2))}</strong></div><div class="coin-stat"><span>MFE</span><strong>${escapeHtml(fmt(row.mfeR, 2))}R</strong></div><div class="coin-stat"><span>MAE</span><strong>${escapeHtml(fmt(row.maeR, 2))}R</strong></div><div class="coin-stat"><span>CostR</span><strong>${escapeHtml(fmt(row.costR || row.avgCostR, 3))}</strong></div><div class="coin-stat"><span>DirectSL</span><strong>${row.directSL || row.directToSL ? "YES" : "NO"}</strong></div></div><div class="coin-foot"><code>${escapeHtml(microId(row) || "NO_75_CHILD")}</code></div></article>`;
+    }
+
+    function compactScannerCandidate(row = {}) {
+      return {
+        symbol: baseSymbol(row),
+        contractSymbol: row.contractSymbol || row.instId || row.instrumentId || `${baseSymbol(row)}USDT`,
+        side: ONLY_SIDE,
+        price: firstFinite(row.price, row.currentPrice, row.markPrice, row.entry),
+        scannerScore: firstFinite(row.scannerScore, row.moveScore, row.sniperScore, row.confluence),
+        change1h: firstFinite(row.change1h, row.priceChange1h),
+        change24h: firstFinite(row.change24h, row.priceChange24h),
+        volume24h: firstFinite(row.volume24h, row.quoteVolume24h),
+        scannerGatePassed: Boolean(row.scannerGatePassed),
+        analyzeOnly: Boolean(row.analyzeOnly || row.discoveryOnly || row.tradeDiscoveryOnly),
+        regime: row.regime || row.currentRegime || null,
+        btcState: row.btcState || null,
+        reason: row.scannerReason || row.reason || null,
+        role: "SCANNER_METADATA_ONLY"
+      };
+    }
+
+    function scannerWarnings(data = {}) {
+      if (Array.isArray(data.runtimeWarnings)) return data.runtimeWarnings;
+      if (Array.isArray(data.warnings)) return data.warnings;
+      if (data.warning) return [data.warning];
+      return [];
+    }
+
+    function scannerErrors(data = {}) {
+      if (Array.isArray(data.errors)) return data.errors;
+      if (data.error) return [data.error];
+      if (data.reason && data.ok === false) return [data.reason];
+      return [];
+    }
+
+    function scannerHealthStatus({ data = {}, snapshot = {}, candidates = [] } = {}) {
+      const warnings = scannerWarnings(data);
+      const errors = scannerErrors(data);
+      const snapshotId = snapshot.snapshotId || data.snapshotId || null;
+      const createdAt = Number(snapshot.createdAt || data.createdAt || snapshot.completedAt || data.completedAt || 0);
+      const ageSec = createdAt > 0 ? Math.round((Date.now() - createdAt) / 1000) : null;
+
+      if (errors.length) return "ERROR";
+      if (data.ok === false) return "ERROR";
+      if (!snapshotId && !candidates.length) return "NO_SNAPSHOT";
+      if (Number.isFinite(ageSec) && ageSec > 15 * 60) return "STALE";
+      if (!candidates.length) return "NO_CANDIDATES";
+      if (warnings.length) return "HEALTHY_WITH_WARNINGS";
+
+      return "HEALTHY";
+    }
+
+    function compactScannerApiOutput(data = {}) {
+      const snapshot = data.snapshot || data.latest || data.latestSnapshot || {};
+      const rawCandidates = snapshot.candidates || data.candidates || data.rows || [];
+      const candidates = longRows(rawCandidates);
+
+      const warnings = scannerWarnings(data);
+      const errors = scannerErrors(data);
+
+      const snapshotId = snapshot.snapshotId || data.snapshotId || null;
+      const createdAt = Number(snapshot.createdAt || data.createdAt || snapshot.completedAt || data.completedAt || 0);
+      const ageSec = createdAt > 0 ? Math.round((Date.now() - createdAt) / 1000) : null;
+
+      const gatePassed = candidates.filter((row) => row.scannerGatePassed).length;
+      const analyzeOnly = candidates.filter((row) => row.analyzeOnly || row.discoveryOnly || row.tradeDiscoveryOnly).length;
+
+      return {
+        ok: data.ok !== false,
+        health: scannerHealthStatus({ data, snapshot, candidates }),
+
+        side: ONLY_SIDE,
+        dashboardSide: DASHBOARD_SIDE,
+        namespace: LONG_NAMESPACE,
+        redisKeyPrefix: LONG_KEY_PREFIX,
+
+        apiRoute: endpoints.scanner,
+        runRoute: endpoints.runScanner,
+
+        snapshot: {
+          snapshotId,
+          createdAt: createdAt || null,
+          ageSec,
+          ageText: ageText(createdAt),
+          source: data.selectedSnapshotSource || snapshot.selectedSnapshotSource || data.source || null,
+          reason: data.selectedSnapshotReason || snapshot.selectedSnapshotReason || data.reason || null
+        },
+
+        counts: {
+          rawCandidates: Array.isArray(rawCandidates) ? rawCandidates.length : 0,
+          longCandidates: candidates.length,
+          scannerGatePassed: gatePassed,
+          analyzeOnly,
+          ignoredOppositeSide: Number(snapshot.rawShortCandidatesIgnored || data.rawOppositeCount || data.ignoredShortCandidates || 0),
+          filteredUniverse: Number(snapshot.filteredUniverse || data.filteredUniverse || data.scannerSnapshotStats?.filteredUniverse || 0) || null,
+          rawUniverse: Number(snapshot.rawCount || data.rawCount || data.scannerSnapshotStats?.rawCount || 0) || null
+        },
+
+        scannerRules: {
+          scannerWritesLearning: false,
+          scannerWritesTrade: false,
+          scannerSendsDiscord: false,
+          scannerFingerprintRole: "METADATA_ONLY",
+          scannerFingerprintsUsedAsLearningFamily: false,
+          learningIdentitySource: "ANALYZE_TRUE_MICRO_FAMILY"
+        },
+
+        market: {
+          regime: data.marketContext?.regime || data.currentMarketWeather?.regime || data.currentMarketWeather?.currentRegime || null,
+          trendSide: data.marketContext?.trendSide || data.currentMarketWeather?.trendSide || data.currentMarketWeather?.currentTrendSide || null,
+          confidence: data.marketContext?.confidence || data.currentMarketWeather?.confidence || null,
+          bullishPct: data.marketContext?.bullishPct || data.currentMarketWeather?.bullishPct || null,
+          bearishPct: data.marketContext?.bearishPct || data.currentMarketWeather?.bearishPct || null,
+          squeezePct: data.marketContext?.squeezePct || data.currentMarketWeather?.squeezePct || null
+        },
+
+        warnings,
+        errors,
+
+        topCandidates: candidates
+          .slice(0, 12)
+          .map(compactScannerCandidate),
+
+        omitted: {
+          fullCandidatesArray: true,
+          rawUniverseRows: true,
+          marketUniverseRows: true,
+          verboseDebugFields: true,
+          fullApiStillAvailableViaOpenButton: true,
+          reason: "COMPACT_SCANNER_HEALTH_OUTPUT_FOR_CHATGPT_UPLOAD"
+        }
+      };
     }
 
     function microTable(rows = []) {
@@ -1943,13 +2092,116 @@
 
     async function renderScanner() {
       showLoading("scanner");
-      const data = await api(endpoints.scanner);
+
+      const endpointUrl = scannerApiUrl();
+      const data = await api(endpointUrl, { timeoutMs: 22000 });
+
       state.scanner = data;
-      const snapshot = data.snapshot || data.latest || {};
-      const candidates = longRows(snapshot.candidates || data.candidates || []);
-      $("scanner").innerHTML = `<div class="toolbar"><button type="button" class="primary" id="runScannerBtn">Run Scanner now</button><button type="button" id="copyScannerBtn">Copy JSON</button></div><div class="grid">${metricCard("Snapshot ID", snapshot.snapshotId || data.snapshotId || "-")}${metricCard("Age", ageText(snapshot.createdAt), fmtTs(snapshot.createdAt))}${metricCard("LONG candidates", fmtInt(candidates.length))}${metricCard("Scanner gate", fmtInt(candidates.filter((row) => row.scannerGatePassed).length))}${metricCard("Analyze-only", fmtInt(candidates.filter((row) => row.analyzeOnly || row.discoveryOnly || row.tradeDiscoveryOnly).length))}${metricCard("Ignored SHORT", fmtInt(snapshot.rawShortCandidatesIgnored || data.rawOppositeCount || 0))}${metricCard("Learning identity", "Analyze only")}${metricCard("Scanner IDs", "metadata only")}</div><div class="section-title"><div><h2>Scanner LONG candidates</h2><p>Scanner zoekt bullish coins. Scanner schrijft geen learning family, geen trade, geen Discord.</p></div></div><div class="coin-grid">${candidates.slice(0, 12).map(coinCard).join("") || '<div class="empty">Geen LONG scanner candidates.</div>'}</div>${table(candidates, [{ label: "Symbol", render: (row) => escapeHtml(baseSymbol(row)) }, { label: "Contract", render: (row) => escapeHtml(row.contractSymbol || `${baseSymbol(row)}USDT`) }, { label: "Side", render: () => '<span class="pill long">LONG</span>' }, { label: "Role", render: () => '<span class="pill raw">scanner metadata</span>' }, { label: "Price", render: (row) => fmtPrice(row.price) }, { label: "Score", render: (row) => fmt(row.scannerScore ?? row.moveScore, 2) }, { label: "1h", render: (row) => fmtRawPct(row.change1h) }, { label: "24h", render: (row) => fmtRawPct(row.change24h) }, { label: "Vol24h", render: (row) => fmtMoney(row.volume24h || row.quoteVolume24h) }, { label: "BTC", render: (row) => escapeHtml(row.btcState || "-") }, { label: "Regime", render: (row) => escapeHtml(row.regime || "-") }, { label: "Reason", render: (row) => escapeHtml(row.scannerReason || row.reason || "-") }], "Geen LONG scanner candidates.")}`;
+
+      const snapshot = data.snapshot || data.latest || data.latestSnapshot || {};
+      const candidates = longRows(snapshot.candidates || data.candidates || data.rows || []);
+      const compactOutput = compactScannerApiOutput(data);
+      const compactOutputJson = JSON.stringify(compactOutput, null, 2);
+
+      $("scanner").innerHTML = `
+        <div class="section-title">
+          <div>
+            <h2>Scanner</h2>
+            <p>Compacte API-health voor scanner. Scanner schrijft geen learning family, geen trade, geen Discord.</p>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <button type="button" class="primary" id="runScannerBtn">Run Scanner now</button>
+          <button type="button" id="copyScannerBtn">Copy compact JSON</button>
+          <button type="button" id="copyScannerUrlBtn">Copy API URL</button>
+          <button type="button" id="selectScannerOutputBtn">Select compact output</button>
+          <button type="button" id="openScannerApiBtn">Open volledige API</button>
+          <button type="button" id="exportScannerBtn">Export compact JSON</button>
+        </div>
+
+        <div class="api-url-box">
+          <strong>API URL:</strong>
+          <code>${escapeHtml(endpointUrl)}</code>
+        </div>
+
+        <div class="grid">
+          ${metricCard("Scanner health", compactOutput.health, "compacte status")}
+          ${metricCard("Endpoint", "/api/admin/scanner", "scanner health")}
+          ${metricCard("Snapshot ID", compactOutput.snapshot.snapshotId || "-")}
+          ${metricCard("Age", compactOutput.snapshot.ageText || "-", fmtTs(compactOutput.snapshot.createdAt))}
+          ${metricCard("LONG candidates", fmtInt(compactOutput.counts.longCandidates))}
+          ${metricCard("Scanner gate", fmtInt(compactOutput.counts.scannerGatePassed))}
+          ${metricCard("Analyze-only", fmtInt(compactOutput.counts.analyzeOnly))}
+          ${metricCard("Ignored SHORT", fmtInt(compactOutput.counts.ignoredOppositeSide))}
+          ${metricCard("Learning identity", "Analyze only")}
+          ${metricCard("Scanner IDs", "metadata only")}
+        </div>
+
+        <div class="section-title">
+          <div>
+            <h2>Scanner LONG candidates</h2>
+            <p>Scanner zoekt bullish coins. Scanner fingerprints blijven metadata-only.</p>
+          </div>
+        </div>
+
+        <div class="coin-grid">
+          ${candidates.slice(0, 12).map(coinCard).join("") || '<div class="empty">Geen LONG scanner candidates.</div>'}
+        </div>
+
+        ${table(candidates, [
+          { label: "Symbol", render: (row) => escapeHtml(baseSymbol(row)) },
+          { label: "Contract", render: (row) => escapeHtml(row.contractSymbol || `${baseSymbol(row)}USDT`) },
+          { label: "Side", render: () => '<span class="pill long">LONG</span>' },
+          { label: "Role", render: () => '<span class="pill raw">scanner metadata</span>' },
+          { label: "Price", render: (row) => fmtPrice(row.price) },
+          { label: "Score", render: (row) => fmt(row.scannerScore ?? row.moveScore, 2) },
+          { label: "1h", render: (row) => fmtRawPct(row.change1h) },
+          { label: "24h", render: (row) => fmtRawPct(row.change24h) },
+          { label: "Vol24h", render: (row) => fmtMoney(row.volume24h || row.quoteVolume24h) },
+          { label: "BTC", render: (row) => escapeHtml(row.btcState || "-") },
+          { label: "Regime", render: (row) => escapeHtml(row.regime || "-") },
+          { label: "Reason", render: (row) => escapeHtml(row.scannerReason || row.reason || "-") }
+        ], "Geen LONG scanner candidates.")}
+
+        <div class="card api-output-card">
+          <h3>Scanner API health output — compact</h3>
+          <div class="toolbar">
+            <button type="button" class="primary api-output-copy-btn" id="copyScannerOutputBtnBottom">Kopieer compact</button>
+          </div>
+          <textarea id="scannerApiOutput" class="api-output-textarea" readonly>${escapeHtml(compactOutputJson)}</textarea>
+        </div>
+      `;
+
+      function copyScannerOutput() {
+        const box = $("scannerApiOutput");
+        copyText(box?.value || compactOutputJson, "Compacte Scanner health output gekopieerd.");
+      }
+
       $("runScannerBtn")?.addEventListener("click", runScannerNow);
-      $("copyScannerBtn")?.addEventListener("click", () => copyText(JSON.stringify(data, null, 2), "Scanner JSON gekopieerd."));
+      $("copyScannerBtn")?.addEventListener("click", copyScannerOutput);
+      $("copyScannerOutputBtnBottom")?.addEventListener("click", copyScannerOutput);
+
+      $("copyScannerUrlBtn")?.addEventListener("click", () => {
+        copyText(endpointUrl, "Scanner API URL gekopieerd.");
+      });
+
+      $("selectScannerOutputBtn")?.addEventListener("click", () => {
+        const box = $("scannerApiOutput");
+        if (!box) return;
+        box.focus();
+        box.select();
+        box.setSelectionRange(0, box.value.length);
+        setMessage("Compacte scanner output geselecteerd. Je kunt nu kopiëren.", "ok");
+      });
+
+      $("openScannerApiBtn")?.addEventListener("click", () => {
+        window.open(endpointUrl, "_blank", "noopener,noreferrer");
+      });
+
+      $("exportScannerBtn")?.addEventListener("click", () => {
+        downloadJson("scanner-health-compact-long.json", compactOutput);
+      });
     }
 
     async function runScannerNow() {
