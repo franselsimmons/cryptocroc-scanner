@@ -224,7 +224,7 @@ function topNPerSide() {
 
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_TOP_N_PER_SIDE;
 
-  return Math.max(1, Math.min(MAX_TOP_N_PER_SIDE, n));
+  return Math.max(DEFAULT_TOP_N_PER_SIDE, Math.min(MAX_TOP_N_PER_SIDE, n));
 }
 
 function parentDiversificationEnabled() {
@@ -250,9 +250,9 @@ function maxPerParentTrueMicroFamily() {
     CONFIG.long?.rotation?.enforceMaxPerMacroFamily ??
     CONFIG.rotation?.enforceMaxPerMacroFamily;
 
-  if (legacyEnforce === true) return 1;
+  if (legacyEnforce === true) return DEFAULT_TOP_N_PER_SIDE;
 
-  return parentDiversificationEnabled() ? 1 : 0;
+  return parentDiversificationEnabled() ? DEFAULT_TOP_N_PER_SIDE : 0;
 }
 
 function minPrimaryRowsForPreviousMerge() {
@@ -2223,6 +2223,7 @@ export async function buildRotationFromWeek({
   const microFamilies = sortAdaptiveRows(selected)
     .filter(isLongRotationRow)
     .filter(isTrueMicroFamily)
+    .slice(0, topNPerSide())
     .map((row, index) => compactRotationRow(row, index + 1))
     .filter((row) => row.microFamilyId)
     .filter((row) => isKnownTrueMicroId(row.microFamilyId));
@@ -2469,6 +2470,7 @@ function sanitizeActiveRotation(rotation = {}, {
       .filter(isLongRotationRow)
       .filter(isTrueMicroFamily)
   )
+    .slice(0, topNPerSide())
     .map((row, index) => compactRotationRow(row, index + 1))
     .filter((row) => row.microFamilyId)
     .filter((row) => isKnownTrueMicroId(row.microFamilyId));
@@ -2615,6 +2617,23 @@ function manualSideFromId(id = '') {
   if (idLooksLikeLongFamily(value)) return TARGET_TRADE_SIDE;
 
   return 'UNKNOWN';
+}
+
+function activeManualIdsFromRotation(rotation = {}) {
+  return uniqueStrings([
+    rotation?.activeMicroFamilyIds || [],
+    rotation?.trueMicroFamilyIds || [],
+    rotation?.childTrueMicroFamilyIds || [],
+    rotation?.microFamilyIds || [],
+    Array.isArray(rotation?.microFamilies)
+      ? rotation.microFamilies.map((row) => row.trueMicroFamilyId || row.childTrueMicroFamilyId || row.microFamilyId)
+      : []
+  ])
+    .map(cleanLearningMicroId)
+    .filter(Boolean)
+    .filter(isKnownTrueMicroId)
+    .filter((id) => manualSideFromId(id) === TARGET_TRADE_SIDE)
+    .slice(0, topNPerSide());
 }
 
 function buildManualOnlyRow(id, rank) {
@@ -2907,6 +2926,60 @@ function requestedManualIdsFromOptions(options = {}) {
   ]);
 }
 
+function replaceManualSelectionRequested(options = {}, requestedIds = []) {
+  if (options.replaceSelection === true) return true;
+  if (options.replaceExisting === true) return true;
+  if (options.replace === true) return true;
+  if (options.overwrite === true) return true;
+  if (options.clearExisting === true) return true;
+
+  const mode = String(options.selectionMode || options.mode || '').trim().toUpperCase();
+
+  if (mode === 'REPLACE' || mode === 'OVERWRITE') return true;
+
+  return requestedIds.length >= topNPerSide();
+}
+
+function buildEffectiveManualSelection({
+  options = {},
+  requestedIds = [],
+  existingActive = null
+}) {
+  const normalizedRequestedIds = uniqueStrings(requestedIds)
+    .map(cleanLearningMicroId)
+    .filter(Boolean);
+
+  const replace = replaceManualSelectionRequested(options, normalizedRequestedIds);
+  const existingIds = replace ? [] : activeManualIdsFromRotation(existingActive);
+
+  const mergedIds = uniqueStrings([
+    existingIds,
+    normalizedRequestedIds
+  ])
+    .map(cleanLearningMicroId)
+    .filter(Boolean);
+
+  const effectiveIds = mergedIds.slice(0, topNPerSide());
+
+  const ignoredByLimitIds = mergedIds
+    .slice(topNPerSide())
+    .map((id) => ({
+      id,
+      normalizedId: id,
+      side: manualSideFromId(id),
+      reason: `MAX_${DEFAULT_TOP_N_PER_SIDE}_LONG_75_CHILD_TRUE_MICRO_IDS_REACHED`
+    }));
+
+  return {
+    replace,
+    appendMode: !replace && existingIds.length > 0,
+    existingIds,
+    originalRequestedIds: normalizedRequestedIds,
+    effectiveIds,
+    ignoredByLimitIds
+  };
+}
+
 function buildPreservedActiveResponse({
   existingActive,
   requestedIds,
@@ -3000,20 +3073,36 @@ export async function activateSelectedMicroFamilies(options = {}) {
     previousRows
   } = rotationMicros;
 
+  const existingActive = sanitizeActiveRotation(existingRawActive, {
+    requireManual: true
+  });
+
   const requestedIds = requestedManualIdsFromOptions(options);
+
+  const manualSelection = buildEffectiveManualSelection({
+    options,
+    requestedIds,
+    existingActive
+  });
 
   const {
     selectedRows,
-    ignoredIds,
+    ignoredIds: resolvedIgnoredIds,
     expandedFromMacro
   } = resolveManualSelection({
-    requestedIds,
+    requestedIds: manualSelection.effectiveIds,
     micros
   });
+
+  const ignoredIds = [
+    ...resolvedIgnoredIds,
+    ...manualSelection.ignoredByLimitIds
+  ];
 
   const microFamilies = sortAdaptiveRows(selectedRows)
     .filter(isLongRotationRow)
     .filter(isTrueMicroFamily)
+    .slice(0, topNPerSide())
     .map((row, index) => {
       if (row.manualOnly) {
         return {
@@ -3028,13 +3117,9 @@ export async function activateSelectedMicroFamilies(options = {}) {
     .filter((row) => isKnownTrueMicroId(row.microFamilyId));
 
   if (microFamilies.length === 0) {
-    const existingActive = sanitizeActiveRotation(existingRawActive, {
-      requireManual: true
-    });
-
     return buildPreservedActiveResponse({
       existingActive,
-      requestedIds,
+      requestedIds: manualSelection.effectiveIds,
       ignoredIds,
       expandedFromMacro,
       weekKey: dataWeekKey,
@@ -3095,8 +3180,12 @@ export async function activateSelectedMicroFamilies(options = {}) {
       ? 'NO_LONG_75_CHILD_TRUE_MICRO_IDS_SELECTED'
       : null,
 
-    requestedMicroFamilyIds: requestedIds,
-    requestedTrueMicroFamilyIds: requestedIds,
+    requestedMicroFamilyIds: manualSelection.originalRequestedIds,
+    requestedTrueMicroFamilyIds: manualSelection.originalRequestedIds,
+    effectiveRequestedMicroFamilyIds: manualSelection.effectiveIds,
+    preservedExistingMicroFamilyIds: manualSelection.existingIds,
+    appendMode: manualSelection.appendMode,
+    replaceMode: manualSelection.replace,
     ignoredRequestedIds: ignoredIds,
     expandedFromMacro,
 
