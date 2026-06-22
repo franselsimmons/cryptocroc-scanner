@@ -729,7 +729,7 @@
     const PERSISTENT_LEARNING_KEY = "LONG_LIVE";
 
     const MIN_COMPLETED_ACTIVE_LEARNING = 20;
-    const MAX_MANUAL_SELECTED_MICRO_FAMILIES = 2;
+    const MAX_ACTIVE_DISCORD_MICRO_FAMILIES = 2;
     const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 
     const TRUE_MICRO_SCHEMA = "FIXED_TAXONOMY_75";
@@ -1699,7 +1699,7 @@
         { label: "Momentum", render: (row) => fmt(recentMomentumScore(row), 1) },
         { label: "Adaptive", render: (row) => `<strong>${escapeHtml(fmt(adaptiveScore(row), 2))}</strong>` },
         { label: "Balanced", render: (row) => fmt(row.dashboardBalancedScore ?? row.balancedScore, 2) },
-        { label: "Actie", render: (row) => `<button type="button" class="small long-action" data-activate-one="${escapeAttr(microId(row))}" ${isSelectableTrueMicroId(microId(row)) ? "" : "disabled"}>Select exact</button> <button type="button" class="small" data-copy="${escapeAttr(microId(row))}" ${isSelectableTrueMicroId(microId(row)) ? "" : "disabled"}>Copy</button>` }
+        { label: "Actie", render: (row) => `<div class="micro-actions"><button type="button" class="small long-action" data-activate-slot="1" data-activate-id="${escapeAttr(microId(row))}" ${isSelectableTrueMicroId(microId(row)) ? "" : "disabled"}>Zet als #1</button> <button type="button" class="small long-action" data-activate-slot="2" data-activate-id="${escapeAttr(microId(row))}" ${isSelectableTrueMicroId(microId(row)) ? "" : "disabled"}>Zet als #2</button> <button type="button" class="small" data-copy="${escapeAttr(microId(row))}" ${isSelectableTrueMicroId(microId(row)) ? "" : "disabled"}>Copy</button></div>` }
       ];
 
       if (!Array.isArray(rows) || rows.length === 0) return `<div class="empty">Geen geldige LONG 75-child Analyze micro-families.</div>`;
@@ -1709,14 +1709,61 @@
         const parentId = parentMicroId(row);
         const active = activeSet.has(id);
         const done = completed(row);
-        return `<article class="micro-card"><div class="micro-card-head"><div class="micro-card-rank">${escapeHtml(row.rank ?? index + 1)}</div><div class="micro-card-title"><button class="small" type="button" data-open-micro="${escapeAttr(id)}"><code>${escapeHtml(id || "NO_75_CHILD")}</code></button><div class="micro-card-parent"><code>${escapeHtml(parentId || "NO_PARENT")}</code></div></div></div><div class="micro-card-pills"><span class="pill ${active ? "active" : "raw"}">${active ? "EXACT ACTIVE" : "OFF"}</span><span class="pill long">LONG</span>${tierPill(tier(row))}${statusPill(row)}${tooEarly(row) ? `<span class="pill warn">${escapeHtml(fmt(done, 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>` : '<span class="pill active">OK</span>'}${currentFitPill(row)}</div><div class="micro-card-stats"><div class="micro-card-stat"><span>Seen</span><strong>${escapeHtml(fmtInt(row.seen ?? row.observations))}</strong></div><div class="micro-card-stat"><span>Completed</span><strong>${escapeHtml(fmt(done, 2))}</strong></div><div class="micro-card-stat"><span>Fair WR</span><strong>${escapeHtml(fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate ?? row.bayesianWinrate ?? row.wilsonLowerBound))}</strong></div><div class="micro-card-stat"><span>Winrate raw</span><strong>${escapeHtml(fmtPct(row.winrate))}</strong></div><div class="micro-card-stat"><span>AvgR net</span><strong>${escapeHtml(fmt(row.avgR, 3))}</strong></div><div class="micro-card-stat"><span>TotalR net</span><strong>${escapeHtml(fmt(row.totalR, 3))}</strong></div><div class="micro-card-stat"><span>AvgCostR</span><strong>${escapeHtml(fmt(avgCostR(row), 3))}</strong></div><div class="micro-card-stat"><span>DirectSL</span><strong>${escapeHtml(fmtPct(directSLPct(row)))}</strong></div><div class="micro-card-stat"><span>FitScore</span><strong>${escapeHtml(fmt(currentFitScore(row), 1))}</strong></div><div class="micro-card-stat"><span>Momentum</span><strong>${escapeHtml(fmt(recentMomentumScore(row), 1))}</strong></div><div class="micro-card-stat"><span>Adaptive</span><strong>${escapeHtml(fmt(adaptiveScore(row), 2))}</strong></div><div class="micro-card-stat"><span>Balanced</span><strong>${escapeHtml(fmt(row.dashboardBalancedScore ?? row.balancedScore, 2))}</strong></div></div><div class="micro-card-actions"><button type="button" class="long-action" data-activate-one="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Select exact</button><button type="button" data-copy="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Copy ID</button></div></article>`;
+        return `<article class="micro-card"><div class="micro-card-head"><div class="micro-card-rank">${escapeHtml(row.rank ?? index + 1)}</div><div class="micro-card-title"><button class="small" type="button" data-open-micro="${escapeAttr(id)}"><code>${escapeHtml(id || "NO_75_CHILD")}</code></button><div class="micro-card-parent"><code>${escapeHtml(parentId || "NO_PARENT")}</code></div></div></div><div class="micro-card-pills"><span class="pill ${active ? "active" : "raw"}">${active ? "EXACT ACTIVE" : "OFF"}</span><span class="pill long">LONG</span>${tierPill(tier(row))}${statusPill(row)}${tooEarly(row) ? `<span class="pill warn">${escapeHtml(fmt(done, 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>` : '<span class="pill active">OK</span>'}${currentFitPill(row)}</div><div class="micro-card-stats"><div class="micro-card-stat"><span>Seen</span><strong>${escapeHtml(fmtInt(row.seen ?? row.observations))}</strong></div><div class="micro-card-stat"><span>Completed</span><strong>${escapeHtml(fmt(done, 2))}</strong></div><div class="micro-card-stat"><span>Fair WR</span><strong>${escapeHtml(fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate ?? row.bayesianWinrate ?? row.wilsonLowerBound))}</strong></div><div class="micro-card-stat"><span>Winrate raw</span><strong>${escapeHtml(fmtPct(row.winrate))}</strong></div><div class="micro-card-stat"><span>AvgR net</span><strong>${escapeHtml(fmt(row.avgR, 3))}</strong></div><div class="micro-card-stat"><span>TotalR net</span><strong>${escapeHtml(fmt(row.totalR, 3))}</strong></div><div class="micro-card-stat"><span>AvgCostR</span><strong>${escapeHtml(fmt(avgCostR(row), 3))}</strong></div><div class="micro-card-stat"><span>DirectSL</span><strong>${escapeHtml(fmtPct(directSLPct(row)))}</strong></div><div class="micro-card-stat"><span>FitScore</span><strong>${escapeHtml(fmt(currentFitScore(row), 1))}</strong></div><div class="micro-card-stat"><span>Momentum</span><strong>${escapeHtml(fmt(recentMomentumScore(row), 1))}</strong></div><div class="micro-card-stat"><span>Adaptive</span><strong>${escapeHtml(fmt(adaptiveScore(row), 2))}</strong></div><div class="micro-card-stat"><span>Balanced</span><strong>${escapeHtml(fmt(row.dashboardBalancedScore ?? row.balancedScore, 2))}</strong></div></div><div class="micro-card-actions"><button type="button" class="long-action" data-activate-slot="1" data-activate-id="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Zet als #1</button><button type="button" class="long-action" data-activate-slot="2" data-activate-id="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Zet als #2</button><button type="button" data-copy="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Copy ID</button></div></article>`;
       }).join("");
 
       return `<div class="micro-desktop-table">${table(rows, cols, "Geen geldige LONG 75-child Analyze micro-families.")}</div><div class="micro-mobile-list">${mobileCards}</div>`;
     }
 
+    function currentManualSelectionSlots() {
+      const active = activeMicroIds()
+        .map((id) => String(id || "").trim().toUpperCase())
+        .filter(idAllowedInLongOnly)
+        .slice(0, MAX_ACTIVE_DISCORD_MICRO_FAMILIES);
+      while (active.length < MAX_ACTIVE_DISCORD_MICRO_FAMILIES) {
+        active.push("");
+      }
+      return active;
+    }
+
+    function buildManualSelectionForSlot(slotNumber, id) {
+      const slots = currentManualSelectionSlots();
+      const cleanId = String(id || "").trim().toUpperCase();
+      const index = Number(slotNumber) === 2 ? 1 : 0;
+      if (!idAllowedInLongOnly(cleanId)) {
+        return slots.filter(Boolean);
+      }
+      slots[index] = cleanId;
+      return uniqueStrings(slots)
+        .filter(idAllowedInLongOnly)
+        .slice(0, MAX_ACTIVE_DISCORD_MICRO_FAMILIES);
+    }
+
+    function clearManualSelectionSlot(slotNumber) {
+      const slots = currentManualSelectionSlots();
+      const index = Number(slotNumber) === 2 ? 1 : 0;
+      slots[index] = "";
+      return uniqueStrings(slots)
+        .filter(idAllowedInLongOnly)
+        .slice(0, MAX_ACTIVE_DISCORD_MICRO_FAMILIES);
+    }
+
     function bindMicroEvents() {
-      document.querySelectorAll("[data-activate-one]").forEach((btn) => btn.addEventListener("click", () => activateSelectedMicroFamilies([btn.dataset.activateOne])));
+      document.querySelectorAll("[data-activate-slot]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const slotNumber = Number(btn.dataset.activateSlot || 1);
+          const id = btn.dataset.activateId || "";
+          const ids = buildManualSelectionForSlot(slotNumber, id);
+          activateSelectedMicroFamilies(ids);
+        });
+      });
+      document.querySelectorAll("[data-clear-slot]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const slotNumber = Number(btn.dataset.clearSlot || 2);
+          const ids = clearManualSelectionSlot(slotNumber);
+          activateSelectedMicroFamilies(ids);
+        });
+      });
       document.querySelectorAll("[data-copy]").forEach((btn) => btn.addEventListener("click", () => copyText(btn.dataset.copy, "75-child trueMicroFamilyId gekopieerd.")));
       document.querySelectorAll("[data-open-micro]").forEach((btn) => btn.addEventListener("click", () => openMicro(btn.dataset.openMicro)));
     }
@@ -1866,7 +1913,7 @@
       const id = microId(row);
       const parentId = parentMicroId(row);
       const isActive = activeMicroIds().includes(id);
-      return `<div class="manual-card"><h3>Beste zichtbare LONG 75-child true micro</h3><div class="toolbar"><span class="pill long">LONG</span><span class="pill dark">75-child exact</span>${isActive ? '<span class="pill active">DISCORD ACTIVE</span>' : '<span class="pill info">NOT SELECTED</span>'}${tierPill(tier(row))}${statusPill(row)}${currentFitPill(row)}${tooEarly(row) ? `<span class="pill warn">${escapeHtml(fmt(completed(row), 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>` : ""}</div><div><div class="metric-extra">Selectable trueMicroFamilyId</div><code>${escapeHtml(id || "NO_75_CHILD_ID")}</code></div><div style="margin-top:8px"><div class="metric-extra">Parent 15 context</div><code>${escapeHtml(parentId || "NO_PARENT_ID")}</code></div><div class="manual-grid"><div class="manual-stat"><span>Seen</span><strong>${escapeHtml(fmt(observationSample(row), 2))}</strong></div><div class="manual-stat"><span>Completed</span><strong>${escapeHtml(fmt(completed(row), 2))}</strong></div><div class="manual-stat"><span>Status</span><strong>${escapeHtml(learningStatus(row))}</strong></div><div class="manual-stat"><span>Sample</span><strong>${tooEarly(row) ? `TE VROEG ${fmt(completed(row), 0)}/${MIN_COMPLETED_ACTIVE_LEARNING}` : "OK"}</strong></div><div class="manual-stat"><span>Fair WR</span><strong>${escapeHtml(fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate))}</strong></div><div class="manual-stat"><span>Net TotalR</span><strong>${escapeHtml(fmt(row.totalR, 3))}</strong></div><div class="manual-stat"><span>AvgCostR</span><strong>${escapeHtml(fmt(avgCostR(row), 3))}</strong></div><div class="manual-stat"><span>DirectSL</span><strong>${escapeHtml(fmtPct(directSLPct(row)))}</strong></div><div class="manual-stat"><span>CurrentFit</span><strong>${escapeHtml(currentFit(row))}</strong></div><div class="manual-stat"><span>FitScore</span><strong>${escapeHtml(fmt(currentFitScore(row), 1))}</strong></div><div class="manual-stat"><span>Momentum</span><strong>${escapeHtml(fmt(recentMomentumScore(row), 1))}</strong></div><div class="manual-stat"><span>Adaptive</span><strong>${escapeHtml(fmt(adaptiveScore(row), 2))}</strong></div></div><div class="metric-extra">Discord wordt alleen actief voor exact deze 75-child trueMicroFamilyId. Parent 15, macro, scanner buckets, coinnaam en fingerprints mogen nooit Discord-match zijn. CurrentFit blijft soft voor learning, maar Discord mag streng blokkeren.</div><div class="toolbar"><button type="button" class="long-action" data-activate-one="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Select exact 75-child</button><button type="button" data-copy="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Copy</button></div></div>`;
+      return `<div class="manual-card"><h3>Beste zichtbare LONG 75-child true micro</h3><div class="toolbar"><span class="pill long">LONG</span><span class="pill dark">75-child exact</span>${isActive ? '<span class="pill active">DISCORD ACTIVE</span>' : '<span class="pill info">NOT SELECTED</span>'}${tierPill(tier(row))}${statusPill(row)}${currentFitPill(row)}${tooEarly(row) ? `<span class="pill warn">${escapeHtml(fmt(completed(row), 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>` : ""}</div><div><div class="metric-extra">Selectable trueMicroFamilyId</div><code>${escapeHtml(id || "NO_75_CHILD_ID")}</code></div><div style="margin-top:8px"><div class="metric-extra">Parent 15 context</div><code>${escapeHtml(parentId || "NO_PARENT_ID")}</code></div><div class="manual-grid"><div class="manual-stat"><span>Seen</span><strong>${escapeHtml(fmt(observationSample(row), 2))}</strong></div><div class="manual-stat"><span>Completed</span><strong>${escapeHtml(fmt(completed(row), 2))}</strong></div><div class="manual-stat"><span>Status</span><strong>${escapeHtml(learningStatus(row))}</strong></div><div class="manual-stat"><span>Sample</span><strong>${tooEarly(row) ? `TE VROEG ${fmt(completed(row), 0)}/${MIN_COMPLETED_ACTIVE_LEARNING}` : "OK"}</strong></div><div class="manual-stat"><span>Fair WR</span><strong>${escapeHtml(fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate))}</strong></div><div class="manual-stat"><span>Net TotalR</span><strong>${escapeHtml(fmt(row.totalR, 3))}</strong></div><div class="manual-stat"><span>AvgCostR</span><strong>${escapeHtml(fmt(avgCostR(row), 3))}</strong></div><div class="manual-stat"><span>DirectSL</span><strong>${escapeHtml(fmtPct(directSLPct(row)))}</strong></div><div class="manual-stat"><span>CurrentFit</span><strong>${escapeHtml(currentFit(row))}</strong></div><div class="manual-stat"><span>FitScore</span><strong>${escapeHtml(fmt(currentFitScore(row), 1))}</strong></div><div class="manual-stat"><span>Momentum</span><strong>${escapeHtml(fmt(recentMomentumScore(row), 1))}</strong></div><div class="manual-stat"><span>Adaptive</span><strong>${escapeHtml(fmt(adaptiveScore(row), 2))}</strong></div></div><div class="metric-extra">Discord wordt alleen actief voor exact deze 75-child trueMicroFamilyId. Parent 15, macro, scanner buckets, coinnaam en fingerprints mogen nooit Discord-match zijn. CurrentFit blijft soft voor learning, maar Discord mag streng blokkeren.</div><div class="toolbar"><button type="button" class="long-action" data-activate-slot="1" data-activate-id="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Zet als #1</button><button type="button" class="long-action" data-activate-slot="2" data-activate-id="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Zet als #2</button><button type="button" class="warn" data-clear-slot="2">Maak #2 leeg</button><button type="button" data-copy="${escapeAttr(id)}" ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Copy</button></div></div>`;
     }
 
     async function renderMicros() {
@@ -1885,7 +1932,7 @@
       $("microSearch")?.addEventListener("change", (event) => { state.microSearch = event.target.value; renderMicros(); });
       $("microSearch")?.addEventListener("keydown", (event) => { if (event.key === "Enter") { state.microSearch = event.target.value; renderMicros(); } });
       $("copyVisibleIdsBtn")?.addEventListener("click", () => { const ids = uniqueStrings(rows.map(microId)).filter(idAllowedInLongOnly); copyText(JSON.stringify(ids, null, 2), `Visible ${ids.length} LONG 75-child IDs gekopieerd.`); });
-      $("activateVisibleIdsBtn")?.addEventListener("click", () => { const ids = uniqueStrings(rows.map(microId)).filter(idAllowedInLongOnly).slice(0, MAX_MANUAL_SELECTED_MICRO_FAMILIES); activateSelectedMicroFamilies(ids); });
+      $("activateVisibleIdsBtn")?.addEventListener("click", () => { const ids = uniqueStrings(rows.map(microId)).filter(idAllowedInLongOnly).slice(0, MAX_ACTIVE_DISCORD_MICRO_FAMILIES); activateSelectedMicroFamilies(ids); });
       $("exportMicrosBtn")?.addEventListener("click", () => downloadJson("long-75-child-micro-families.json", state.micros));
       bindMicroEvents();
     }
@@ -1910,22 +1957,22 @@
     async function activateSelectedMicroFamilies(ids = []) {
       const allRequestedIds = uniqueStrings(ids);
       const validIds = allRequestedIds.filter(idAllowedInLongOnly);
-      const microFamilyIds = validIds.slice(0, MAX_MANUAL_SELECTED_MICRO_FAMILIES);
+      const microFamilyIds = validIds.slice(0, MAX_ACTIVE_DISCORD_MICRO_FAMILIES);
       const rejectedIds = allRequestedIds.filter((id) => !idAllowedInLongOnly(id));
-      const ignoredExtraIds = validIds.slice(MAX_MANUAL_SELECTED_MICRO_FAMILIES);
+      const ignoredExtraIds = validIds.slice(MAX_ACTIVE_DISCORD_MICRO_FAMILIES);
 
       if (!microFamilyIds.length) {
         setMessage(rejectedIds.length ? `Geen geldige LONG 75-child trueMicroFamilyId geselecteerd.\nGeweigerd: ${rejectedIds.join(", ")}` : "Geen geldige LONG 75-child trueMicroFamilyId geselecteerd.", "warn");
         return;
       }
 
-      if (!confirm(`Activeer Discord alerts voor ${microFamilyIds.length} van maximaal ${MAX_MANUAL_SELECTED_MICRO_FAMILIES} exacte LONG 75-child ID(s)?\n\n${microFamilyIds.join("\n")}${ignoredExtraIds.length ? `\n\nGenegeerd boven limiet:\n${ignoredExtraIds.join("\n")}` : ""}\n\nVirtual/shadow learning blijft breed doorlopen. CurrentFit mag Discord blokkeren.`)) return;
+      if (!confirm(`Activeer Discord alerts voor ${microFamilyIds.length} van maximaal ${MAX_ACTIVE_DISCORD_MICRO_FAMILIES} exacte LONG 75-child ID(s)?\n\n${microFamilyIds.join("\n")}${ignoredExtraIds.length ? `\n\nGenegeerd boven limiet:\n${ignoredExtraIds.join("\n")}` : ""}\n\nVirtual/shadow learning blijft breed doorlopen. CurrentFit mag Discord blokkeren.`)) return;
 
       const data = await api(endpoints.rotation, { method: "POST", timeoutMs: 28000, body: JSON.stringify({ action: "activateSelectedMicroFamilies", microFamilyIds, activeMicroFamilyIds: microFamilyIds, trueMicroFamilyIds: microFamilyIds, childTrueMicroFamilyIds: microFamilyIds, macroFamilyIds: [], activeMacroFamilyIds: [], side: DASHBOARD_SIDE, tradeSide: ONLY_SIDE, positionSide: ONLY_SIDE, direction: ONLY_SIDE, targetTradeSide: ONLY_SIDE, dashboardSide: DASHBOARD_SIDE, longOnly: true, shortDisabled: true, disableShort: true, manualOnly: true, adminSelected: true, autoRotation: false, trueMicroFamilySchema: TRUE_MICRO_SCHEMA, parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA, learningGranularity: LEARNING_GRANULARITY, parentLearningGranularity: PARENT_LEARNING_GRANULARITY, selectionGranularity: "EXACT_75_CHILD", currentFitSoftOnly: true, currentFitBlocksLearning: false, selectionIsAdaptive: true, discordOnlyForSelectedMicroFamilies: true, discordOnlyForExactTrueMicroMatch: true, discordRequiresCurrentFit: true, macroMatchDoesNotTriggerDiscord: true, parentMacroMatchDoesNotTriggerDiscord: true }) });
       const active = data.active || data.activeRotation || {};
       const activeIds = uniqueStrings([active.activeMicroFamilyIds || [], active.microFamilyIds || [], active.trueMicroFamilyIds || [], data.activeMicroFamilyIds || []]).filter(idAllowedInLongOnly);
       state.rotation = { ...(state.rotation || {}), ...data, active, activeRotation: active, activeMicroFamilyIds: activeIds };
-      setMessage(`Manual Discord selection opgeslagen.\nActive LONG 75-child IDs: ${activeIds.length}/${MAX_MANUAL_SELECTED_MICRO_FAMILIES}\nVirtual/shadow learning blijft breed doorlopen.`, "ok");
+      setMessage(`Manual Discord selection opgeslagen.\nActive LONG 75-child IDs: ${activeIds.length}/${MAX_ACTIVE_DISCORD_MICRO_FAMILIES}\nVirtual/shadow learning blijft breed doorlopen.`, "ok");
       if (state.activeTab === "rotation") await renderRotation();
       if (state.activeTab === "micros") await renderMicros();
     }
@@ -1939,10 +1986,10 @@
       try {
         const data = await api(`${endpoints.microDetail}/${encodeURIComponent(id)}`, { timeoutMs: 18000 });
         const row = normalizeMicroRowForUi(data.row || data.microFamily || data);
-        drawer.innerHTML = `<div class="drawer-head"><div><h2>${escapeHtml(id)}</h2><div class="metric-extra">75-child=${escapeHtml(microId(row))} · parent=${escapeHtml(parentMicroId(row))}</div></div><button type="button" id="closeDrawerBtn">Close</button></div><div class="toolbar"><span class="pill long">LONG</span><span class="pill dark">75-child exact</span>${statusPill(row)}${currentFitPill(row)}${tooEarly(row) ? `<span class="pill warn">${escapeHtml(fmt(completed(row), 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>` : ""}<button type="button" class="long-action" id="activateDrawerBtn" ${isSelectableTrueMicroId(microId(row)) ? "" : "disabled"}>Select exact</button><button type="button" id="copyDrawerBtn">Copy</button></div><div class="grid">${metricCard("Seen", fmtInt(row.seen ?? row.observations))}${metricCard("Observations", fmtInt(row.observations ?? row.seen))}${metricCard("Obs dedupe skipped", fmtInt(row.observationDuplicateSkippedCount))}${metricCard("Completed", fmt(completed(row), 2), tooEarly(row) ? `minimum ${MIN_COMPLETED_ACTIVE_LEARNING}` : "active learning")}${metricCard("Winrate raw", fmtPct(row.winrate))}${metricCard("Fair WR", fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate))}${metricCard("AvgR net", fmt(row.avgR, 3))}${metricCard("TotalR net", fmt(row.totalR, 3))}${metricCard("AvgCostR", fmt(avgCostR(row), 3))}${metricCard("DirectSL", fmtPct(directSLPct(row)))}${metricCard("CurrentFit", currentFit(row))}${metricCard("Adaptive", fmt(adaptiveScore(row), 2))}</div><div class="card"><h3>Raw detail JSON</h3>${jsonBlock(data)}</div>`;
+        drawer.innerHTML = `<div class="drawer-head"><div><h2>${escapeHtml(id)}</h2><div class="metric-extra">75-child=${escapeHtml(microId(row))} · parent=${escapeHtml(parentMicroId(row))}</div></div><button type="button" id="closeDrawerBtn">Close</button></div><div class="toolbar"><span class="pill long">LONG</span><span class="pill dark">75-child exact</span>${statusPill(row)}${currentFitPill(row)}${tooEarly(row) ? `<span class="pill warn">${escapeHtml(fmt(completed(row), 0))}/${MIN_COMPLETED_ACTIVE_LEARNING}</span>` : ""}<button type="button" class="long-action" data-activate-slot="1" data-activate-id="${escapeAttr(microId(row))}" ${isSelectableTrueMicroId(microId(row)) ? "" : "disabled"}>Zet als #1</button><button type="button" class="long-action" data-activate-slot="2" data-activate-id="${escapeAttr(microId(row))}" ${isSelectableTrueMicroId(microId(row)) ? "" : "disabled"}>Zet als #2</button><button type="button" class="warn" data-clear-slot="2">Maak #2 leeg</button></div><div class="grid">${metricCard("Seen", fmtInt(row.seen ?? row.observations))}${metricCard("Observations", fmtInt(row.observations ?? row.seen))}${metricCard("Obs dedupe skipped", fmtInt(row.observationDuplicateSkippedCount))}${metricCard("Completed", fmt(completed(row), 2), tooEarly(row) ? `minimum ${MIN_COMPLETED_ACTIVE_LEARNING}` : "active learning")}${metricCard("Winrate raw", fmtPct(row.winrate))}${metricCard("Fair WR", fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate))}${metricCard("AvgR net", fmt(row.avgR, 3))}${metricCard("TotalR net", fmt(row.totalR, 3))}${metricCard("AvgCostR", fmt(avgCostR(row), 3))}${metricCard("DirectSL", fmtPct(directSLPct(row)))}${metricCard("CurrentFit", currentFit(row))}${metricCard("Adaptive", fmt(adaptiveScore(row), 2))}</div><div class="card"><h3>Raw detail JSON</h3>${jsonBlock(data)}</div>`;
         $("closeDrawerBtn")?.addEventListener("click", closeDrawer);
-        $("activateDrawerBtn")?.addEventListener("click", () => activateSelectedMicroFamilies([microId(row)]));
-        $("copyDrawerBtn")?.addEventListener("click", () => copyText(microId(row), "75-child trueMicroFamilyId gekopieerd."));
+        bindMicroEvents();
+        // $("copyDrawerBtn")? ... removed, already in bindMicroEvents
       } catch (error) {
         drawer.innerHTML = `<div class="drawer-head"><div><h2>${escapeHtml(id)}</h2><div class="metric-extra">Detail API niet geladen.</div></div><button type="button" id="closeDrawerBtn">Close</button></div><div class="message warn">${escapeHtml(friendlyApiMessage(error))}</div>`;
         $("closeDrawerBtn")?.addEventListener("click", closeDrawer);
