@@ -40,15 +40,22 @@ const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 const POSITION_SOURCE = 'VIRTUAL';
 const OUTCOME_SOURCE = 'VIRTUAL';
 
-const COST_MODEL_VERSION = 'POSITION_ENGINE_LONG_NET_COST_COMPACT_V9';
-const MEASUREMENT_FIX_VERSION = 'LONG_COMPACT_INDEXED_POSITION_ENGINE_V1';
+const COST_MODEL_VERSION = 'POSITION_ENGINE_LONG_NET_COST_V8';
+const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
 
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
-const DEFAULT_OPEN_INDEX_LIMIT = 80;
-const DEFAULT_MONITOR_LIMIT = 40;
-const DEFAULT_MONITOR_PRICE_TIMEOUT_MS = 400;
-const DEFAULT_MONITOR_MAX_RUNTIME_MS = 3000;
 const MIN_COMPLETED_ACTIVE_LEARNING = 20;
+
+const DEFAULT_OPEN_POSITION_FETCH_LIMIT = 120;
+const DEFAULT_MONITOR_POSITION_LIMIT = 40;
+const DEFAULT_MONITOR_RUNTIME_MS = 2600;
+const DEFAULT_MONITOR_GET_OPEN_TIMEOUT_MS = 900;
+const DEFAULT_MONITOR_POSITION_TIMEOUT_MS = 650;
+const DEFAULT_MONITOR_PRICE_FETCH_TIMEOUT_MS = 250;
+const DEFAULT_SAVE_OPEN_POSITION_TIMEOUT_MS = 800;
+const DEFAULT_RECORD_OUTCOME_TIMEOUT_MS = 1200;
+const DEFAULT_DISCORD_EXIT_TIMEOUT_MS = 1200;
+const DEFAULT_OPEN_POSITION_MAX_BYTES = 450_000;
 
 const LONG_FIXED_SETUP_TYPES = new Set([
   'BREAKOUT',
@@ -98,6 +105,12 @@ const SHORT_DIRECT = new Set([
   'RED'
 ]);
 
+const HEAVY_FIELD_RE =
+  /^(raw|rows?|candles?|klines?|ohlcv|orderbook|orderBook|book|bids|asks|universe|symbols|candidates|allCandidates|filteredUniverse|marketUniverse|snapshot|fullSnapshot|latestSnapshot|debug|trace|logs?|messages?|payload|html|body|largeRows|largeSymbols)$/i;
+
+const HEAVY_FIELD_CONTAINS_RE =
+  /(candles|klines|orderbook|universe|snapshot|debug|trace|rawRows|rawPayload|largeRows|largeSymbols)/i;
+
 function now() {
   return Date.now();
 }
@@ -108,48 +121,8 @@ function upper(value) {
 
 function finiteNumber(value, fallback = 0) {
   const n = Number(value);
+
   return Number.isFinite(n) ? n : fallback;
-}
-
-function positiveInt(value, fallback, min = 1, max = Number.MAX_SAFE_INTEGER) {
-  const n = Math.floor(finiteNumber(value, fallback));
-  return Math.max(min, Math.min(max, n));
-}
-
-function round4(value) {
-  return Number(finiteNumber(value, 0).toFixed(4));
-}
-
-function round6(value) {
-  return Number(finiteNumber(value, 0).toFixed(6));
-}
-
-function roundPrice(value) {
-  const n = finiteNumber(value, 0);
-
-  if (n >= 1000) return Number(n.toFixed(2));
-  if (n >= 1) return Number(n.toFixed(6));
-
-  return Number(n.toFixed(10));
-}
-
-function clonePlainObject(value) {
-  if (typeof structuredClone === 'function') {
-    return structuredClone(value);
-  }
-
-  return JSON.parse(JSON.stringify(value ?? null));
-}
-
-function withTimeout(promise, timeoutMs, fallback) {
-  const ms = positiveInt(timeoutMs, 1000, 1, 30_000);
-
-  return Promise.race([
-    Promise.resolve(promise),
-    new Promise((resolve) => {
-      setTimeout(() => resolve(fallback), ms);
-    })
-  ]);
 }
 
 function namespacedLongKey(key, fallback) {
@@ -168,11 +141,7 @@ function storageSymbol(input) {
 
   const base = normalizeBaseSymbol(raw);
 
-  return base || String(raw || '')
-    .toUpperCase()
-    .replace(/USDT|USDC|USD|PERP|SWAP|FUTURES|SPOT/g, '')
-    .replace(/[^A-Z0-9]+/g, '')
-    .trim();
+  return base || String(raw || '').toUpperCase().trim();
 }
 
 function resolveOpenPatternKey() {
@@ -182,15 +151,6 @@ function resolveOpenPatternKey() {
     KEYS.trade?.openPattern;
 
   return namespacedLongKey(configured, 'TRADE:OPEN:*');
-}
-
-function resolveOpenIndexKey() {
-  const configured =
-    KEYS.long?.trade?.openIndex ||
-    KEYS.trade?.longOpenIndex ||
-    'TRADE:OPEN:INDEX';
-
-  return namespacedLongKey(configured, 'TRADE:OPEN:INDEX');
 }
 
 function resolveOpenKey(symbol) {
@@ -225,71 +185,122 @@ function resolveOpenKey(symbol) {
 const LONG_KEYS = {
   trade: {
     openPattern: resolveOpenPatternKey(),
-    openIndex: resolveOpenIndexKey(),
     open: resolveOpenKey
   }
 };
 
 function tradeConfig() {
   return {
-    dataConcurrency: positiveInt(
-      CONFIG.long?.trade?.dataConcurrency ??
-        CONFIG.trade?.dataConcurrency,
-      4,
+    dataConcurrency: Math.max(
       1,
-      12
+      Math.floor(safeNumber(
+        CONFIG.long?.trade?.dataConcurrency ??
+          CONFIG.trade?.dataConcurrency,
+        3
+      ))
     ),
 
-    positionTimeStopMin: positiveInt(
-      CONFIG.long?.trade?.positionTimeStopMin ??
-        CONFIG.trade?.positionTimeStopMin,
-      DEFAULT_POSITION_TIME_STOP_MIN,
+    positionTimeStopMin: Math.max(
       1,
-      30 * 24 * 60
+      safeNumber(
+        CONFIG.long?.trade?.positionTimeStopMin ??
+          CONFIG.trade?.positionTimeStopMin,
+        DEFAULT_POSITION_TIME_STOP_MIN
+      )
     ),
 
-    openIndexLimit: positiveInt(
-      CONFIG.long?.trade?.openIndexLimit ??
-        CONFIG.trade?.openIndexLimit,
-      DEFAULT_OPEN_INDEX_LIMIT,
+    openPositionFetchLimit: Math.max(
       1,
-      500
+      Math.floor(safeNumber(
+        CONFIG.long?.trade?.openPositionFetchLimit ??
+          CONFIG.trade?.openPositionFetchLimit,
+        DEFAULT_OPEN_POSITION_FETCH_LIMIT
+      ))
     ),
 
-    monitorLimit: positiveInt(
-      CONFIG.long?.trade?.monitorLimit ??
-        CONFIG.trade?.monitorLimit,
-      DEFAULT_MONITOR_LIMIT,
+    monitorPositionLimit: Math.max(
       1,
-      200
+      Math.floor(safeNumber(
+        CONFIG.long?.trade?.monitorPositionLimit ??
+          CONFIG.trade?.monitorPositionLimit,
+        DEFAULT_MONITOR_POSITION_LIMIT
+      ))
     ),
 
-    monitorPriceFetchTimeoutMs: positiveInt(
-      CONFIG.long?.trade?.monitorPriceFetchTimeoutMs ??
-        CONFIG.trade?.monitorPriceFetchTimeoutMs,
-      DEFAULT_MONITOR_PRICE_TIMEOUT_MS,
-      50,
-      5000
-    ),
-
-    monitorMaxRuntimeMs: positiveInt(
-      CONFIG.long?.trade?.monitorMaxRuntimeMs ??
-        CONFIG.trade?.monitorMaxRuntimeMs,
-      DEFAULT_MONITOR_MAX_RUNTIME_MS,
+    monitorRuntimeMs: Math.max(
       500,
-      20_000
+      Math.floor(safeNumber(
+        CONFIG.long?.trade?.monitorRuntimeMs ??
+          CONFIG.trade?.monitorRuntimeMs,
+        DEFAULT_MONITOR_RUNTIME_MS
+      ))
     ),
 
-    persistMonitorUpdates: Boolean(
-      CONFIG.long?.trade?.persistMonitorUpdates ??
-        CONFIG.trade?.persistMonitorUpdates ??
-        false
+    monitorGetOpenTimeoutMs: Math.max(
+      200,
+      Math.floor(safeNumber(
+        CONFIG.long?.trade?.monitorGetOpenTimeoutMs ??
+          CONFIG.trade?.monitorGetOpenTimeoutMs,
+        DEFAULT_MONITOR_GET_OPEN_TIMEOUT_MS
+      ))
     ),
 
-    persistPriceFetchFailures: Boolean(
-      CONFIG.long?.trade?.persistPriceFetchFailures ??
-        CONFIG.trade?.persistPriceFetchFailures ??
-        false
+    monitorPositionTimeoutMs: Math.max(
+      150,
+      Math.floor(safeNumber(
+        CONFIG.long?.trade?.monitorPositionTimeoutMs ??
+          CONFIG.trade?.monitorPositionTimeoutMs,
+        DEFAULT_MONITOR_POSITION_TIMEOUT_MS
+      ))
+    ),
+
+    monitorPriceFetchTimeoutMs: Math.max(
+      75,
+      Math.floor(safeNumber(
+        CONFIG.long?.trade?.monitorPriceFetchTimeoutMs ??
+          CONFIG.trade?.monitorPriceFetchTimeoutMs,
+        DEFAULT_MONITOR_PRICE_FETCH_TIMEOUT_MS
+      ))
+    ),
+
+    saveOpenPositionTimeoutMs: Math.max(
+      150,
+      Math.floor(safeNumber(
+        CONFIG.long?.trade?.saveOpenPositionTimeoutMs ??
+          CONFIG.trade?.saveOpenPositionTimeoutMs,
+        DEFAULT_SAVE_OPEN_POSITION_TIMEOUT_MS
+      ))
+    ),
+
+    recordOutcomeTimeoutMs: Math.max(
+      250,
+      Math.floor(safeNumber(
+        CONFIG.long?.trade?.recordOutcomeTimeoutMs ??
+          CONFIG.trade?.recordOutcomeTimeoutMs,
+        DEFAULT_RECORD_OUTCOME_TIMEOUT_MS
+      ))
+    ),
+
+    discordExitTimeoutMs: Math.max(
+      250,
+      Math.floor(safeNumber(
+        CONFIG.long?.trade?.discordExitTimeoutMs ??
+          CONFIG.trade?.discordExitTimeoutMs,
+        DEFAULT_DISCORD_EXIT_TIMEOUT_MS
+      ))
+    ),
+
+    persistNoPriceFailures:
+      CONFIG.long?.trade?.persistNoPriceFailures === true ||
+      CONFIG.trade?.persistNoPriceFailures === true,
+
+    openPositionMaxBytes: Math.max(
+      50_000,
+      Math.floor(safeNumber(
+        CONFIG.long?.trade?.openPositionMaxBytes ??
+          CONFIG.trade?.openPositionMaxBytes,
+        DEFAULT_OPEN_POSITION_MAX_BYTES
+      ))
     )
   };
 }
@@ -297,11 +308,98 @@ function tradeConfig() {
 function manageConfig() {
   return {
     applyLive: CONFIG.long?.manage?.applyLive === true || CONFIG.manage?.applyLive === true,
-    beArmR: finiteNumber(CONFIG.long?.manage?.beArmR ?? CONFIG.manage?.beArmR, 0.70),
-    beLockR: finiteNumber(CONFIG.long?.manage?.beLockR ?? CONFIG.manage?.beLockR, 0.05),
-    trailArmR: finiteNumber(CONFIG.long?.manage?.trailArmR ?? CONFIG.manage?.trailArmR, 1.00),
-    trailLockR: finiteNumber(CONFIG.long?.manage?.trailLockR ?? CONFIG.manage?.trailLockR, 0.35)
+    beArmR: safeNumber(CONFIG.long?.manage?.beArmR ?? CONFIG.manage?.beArmR, 0.70),
+    beLockR: safeNumber(CONFIG.long?.manage?.beLockR ?? CONFIG.manage?.beLockR, 0.05),
+    trailArmR: safeNumber(CONFIG.long?.manage?.trailArmR ?? CONFIG.manage?.trailArmR, 1.00),
+    trailLockR: safeNumber(CONFIG.long?.manage?.trailLockR ?? CONFIG.manage?.trailLockR, 0.35)
   };
+}
+
+function round4(value) {
+  return Number(safeNumber(value, 0).toFixed(4));
+}
+
+function round6(value) {
+  return Number(safeNumber(value, 0).toFixed(6));
+}
+
+function roundPrice(value) {
+  const n = safeNumber(value, 0);
+
+  if (n >= 1000) return Number(n.toFixed(2));
+  if (n >= 1) return Number(n.toFixed(6));
+
+  return Number(n.toFixed(10));
+}
+
+function clonePlainObject(value) {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value);
+  }
+
+  return JSON.parse(JSON.stringify(value ?? null));
+}
+
+function jsonSizeBytes(value) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value ?? null), 'utf8');
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+function compactString(value, maxLength = 1200) {
+  const text = String(value ?? '');
+
+  if (text.length <= maxLength) return text;
+
+  return `${text.slice(0, maxLength)}…[truncated:${text.length}]`;
+}
+
+function shouldOmitLargeKey(key = '') {
+  const k = String(key || '');
+
+  return HEAVY_FIELD_RE.test(k) || HEAVY_FIELD_CONTAINS_RE.test(k);
+}
+
+function compactValue(value, depth = 0, seen = new WeakSet()) {
+  if (value === null || value === undefined) return value;
+
+  const type = typeof value;
+
+  if (type === 'number') return Number.isFinite(value) ? value : 0;
+  if (type === 'boolean') return value;
+  if (type === 'string') return compactString(value, depth <= 1 ? 1800 : 700);
+  if (type !== 'object') return value;
+
+  if (seen.has(value)) return '[Circular]';
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    const limit = depth <= 1 ? 30 : 12;
+
+    return value
+      .slice(0, limit)
+      .map((item) => compactValue(item, depth + 1, seen));
+  }
+
+  const out = {};
+
+  for (const [key, item] of Object.entries(value)) {
+    if (shouldOmitLargeKey(key)) {
+      out[`${key}OmittedForRedis`] = true;
+      continue;
+    }
+
+    if (depth >= 4 && item && typeof item === 'object') {
+      out[`${key}OmittedForRedisDepth`] = true;
+      continue;
+    }
+
+    out[key] = compactValue(item, depth + 1, seen);
+  }
+
+  return out;
 }
 
 function normalizeSymbolToken(value = '') {
@@ -437,11 +535,13 @@ function parseLongTaxonomyMicroId(id = '') {
 
 function isExactLongChildTrueMicroId(id = '') {
   const parsed = parseLongTaxonomyMicroId(id);
+
   return Boolean(parsed.valid && parsed.selectable && parsed.isChild);
 }
 
 function isParentLongTrueMicroId(id = '') {
   const parsed = parseLongTaxonomyMicroId(id);
+
   return Boolean(parsed.valid && parsed.isParent && !parsed.selectable);
 }
 
@@ -590,11 +690,12 @@ function normalizedTextParts(row = {}) {
     row.microDefinition,
     row.macroDefinition,
     row.parentDefinition,
-    ...(Array.isArray(row.definitionParts) ? row.definitionParts.slice(0, 30) : []),
-    ...(Array.isArray(row.microDefinitionParts) ? row.microDefinitionParts.slice(0, 30) : []),
-    ...(Array.isArray(row.macroDefinitionParts) ? row.macroDefinitionParts.slice(0, 30) : []),
-    ...(Array.isArray(row.parentDefinitionParts) ? row.parentDefinitionParts.slice(0, 30) : []),
-    ...(Array.isArray(row.executionFingerprintParts) ? row.executionFingerprintParts.slice(0, 20) : [])
+
+    ...(Array.isArray(row.definitionParts) ? row.definitionParts : []),
+    ...(Array.isArray(row.microDefinitionParts) ? row.microDefinitionParts : []),
+    ...(Array.isArray(row.macroDefinitionParts) ? row.macroDefinitionParts : []),
+    ...(Array.isArray(row.parentDefinitionParts) ? row.parentDefinitionParts : []),
+    ...(Array.isArray(row.executionFingerprintParts) ? row.executionFingerprintParts : [])
   ]
     .map((value) => String(value || '').toUpperCase())
     .filter(Boolean);
@@ -605,23 +706,28 @@ function idText(row = {}) {
     row.familyId,
     row.family,
     row.baseFamilyId,
+
     row.childTrueMicroFamilyId,
     row.trueMicroFamilyId,
     row.microFamilyId,
     row.analyzeMicroFamilyId,
     row.learningMicroFamilyId,
     row.fixedTaxonomyMicroFamilyId,
+
     row.coarseMicroFamilyId,
     row.baseMicroFamilyId,
     row.legacyMicroFamilyId,
+
     row.scannerMicroFamilyId,
     row.scannerFamilyId,
     row.executionMicroFamilyId,
+
     row.parentTrueMicroFamilyId,
     row.macroFamilyId,
     row.parentMacroFamilyId,
     row.parentMicroFamilyId,
     row.parentFamilyId,
+
     row.id,
     row.key
   ]
@@ -762,7 +868,9 @@ function inferPositionTradeSide(row = {}) {
 
   const fromIds = inferTradeSideFromIds(row);
 
-  if (fromIds === TARGET_TRADE_SIDE || fromIds === OPPOSITE_TRADE_SIDE) return fromIds;
+  if (fromIds === TARGET_TRADE_SIDE || fromIds === OPPOSITE_TRADE_SIDE) {
+    return fromIds;
+  }
 
   const fromDefinitions = inferTradeSideFromDefinitions(row);
 
@@ -770,8 +878,13 @@ function inferPositionTradeSide(row = {}) {
     return fromDefinitions;
   }
 
-  if (row.longOnly === true || row.shortDisabled === true) return TARGET_TRADE_SIDE;
-  if (row.shortOnly === true || row.longDisabled === true) return OPPOSITE_TRADE_SIDE;
+  if (row.longOnly === true && row.shortDisabled === true) {
+    return TARGET_TRADE_SIDE;
+  }
+
+  if (row.shortOnly === true || row.longDisabled === true) {
+    return OPPOSITE_TRADE_SIDE;
+  }
 
   return 'UNKNOWN';
 }
@@ -899,10 +1012,21 @@ function normalizeMicroIdentity(row = {}) {
   const microFamilyId = rowMicroId(row);
   const parsed = parseLongTaxonomyMicroId(microFamilyId);
 
-  if (!microFamilyId) throw new Error('ANALYZE_TRUE_MICRO_FAMILY_ID_REQUIRED');
-  if (isScannerFingerprintId(microFamilyId)) throw new Error('SCANNER_FINGERPRINT_CANNOT_BE_LEARNING_FAMILY_ID');
-  if (isExecutionFingerprintId(microFamilyId)) throw new Error('EXECUTION_FINGERPRINT_CANNOT_BE_LEARNING_FAMILY_ID');
-  if (!parsed.selectable || !parsed.isChild) throw new Error('EXACT_75_CHILD_TRUE_MICRO_FAMILY_ID_REQUIRED');
+  if (!microFamilyId) {
+    throw new Error('ANALYZE_TRUE_MICRO_FAMILY_ID_REQUIRED');
+  }
+
+  if (isScannerFingerprintId(microFamilyId)) {
+    throw new Error('SCANNER_FINGERPRINT_CANNOT_BE_LEARNING_FAMILY_ID');
+  }
+
+  if (isExecutionFingerprintId(microFamilyId)) {
+    throw new Error('EXECUTION_FINGERPRINT_CANNOT_BE_LEARNING_FAMILY_ID');
+  }
+
+  if (!parsed.selectable || !parsed.isChild) {
+    throw new Error('EXACT_75_CHILD_TRUE_MICRO_FAMILY_ID_REQUIRED');
+  }
 
   const parentId = parsed.parentTrueMicroFamilyId;
   const scannerId = scannerMicroId(row);
@@ -938,10 +1062,19 @@ function normalizeMicroIdentity(row = {}) {
     scannerFamilyId: row.scannerFamilyId || null,
     scannerDefinition: row.scannerDefinition || null,
     scannerDefinitionParts: Array.isArray(row.scannerDefinitionParts)
-      ? row.scannerDefinitionParts.slice(0, 12)
+      ? row.scannerDefinitionParts.slice(0, 30)
       : [],
 
     executionMicroFamilyId: executionId,
+    executionFingerprintRole: 'METADATA_ONLY',
+    executionFingerprintOnlyMetadata: Boolean(executionId),
+    executionFingerprintsMetadataOnly: true,
+    executionFingerprintsUsedAsLearningFamily: false,
+
+    scannerFingerprintRole: 'METADATA_ONLY',
+    scannerFingerprintOnlyMetadata: Boolean(scannerId),
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
 
     learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
     exactTrueMicroFamilyRequired: true,
@@ -975,9 +1108,9 @@ function normalizeMicroIdentity(row = {}) {
 }
 
 function validLongRiskGeometry(row = {}) {
-  const entryPrice = finiteNumber(row.entry, 0);
-  const sl = finiteNumber(row.sl, 0);
-  const tp = finiteNumber(row.tp, 0);
+  const entryPrice = safeNumber(row.entry, 0);
+  const sl = safeNumber(row.sl, 0);
+  const tp = safeNumber(row.tp, 0);
 
   return entryPrice > 0 && sl > 0 && tp > 0 && sl < entryPrice && entryPrice < tp;
 }
@@ -991,16 +1124,22 @@ function assertLongRiskGeometry(row = {}) {
 function assertLearningFamilyIdentity(row = {}) {
   const microFamilyId = rowMicroId(row);
 
-  if (!microFamilyId) throw new Error('OPEN_POSITION_TRUE_MICRO_FAMILY_ID_MISSING');
+  if (!microFamilyId) {
+    throw new Error('OPEN_POSITION_TRUE_MICRO_FAMILY_ID_MISSING');
+  }
+
   if (isScannerFingerprintId(microFamilyId) || isScannerFamilyRow(row)) {
     throw new Error('OPEN_POSITION_SCANNER_FINGERPRINT_METADATA_ONLY');
   }
+
   if (isExecutionFingerprintId(microFamilyId)) {
     throw new Error('OPEN_POSITION_EXECUTION_FINGERPRINT_METADATA_ONLY');
   }
+
   if (!isExactLongChildTrueMicroId(microFamilyId)) {
     throw new Error('OPEN_POSITION_REQUIRES_EXACT_75_CHILD_TRUE_MICRO_FAMILY');
   }
+
   if (!isTrueMicroFamilyRow(row)) {
     throw new Error('OPEN_POSITION_REQUIRES_ANALYZE_TRUE_MICRO_FAMILY');
   }
@@ -1033,6 +1172,161 @@ function assertLongInput(row = {}, context = 'POSITION') {
   if (side !== TARGET_TRADE_SIDE) {
     throw new Error(`${context}_LONG_ONLY_REJECTED_${side}`);
   }
+}
+
+function calcStopFromR({
+  entry,
+  initialSl,
+  stopR
+} = {}) {
+  const e = safeNumber(entry, 0);
+  const sl = safeNumber(initialSl, 0);
+  const r = safeNumber(stopR, 0);
+
+  if (e <= 0 || sl <= 0 || sl >= e) return 0;
+
+  const riskDist = e - sl;
+
+  if (riskDist <= 0) return 0;
+
+  return e + riskDist * r;
+}
+
+function shouldTightenStop({
+  currentSl,
+  nextSl
+} = {}) {
+  const current = safeNumber(currentSl, 0);
+  const next = safeNumber(nextSl, 0);
+
+  if (current <= 0 || next <= 0) return false;
+
+  return next > current;
+}
+
+function applyLiveStopManagement(position) {
+  const cfg = manageConfig();
+
+  if (!cfg.applyLive) return position;
+  if (!isLongPosition(position)) return position;
+
+  const entry = safeNumber(position.entry, 0);
+  const initialSl = safeNumber(position.initialSl || position.sl, 0);
+  const currentSl = safeNumber(position.sl, 0);
+  const currentR = safeNumber(position.currentR, 0);
+
+  if (entry <= 0 || initialSl <= 0 || currentSl <= 0 || initialSl >= entry) return position;
+
+  let nextStopR = null;
+  let source = null;
+
+  if (currentR >= cfg.beArmR) {
+    nextStopR = cfg.beLockR;
+    source = 'BE';
+  }
+
+  if (currentR >= cfg.trailArmR) {
+    nextStopR = Math.max(
+      safeNumber(nextStopR, cfg.beLockR),
+      cfg.trailLockR
+    );
+    source = 'TRAIL';
+  }
+
+  if (nextStopR === null) return position;
+
+  const nextSl = calcStopFromR({
+    entry,
+    initialSl,
+    stopR: nextStopR
+  });
+
+  if (!shouldTightenStop({
+    currentSl,
+    nextSl
+  })) {
+    return position;
+  }
+
+  position.sl = roundPrice(nextSl);
+  position.slManagementSource = source;
+  position.slMovedAt = now();
+  position.liveManaged = true;
+
+  if (source === 'BE') {
+    position.beLiveApplied = true;
+  }
+
+  if (source === 'TRAIL') {
+    position.trailLiveApplied = true;
+  }
+
+  return position;
+}
+
+function detectExit({
+  position,
+  price,
+  timestamp
+} = {}) {
+  const cfg = tradeConfig();
+
+  const current = safeNumber(price, 0);
+  const fallbackCurrent = safeNumber(
+    current ||
+      position.currentPrice ||
+      position.lastPrice ||
+      position.entry,
+    0
+  );
+
+  const tp = safeNumber(position.tp, 0);
+  const sl = safeNumber(position.sl, 0);
+  const openedAt = safeNumber(position.openedAt || position.createdAt, 0);
+
+  if (!isLongPosition(position)) {
+    return {
+      shouldExit: false,
+      reason: 'NON_LONG_POSITION_IGNORED',
+      trigger: null
+    };
+  }
+
+  if (current > 0 && tp > 0 && sl > 0) {
+    if (current >= tp) {
+      return {
+        shouldExit: true,
+        reason: 'TP',
+        trigger: 'price >= tp'
+      };
+    }
+
+    if (current <= sl) {
+      return {
+        shouldExit: true,
+        reason: 'SL',
+        trigger: 'price <= sl'
+      };
+    }
+  }
+
+  const expired =
+    openedAt > 0 &&
+    timestamp - openedAt >= cfg.positionTimeStopMin * 60 * 1000;
+
+  if (expired && fallbackCurrent > 0) {
+    return {
+      shouldExit: true,
+      reason: 'TIME_STOP',
+      trigger: 'TIME_STOP'
+    };
+  }
+
+  return {
+    shouldExit: false,
+    reason: null,
+    trigger: null
+  };
 }
 
 function identityFlags() {
@@ -1175,186 +1469,127 @@ function buildVirtualFlags(row = {}) {
   };
 }
 
-function compactMarketWeather(value = null) {
-  if (!value || typeof value !== 'object') return null;
-
-  return {
-    ok: value.ok !== false,
-    available: value.available ?? value.ok ?? true,
-    snapshotId: value.snapshotId || null,
-    createdAt: finiteNumber(value.createdAt ?? value.generatedAt ?? value.updatedAt, 0),
-    updatedAt: finiteNumber(value.updatedAt ?? value.completedAt ?? value.createdAt, 0),
-    regime: value.regime || value.currentRegime || null,
-    currentRegime: value.currentRegime || value.regime || null,
-    trendSide: value.trendSide || value.currentTrendSide || null,
-    currentTrendSide: value.currentTrendSide || value.trendSide || null,
-    confidence: value.confidence ?? value.weatherConfidence ?? null,
-    bullishPct: value.bullishPct ?? null,
-    bearishPct: value.bearishPct ?? null,
-    squeezePct: value.squeezePct ?? null,
-    btcState: value.btcState || null,
-    rowsOmittedForRedis: true,
-    symbolsOmittedForRedis: true,
-    compactedForRedis: true
-  };
-}
-
-function compactStats(value = null) {
-  if (!value || typeof value !== 'object') return null;
-
-  return {
-    microFamilyId: value.microFamilyId || value.trueMicroFamilyId || null,
-    completed: finiteNumber(value.completed, 0),
-    seen: finiteNumber(value.seen, 0),
-    observations: finiteNumber(value.observations, 0),
-    wins: finiteNumber(value.wins, 0),
-    losses: finiteNumber(value.losses, 0),
-    flats: finiteNumber(value.flats, 0),
-    winrate: finiteNumber(value.winrate ?? value.fairWinrate, 0),
-    fairWinrate: finiteNumber(value.fairWinrate ?? value.winrate, 0),
-    totalR: round6(value.totalR),
-    avgR: round6(value.avgR),
-    avgCostR: round6(value.avgCostR ?? value.costR),
-    balancedScore: round6(value.balancedScore),
-    dashboardBalancedScore: round6(value.dashboardBalancedScore ?? value.balancedScore)
-  };
-}
-
-function compactPositionForStorage(input = {}) {
-  const normalized = forceLongPositionFields(input);
-  const identity = normalizeMicroIdentity(normalized);
-  const keySymbol = storageSymbol(normalized);
-  const openedAt = finiteNumber(normalized.openedAt || normalized.createdAt, now());
-  const updatedAt = finiteNumber(normalized.updatedAt, now());
-
-  const entry = roundPrice(normalized.entry);
-  const sl = roundPrice(normalized.sl);
-  const tp = roundPrice(normalized.tp);
-  const initialSl = roundPrice(normalized.initialSl || normalized.sl);
-
-  const definition = [
-    'TRADE_SIDE=LONG',
-    `TRUE_MICRO=${identity.trueMicroFamilyId}`,
-    `PARENT_TRUE_MICRO=${identity.parentTrueMicroFamilyId}`,
-    `SETUP=${identity.setupType}`,
-    `REGIME_BUCKET=${identity.regimeBucket}`,
-    `CONFIRMATION_PROFILE=${identity.confirmationProfile}`,
-    'OUTCOME_IDENTITY=POSITION_LOCKED',
-    'CURRENT_FIT_SOFT_ONLY=true',
-    'CURRENT_FIT_BLOCKS_LEARNING=false',
-    'LEARNING_REMAINS_BROAD=true'
-  ].join(' | ');
-
+function minimalOpenPositionRow(row = {}) {
   return forceLongPositionFields({
-    ...identity,
-    ...buildVirtualFlags(normalized),
+    tradeId: row.tradeId || null,
 
-    tradeId: normalized.tradeId || randomId('trade_long'),
+    symbol: row.symbol || row.baseSymbol || row.contractSymbol || null,
+    baseSymbol: row.baseSymbol || row.symbol || null,
+    contractSymbol: row.contractSymbol || null,
 
-    symbol: normalized.symbol || keySymbol,
-    baseSymbol: normalized.baseSymbol || keySymbol,
-    contractSymbol: normalized.contractSymbol || null,
+    status: row.status || 'OPEN',
 
-    status: 'OPEN',
+    source: row.source || POSITION_SOURCE,
+    outcomeSource: row.outcomeSource || OUTCOME_SOURCE,
+    positionSource: row.positionSource || POSITION_SOURCE,
 
-    entry,
-    sl,
-    tp,
-    initialSl,
-    rr: round6(normalized.rr),
-    riskPct: round6(normalized.riskPct),
-    rewardPct: round6(normalized.rewardPct),
-    riskFraction: round6(normalized.riskFraction),
-    riskSource: normalized.riskSource || null,
-    riskEngineRisk: Boolean(normalized.riskEngineRisk),
-    standardizedLearningRisk: Boolean(normalized.standardizedLearningRisk),
-    standardizedLearningRiskReason: normalized.standardizedLearningRiskReason || null,
+    strategyVersion: row.strategyVersion || CONFIG.strategyVersion || null,
 
-    spreadPct: round6(normalized.spreadPct ?? normalized.liveSpreadPct ?? CONFIG.long?.cost?.fallbackSpreadPct ?? CONFIG.cost?.fallbackSpreadPct),
-    liveSpreadPct: round6(normalized.liveSpreadPct ?? normalized.spreadPct ?? CONFIG.long?.cost?.fallbackSpreadPct ?? CONFIG.cost?.fallbackSpreadPct),
+    entry: safeNumber(row.entry, 0),
+    sl: safeNumber(row.sl, 0),
+    tp: safeNumber(row.tp, 0),
+    initialSl: safeNumber(row.initialSl || row.sl, 0),
 
-    currentPrice: roundPrice(normalized.currentPrice ?? normalized.lastPrice ?? normalized.entry),
-    lastPrice: roundPrice(normalized.lastPrice ?? normalized.currentPrice ?? normalized.entry),
-    currentR: round4(normalized.currentR),
-    mfeR: round4(normalized.mfeR),
-    maeR: round4(normalized.maeR),
-    maxTpProgress: round4(normalized.maxTpProgress),
+    openedAt: safeNumber(row.openedAt || row.createdAt, 0),
+    createdAt: safeNumber(row.createdAt || row.openedAt, 0),
+    updatedAt: safeNumber(row.updatedAt, now()),
 
-    ticksObserved: finiteNumber(normalized.ticksObserved, 0),
-    favorableTicks: finiteNumber(normalized.favorableTicks, 0),
-    adverseTicks: finiteNumber(normalized.adverseTicks, 0),
-    priceFetchFailures: finiteNumber(normalized.priceFetchFailures, 0),
-    lastPriceFetchFailedAt: normalized.lastPriceFetchFailedAt || null,
+    closedAt: row.closedAt || null,
+    completedAt: row.completedAt || null,
+    exitPrice: row.exitPrice || null,
+    exitReason: row.exitReason || null,
+    exitTrigger: row.exitTrigger || null,
 
-    reachedHalfR: Boolean(normalized.reachedHalfR),
-    reachedOneR: Boolean(normalized.reachedOneR),
-    nearTpSeen: Boolean(normalized.nearTpSeen),
-    directToSL: Boolean(normalized.directToSL),
-    directSL: Boolean(normalized.directSL),
+    currentPrice: safeNumber(row.currentPrice || row.lastPrice || row.entry, 0),
+    lastPrice: safeNumber(row.lastPrice || row.currentPrice || row.entry, 0),
+    currentR: round4(row.currentR || 0),
+    mfeR: round4(row.mfeR || 0),
+    maeR: round4(row.maeR || 0),
+    maxTpProgress: round4(row.maxTpProgress || 0),
 
-    beArmed: Boolean(normalized.beArmed),
-    beWouldExit: Boolean(normalized.beWouldExit),
-    beExitR: round4(normalized.beExitR),
-    beWouldExitAt: normalized.beWouldExitAt || null,
+    ticksObserved: safeNumber(row.ticksObserved, 0),
+    favorableTicks: safeNumber(row.favorableTicks, 0),
+    adverseTicks: safeNumber(row.adverseTicks, 0),
 
-    gaveBackAfterHalfR: Boolean(normalized.gaveBackAfterHalfR),
-    gaveBackAfterOneR: Boolean(normalized.gaveBackAfterOneR),
-    nearTpThenLoss: Boolean(normalized.nearTpThenLoss),
+    priceFetchFailures: safeNumber(row.priceFetchFailures, 0),
+    lastPriceFetchFailedAt: row.lastPriceFetchFailedAt || null,
 
-    liveManaged: Boolean(normalized.liveManaged),
-    beLiveApplied: Boolean(normalized.beLiveApplied),
-    trailLiveApplied: Boolean(normalized.trailLiveApplied),
-    slManagementSource: normalized.slManagementSource || null,
-    slMovedAt: normalized.slMovedAt || null,
+    reachedHalfR: Boolean(row.reachedHalfR),
+    reachedOneR: Boolean(row.reachedOneR),
+    nearTpSeen: Boolean(row.nearTpSeen),
 
-    selectedRotationId: normalized.selectedRotationId || normalized.activeRotationId || null,
-    activeRotationId: normalized.activeRotationId || normalized.selectedRotationId || null,
-    selectedMicroFamilyAlert: Boolean(normalized.selectedMicroFamilyAlert),
-    discordAlertEligible: Boolean(normalized.discordAlertEligible),
-    selectedForDiscord: Boolean(normalized.selectedForDiscord || normalized.discordAlertEligible || normalized.selectedMicroFamilyAlert),
-    discordAlertReason: normalized.discordAlertReason || null,
-    rotationMatchType: normalized.rotationMatchType || null,
+    directToSL: Boolean(row.directToSL),
+    directSL: Boolean(row.directSL),
 
-    selectedWeeklyStats: compactStats(normalized.selectedWeeklyStats || normalized.weeklyStats),
-    weeklyStats: compactStats(normalized.weeklyStats || normalized.selectedWeeklyStats),
+    beArmed: Boolean(row.beArmed),
+    beWouldExit: Boolean(row.beWouldExit),
+    beExitR: safeNumber(row.beExitR, 0),
 
-    entryMarketWeather: compactMarketWeather(normalized.entryMarketWeather || normalized.currentMarketWeather),
-    currentMarketWeather: compactMarketWeather(normalized.currentMarketWeather),
-    currentMarketWeatherAgeSec: normalized.currentMarketWeatherAgeSec ?? null,
-    currentMarketWeatherStale: Boolean(normalized.currentMarketWeatherStale),
-    entryCurrentRegime: normalized.entryCurrentRegime || normalized.currentRegime || null,
-    entryCurrentTrendSide: normalized.entryCurrentTrendSide || normalized.currentTrendSide || null,
-    entryCurrentFit: normalized.entryCurrentFit ?? normalized.currentFit ?? null,
-    entryCurrentFitConfidence: normalized.entryCurrentFitConfidence ?? normalized.currentFitConfidence ?? null,
-    entryWeatherFitMatchedFamily: normalized.entryWeatherFitMatchedFamily ?? null,
-    currentFit: normalized.currentFit || normalized.entryCurrentFit || null,
-    currentFitScore: round4(normalized.currentFitScore),
-    currentFitConfidence: normalized.currentFitConfidence ?? normalized.entryCurrentFitConfidence ?? null,
-    currentFitReason: normalized.currentFitReason || null,
+    gaveBackAfterHalfR: Boolean(row.gaveBackAfterHalfR),
+    gaveBackAfterOneR: Boolean(row.gaveBackAfterOneR),
+    nearTpThenLoss: Boolean(row.nearTpThenLoss),
 
-    scannerScore: round4(normalized.scannerScore ?? normalized.moveScore),
-    moveScore: round4(normalized.moveScore ?? normalized.scannerScore),
-    scannerReason: normalized.scannerReason || null,
-    scannerGatePassed: normalized.scannerGatePassed !== false,
-    scannerGateReason: normalized.scannerGateReason || null,
-    analyzeEligible: normalized.analyzeEligible !== false,
+    liveManaged: Boolean(row.liveManaged),
+    beLiveApplied: Boolean(row.beLiveApplied),
+    trailLiveApplied: Boolean(row.trailLiveApplied),
+    slManagementSource: row.slManagementSource || null,
+    slMovedAt: row.slMovedAt || null,
 
-    scannerFingerprintRole: 'METADATA_ONLY',
-    scannerFingerprintOnlyMetadata: Boolean(identity.scannerMicroFamilyId),
-    scannerFingerprintsMetadataOnly: true,
-    scannerFingerprintsUsedAsLearningFamily: false,
-    scannerBucketsMetadataOnly: true,
-    legacy25BucketsMetadataOnly: true,
+    microFamilyId: row.microFamilyId || null,
+    trueMicroFamilyId: row.trueMicroFamilyId || row.microFamilyId || null,
+    childTrueMicroFamilyId: row.childTrueMicroFamilyId || row.trueMicroFamilyId || row.microFamilyId || null,
+    analyzeMicroFamilyId: row.analyzeMicroFamilyId || row.trueMicroFamilyId || row.microFamilyId || null,
+    learningMicroFamilyId: row.learningMicroFamilyId || row.trueMicroFamilyId || row.microFamilyId || null,
+    fixedTaxonomyMicroFamilyId: row.fixedTaxonomyMicroFamilyId || row.trueMicroFamilyId || row.microFamilyId || null,
 
-    executionFingerprintRole: 'METADATA_ONLY',
-    executionFingerprintOnlyMetadata: Boolean(identity.executionMicroFamilyId),
-    executionFingerprintsMetadataOnly: true,
-    executionFingerprintsUsedAsLearningFamily: false,
+    parentTrueMicroFamilyId: row.parentTrueMicroFamilyId || row.coarseMicroFamilyId || null,
+    coarseMicroFamilyId: row.coarseMicroFamilyId || row.parentTrueMicroFamilyId || null,
+    baseMicroFamilyId: row.baseMicroFamilyId || row.parentTrueMicroFamilyId || null,
+    legacyMicroFamilyId: row.legacyMicroFamilyId || row.parentTrueMicroFamilyId || null,
 
-    definition,
-    definitionParts: definition.split(' | '),
+    familyId: row.familyId || row.parentTrueMicroFamilyId || row.coarseMicroFamilyId || null,
+    parentMacroFamilyId: row.parentMacroFamilyId || row.parentTrueMicroFamilyId || null,
+    parentMicroFamilyId: row.parentMicroFamilyId || row.parentTrueMicroFamilyId || null,
+    macroFamilyId: row.macroFamilyId || row.parentTrueMicroFamilyId || null,
 
-    validLongRiskShape: true,
+    setupType: row.setupType || null,
+    regimeBucket: row.regimeBucket || null,
+    confirmationProfile: row.confirmationProfile || null,
+
+    scannerMicroFamilyId: row.scannerMicroFamilyId || null,
+    scannerFamilyId: row.scannerFamilyId || null,
+    executionMicroFamilyId: row.executionMicroFamilyId || null,
+
+    activeRotationId: row.activeRotationId || null,
+    selectedRotationId: row.selectedRotationId || row.activeRotationId || null,
+    activeMacroFamilyId: row.activeMacroFamilyId || row.parentTrueMicroFamilyId || null,
+    selectedMacroFamilyId: row.selectedMacroFamilyId || row.activeMacroFamilyId || row.parentTrueMicroFamilyId || null,
+
+    selectedMicroFamilyAlert: Boolean(row.selectedMicroFamilyAlert),
+    discordAlertEligible: Boolean(row.discordAlertEligible),
+    selectedForDiscord: Boolean(row.selectedForDiscord || row.discordAlertEligible || row.selectedMicroFamilyAlert),
+    rotationMatchType: row.rotationMatchType || null,
+
+    weeklyStats: compactValue(row.weeklyStats || null),
+    entryMarketWeather: compactValue(row.entryMarketWeather || null),
+    entryCurrentRegime: row.entryCurrentRegime || row.currentRegime || null,
+    entryCurrentTrendSide: row.entryCurrentTrendSide || row.currentTrendSide || null,
+    entryCurrentFit: row.entryCurrentFit ?? row.currentFit ?? null,
+    entryCurrentFitConfidence: row.entryCurrentFitConfidence ?? row.currentMarketFitConfidence ?? null,
+    entryWeatherFitMatchedFamily: row.entryWeatherFitMatchedFamily ?? null,
+
+    spreadPct: safeNumber(row.spreadPct, 0),
+    liveSpreadPct: safeNumber(row.liveSpreadPct, 0),
+    orderbookSpreadPct: safeNumber(row.orderbookSpreadPct, 0),
+    estimatedCostR: safeNumber(row.estimatedCostR, 0),
+    costR: safeNumber(row.costR, 0),
+    avgCostR: safeNumber(row.avgCostR, 0),
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+
+    validLongRiskShape: validLongRiskGeometry(row),
     longRiskFormula: 'sl < entry < tp',
     longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
     longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
@@ -1364,739 +1599,91 @@ function compactPositionForStorage(input = {}) {
       timeStop: 'TIME_STOP'
     },
 
-    strategyVersion: normalized.strategyVersion || CONFIG.strategyVersion || null,
-
-    openedAt,
-    createdAt: finiteNumber(normalized.createdAt || openedAt, openedAt),
-    updatedAt,
-
     compactedForRedis: true,
-    compactedAt: now(),
-    compactVersion: MEASUREMENT_FIX_VERSION
+    compactedForPositionEngine: true,
+    compactVersion: 'LONG_OPEN_POSITION_COMPACT_V2',
+    compactedAt: now()
   });
 }
 
-function normalizeOpenIndex(raw = null) {
-  const symbols = {};
+function compactOpenPositionRow(row = {}) {
+  const cfg = tradeConfig();
 
-  if (!raw) {
-    return {
-      version: 'LONG_OPEN_INDEX_V1',
-      updatedAt: 0,
-      symbols
-    };
+  const compacted = compactValue(forceLongPositionFields(row));
+
+  compacted.compactedForRedis = true;
+  compacted.compactedForPositionEngine = true;
+  compacted.compactVersion = 'LONG_OPEN_POSITION_COMPACT_V2';
+  compacted.compactedAt = now();
+
+  if (jsonSizeBytes(compacted) <= cfg.openPositionMaxBytes) {
+    return compacted;
   }
 
-  if (Array.isArray(raw)) {
-    for (const row of raw) {
-      const symbol = storageSymbol(row?.symbol || row);
-      if (!symbol) continue;
+  const minimal = minimalOpenPositionRow(row);
 
-      symbols[symbol] = {
-        symbol,
-        key: LONG_KEYS.trade.open(symbol),
-        tradeId: row?.tradeId || null,
-        openedAt: finiteNumber(row?.openedAt || row?.createdAt, 0),
-        microFamilyId: row?.microFamilyId || row?.trueMicroFamilyId || null
-      };
-    }
-
-    return {
-      version: 'LONG_OPEN_INDEX_V1',
-      updatedAt: now(),
-      symbols
-    };
-  }
-
-  if (typeof raw === 'object') {
-    const source = raw.symbols && typeof raw.symbols === 'object'
-      ? raw.symbols
-      : raw.rows && typeof raw.rows === 'object'
-        ? raw.rows
-        : {};
-
-    for (const [key, value] of Object.entries(source)) {
-      const symbol = storageSymbol(value?.symbol || key);
-      if (!symbol) continue;
-
-      symbols[symbol] = {
-        symbol,
-        key: value?.key || LONG_KEYS.trade.open(symbol),
-        tradeId: value?.tradeId || null,
-        openedAt: finiteNumber(value?.openedAt || value?.createdAt, 0),
-        microFamilyId: value?.microFamilyId || value?.trueMicroFamilyId || null
-      };
-    }
-
-    return {
-      version: raw.version || 'LONG_OPEN_INDEX_V1',
-      updatedAt: finiteNumber(raw.updatedAt, 0),
-      symbols
-    };
+  if (jsonSizeBytes(minimal) <= cfg.openPositionMaxBytes) {
+    return minimal;
   }
 
   return {
-    version: 'LONG_OPEN_INDEX_V1',
-    updatedAt: 0,
-    symbols
+    ...minimal,
+    weeklyStats: null,
+    entryMarketWeather: null,
+    scannerDefinition: null,
+    scannerDefinitionParts: [],
+    compactEmergencyMinimal: true,
+    compactedAt: now()
   };
 }
 
-async function readOpenIndex(redis = getDurableRedis()) {
-  const raw = await getJson(redis, LONG_KEYS.trade.openIndex, null).catch(() => null);
-  return normalizeOpenIndex(raw);
-}
+function withTimeout(promise, ms, fallback) {
+  let timer = null;
 
-async function writeOpenIndex(redis, index) {
-  const clean = normalizeOpenIndex(index);
-
-  await setJson(redis, LONG_KEYS.trade.openIndex, {
-    version: 'LONG_OPEN_INDEX_V1',
-    namespace: LONG_NAMESPACE,
-    keyPrefix: LONG_KEY_PREFIX,
-    side: TARGET_DASHBOARD_SIDE,
-    tradeSide: TARGET_TRADE_SIDE,
-    positionSide: TARGET_TRADE_SIDE,
-    direction: TARGET_TRADE_SIDE,
-    virtualOnly: true,
-    oneOpenPositionPerSymbol: true,
-    updatedAt: now(),
-    symbols: clean.symbols,
-    count: Object.keys(clean.symbols).length,
-    compactedForRedis: true
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
   });
 
-  return clean;
+  return Promise.race([
+    Promise.resolve(promise)
+      .then((value) => {
+        if (timer) clearTimeout(timer);
+        return value;
+      })
+      .catch((error) => {
+        if (timer) clearTimeout(timer);
+        throw error;
+      }),
+    timeout
+  ]);
 }
 
-async function addToOpenIndex(redis, position) {
-  const symbol = storageSymbol(position);
-
-  if (!symbol) return null;
-
-  const index = await readOpenIndex(redis);
-
-  index.symbols[symbol] = {
-    symbol,
-    key: LONG_KEYS.trade.open(symbol),
-    tradeId: position.tradeId || null,
-    openedAt: finiteNumber(position.openedAt || position.createdAt, now()),
-    microFamilyId: rowMicroId(position),
-    trueMicroFamilyId: rowMicroId(position),
-    parentTrueMicroFamilyId: rowParentMicroId(position),
-    updatedAt: now()
-  };
-
-  await writeOpenIndex(redis, index);
-
-  return index.symbols[symbol];
-}
-
-async function removeFromOpenIndex(redis, symbolInput) {
-  const symbol = storageSymbol(symbolInput);
-
-  if (!symbol) return null;
-
-  const index = await readOpenIndex(redis);
-
-  delete index.symbols[symbol];
-
-  await writeOpenIndex(redis, index);
-
-  return symbol;
-}
-
-function isValidOpenPosition(row = {}) {
-  if (!row) return false;
-  if (String(row.status || 'OPEN').toUpperCase() !== 'OPEN') return false;
-  if (!isLongPosition(row)) return false;
-  if (isScannerFamilyRow(row)) return false;
-  if (!isExactLongChildTrueMicroId(rowMicroId(row))) return false;
-  if (!validLongRiskGeometry(row)) return false;
-
-  return true;
-}
-
-function sortOpenPositions(rows = []) {
-  return rows
-    .filter(isValidOpenPosition)
-    .sort((a, b) => (
-      finiteNumber(a.openedAt || a.createdAt, 0) -
-      finiteNumber(b.openedAt || b.createdAt, 0)
-    ));
-}
-
-async function readPositionByIndexEntry(redis, entry) {
-  const symbol = storageSymbol(entry?.symbol);
-  const key = entry?.key || LONG_KEYS.trade.open(symbol);
-
-  if (!key) return null;
-
-  const row = await getJson(redis, key, null).catch(() => null);
-
-  if (!isValidOpenPosition(row)) return null;
-
-  return row;
-}
-
-async function fallbackScanOpenPositions(redis, limit = DEFAULT_OPEN_INDEX_LIMIT) {
-  const keys = await getKeys(
-    redis,
-    LONG_KEYS.trade.openPattern,
-    positiveInt(limit, DEFAULT_OPEN_INDEX_LIMIT, 1, 1000)
-  ).catch(() => []);
-
-  const openKeys = keys
-    .filter(Boolean)
-    .filter((key) => key !== LONG_KEYS.trade.openIndex)
-    .filter((key) => !String(key).endsWith(':INDEX'));
-
-  if (!openKeys.length) return [];
-
-  const rows = await Promise.all(
-    openKeys.map((key) => getJson(redis, key, null).catch(() => null))
-  );
-
-  return sortOpenPositions(rows);
-}
-
-async function persistCompactedOpenRows(redis, rows = []) {
-  const valid = sortOpenPositions(rows);
-
-  for (const row of valid.slice(0, DEFAULT_OPEN_INDEX_LIMIT)) {
-    const symbol = storageSymbol(row);
-    const key = LONG_KEYS.trade.open(symbol);
-
-    if (!symbol || !key) continue;
-
-    const compact = compactPositionForStorage(row);
-    await setJson(redis, key, compact).catch(() => null);
-  }
-
-  return valid;
-}
-
-async function rebuildOpenIndexFromRows(redis, rows = [], { compactPersist = false } = {}) {
-  const valid = compactPersist
-    ? await persistCompactedOpenRows(redis, rows)
-    : sortOpenPositions(rows);
-
-  const symbols = {};
-
-  for (const row of valid) {
-    const symbol = storageSymbol(row);
-    if (!symbol) continue;
-
-    symbols[symbol] = {
-      symbol,
-      key: LONG_KEYS.trade.open(symbol),
-      tradeId: row.tradeId || null,
-      openedAt: finiteNumber(row.openedAt || row.createdAt, 0),
-      microFamilyId: rowMicroId(row),
-      trueMicroFamilyId: rowMicroId(row),
-      parentTrueMicroFamilyId: rowParentMicroId(row),
-      updatedAt: now()
-    };
-  }
-
-  await writeOpenIndex(redis, {
-    version: 'LONG_OPEN_INDEX_V1',
-    updatedAt: now(),
-    symbols
-  });
-
-  return valid;
-}
-
-export async function getOpenPositions(options = {}) {
-  const redis = getDurableRedis();
-  const cfg = tradeConfig();
-  const limit = positiveInt(options.limit ?? cfg.openIndexLimit, cfg.openIndexLimit, 1, 1000);
-
-  const index = await readOpenIndex(redis);
-  const indexEntries = Object.values(index.symbols || {}).slice(0, limit);
-
-  if (indexEntries.length > 0) {
-    const rows = await Promise.all(
-      indexEntries.map((entry) => readPositionByIndexEntry(redis, entry))
-    );
-
-    const valid = sortOpenPositions(rows);
-
-    if (valid.length > 0 || options.fallbackScanWhenIndexEmpty === false) {
-      if (valid.length !== indexEntries.length && options.pruneStaleIndex !== false) {
-        await rebuildOpenIndexFromRows(redis, valid).catch(() => null);
-      }
-
-      return valid.slice(0, limit);
+async function saveOpenPositionWithTimeout(position, timeoutMs) {
+  return withTimeout(
+    saveOpenPosition(position)
+      .then((row) => ({
+        ok: true,
+        row
+      }))
+      .catch((error) => ({
+        ok: false,
+        error: error?.message || String(error)
+      })),
+    timeoutMs,
+    {
+      ok: false,
+      timeout: true,
+      error: 'SAVE_OPEN_POSITION_TIMEOUT'
     }
-  }
-
-  const scanned = await fallbackScanOpenPositions(redis, limit);
-
-  if (scanned.length > 0) {
-    await rebuildOpenIndexFromRows(redis, scanned, { compactPersist: true }).catch(() => null);
-  }
-
-  return scanned.slice(0, limit);
-}
-
-export async function getOpenPosition(symbol) {
-  const keySymbol = storageSymbol(symbol);
-
-  if (!keySymbol) return null;
-
-  const row = await getJson(
-    getDurableRedis(),
-    LONG_KEYS.trade.open(keySymbol),
-    null
-  ).catch(() => null);
-
-  if (!isValidOpenPosition(row)) return null;
-
-  return row;
-}
-
-export async function saveOpenPosition(position) {
-  assertLongInput(position, 'SAVE_OPEN_POSITION');
-
-  const redis = getDurableRedis();
-  const keySymbol = storageSymbol(position);
-
-  if (!keySymbol) throw new Error('OPEN_POSITION_SYMBOL_MISSING');
-
-  const existing = await getOpenPosition(keySymbol);
-
-  if (
-    existing &&
-    existing.tradeId &&
-    position.tradeId &&
-    existing.tradeId !== position.tradeId
-  ) {
-    throw new Error('SYMBOL_ALREADY_OPEN_VIRTUAL_POSITION');
-  }
-
-  const row = compactPositionForStorage({
-    ...position,
-    symbol: position.symbol || keySymbol,
-    baseSymbol: position.baseSymbol || keySymbol,
-    status: 'OPEN',
-    updatedAt: now()
-  });
-
-  assertPositionPersistable(row);
-
-  await setJson(
-    redis,
-    LONG_KEYS.trade.open(keySymbol),
-    row
   );
-
-  await addToOpenIndex(redis, row).catch(() => null);
-
-  return row;
-}
-
-async function redisDel(redis, key) {
-  if (!key) return 0;
-
-  if (typeof redis?.del === 'function') {
-    return redis.del(key);
-  }
-
-  if (typeof redis?.unlink === 'function') {
-    return redis.unlink(key);
-  }
-
-  await setJson(redis, key, null).catch(() => null);
-  return 1;
-}
-
-export async function deleteOpenPosition(symbol) {
-  const keySymbol = storageSymbol(symbol);
-
-  if (!keySymbol) return 0;
-
-  const redis = getDurableRedis();
-  const key = LONG_KEYS.trade.open(keySymbol);
-
-  if (!key) return 0;
-
-  const result = await redisDel(redis, key).catch(() => 0);
-
-  await removeFromOpenIndex(redis, keySymbol).catch(() => null);
-
-  return result;
-}
-
-function calcStopFromR({
-  entry,
-  initialSl,
-  stopR
-} = {}) {
-  const e = finiteNumber(entry, 0);
-  const sl = finiteNumber(initialSl, 0);
-  const r = finiteNumber(stopR, 0);
-
-  if (e <= 0 || sl <= 0 || sl >= e) return 0;
-
-  const riskDist = e - sl;
-
-  if (riskDist <= 0) return 0;
-
-  return e + riskDist * r;
-}
-
-function shouldTightenStop({
-  currentSl,
-  nextSl
-} = {}) {
-  const current = finiteNumber(currentSl, 0);
-  const next = finiteNumber(nextSl, 0);
-
-  if (current <= 0 || next <= 0) return false;
-
-  return next > current;
-}
-
-function applyLiveStopManagement(position) {
-  const cfg = manageConfig();
-
-  if (!cfg.applyLive) return position;
-  if (!isLongPosition(position)) return position;
-
-  const entry = finiteNumber(position.entry, 0);
-  const initialSl = finiteNumber(position.initialSl || position.sl, 0);
-  const currentSl = finiteNumber(position.sl, 0);
-  const currentR = finiteNumber(position.currentR, 0);
-
-  if (entry <= 0 || initialSl <= 0 || currentSl <= 0 || initialSl >= entry) return position;
-
-  let nextStopR = null;
-  let source = null;
-
-  if (currentR >= cfg.beArmR) {
-    nextStopR = cfg.beLockR;
-    source = 'BE';
-  }
-
-  if (currentR >= cfg.trailArmR) {
-    nextStopR = Math.max(
-      finiteNumber(nextStopR, cfg.beLockR),
-      cfg.trailLockR
-    );
-    source = 'TRAIL';
-  }
-
-  if (nextStopR === null) return position;
-
-  const nextSl = calcStopFromR({
-    entry,
-    initialSl,
-    stopR: nextStopR
-  });
-
-  if (!shouldTightenStop({
-    currentSl,
-    nextSl
-  })) {
-    return position;
-  }
-
-  position.sl = roundPrice(nextSl);
-  position.slManagementSource = source;
-  position.slMovedAt = now();
-  position.liveManaged = true;
-
-  if (source === 'BE') position.beLiveApplied = true;
-  if (source === 'TRAIL') position.trailLiveApplied = true;
-
-  return position;
-}
-
-export function updatePathMetrics(position, price) {
-  const cfg = manageConfig();
-
-  if (!isLongPosition(position)) {
-    position.updatedAt = now();
-    position.longOnly = true;
-    position.shortDisabled = true;
-    position.shortOnly = false;
-    position.longDisabled = false;
-    position.liveManagementSkippedReason = 'NON_LONG_POSITION_IGNORED';
-
-    return position;
-  }
-
-  const current = finiteNumber(price, 0);
-  const entry = finiteNumber(position.entry, 0);
-  const initialSl = finiteNumber(position.initialSl || position.sl, 0);
-  const tp = finiteNumber(position.tp, 0);
-
-  if (entry <= 0 || initialSl <= 0 || tp <= 0 || current <= 0 || initialSl >= entry || tp <= entry) {
-    return forceLongPositionFields({
-      ...position,
-      updatedAt: now()
-    });
-  }
-
-  const riskDist = entry - initialSl;
-  const rewardDist = tp - entry;
-
-  const directionalMove = current - entry;
-  const currentR = directionalMove / riskDist;
-  const tpProgress = directionalMove / rewardDist;
-
-  position.lastPrice = roundPrice(current);
-  position.currentPrice = roundPrice(current);
-  position.currentR = round4(currentR);
-
-  position.mfeR = round4(Math.max(
-    finiteNumber(position.mfeR, 0),
-    position.currentR
-  ));
-
-  position.maeR = round4(Math.min(
-    finiteNumber(position.maeR, 0),
-    position.currentR
-  ));
-
-  position.maxTpProgress = round4(Math.max(
-    finiteNumber(position.maxTpProgress, 0),
-    tpProgress
-  ));
-
-  position.ticksObserved = finiteNumber(position.ticksObserved, 0) + 1;
-
-  if (currentR > 0) position.favorableTicks = finiteNumber(position.favorableTicks, 0) + 1;
-  if (currentR < 0) position.adverseTicks = finiteNumber(position.adverseTicks, 0) + 1;
-
-  if (position.mfeR >= 0.5) position.reachedHalfR = true;
-  if (position.mfeR >= 1.0) position.reachedOneR = true;
-  if (tpProgress >= 0.8) position.nearTpSeen = true;
-
-  if (position.mfeR >= cfg.beArmR) {
-    position.beArmed = true;
-
-    if (currentR <= cfg.beLockR && !position.beWouldExit) {
-      position.beWouldExit = true;
-      position.beExitR = cfg.beLockR;
-      position.beWouldExitAt = now();
-    }
-  }
-
-  if (position.reachedHalfR && currentR < 0) position.gaveBackAfterHalfR = true;
-  if (position.reachedOneR && currentR < cfg.trailLockR) position.gaveBackAfterOneR = true;
-  if (position.nearTpSeen && currentR < 0) position.nearTpThenLoss = true;
-
-  applyLiveStopManagement(position);
-
-  Object.assign(position, forceLongPositionFields(position));
-
-  position.updatedAt = now();
-
-  return position;
-}
-
-export function buildOpenPositionFromEntry(entry) {
-  assertLongInput(entry, 'BUILD_OPEN_POSITION_FROM_ENTRY');
-
-  const normalizedEntry = forceLongPositionFields(entry);
-  const keySymbol = storageSymbol(normalizedEntry);
-  const openedAt = now();
-  const identity = normalizeMicroIdentity(normalizedEntry);
-
-  const position = compactPositionForStorage({
-    ...normalizedEntry,
-    ...identity,
-    ...buildVirtualFlags(normalizedEntry),
-
-    tradeId: normalizedEntry.tradeId || randomId('trade_long'),
-
-    symbol: normalizedEntry.symbol || keySymbol,
-    baseSymbol: normalizedEntry.baseSymbol || keySymbol,
-    contractSymbol: normalizedEntry.contractSymbol || null,
-
-    status: 'OPEN',
-
-    strategyVersion: normalizedEntry.strategyVersion || CONFIG.strategyVersion,
-
-    openedAt,
-    createdAt: openedAt,
-    updatedAt: openedAt,
-
-    initialSl: normalizedEntry.initialSl || normalizedEntry.sl,
-
-    currentPrice: normalizedEntry.currentPrice ?? normalizedEntry.lastPrice ?? normalizedEntry.entry,
-    lastPrice: normalizedEntry.lastPrice ?? normalizedEntry.currentPrice ?? normalizedEntry.entry,
-
-    currentR: 0,
-    mfeR: 0,
-    maeR: 0,
-    maxTpProgress: 0,
-
-    ticksObserved: 0,
-    favorableTicks: 0,
-    adverseTicks: 0,
-
-    priceFetchFailures: 0,
-    lastPriceFetchFailedAt: null,
-
-    reachedHalfR: false,
-    reachedOneR: false,
-    nearTpSeen: false,
-
-    directToSL: false,
-    directSL: false,
-
-    beArmed: false,
-    beWouldExit: false,
-    beExitR: 0,
-
-    gaveBackAfterHalfR: false,
-    gaveBackAfterOneR: false,
-    nearTpThenLoss: false,
-
-    liveManaged: false,
-    beLiveApplied: false,
-    trailLiveApplied: false,
-    slManagementSource: null,
-
-    entryMarketWeather: normalizedEntry.entryMarketWeather || normalizedEntry.currentMarketWeather || null,
-    entryCurrentRegime: normalizedEntry.entryCurrentRegime || normalizedEntry.currentRegime || null,
-    entryCurrentTrendSide: normalizedEntry.entryCurrentTrendSide || normalizedEntry.currentTrendSide || null,
-    entryCurrentFit: normalizedEntry.entryCurrentFit ?? normalizedEntry.currentFit ?? null,
-    entryCurrentFitConfidence: normalizedEntry.entryCurrentFitConfidence ?? normalizedEntry.currentFitConfidence ?? null,
-    entryWeatherFitMatchedFamily: normalizedEntry.entryWeatherFitMatchedFamily ?? null
-  });
-
-  assertPositionPersistable(position);
-
-  return position;
-}
-
-function fallbackExitPrice(position = {}) {
-  return roundPrice(
-    position.currentPrice ??
-      position.lastPrice ??
-      position.markPrice ??
-      position.price ??
-      position.entry
-  );
-}
-
-function detectExit({
-  position,
-  price,
-  timestamp
-} = {}) {
-  const cfg = tradeConfig();
-
-  if (!isLongPosition(position)) {
-    return {
-      shouldExit: false,
-      reason: 'NON_LONG_POSITION_IGNORED',
-      trigger: null,
-      exitPrice: 0
-    };
-  }
-
-  const current = finiteNumber(price, 0);
-  const tp = finiteNumber(position.tp, 0);
-  const sl = finiteNumber(position.sl, 0);
-  const openedAt = finiteNumber(position.openedAt || position.createdAt, 0);
-
-  if (current > 0 && tp > 0 && current >= tp) {
-    return {
-      shouldExit: true,
-      reason: 'TP',
-      trigger: 'price >= tp',
-      exitPrice: roundPrice(current)
-    };
-  }
-
-  if (current > 0 && sl > 0 && current <= sl) {
-    return {
-      shouldExit: true,
-      reason: 'SL',
-      trigger: 'price <= sl',
-      exitPrice: roundPrice(current)
-    };
-  }
-
-  const expired =
-    openedAt > 0 &&
-    timestamp - openedAt >= cfg.positionTimeStopMin * 60 * 1000;
-
-  if (expired) {
-    return {
-      shouldExit: true,
-      reason: 'TIME_STOP',
-      trigger: 'TIME_STOP',
-      exitPrice: current > 0 ? roundPrice(current) : fallbackExitPrice(position),
-      priceUnavailableTimeStop: current <= 0
-    };
-  }
-
-  return {
-    shouldExit: false,
-    reason: null,
-    trigger: null,
-    exitPrice: current > 0 ? roundPrice(current) : 0
-  };
-}
-
-async function markPriceFetchFailed(position, { persist = false } = {}) {
-  position.priceFetchFailures = finiteNumber(position.priceFetchFailures, 0) + 1;
-  position.lastPriceFetchFailedAt = now();
-  position.updatedAt = now();
-
-  if (persist) {
-    await saveOpenPosition(forceLongPositionFields(position)).catch(() => null);
-  }
-
-  return position;
-}
-
-function isDirectSLExit({
-  position,
-  exitReason
-} = {}) {
-  const reason = upper(exitReason);
-
-  const stoppedOut =
-    reason === 'SL' ||
-    reason === 'HIT_SL' ||
-    reason === 'STOP' ||
-    reason === 'STOP_LOSS' ||
-    reason === 'STOPLOSS' ||
-    reason === 'HARD_SL' ||
-    reason === 'DIRECT_SL';
-
-  if (!stoppedOut) return false;
-
-  if (
-    Boolean(position.nearTpSeen) ||
-    Boolean(position.reachedHalfR) ||
-    Boolean(position.reachedOneR)
-  ) {
-    return false;
-  }
-
-  const mfeR = finiteNumber(position.mfeR, 0);
-  const maeR = finiteNumber(position.maeR, 0);
-
-  return Boolean(position.directToSL || position.directSL) ||
-    mfeR < 0.25 ||
-    maeR <= -0.8;
 }
 
 function calcGrossMovePctFromPosition({
   position,
   exitPrice
 } = {}) {
-  const entry = finiteNumber(position.entry, 0);
-  const exit = finiteNumber(exitPrice, 0);
+  const entry = safeNumber(position.entry, 0);
+  const exit = safeNumber(exitPrice, 0);
 
   if (entry <= 0 || exit <= 0) return 0;
 
@@ -2107,9 +1694,9 @@ function calcGrossRFromPosition({
   position,
   exitPrice
 } = {}) {
-  const entry = finiteNumber(position.entry, 0);
-  const initialSl = finiteNumber(position.initialSl || position.sl, 0);
-  const exit = finiteNumber(exitPrice, 0);
+  const entry = safeNumber(position.entry, 0);
+  const initialSl = safeNumber(position.initialSl || position.sl, 0);
+  const exit = safeNumber(exitPrice, 0);
 
   if (entry <= 0 || initialSl <= 0 || exit <= 0) return 0;
 
@@ -2121,8 +1708,8 @@ function calcGrossRFromPosition({
 }
 
 function calcRiskPctFromPosition(position = {}) {
-  const entry = finiteNumber(position.entry, 0);
-  const initialSl = finiteNumber(position.initialSl || position.sl, 0);
+  const entry = safeNumber(position.entry, 0);
+  const initialSl = safeNumber(position.initialSl || position.sl, 0);
 
   if (entry <= 0 || initialSl <= 0 || initialSl >= entry) return 0;
 
@@ -2130,8 +1717,8 @@ function calcRiskPctFromPosition(position = {}) {
 }
 
 function calcRewardPctFromPosition(position = {}) {
-  const entry = finiteNumber(position.entry, 0);
-  const tp = finiteNumber(position.tp, 0);
+  const entry = safeNumber(position.entry, 0);
+  const tp = safeNumber(position.tp, 0);
 
   if (entry <= 0 || tp <= entry) return 0;
 
@@ -2153,7 +1740,7 @@ function calcNetCostOutcome({
     exitPrice
   });
 
-  const entrySpreadPct = finiteNumber(
+  const entrySpreadPct = safeNumber(
     position.spreadPct ??
       position.liveSpreadPct ??
       position.orderbookSpreadPct ??
@@ -2162,7 +1749,7 @@ function calcNetCostOutcome({
     0
   );
 
-  const exitSpreadPct = finiteNumber(
+  const exitSpreadPct = safeNumber(
     position.exitSpreadPct ??
       position.spreadPct ??
       position.liveSpreadPct ??
@@ -2182,13 +1769,14 @@ function calcNetCostOutcome({
     exitSpreadPct
   }) || {};
 
-  const appliedGrossR = Number.isFinite(Number(cost.grossR))
-    ? finiteNumber(cost.grossR, grossR)
+  const costGrossR = finiteNumber(cost.grossR, NaN);
+  const appliedGrossR = Number.isFinite(costGrossR)
+    ? costGrossR
     : grossR;
 
   const costR = Math.max(
     0,
-    finiteNumber(
+    safeNumber(
       cost.costR ??
         position.costR ??
         position.estimatedCostR ??
@@ -2210,44 +1798,16 @@ function calcNetCostOutcome({
     costR,
     netR,
 
-    feeR: Math.max(0, finiteNumber(cost.feeR, 0)),
-    slippageR: Math.max(0, finiteNumber(cost.slippageR, 0)),
-    marketImpactR: Math.max(0, finiteNumber(cost.marketImpactR, 0)),
-    spreadCostR: Math.max(0, finiteNumber(cost.spreadCostR, 0)),
+    feeR: Math.max(0, safeNumber(cost.feeR, 0)),
+    slippageR: Math.max(0, safeNumber(cost.slippageR, 0)),
+    marketImpactR: Math.max(0, safeNumber(cost.marketImpactR, 0)),
+    spreadCostR: Math.max(0, safeNumber(cost.spreadCostR, 0)),
 
-    feePct: finiteNumber(cost.feePct, 0),
-    slippagePct: finiteNumber(cost.slippagePct, 0),
-    costPct: finiteNumber(cost.costPct, 0),
-    grossPnlPct: finiteNumber(cost.grossPnlPct, grossMovePct * 100),
-    netPnlPct: finiteNumber(cost.netPnlPct, (grossMovePct - finiteNumber(cost.costRatio, 0)) * 100)
-  };
-}
-
-function compactRawOutcome(outcome = {}) {
-  return {
-    tradeId: outcome.tradeId || null,
-    symbol: outcome.symbol || null,
-    baseSymbol: outcome.baseSymbol || outcome.symbol || null,
-    contractSymbol: outcome.contractSymbol || null,
-    status: 'CLOSED',
-    exitReason: outcome.exitReason || outcome.reason || null,
-    exitTrigger: outcome.exitTrigger || null,
-    exitPrice: finiteNumber(outcome.exitPrice, 0),
-    entry: finiteNumber(outcome.entry, 0),
-    sl: finiteNumber(outcome.sl, 0),
-    tp: finiteNumber(outcome.tp, 0),
-    initialSl: finiteNumber(outcome.initialSl, 0),
-    currentR: round4(outcome.currentR),
-    mfeR: round4(outcome.mfeR),
-    maeR: round4(outcome.maeR),
-    grossR: round6(outcome.grossR ?? outcome.realizedGrossR),
-    netR: round6(outcome.netR ?? outcome.r ?? outcome.realizedR),
-    r: round6(outcome.r ?? outcome.netR ?? outcome.realizedR),
-    realizedR: round6(outcome.realizedR ?? outcome.netR ?? outcome.r),
-    costR: round6(outcome.costR),
-    avgCostR: round6(outcome.avgCostR ?? outcome.costR),
-    closedAt: finiteNumber(outcome.closedAt || outcome.completedAt, now()),
-    completedAt: finiteNumber(outcome.completedAt || outcome.closedAt, now())
+    feePct: safeNumber(cost.feePct, 0),
+    slippagePct: safeNumber(cost.slippagePct, 0),
+    costPct: safeNumber(cost.costPct, 0),
+    grossPnlPct: safeNumber(cost.grossPnlPct, grossMovePct * 100),
+    netPnlPct: safeNumber(cost.netPnlPct, (grossMovePct - safeNumber(cost.costRatio, 0)) * 100)
   };
 }
 
@@ -2258,9 +1818,11 @@ function applyNetCostModelToOutcome({
 } = {}) {
   if (!outcome || typeof outcome !== 'object') return outcome;
 
-  if (!isLongPosition(position)) {
+  const normalizedOutcome = forceLongPositionFields(outcome);
+
+  if (!isLongPosition(position) || !isLongPosition(normalizedOutcome)) {
     return {
-      ...compactRawOutcome(outcome),
+      ...normalizedOutcome,
       skipped: true,
       reason: 'NON_LONG_OUTCOME_COST_MODEL_REJECTED',
       source: OUTCOME_SOURCE,
@@ -2280,7 +1842,7 @@ function applyNetCostModelToOutcome({
   });
 
   return forceLongPositionFields({
-    ...compactRawOutcome(outcome),
+    ...normalizedOutcome,
 
     source: OUTCOME_SOURCE,
     outcomeSource: OUTCOME_SOURCE,
@@ -2347,33 +1909,325 @@ function applyNetCostModelToOutcome({
   });
 }
 
-function fallbackOutcomeFromPosition({
-  position,
-  exitPrice,
-  exitReason,
-  timestamp
-} = {}) {
-  return {
-    tradeId: position.tradeId || null,
-    symbol: position.symbol || null,
-    baseSymbol: position.baseSymbol || position.symbol || null,
-    contractSymbol: position.contractSymbol || null,
-    status: 'CLOSED',
-    exitReason,
-    reason: exitReason,
-    exitPrice,
-    entry: position.entry,
-    sl: position.sl,
-    tp: position.tp,
-    initialSl: position.initialSl || position.sl,
-    currentR: position.currentR || 0,
-    mfeR: position.mfeR || 0,
-    maeR: position.maeR || 0,
-    closedAt: timestamp,
-    completedAt: timestamp,
-    source: OUTCOME_SOURCE,
-    outcomeSource: OUTCOME_SOURCE
-  };
+export async function getOpenPositions(options = {}) {
+  const cfg = tradeConfig();
+  const redis = getDurableRedis();
+
+  const limit = Math.max(
+    1,
+    Math.floor(safeNumber(options.limit, cfg.openPositionFetchLimit))
+  );
+
+  const keys = await getKeys(redis, LONG_KEYS.trade.openPattern, limit);
+
+  if (!keys.length) return [];
+
+  const rows = await mapConcurrent(
+    keys,
+    Math.max(1, Math.min(cfg.dataConcurrency, 5)),
+    async (key) => getJson(redis, key, null).catch(() => null)
+  );
+
+  return rows
+    .filter(Boolean)
+    .filter((row) => String(row.status || 'OPEN').toUpperCase() === 'OPEN')
+    .filter(isLongPosition)
+    .filter((row) => !isScannerFamilyRow(row))
+    .filter((row) => isExactLongChildTrueMicroId(rowMicroId(row)))
+    .sort((a, b) => (
+      safeNumber(a.openedAt || a.createdAt, 0) -
+      safeNumber(b.openedAt || b.createdAt, 0)
+    ));
+}
+
+export async function getOpenPosition(symbol) {
+  const keySymbol = storageSymbol(symbol);
+
+  if (!keySymbol) return null;
+
+  const row = await getJson(
+    getDurableRedis(),
+    LONG_KEYS.trade.open(keySymbol),
+    null
+  );
+
+  if (!row) return null;
+  if (String(row.status || 'OPEN').toUpperCase() !== 'OPEN') return null;
+  if (!isLongPosition(row)) return null;
+  if (isScannerFamilyRow(row)) return null;
+  if (!isExactLongChildTrueMicroId(rowMicroId(row))) return null;
+
+  return row;
+}
+
+export async function saveOpenPosition(position) {
+  assertLongInput(position, 'SAVE_OPEN_POSITION');
+
+  const keySymbol = storageSymbol(position);
+
+  if (!keySymbol) {
+    throw new Error('OPEN_POSITION_SYMBOL_MISSING');
+  }
+
+  const existing = await getOpenPosition(keySymbol);
+
+  if (
+    existing &&
+    existing.tradeId &&
+    position.tradeId &&
+    existing.tradeId !== position.tradeId
+  ) {
+    throw new Error('OPEN_POSITION_SYMBOL_ALREADY_OPEN_LONG_ONLY');
+  }
+
+  const normalized = forceLongPositionFields(position);
+  const identity = normalizeMicroIdentity(normalized);
+
+  const row = forceLongPositionFields({
+    ...normalized,
+    ...identity,
+    ...buildVirtualFlags(normalized),
+
+    symbol: normalized.symbol || keySymbol,
+    baseSymbol: normalized.baseSymbol || keySymbol,
+    contractSymbol: normalized.contractSymbol || null,
+
+    status: normalized.status || 'OPEN',
+
+    strategyVersion: normalized.strategyVersion || CONFIG.strategyVersion,
+
+    updatedAt: now()
+  });
+
+  assertPositionPersistable(row);
+
+  const compacted = compactOpenPositionRow(row);
+
+  await setJson(
+    getDurableRedis(),
+    LONG_KEYS.trade.open(keySymbol),
+    compacted
+  );
+
+  return compacted;
+}
+
+export async function deleteOpenPosition(symbol) {
+  const keySymbol = storageSymbol(symbol);
+
+  if (!keySymbol) return 0;
+
+  const key = LONG_KEYS.trade.open(keySymbol);
+
+  if (!key) return 0;
+
+  return getDurableRedis().del(key);
+}
+
+export function updatePathMetrics(position, price) {
+  const cfg = manageConfig();
+
+  if (!isLongPosition(position)) {
+    position.updatedAt = now();
+    position.longOnly = true;
+    position.shortDisabled = true;
+    position.shortOnly = false;
+    position.longDisabled = false;
+    position.liveManagementSkippedReason = 'NON_LONG_POSITION_IGNORED';
+
+    return position;
+  }
+
+  const current = safeNumber(price, 0);
+  const entry = safeNumber(position.entry, 0);
+  const initialSl = safeNumber(position.initialSl || position.sl, 0);
+  const tp = safeNumber(position.tp, 0);
+
+  if (entry <= 0 || initialSl <= 0 || tp <= 0 || current <= 0 || initialSl >= entry || tp <= entry) {
+    return forceLongPositionFields({
+      ...position,
+      updatedAt: now()
+    });
+  }
+
+  const riskDist = entry - initialSl;
+  const rewardDist = tp - entry;
+
+  const directionalMove = current - entry;
+  const currentR = directionalMove / riskDist;
+  const tpProgress = directionalMove / rewardDist;
+
+  position.lastPrice = current;
+  position.currentPrice = current;
+  position.currentR = round4(currentR);
+
+  position.mfeR = round4(Math.max(
+    safeNumber(position.mfeR, 0),
+    position.currentR
+  ));
+
+  position.maeR = round4(Math.min(
+    safeNumber(position.maeR, 0),
+    position.currentR
+  ));
+
+  position.maxTpProgress = round4(Math.max(
+    safeNumber(position.maxTpProgress, 0),
+    tpProgress
+  ));
+
+  position.ticksObserved = safeNumber(position.ticksObserved, 0) + 1;
+
+  if (currentR > 0) {
+    position.favorableTicks = safeNumber(position.favorableTicks, 0) + 1;
+  }
+
+  if (currentR < 0) {
+    position.adverseTicks = safeNumber(position.adverseTicks, 0) + 1;
+  }
+
+  if (position.mfeR >= 0.5) position.reachedHalfR = true;
+  if (position.mfeR >= 1.0) position.reachedOneR = true;
+  if (tpProgress >= 0.8) position.nearTpSeen = true;
+
+  if (position.mfeR >= cfg.beArmR) {
+    position.beArmed = true;
+
+    if (currentR <= cfg.beLockR && !position.beWouldExit) {
+      position.beWouldExit = true;
+      position.beExitR = cfg.beLockR;
+      position.beWouldExitAt = now();
+    }
+  }
+
+  if (position.reachedHalfR && currentR < 0) {
+    position.gaveBackAfterHalfR = true;
+  }
+
+  if (position.reachedOneR && currentR < cfg.trailLockR) {
+    position.gaveBackAfterOneR = true;
+  }
+
+  if (position.nearTpSeen && currentR < 0) {
+    position.nearTpThenLoss = true;
+  }
+
+  applyLiveStopManagement(position);
+
+  Object.assign(position, forceLongPositionFields(position));
+
+  position.updatedAt = now();
+
+  return position;
+}
+
+export function buildOpenPositionFromEntry(entry) {
+  assertLongInput(entry, 'BUILD_OPEN_POSITION_FROM_ENTRY');
+
+  const normalizedEntry = forceLongPositionFields(entry);
+  const keySymbol = storageSymbol(normalizedEntry);
+  const openedAt = now();
+  const identity = normalizeMicroIdentity(normalizedEntry);
+
+  const position = forceLongPositionFields({
+    ...normalizedEntry,
+    ...identity,
+    ...buildVirtualFlags(normalizedEntry),
+
+    tradeId: normalizedEntry.tradeId || randomId('trade_long'),
+
+    symbol: normalizedEntry.symbol || keySymbol,
+    baseSymbol: normalizedEntry.baseSymbol || keySymbol,
+    contractSymbol: normalizedEntry.contractSymbol || null,
+
+    status: 'OPEN',
+
+    strategyVersion: normalizedEntry.strategyVersion || CONFIG.strategyVersion,
+
+    openedAt,
+    createdAt: openedAt,
+    updatedAt: openedAt,
+
+    initialSl: normalizedEntry.initialSl || normalizedEntry.sl,
+
+    currentR: 0,
+    mfeR: 0,
+    maeR: 0,
+    maxTpProgress: 0,
+
+    ticksObserved: 0,
+    favorableTicks: 0,
+    adverseTicks: 0,
+
+    priceFetchFailures: 0,
+    lastPriceFetchFailedAt: null,
+
+    reachedHalfR: false,
+    reachedOneR: false,
+    nearTpSeen: false,
+
+    directToSL: false,
+    directSL: false,
+
+    beArmed: false,
+    beWouldExit: false,
+    beExitR: 0,
+
+    gaveBackAfterHalfR: false,
+    gaveBackAfterOneR: false,
+    nearTpThenLoss: false,
+
+    liveManaged: false,
+    beLiveApplied: false,
+    trailLiveApplied: false,
+    slManagementSource: null,
+
+    entryMarketWeather: normalizedEntry.entryMarketWeather || null,
+    entryCurrentRegime: normalizedEntry.entryCurrentRegime || normalizedEntry.currentRegime || null,
+    entryCurrentTrendSide: normalizedEntry.entryCurrentTrendSide || normalizedEntry.currentTrendSide || null,
+    entryCurrentFit: normalizedEntry.entryCurrentFit ?? normalizedEntry.currentFit ?? null,
+    entryCurrentFitConfidence: normalizedEntry.entryCurrentFitConfidence ?? normalizedEntry.currentMarketFitConfidence ?? null,
+    entryWeatherFitMatchedFamily: normalizedEntry.entryWeatherFitMatchedFamily ?? null,
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+
+    validLongRiskShape: validLongRiskGeometry(normalizedEntry),
+    longRiskFormula: 'sl < entry < tp',
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longExitRules: {
+      tp: 'price >= tp',
+      sl: 'price <= sl',
+      timeStop: 'TIME_STOP'
+    }
+  });
+
+  assertPositionPersistable(position);
+
+  return position;
+}
+
+async function markPriceFetchFailed(position, options = {}) {
+  const cfg = tradeConfig();
+
+  const updated = forceLongPositionFields({
+    ...position,
+    priceFetchFailures: safeNumber(position.priceFetchFailures, 0) + 1,
+    lastPriceFetchFailedAt: now(),
+    updatedAt: now()
+  });
+
+  const persist =
+    options.persist === true ||
+    cfg.persistNoPriceFailures === true;
+
+  if (!persist) return updated;
+
+  await saveOpenPositionWithTimeout(updated, cfg.saveOpenPositionTimeoutMs);
+
+  return updated;
 }
 
 function isDirectSLExit({
@@ -2401,8 +2255,8 @@ function isDirectSLExit({
     return false;
   }
 
-  const mfeR = finiteNumber(position.mfeR, 0);
-  const maeR = finiteNumber(position.maeR, 0);
+  const mfeR = safeNumber(position.mfeR, 0);
+  const maeR = safeNumber(position.maeR, 0);
 
   return Boolean(position.directToSL || position.directSL) ||
     mfeR < 0.25 ||
@@ -2412,13 +2266,13 @@ function isDirectSLExit({
 function enrichOutcomeIdentity(outcome = {}, position = {}) {
   const identity = normalizeMicroIdentity(position);
 
-  const openedAt = finiteNumber(position.openedAt || position.createdAt, 0);
-  const closedAt = finiteNumber(outcome.closedAt || outcome.completedAt, now());
+  const openedAt = safeNumber(position.openedAt || position.createdAt, 0);
+  const closedAt = safeNumber(outcome.closedAt || outcome.completedAt, now());
   const ageSec = openedAt > 0 && closedAt > 0
     ? Math.max(0, Math.floor((closedAt - openedAt) / 1000))
     : 0;
 
-  const exitReason = upper(outcome.exitReason || outcome.reason);
+  const exitReason = String(outcome.exitReason || '').toUpperCase();
   const directSL = isDirectSLExit({
     position,
     exitReason
@@ -2431,12 +2285,12 @@ function enrichOutcomeIdentity(outcome = {}, position = {}) {
     openedAt || '',
     closedAt || '',
     exitReason || '',
-    finiteNumber(outcome.exitPrice || outcome.exit, 0),
+    safeNumber(outcome.exitPrice || outcome.exit, 0),
     identity.microFamilyId
   ].join('|');
 
   return forceLongPositionFields({
-    ...compactRawOutcome(outcome),
+    ...outcome,
     ...identity,
 
     source: OUTCOME_SOURCE,
@@ -2467,8 +2321,7 @@ function enrichOutcomeIdentity(outcome = {}, position = {}) {
     selectedForDiscord: Boolean(position.selectedForDiscord || position.discordAlertEligible || position.selectedMicroFamilyAlert),
     rotationMatchType: position.rotationMatchType || outcome.rotationMatchType || null,
 
-    weeklyStats: compactStats(position.weeklyStats || position.selectedWeeklyStats),
-    selectedWeeklyStats: compactStats(position.selectedWeeklyStats || position.weeklyStats),
+    weeklyStats: compactValue(position.weeklyStats || null),
 
     virtualOnly: true,
     virtualTracked: true,
@@ -2485,7 +2338,7 @@ function enrichOutcomeIdentity(outcome = {}, position = {}) {
     scannerFamilyId: position.scannerFamilyId || identity.scannerFamilyId || null,
     scannerDefinition: position.scannerDefinition || identity.scannerDefinition || null,
     scannerDefinitionParts: Array.isArray(position.scannerDefinitionParts)
-      ? position.scannerDefinitionParts.slice(0, 12)
+      ? position.scannerDefinitionParts.slice(0, 30)
       : identity.scannerDefinitionParts || [],
 
     executionMicroFamilyId: position.executionMicroFamilyId || identity.executionMicroFamilyId || null,
@@ -2513,17 +2366,17 @@ function enrichOutcomeIdentity(outcome = {}, position = {}) {
     trueMicroOnly: true,
     exactTrueMicroOnly: true,
 
-    currentPrice: roundPrice(position.currentPrice ?? position.lastPrice ?? outcome.exitPrice),
-    lastPrice: roundPrice(position.lastPrice ?? position.currentPrice ?? outcome.exitPrice),
-    entry: roundPrice(position.entry ?? outcome.entry),
-    sl: roundPrice(position.sl ?? outcome.sl),
-    tp: roundPrice(position.tp ?? outcome.tp),
-    initialSl: roundPrice(position.initialSl ?? outcome.initialSl ?? position.sl),
+    currentPrice: safeNumber(position.currentPrice ?? position.lastPrice ?? outcome.exitPrice, 0),
+    lastPrice: safeNumber(position.lastPrice ?? position.currentPrice ?? outcome.exitPrice, 0),
+    entry: safeNumber(position.entry ?? outcome.entry, 0),
+    sl: safeNumber(position.sl ?? outcome.sl, 0),
+    tp: safeNumber(position.tp ?? outcome.tp, 0),
+    initialSl: safeNumber(position.initialSl ?? outcome.initialSl ?? position.sl, 0),
 
     ageSec,
-    currentR: round4(position.currentR ?? outcome.currentR),
-    mfeR: round4(position.mfeR ?? outcome.mfeR),
-    maeR: round4(position.maeR ?? outcome.maeR),
+    currentR: safeNumber(position.currentR ?? outcome.currentR, 0),
+    mfeR: safeNumber(position.mfeR ?? outcome.mfeR, 0),
+    maeR: safeNumber(position.maeR ?? outcome.maeR, 0),
 
     reachedHalfR: Boolean(position.reachedHalfR || outcome.reachedHalfR),
     reachedOneR: Boolean(position.reachedOneR || outcome.reachedOneR),
@@ -2549,11 +2402,11 @@ function enrichOutcomeIdentity(outcome = {}, position = {}) {
     longRiskFormula: 'sl < entry < tp',
     longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
 
-    entryMarketWeather: compactMarketWeather(position.entryMarketWeather || outcome.entryMarketWeather),
+    entryMarketWeather: compactValue(position.entryMarketWeather || outcome.entryMarketWeather || null),
     entryCurrentRegime: position.entryCurrentRegime || position.currentRegime || outcome.entryCurrentRegime || outcome.currentRegime || null,
     entryCurrentTrendSide: position.entryCurrentTrendSide || position.currentTrendSide || outcome.entryCurrentTrendSide || outcome.currentTrendSide || null,
     entryCurrentFit: position.entryCurrentFit ?? position.currentFit ?? outcome.entryCurrentFit ?? outcome.currentFit ?? null,
-    entryCurrentFitConfidence: position.entryCurrentFitConfidence ?? position.currentFitConfidence ?? outcome.entryCurrentFitConfidence ?? outcome.currentFitConfidence ?? null,
+    entryCurrentFitConfidence: position.entryCurrentFitConfidence ?? position.currentMarketFitConfidence ?? outcome.entryCurrentFitConfidence ?? outcome.currentMarketFitConfidence ?? null,
     entryWeatherFitMatchedFamily: position.entryWeatherFitMatchedFamily ?? outcome.entryWeatherFitMatchedFamily ?? null,
 
     currentFitSoftOnly: true,
@@ -2572,12 +2425,11 @@ function enrichOutcomeIdentity(outcome = {}, position = {}) {
   });
 }
 
-function maybeSendExitAlert(position, outcome) {
+async function maybeSendExitAlert(position, outcome) {
   if (!position.discordAlertEligible && !position.selectedMicroFamilyAlert && !position.selectedForDiscord) {
     return {
       sent: false,
       skipped: true,
-      queued: false,
       reason: 'POSITION_NOT_SELECTED_FOR_DISCORD_EXIT_ALERT'
     };
   }
@@ -2586,36 +2438,65 @@ function maybeSendExitAlert(position, outcome) {
     return {
       sent: false,
       skipped: true,
-      queued: false,
       reason: 'EXIT_ALERT_REQUIRES_EXACT_75_CHILD_TRUE_MICRO_FAMILY'
     };
   }
 
-  Promise.resolve(sendExitAlert(outcome)).catch(() => null);
+  try {
+    await sendExitAlert(outcome);
 
-  return {
-    sent: false,
-    skipped: false,
-    queued: true,
-    fireAndForget: true,
-    reason: 'DISCORD_EXIT_ALERT_QUEUED_FIRE_AND_FORGET'
-  };
+    return {
+      sent: true,
+      skipped: false,
+      reason: 'DISCORD_EXIT_ALERT_SENT'
+    };
+  } catch (error) {
+    return {
+      sent: false,
+      skipped: false,
+      failed: true,
+      reason: 'DISCORD_EXIT_ALERT_FAILED',
+      error: error?.message || String(error)
+    };
+  }
 }
 
-async function fetchPriceSafely({
-  priceFetcher,
-  symbol,
-  timeoutMs
-}) {
-  if (typeof priceFetcher !== 'function') return 0;
-
-  const result = await withTimeout(
-    Promise.resolve(priceFetcher(symbol)).catch(() => 0),
+async function safeRecordOutcome(outcome, timeoutMs) {
+  return withTimeout(
+    recordOutcome(outcome, {
+      source: OUTCOME_SOURCE,
+      weekKey: PERSISTENT_LEARNING_KEY
+    })
+      .then((result) => ({
+        ok: true,
+        result
+      }))
+      .catch((error) => ({
+        ok: false,
+        failed: true,
+        reason: 'RECORD_OUTCOME_FAILED',
+        error: error?.message || String(error)
+      })),
     timeoutMs,
-    0
+    {
+      ok: false,
+      timeout: true,
+      reason: 'RECORD_OUTCOME_TIMEOUT'
+    }
   );
+}
 
-  return finiteNumber(result, 0);
+async function safeSendExitAlert(position, outcome, timeoutMs) {
+  return withTimeout(
+    maybeSendExitAlert(position, outcome),
+    timeoutMs,
+    {
+      sent: false,
+      skipped: false,
+      timeout: true,
+      reason: 'DISCORD_EXIT_ALERT_TIMEOUT'
+    }
+  );
 }
 
 async function monitorOnePosition({
@@ -2650,84 +2531,119 @@ async function monitorOnePosition({
     };
   }
 
-  const fetchSymbol = position.contractSymbol || position.symbol;
-  const price = await fetchPriceSafely({
-    priceFetcher,
-    symbol: fetchSymbol,
-    timeoutMs: options.monitorPriceFetchTimeoutMs ?? cfg.monitorPriceFetchTimeoutMs
-  });
+  const effectivePriceFetcher =
+    typeof priceFetcher === 'function'
+      ? priceFetcher
+      : async () => 0;
 
-  if (price > 0) {
-    position.priceFetchFailures = 0;
-    position.lastPriceFetchFailedAt = null;
-    updatePathMetrics(position, price);
-  } else {
-    await markPriceFetchFailed(position, {
-      persist: Boolean(options.persistPriceFetchFailures ?? cfg.persistPriceFetchFailures)
+  const fetchSymbol = position.contractSymbol || position.symbol;
+
+  const fetchedPrice = await withTimeout(
+    effectivePriceFetcher(fetchSymbol).catch(() => 0),
+    Math.max(
+      50,
+      Math.floor(safeNumber(
+        options.priceFetchTimeoutMs,
+        cfg.monitorPriceFetchTimeoutMs
+      ))
+    ),
+    0
+  ).catch(() => 0);
+
+  let workingPosition = position;
+  const livePrice = safeNumber(fetchedPrice, 0);
+  const fallbackPrice = safeNumber(
+    livePrice ||
+      position.currentPrice ||
+      position.lastPrice ||
+      position.entry,
+    0
+  );
+
+  if (livePrice <= 0) {
+    workingPosition = await markPriceFetchFailed(position, {
+      persist: options.persistNoPriceFailures === true
     });
+
+    const fallbackExit = detectExit({
+      position: workingPosition,
+      price: fallbackPrice,
+      timestamp
+    });
+
+    if (!fallbackExit.shouldExit) {
+      return {
+        type: 'NO_PRICE',
+        position: workingPosition,
+        outcome: null
+      };
+    }
+  } else {
+    workingPosition.priceFetchFailures = 0;
+    workingPosition.lastPriceFetchFailedAt = null;
+
+    updatePathMetrics(workingPosition, livePrice);
   }
 
+  const priceForExit = livePrice > 0 ? livePrice : fallbackPrice;
+
   const exit = detectExit({
-    position,
-    price,
+    position: workingPosition,
+    price: priceForExit,
     timestamp
   });
 
   if (!exit.shouldExit) {
-    if (price > 0 && Boolean(options.persistMonitorUpdates ?? cfg.persistMonitorUpdates)) {
-      await saveOpenPosition(position).catch(() => null);
-    }
+    const saveResult = await saveOpenPositionWithTimeout(
+      workingPosition,
+      Math.max(
+        150,
+        Math.floor(safeNumber(
+          options.saveOpenPositionTimeoutMs,
+          cfg.saveOpenPositionTimeoutMs
+        ))
+      )
+    );
 
     return {
-      type: price > 0 ? 'UPDATED' : 'NO_PRICE',
-      position,
-      outcome: null
+      type: saveResult.ok ? 'UPDATED' : 'UPDATED_SAVE_FAILED',
+      position: saveResult.row || workingPosition,
+      outcome: null,
+      saveResult
     };
   }
 
   const closedAt = timestamp;
-  const exitPrice = roundPrice(exit.exitPrice || price || fallbackExitPrice(position));
+  const exitPrice = roundPrice(priceForExit);
   const directSL = isDirectSLExit({
-    position,
+    position: workingPosition,
     exitReason: exit.reason
   });
 
   const closedPosition = forceLongPositionFields({
-    ...position,
+    ...workingPosition,
     status: 'CLOSED',
     closedAt,
     completedAt: closedAt,
     exitPrice,
     exitReason: exit.reason,
     exitTrigger: exit.trigger,
-    priceUnavailableTimeStop: Boolean(exit.priceUnavailableTimeStop),
     outcomeSource: OUTCOME_SOURCE,
     source: POSITION_SOURCE,
     directToSL: directSL,
     directSL
   });
 
-  let baseOutcome;
-
-  try {
-    baseOutcome = buildOutcomeFromPosition({
-      position: closedPosition,
-      exitPrice,
-      exitReason: exit.reason,
-      source: OUTCOME_SOURCE
-    });
-  } catch {
-    baseOutcome = fallbackOutcomeFromPosition({
-      position: closedPosition,
-      exitPrice,
-      exitReason: exit.reason,
-      timestamp: closedAt
-    });
-  }
+  const baseOutcome = buildOutcomeFromPosition({
+    position: closedPosition,
+    exitPrice,
+    exitReason: exit.reason,
+    source: OUTCOME_SOURCE
+  });
 
   const netOutcome = applyNetCostModelToOutcome({
     outcome: {
-      ...compactRawOutcome(baseOutcome),
+      ...baseOutcome,
       status: 'CLOSED',
       closedAt,
       completedAt: closedAt,
@@ -2745,106 +2661,140 @@ async function monitorOnePosition({
 
   const outcome = enrichOutcomeIdentity(netOutcome, closedPosition);
 
-  let recordOutcomeResult = {
-    ok: true
-  };
+  const analyzeOutcome = clonePlainObject(outcome);
+  const discordOutcome = clonePlainObject(outcome);
 
-  try {
-    await recordOutcome(clonePlainObject(outcome), {
-      source: OUTCOME_SOURCE,
-      weekKey: PERSISTENT_LEARNING_KEY,
-      persistentLearningKey: PERSISTENT_LEARNING_KEY,
-      targetTradeSide: TARGET_TRADE_SIDE,
-      tradeSide: TARGET_TRADE_SIDE,
-      side: TARGET_DASHBOARD_SIDE,
-      namespace: LONG_NAMESPACE,
-      keyPrefix: LONG_KEY_PREFIX,
-      virtualOnly: true,
-      realOrdersDisabled: true,
-      bitgetOrdersDisabled: true,
-      exchangeCallsDisabled: true
-    });
-  } catch (error) {
-    recordOutcomeResult = {
-      ok: false,
-      error: error?.message || String(error),
-      reason: String(error?.message || error || '').includes('max request size')
-        ? 'RECORD_OUTCOME_PAYLOAD_TOO_LARGE_SKIPPED_DELETE_POSITION'
-        : 'RECORD_OUTCOME_FAILED_SKIPPED_DELETE_POSITION'
-    };
-  }
-
-  const discordResult = maybeSendExitAlert(
-    closedPosition,
-    clonePlainObject(outcome)
+  const recordResult = await safeRecordOutcome(
+    analyzeOutcome,
+    Math.max(
+      250,
+      Math.floor(safeNumber(
+        options.recordOutcomeTimeoutMs,
+        cfg.recordOutcomeTimeoutMs
+      ))
+    )
   );
 
   await deleteOpenPosition(closedPosition.symbol || closedPosition.contractSymbol);
+
+  const discordResult = await safeSendExitAlert(
+    closedPosition,
+    discordOutcome,
+    Math.max(
+      250,
+      Math.floor(safeNumber(
+        options.discordExitTimeoutMs,
+        cfg.discordExitTimeoutMs
+      ))
+    )
+  );
 
   return {
     type: 'EXIT',
     position: closedPosition,
     outcome: {
-      ...outcome,
-      recordOutcomeResult,
-      recordOutcomeOk: recordOutcomeResult.ok,
+      ...discordOutcome,
+      recordOutcomeResult: recordResult,
+      recordOutcomeOk: Boolean(recordResult.ok),
       discordExitAlertResult: discordResult,
-      discordExitAlertQueued: Boolean(discordResult.queued),
       discordExitAlertSent: Boolean(discordResult.sent)
     }
   };
 }
 
-export async function monitorOpenPositions(options = {}) {
+export async function monitorOpenPositions({
+  priceFetcher,
+  limit,
+  runtimeMs,
+  positionTimeoutMs,
+  priceFetchTimeoutMs,
+  saveOpenPositionTimeoutMs,
+  recordOutcomeTimeoutMs,
+  discordExitTimeoutMs,
+  persistNoPriceFailures
+} = {}) {
   const cfg = tradeConfig();
   const startedAt = now();
-  const timestamp = now();
 
-  const positions = await getOpenPositions({
-    limit: options.limit ?? options.monitorLimit ?? cfg.monitorLimit
-  }).catch(() => []);
+  const effectiveRuntimeMs = Math.max(
+    500,
+    Math.floor(safeNumber(runtimeMs, cfg.monitorRuntimeMs))
+  );
+
+  const effectiveLimit = Math.max(
+    1,
+    Math.floor(safeNumber(limit, cfg.monitorPositionLimit))
+  );
+
+  const effectiveConcurrency = Math.max(
+    1,
+    Math.min(
+      Math.floor(safeNumber(cfg.dataConcurrency, 2)),
+      4
+    )
+  );
+
+  const positions = await withTimeout(
+    getOpenPositions({
+      limit: effectiveLimit
+    }),
+    cfg.monitorGetOpenTimeoutMs,
+    []
+  ).catch(() => []);
 
   if (!positions.length) return [];
 
-  const deadline = startedAt + positiveInt(
-    options.maxRuntimeMs ?? options.monitorMaxRuntimeMs ?? cfg.monitorMaxRuntimeMs,
-    cfg.monitorMaxRuntimeMs,
-    500,
-    20_000
-  );
-
-  const limited = positions.slice(0, positiveInt(
-    options.limit ?? options.monitorLimit ?? cfg.monitorLimit,
-    cfg.monitorLimit,
-    1,
-    200
-  ));
+  const bounded = positions.slice(0, effectiveLimit);
+  const timestamp = now();
 
   const results = await mapConcurrent(
-    limited,
-    positiveInt(options.dataConcurrency ?? cfg.dataConcurrency, cfg.dataConcurrency, 1, 12),
+    bounded,
+    effectiveConcurrency,
     async (position) => {
-      if (now() >= deadline) {
+      const elapsed = now() - startedAt;
+      const remaining = effectiveRuntimeMs - elapsed;
+
+      if (remaining <= 0) {
         return {
-          type: 'MONITOR_TIME_BUDGET_EXCEEDED',
+          type: 'MONITOR_RUNTIME_EXHAUSTED',
           position,
           outcome: null
         };
       }
 
-      return monitorOnePosition({
-        position,
-        priceFetcher: typeof options.priceFetcher === 'function'
-          ? options.priceFetcher
-          : null,
-        timestamp,
-        options
-      }).catch((error) => ({
-        type: 'MONITOR_POSITION_ERROR',
-        position,
-        outcome: null,
-        error: error?.message || String(error)
-      }));
+      const perPositionTimeout = Math.max(
+        150,
+        Math.min(
+          remaining,
+          Math.floor(safeNumber(positionTimeoutMs, cfg.monitorPositionTimeoutMs))
+        )
+      );
+
+      return withTimeout(
+        monitorOnePosition({
+          position,
+          priceFetcher,
+          timestamp,
+          options: {
+            priceFetchTimeoutMs,
+            saveOpenPositionTimeoutMs,
+            recordOutcomeTimeoutMs,
+            discordExitTimeoutMs,
+            persistNoPriceFailures
+          }
+        }).catch((error) => ({
+          type: 'POSITION_MONITOR_FAILED',
+          position,
+          outcome: null,
+          error: error?.message || String(error)
+        })),
+        perPositionTimeout,
+        {
+          type: 'POSITION_MONITOR_TIMEOUT',
+          position,
+          outcome: null
+        }
+      );
     }
   );
 
