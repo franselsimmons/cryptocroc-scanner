@@ -29,6 +29,9 @@ const DEFAULT_LOCK_TTL_SEC = 540;
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 const MIN_COMPLETED_ACTIVE_LEARNING = 20;
 
+const MAX_PERSISTED_CANDIDATES = 250;
+const MAX_RESPONSE_CANDIDATES = 40;
+
 const LONG_SETUP_TYPES = [
   'BREAKOUT',
   'RETEST',
@@ -358,6 +361,15 @@ function safeNumber(value, fallback = 0) {
   if (!Number.isFinite(n)) return fallback;
 
   return n;
+}
+
+function countOf(value, fallback = 0) {
+  if (Array.isArray(value)) return value.length;
+
+  const n = Number(value);
+  if (Number.isFinite(n)) return n;
+
+  return fallback;
 }
 
 function normalizeTradeSide(value) {
@@ -813,7 +825,7 @@ function unwrapPayload(result) {
   if (result.candidates) return result;
 
   if (result.result?.result?.result) return result.result.result.result;
-  if (result.result?.result) return result.result.result;
+  if (result.result?.result) return result.result;
   if (result.result) return result.result;
 
   return result;
@@ -876,7 +888,7 @@ function normalizePayload(payload = {}) {
     scannerGateCandidatesCount: scannerGateCandidates.length,
     analyzeOnlyCandidatesCount: analyzeOnlyCandidates.length,
 
-    rawCandidatesCount: rawCandidates.length,
+    rawCandidatesCount: countOf(payload.rawCandidatesCount, rawCandidates.length),
     rawShortCandidatesIgnored,
     rawUnknownSideCandidatesIgnored,
 
@@ -902,59 +914,224 @@ function normalizePayload(payload = {}) {
   };
 }
 
-function normalizeLockResult(rawResult = {}) {
-  if (!rawResult || typeof rawResult !== 'object') {
-    return {
-      ok: false,
-      reason: 'EMPTY_LOCK_RESULT',
-      ...baseFlags()
-    };
-  }
-
-  const payload = normalizePayload(unwrapPayload(rawResult));
-
-  if (rawResult.result?.result?.result?.candidates) {
-    return {
-      ...rawResult,
-      ...baseFlags(),
-      result: {
-        ...rawResult.result,
-        result: {
-          ...rawResult.result.result,
-          result: payload
-        }
-      }
-    };
-  }
-
-  if (rawResult.result?.result?.candidates) {
-    return {
-      ...rawResult,
-      ...baseFlags(),
-      result: {
-        ...rawResult.result,
-        result: payload
-      }
-    };
-  }
-
-  if (rawResult.result?.candidates) {
-    return {
-      ...rawResult,
-      ...baseFlags(),
-      result: payload
-    };
-  }
-
-  if (rawResult.candidates) {
-    return payload;
-  }
+function compactAnalyze(analyze = null) {
+  if (!analyze || typeof analyze !== 'object') return null;
 
   return {
-    ...rawResult,
-    ...baseFlags(),
-    result: payload
+    ok: analyze.ok ?? null,
+    skipped: Boolean(analyze.skipped || false),
+    reason: analyze.reason || analyze.skipReason || null,
+
+    rows: countOf(analyze.rows, countOf(analyze.microRows, 0)),
+    microRows: countOf(analyze.microRows, 0),
+    families: countOf(analyze.families, countOf(analyze.microFamilies, 0)),
+    exact75Rows: countOf(analyze.exact75Rows, countOf(analyze.trueMicroRows, 0)),
+
+    scannerOutputOnly: true,
+    scannerDoesNotWriteLearning: true,
+    analyzeMustAssignTrueMicroFamily: true,
+
+    omitted: {
+      fullAnalyzeRows: true,
+      fullMicroRows: true,
+      fullFamilyObjects: true,
+      verboseDebugFields: true,
+      reason: 'COMPACT_ANALYZE_TO_PREVENT_SCANNER_500'
+    },
+
+    ...baseFlags()
   };
+}
+
+function compactCandidate(candidate = {}) {
+  const row = normalizeLongCandidate(candidate);
+
+  return {
+    symbol: row.symbol,
+    baseSymbol: row.baseSymbol,
+    contractSymbol: row.contractSymbol,
+
+    side: TARGET_TRADE_SIDE,
+    tradeSide: TARGET_TRADE_SIDE,
+    positionSide: TARGET_TRADE_SIDE,
+    direction: TARGET_TRADE_SIDE,
+
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    scannerSide: TARGET_SCANNER_SIDE,
+    actualScannerSide: TARGET_SCANNER_SIDE,
+    analysisSide: TARGET_TRADE_SIDE,
+
+    price: safeNumber(
+      row.price ??
+        row.lastPrice ??
+        row.markPrice ??
+        row.close ??
+        row.currentPrice,
+      0
+    ),
+
+    scannerScore: safeNumber(row.scannerScore ?? row.moveScore, 0),
+    moveScore: safeNumber(row.moveScore ?? row.scannerScore, 0),
+
+    change1h: safeNumber(row.change1h ?? row.priceChange1hPct, 0),
+    change24h: safeNumber(row.change24h ?? row.priceChange24hPct, 0),
+    volume24h: safeNumber(row.volume24h ?? row.quoteVolume24h ?? row.quoteVolume, 0),
+
+    scannerGatePassed: scannerGatePassed(row),
+    analyzeOnly: isAnalyzeOnly(row),
+
+    regime: row.regime || null,
+    btcState: row.btcState || null,
+
+    reason: row.scannerReason || row.reason || 'LONG_SCANNER_CANDIDATE',
+    role: 'SCANNER_METADATA_ONLY',
+
+    scannerMicroFamilyId: row.scannerMicroFamilyId || null,
+    scannerFamilyId: row.scannerFamilyId || null,
+    scannerBucket: row.scannerBucket || null,
+    scannerBucket25: row.scannerBucket25 || null,
+    scannerReason: row.scannerReason || row.reason || 'LONG_SCANNER_CANDIDATE',
+
+    scannerFingerprintRole: 'METADATA_ONLY',
+    scannerFingerprintsMetadataOnly: true,
+    scannerFingerprintsUsedAsLearningFamily: false,
+    scannerBucketsMetadataOnly: true,
+    legacy25BucketsMetadataOnly: true,
+
+    trueMicroFamilyId: null,
+    parentTrueMicroFamilyId: null,
+    childTrueMicroFamilyId: null,
+    microFamilyId: null,
+    learningMicroFamilyId: null,
+
+    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+    scannerIsLearningIdentitySource: false,
+    scannerDoesNotSelectMicroFamilies: true,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    noTradeExecution: true,
+    noDiscord: true,
+    noMicroFamilySelection: true,
+
+    realOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeCallsDisabled: true,
+
+    createdAt: safeNumber(row.createdAt, now())
+  };
+}
+
+function compactScannerPayload(payload = {}, candidateLimit = MAX_PERSISTED_CANDIDATES) {
+  const rawCandidates = Array.isArray(payload.candidates)
+    ? payload.candidates
+    : [];
+
+  const candidates = rawCandidates
+    .filter(isLongCandidate)
+    .slice(0, candidateLimit)
+    .map(compactCandidate)
+    .filter((row) => row.symbol && row.contractSymbol);
+
+  const scannerGateCandidates = candidates.filter((row) => row.scannerGatePassed);
+  const analyzeOnlyCandidates = candidates.filter((row) => row.analyzeOnly);
+
+  const snapshotId =
+    payload.snapshotId ||
+    payload.id ||
+    payload.scanId ||
+    `scan_long_${now()}_${Math.random().toString(16).slice(2, 10)}`;
+
+  const createdAt = safeNumber(
+    payload.createdAt ||
+      payload.generatedAt ||
+      payload.startedAt ||
+      payload.ts ||
+      now(),
+    now()
+  );
+
+  return {
+    ok: payload.ok !== false,
+    skipped: Boolean(payload.skipped || false),
+    reason: payload.reason || payload.skipReason || null,
+
+    version: 'LONG_SCANNER_COMPACT_PAYLOAD_V2',
+    sideMode: 'LONG_ONLY',
+    payloadRole: 'LONG_SCANNER_DISCOVERY_ONLY',
+
+    snapshotId,
+    createdAt,
+    generatedAt: safeNumber(payload.generatedAt, createdAt),
+    completedAt: safeNumber(payload.completedAt, now()),
+    updatedAt: now(),
+
+    ...baseFlags(),
+
+    candidates,
+    candidatesCount: candidates.length,
+
+    longCandidatesCount: candidates.length,
+    shortCandidatesCount: 0,
+
+    scannerGateCandidatesCount: scannerGateCandidates.length,
+    analyzeOnlyCandidatesCount: analyzeOnlyCandidates.length,
+
+    rawCandidatesCount: countOf(payload.rawCandidatesCount, rawCandidates.length),
+    rawShortCandidatesIgnored: countOf(payload.rawShortCandidatesIgnored, 0),
+    rawUnknownSideCandidatesIgnored: countOf(payload.rawUnknownSideCandidatesIgnored, 0),
+
+    filteredUniverse: countOf(
+      payload.filteredUniverse,
+      countOf(payload.filteredUniverseCount, 0)
+    ),
+
+    rawUniverse: countOf(
+      payload.rawUniverse,
+      countOf(payload.rawUniverseCount, countOf(payload.rawCount, 0))
+    ),
+
+    bullCandidates: candidates.length,
+    bearCandidates: 0,
+
+    topSymbols: candidates
+      .slice(0, 20)
+      .map((candidate) => candidate.symbol)
+      .filter(Boolean),
+
+    scannerGateSymbols: scannerGateCandidates
+      .slice(0, 20)
+      .map((candidate) => candidate.symbol)
+      .filter(Boolean),
+
+    analyzeOnlySymbols: analyzeOnlyCandidates
+      .slice(0, 20)
+      .map((candidate) => candidate.symbol)
+      .filter(Boolean),
+
+    analyze: compactAnalyze(payload.analyze),
+
+    compactedForRedis: true,
+    compactedAt: now(),
+
+    omitted: {
+      fullRawResult: true,
+      fullAnalyzeRows: true,
+      fullUniverseRows: true,
+      rawBreadthObjects: true,
+      verboseDebugFields: true,
+      candidateLimit,
+      originalCandidateCount: rawCandidates.length,
+      reason: 'COMPACT_LONG_SCANNER_PAYLOAD_TO_PREVENT_500'
+    }
+  };
+}
+
+function compactScannerResponse(payload = {}) {
+  return compactScannerPayload(payload, MAX_RESPONSE_CANDIDATES);
 }
 
 function resolveStatus(error) {
@@ -977,6 +1154,15 @@ function buildScannerOptions(req, body = {}) {
   return {
     force,
     forced: force,
+
+    compact: true,
+    compactForApi: true,
+    compactForRedis: true,
+    omitRawUniverseRows: true,
+    omitFullAnalyzeRows: true,
+    omitVerboseDebugFields: true,
+    maxCandidatesForResponse: MAX_RESPONSE_CANDIDATES,
+    maxCandidatesForPersistence: MAX_PERSISTED_CANDIDATES,
 
     targetTradeSide: TARGET_TRADE_SIDE,
     tradeSide: TARGET_TRADE_SIDE,
@@ -1049,45 +1235,46 @@ function buildScannerOptions(req, body = {}) {
 }
 
 async function persistLongScannerPayload(redis, payload = {}) {
-  const snapshotId = payload?.snapshotId || payload?.id || payload?.scanId || null;
+  const latestPayload = compactScannerPayload(payload, MAX_PERSISTED_CANDIDATES);
+  const snapshotId = latestPayload.snapshotId;
 
-  const latestPayload = {
-    ...payload,
-    ...baseFlags(),
-
-    snapshotId,
-    persistedAt: now(),
-    persistedBy: 'api/scanner/run.js',
-    persistedNamespace: LONG_NAMESPACE,
-
-    scannerPayloadRole: 'DISCOVERY_METADATA_ONLY',
-    scannerDoesNotTrade: true,
-    scannerDoesNotSelectMicroFamilies: true,
-    scannerDoesNotSendDiscord: true,
-
-    longKeys: {
-      namespace: LONG_NAMESPACE,
-      prefix: LONG_KEY_PREFIX,
-      scanLatest: LONG_KEYS.scan.latest,
-      snapshotKey: snapshotId ? LONG_KEYS.scan.snapshot(snapshotId) : null
-    }
+  const persisted = {
+    latest: false,
+    snapshot: false,
+    latestError: null,
+    snapshotError: null
   };
 
-  await setJson(redis, LONG_KEYS.scan.latest, latestPayload).catch(() => null);
+  try {
+    await setJson(redis, LONG_KEYS.scan.latest, latestPayload);
+    persisted.latest = true;
+  } catch (error) {
+    persisted.latestError = error?.message || String(error);
+  }
 
   if (snapshotId) {
-    await setJson(
-      redis,
-      LONG_KEYS.scan.snapshot(snapshotId),
-      latestPayload
-    ).catch(() => null);
+    try {
+      await setJson(redis, LONG_KEYS.scan.snapshot(snapshotId), latestPayload);
+      persisted.snapshot = true;
+    } catch (error) {
+      persisted.snapshotError = error?.message || String(error);
+    }
   }
 
   return {
-    persistedLongLatest: true,
-    persistedLongSnapshot: Boolean(snapshotId),
+    persistedLongLatest: persisted.latest,
+    persistedLongSnapshot: persisted.snapshot,
+
     scanLatest: LONG_KEYS.scan.latest,
-    snapshotKey: snapshotId ? LONG_KEYS.scan.snapshot(snapshotId) : null
+    snapshotKey: snapshotId ? LONG_KEYS.scan.snapshot(snapshotId) : null,
+
+    errors: {
+      latest: persisted.latestError,
+      snapshot: persisted.snapshotError
+    },
+
+    compactedForRedis: true,
+    fullPayloadNotPersisted: true
   };
 }
 
@@ -1136,17 +1323,17 @@ export default async function handler(req, res) {
       async () => runScanner(scannerOptions)
     );
 
-    const result = normalizeLockResult(rawResult);
-    const payload = normalizePayload(unwrapPayload(result));
+    const payload = normalizePayload(unwrapPayload(rawResult));
+    const responsePayload = compactScannerResponse(payload);
 
     const persistence = await persistLongScannerPayload(redis, payload);
 
-    const ok = result?.ok !== false && payload?.ok !== false;
+    const ok = rawResult?.ok !== false && payload?.ok !== false;
 
     return res.status(200).json({
       ok,
-      skipped: Boolean(result?.skipped || payload?.skipped || false),
-      reason: result?.reason || payload?.reason || null,
+      skipped: Boolean(rawResult?.skipped || payload?.skipped || false),
+      reason: rawResult?.reason || payload?.reason || null,
 
       source: sourceLabel(req, body),
 
@@ -1154,27 +1341,35 @@ export default async function handler(req, res) {
 
       force: scannerOptions.force,
 
-      persisted: payload?.persisted ?? result?.persisted ?? null,
+      persisted: payload?.persisted ?? rawResult?.persisted ?? null,
       longPersistence: persistence,
 
-      snapshotId: payload?.snapshotId || result?.snapshotId || null,
+      snapshotId: responsePayload.snapshotId,
+      createdAt: responsePayload.createdAt,
+      generatedAt: responsePayload.generatedAt,
+      completedAt: responsePayload.completedAt,
+      updatedAt: responsePayload.updatedAt,
 
-      candidatesCount: Number(payload?.candidatesCount || 0),
-      longCandidatesCount: Number(payload?.longCandidatesCount || payload?.candidatesCount || 0),
+      candidatesCount: Number(responsePayload.candidatesCount || 0),
+      longCandidatesCount: Number(responsePayload.longCandidatesCount || 0),
       shortCandidatesCount: 0,
 
-      scannerGateCandidatesCount: Number(payload?.scannerGateCandidatesCount || 0),
-      analyzeOnlyCandidatesCount: Number(payload?.analyzeOnlyCandidatesCount || 0),
+      scannerGateCandidatesCount: Number(responsePayload.scannerGateCandidatesCount || 0),
+      analyzeOnlyCandidatesCount: Number(responsePayload.analyzeOnlyCandidatesCount || 0),
 
-      rawCandidatesCount: Number(payload?.rawCandidatesCount || payload?.rawCount || 0),
-      rawShortCandidatesIgnored: Number(payload?.rawShortCandidatesIgnored || 0),
-      rawUnknownSideCandidatesIgnored: Number(payload?.rawUnknownSideCandidatesIgnored || 0),
+      rawCandidatesCount: Number(responsePayload.rawCandidatesCount || 0),
+      rawShortCandidatesIgnored: Number(responsePayload.rawShortCandidatesIgnored || 0),
+      rawUnknownSideCandidatesIgnored: Number(responsePayload.rawUnknownSideCandidatesIgnored || 0),
 
-      topSymbols: payload?.topSymbols || [],
-      scannerGateSymbols: payload?.scannerGateSymbols || [],
-      analyzeOnlySymbols: payload?.analyzeOnlySymbols || [],
+      filteredUniverse: Number(responsePayload.filteredUniverse || 0),
+      rawUniverse: Number(responsePayload.rawUniverse || 0),
 
-      analyze: payload?.analyze || null,
+      topSymbols: responsePayload.topSymbols || [],
+      scannerGateSymbols: responsePayload.scannerGateSymbols || [],
+      analyzeOnlySymbols: responsePayload.analyzeOnlySymbols || [],
+
+      candidates: responsePayload.candidates || [],
+      analyze: responsePayload.analyze || null,
 
       longKeys: {
         namespace: LONG_NAMESPACE,
@@ -1182,21 +1377,57 @@ export default async function handler(req, res) {
         scanLock: LONG_KEYS.scan.lock,
         scanLatest: LONG_KEYS.scan.latest,
         scanSnapshotPattern: LONG_KEYS.scan.snapshotPattern,
-        snapshotKey: payload?.snapshotId ? LONG_KEYS.scan.snapshot(payload.snapshotId) : null
+        snapshotKey: responsePayload.snapshotId
+          ? LONG_KEYS.scan.snapshot(responsePayload.snapshotId)
+          : null
       },
 
       durationMs: now() - startedAt,
 
-      result
+      resultSummary: {
+        ok: rawResult?.ok !== false,
+        skipped: Boolean(rawResult?.skipped || false),
+        reason: rawResult?.reason || null,
+        fullResultOmitted: true,
+        compactedForResponse: true
+      },
+
+      omitted: {
+        fullRawResult: true,
+        fullAnalyzeRows: true,
+        fullCandidatesArray: true,
+        responseCandidateLimit: MAX_RESPONSE_CANDIDATES,
+        persistedCandidateLimit: MAX_PERSISTED_CANDIDATES,
+        reason: 'PREVENT_VERCEL_500_AND_REDIS_PAYLOAD_OVERFLOW'
+      }
     });
   } catch (error) {
-    return res.status(resolveStatus(error)).json({
+    const status = resolveStatus(error);
+
+    if (status === 400 || status === 405 || status === 409) {
+      return res.status(status).json({
+        ok: false,
+        ...baseFlags(),
+        error: error?.message || String(error),
+        durationMs: now() - startedAt
+      });
+    }
+
+    return res.status(200).json({
       ok: false,
+      recoveredHttpStatus: 500,
+      scannerRunFailed: true,
 
       ...baseFlags(),
 
       error: error?.message || String(error),
       durationMs: now() - startedAt,
+
+      omitted: {
+        stack: process.env.NODE_ENV === 'production',
+        reason: 'SCANNER_ROUTE_RETURNED_200_WITH_ERROR_PAYLOAD_TO_PREVENT_ADMIN_UI_HARD_500'
+      },
+
       stack: process.env.NODE_ENV === 'production'
         ? undefined
         : error?.stack
