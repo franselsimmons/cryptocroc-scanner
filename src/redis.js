@@ -21,6 +21,8 @@ const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
 const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
 const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 
+const REDIS_BUILD_ID = 'LONG_REDIS_REST_FALLBACK_2026_06_23_V1';
+
 const ROOT_KEY_PREFIXES = [
   'SCAN:',
   'LIVE:',
@@ -111,6 +113,8 @@ function taxonomyFlags() {
 
 function modeFlags() {
   return {
+    redisBuildId: REDIS_BUILD_ID,
+
     namespace: LONG_NAMESPACE,
     redisNamespace: LONG_NAMESPACE,
     keyPrefix: LONG_KEY_PREFIX,
@@ -227,6 +231,7 @@ function makeRedis(url, token, label) {
 
 function getVolatileEnv() {
   return {
+    label: 'VOLATILE',
     url: envValue(
       'VOLATILE_REDIS_REST_URL',
       'KV_REST_API_URL',
@@ -242,6 +247,7 @@ function getVolatileEnv() {
 
 function getDurableEnv() {
   return {
+    label: 'DURABLE',
     url: envValue(
       'DURABLE_REDIS_REST_URL',
       'KV_REST_API_URL',
@@ -253,6 +259,28 @@ function getDurableEnv() {
       'UPSTASH_REDIS_REST_TOKEN'
     )
   };
+}
+
+function uniqueRedisRestConfigs() {
+  const configs = [
+    getVolatileEnv(),
+    getDurableEnv()
+  ]
+    .filter((config) => config.url && config.token);
+
+  const seen = new Set();
+  const out = [];
+
+  for (const config of configs) {
+    const key = `${config.url}|${config.token}`;
+
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    out.push(config);
+  }
+
+  return out;
 }
 
 let volatileRedis = null;
@@ -443,6 +471,199 @@ function assertLongNormalizedKey(key) {
   return true;
 }
 
+function shouldUseRestFallback(error) {
+  const message = String(error?.message || error || '');
+
+  return (
+    message.includes('res.map is not a function') ||
+    message.includes('Pipeline.exec') ||
+    message.includes('AutoPipelineExecutor') ||
+    message.includes('UPSTASH') ||
+    message.includes('fetch failed') ||
+    message.includes('Response') ||
+    message.includes('Unexpected token')
+  );
+}
+
+function cleanRestUrl(url = '') {
+  return String(url || '').trim().replace(/\/+$/u, '');
+}
+
+function encodeCommandPart(value) {
+  return encodeURIComponent(String(value));
+}
+
+function unwrapPipelineResult(json) {
+  if (Array.isArray(json)) {
+    const first = json[0];
+
+    if (first && typeof first === 'object' && 'result' in first) {
+      return first.result;
+    }
+
+    if (first && typeof first === 'object' && 'error' in first) {
+      throw new Error(String(first.error));
+    }
+
+    return first ?? null;
+  }
+
+  if (Array.isArray(json?.result)) {
+    const first = json.result[0];
+
+    if (first && typeof first === 'object' && 'result' in first) {
+      return first.result;
+    }
+
+    if (first && typeof first === 'object' && 'error' in first) {
+      throw new Error(String(first.error));
+    }
+
+    return first ?? null;
+  }
+
+  if (json && typeof json === 'object' && 'result' in json) {
+    return json.result;
+  }
+
+  return json ?? null;
+}
+
+function unwrapRestResult(json) {
+  if (json?.error) {
+    throw new Error(String(json.error));
+  }
+
+  if (json && typeof json === 'object' && 'result' in json) {
+    return json.result;
+  }
+
+  return json ?? null;
+}
+
+async function restPipelineCommand(config, command = []) {
+  const url = cleanRestUrl(config.url);
+
+  if (!url || !config.token) {
+    throw new Error('UPSTASH_REST_ENV_MISSING');
+  }
+
+  const response = await fetch(`${url}/pipeline`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify([command])
+  });
+
+  const json = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const error = new Error(`UPSTASH_REST_PIPELINE_HTTP_${response.status}`);
+    error.details = json;
+    throw error;
+  }
+
+  return unwrapPipelineResult(json);
+}
+
+async function restPathCommand(config, command = []) {
+  const url = cleanRestUrl(config.url);
+
+  if (!url || !config.token) {
+    throw new Error('UPSTASH_REST_ENV_MISSING');
+  }
+
+  const path = command.map(encodeCommandPart).join('/');
+
+  const response = await fetch(`${url}/${path}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${config.token}`
+    }
+  });
+
+  const json = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const error = new Error(`UPSTASH_REST_PATH_HTTP_${response.status}`);
+    error.details = json;
+    throw error;
+  }
+
+  return unwrapRestResult(json);
+}
+
+async function redisRestCommand(command = [], options = {}) {
+  const configs = uniqueRedisRestConfigs();
+
+  if (!configs.length) {
+    throw new Error('UPSTASH_REST_ENV_MISSING');
+  }
+
+  const readOnly = Boolean(options.readOnly);
+  const allowNull = Boolean(options.allowNull);
+  let lastError = null;
+  let sawNull = false;
+
+  for (const config of configs) {
+    try {
+      const result = await restPipelineCommand(config, command);
+
+      if (readOnly && result === null && !allowNull) {
+        sawNull = true;
+        continue;
+      }
+
+      return result;
+    } catch (error) {
+      lastError = error;
+
+      if (!readOnly) continue;
+
+      try {
+        const result = await restPathCommand(config, command);
+
+        if (readOnly && result === null && !allowNull) {
+          sawNull = true;
+          continue;
+        }
+
+        return result;
+      } catch (pathError) {
+        lastError = pathError;
+      }
+    }
+  }
+
+  if (readOnly && sawNull) return null;
+
+  throw lastError || new Error('UPSTASH_REST_COMMAND_FAILED');
+}
+
+function buildSetCommand(redisKey, payload, options = {}) {
+  const command = ['SET', redisKey, payload];
+
+  if (options?.ex !== undefined && options?.ex !== null) {
+    command.push('EX', String(options.ex));
+  }
+
+  if (options?.px !== undefined && options?.px !== null) {
+    command.push('PX', String(options.px));
+  }
+
+  if (options?.nx === true) {
+    command.push('NX');
+  }
+
+  if (options?.xx === true) {
+    command.push('XX');
+  }
+
+  return command;
+}
+
 async function deleteKeys(redis, keys = []) {
   const rows = Array.isArray(keys)
     ? keys
@@ -463,10 +684,21 @@ async function deleteKeys(redis, keys = []) {
 
     if (!batch.length) continue;
 
-    const result = await redis.del(...batch);
-    const count = Number(result);
+    try {
+      const result = await redis.del(...batch);
+      const count = Number(result);
 
-    deleted += Number.isFinite(count) ? count : batch.length;
+      deleted += Number.isFinite(count) ? count : batch.length;
+    } catch (error) {
+      if (!shouldUseRestFallback(error)) throw error;
+
+      const result = await redisRestCommand(['DEL', ...batch], {
+        readOnly: false
+      });
+
+      const count = Number(result);
+      deleted += Number.isFinite(count) ? count : batch.length;
+    }
   }
 
   return deleted;
@@ -533,9 +765,22 @@ export async function getJson(redis, key, fallback = null) {
 
   assertLongNormalizedKey(redisKey);
 
-  const value = await redis.get(redisKey);
+  try {
+    const value = await redis.get(redisKey);
+    return parseJsonValue(value, fallback);
+  } catch (error) {
+    if (!shouldUseRestFallback(error)) return fallback;
 
-  return parseJsonValue(value, fallback);
+    try {
+      const value = await redisRestCommand(['GET', redisKey], {
+        readOnly: true
+      });
+
+      return parseJsonValue(value, fallback);
+    } catch {
+      return fallback;
+    }
+  }
 }
 
 export async function setJson(redis, key, value, options = undefined) {
@@ -549,7 +794,15 @@ export async function setJson(redis, key, value, options = undefined) {
 
   const payload = stringifyJsonValue(withLongMeta(value), redisKey);
 
-  return redis.set(redisKey, payload, options);
+  try {
+    return await redis.set(redisKey, payload, options);
+  } catch (error) {
+    if (!shouldUseRestFallback(error)) throw error;
+
+    return redisRestCommand(buildSetCommand(redisKey, payload, options || {}), {
+      readOnly: false
+    });
+  }
 }
 
 export async function setNxJson(redis, key, value, options = {}) {
@@ -563,10 +816,20 @@ export async function setNxJson(redis, key, value, options = {}) {
 
   const payload = stringifyJsonValue(withLongMeta(value), redisKey);
 
-  return redis.set(redisKey, payload, {
+  const nxOptions = {
     ...options,
     nx: true
-  });
+  };
+
+  try {
+    return await redis.set(redisKey, payload, nxOptions);
+  } catch (error) {
+    if (!shouldUseRestFallback(error)) throw error;
+
+    return redisRestCommand(buildSetCommand(redisKey, payload, nxOptions), {
+      readOnly: false
+    });
+  }
 }
 
 export async function delJson(redis, key) {
@@ -576,7 +839,22 @@ export async function delJson(redis, key) {
 
   assertLongNormalizedKey(redisKey);
 
-  return redis.del(redisKey);
+  try {
+    return await redis.del(redisKey);
+  } catch (error) {
+    if (!shouldUseRestFallback(error)) return 0;
+
+    try {
+      const result = await redisRestCommand(['DEL', redisKey], {
+        readOnly: false
+      });
+
+      const n = Number(result);
+      return Number.isFinite(n) ? n : 0;
+    } catch {
+      return 0;
+    }
+  }
 }
 
 export async function delPattern(redis, pattern, max = 5000) {
@@ -587,37 +865,9 @@ export async function delPattern(redis, pattern, max = 5000) {
   assertLongNormalizedKey(redisPattern.replace(/\*.*$/u, '') || LONG_KEY_PREFIX);
 
   const maxDelete = normalizeMax(max, 5000);
+  const keys = await getKeys(redis, redisPattern, maxDelete);
 
-  let cursor = 0;
-  let deleted = 0;
-
-  do {
-    const scanResult = await redis.scan(cursor, {
-      match: redisPattern,
-      count: normalizeScanCount()
-    });
-
-    const normalized = normalizeScanResult(scanResult);
-
-    cursor = normalized.cursor;
-
-    if (!normalized.keys.length) continue;
-
-    const allowedKeys = normalized.keys
-      .filter((key) => (
-        String(key || '').startsWith(LONG_KEY_PREFIX) ||
-        isPublicMarketKey(key)
-      ));
-
-    const remaining = Math.max(0, maxDelete - deleted);
-    const limitedKeys = allowedKeys.slice(0, remaining);
-
-    deleted += await deleteKeys(redis, limitedKeys);
-
-    if (deleted >= maxDelete) break;
-  } while (cursor !== 0);
-
-  return deleted;
+  return deleteKeys(redis, keys);
 }
 
 export async function getKeys(redis, pattern, max = 1000) {
@@ -633,11 +883,41 @@ export async function getKeys(redis, pattern, max = 1000) {
   const out = [];
   const seen = new Set();
 
-  do {
-    const scanResult = await redis.scan(cursor, {
+  async function scanWithSdk(currentCursor) {
+    return redis.scan(currentCursor, {
       match: redisPattern,
       count: normalizeScanCount()
     });
+  }
+
+  async function scanWithRest(currentCursor) {
+    return redisRestCommand([
+      'SCAN',
+      String(currentCursor),
+      'MATCH',
+      redisPattern,
+      'COUNT',
+      String(normalizeScanCount())
+    ], {
+      readOnly: true,
+      allowNull: true
+    });
+  }
+
+  do {
+    let scanResult;
+
+    try {
+      scanResult = await scanWithSdk(cursor);
+    } catch (error) {
+      if (!shouldUseRestFallback(error)) return out;
+
+      try {
+        scanResult = await scanWithRest(cursor);
+      } catch {
+        return out;
+      }
+    }
 
     const normalized = normalizeScanResult(scanResult);
 
@@ -677,10 +957,23 @@ export async function pushJsonLog(redis, key, value, limit = DEFAULT_LOG_LIMIT) 
   const safeLimit = normalizeLimit(limit, DEFAULT_LOG_LIMIT);
   const payload = stringifyJsonValue(withLongMeta(value), redisKey);
 
-  await redis.lpush(redisKey, payload);
-  await redis.ltrim(redisKey, 0, safeLimit - 1);
+  try {
+    await redis.lpush(redisKey, payload);
+    await redis.ltrim(redisKey, 0, safeLimit - 1);
+    return true;
+  } catch (error) {
+    if (!shouldUseRestFallback(error)) throw error;
 
-  return true;
+    await redisRestCommand(['LPUSH', redisKey, payload], {
+      readOnly: false
+    });
+
+    await redisRestCommand(['LTRIM', redisKey, '0', String(safeLimit - 1)], {
+      readOnly: false
+    });
+
+    return true;
+  }
 }
 
 export async function readJsonLogs(redis, key, limit = 100) {
@@ -691,9 +984,33 @@ export async function readJsonLogs(redis, key, limit = 100) {
   assertLongNormalizedKey(redisKey);
 
   const safeLimit = normalizeLimit(limit, 100);
-  const rows = await redis.lrange(redisKey, 0, safeLimit - 1);
 
-  return (Array.isArray(rows) ? rows : [])
+  let rows = [];
+
+  try {
+    const result = await redis.lrange(redisKey, 0, safeLimit - 1);
+    rows = Array.isArray(result) ? result : [];
+  } catch (error) {
+    if (!shouldUseRestFallback(error)) return [];
+
+    try {
+      const result = await redisRestCommand([
+        'LRANGE',
+        redisKey,
+        '0',
+        String(safeLimit - 1)
+      ], {
+        readOnly: true,
+        allowNull: true
+      });
+
+      rows = Array.isArray(result) ? result : [];
+    } catch {
+      rows = [];
+    }
+  }
+
+  return rows
     .map((row) => {
       if (row === null || row === undefined) return null;
 
@@ -720,7 +1037,18 @@ export async function pingRedis(redis) {
     const result = await redis.ping();
 
     return result === 'PONG' || result === 'pong' || result === true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (!shouldUseRestFallback(error)) return false;
+
+    try {
+      const result = await redisRestCommand(['PING'], {
+        readOnly: true,
+        allowNull: true
+      });
+
+      return result === 'PONG' || result === 'pong' || result === true;
+    } catch {
+      return false;
+    }
   }
 }
