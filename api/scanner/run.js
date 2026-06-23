@@ -32,6 +32,8 @@ const MIN_COMPLETED_ACTIVE_LEARNING = 20;
 const MAX_PERSISTED_CANDIDATES = 250;
 const MAX_RESPONSE_CANDIDATES = 40;
 
+const SCANNER_RUN_BUILD_ID = 'LONG_SCANNER_RUN_DEBUG_STACK_VISIBLE_2026_06_23_V1';
+
 const LONG_SETUP_TYPES = [
   'BREAKOUT',
   'RETEST',
@@ -111,6 +113,8 @@ const LONG_KEYS = {
 
 function baseFlags() {
   return {
+    scannerRunBuildId: SCANNER_RUN_BUILD_ID,
+
     targetTradeSide: TARGET_TRADE_SIDE,
     targetScannerSide: TARGET_SCANNER_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
@@ -1280,6 +1284,7 @@ async function persistLongScannerPayload(redis, payload = {}) {
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
+  res.setHeader('X-Scanner-Run-Build-Id', SCANNER_RUN_BUILD_ID);
   res.setHeader('X-Scanner-Target-Side', TARGET_TRADE_SIDE);
   res.setHeader('X-Dashboard-Side', TARGET_DASHBOARD_SIDE);
   res.setHeader('X-Long-Only', 'true');
@@ -1332,6 +1337,8 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       ok,
+      scannerRunBuildId: SCANNER_RUN_BUILD_ID,
+
       skipped: Boolean(rawResult?.skipped || payload?.skipped || false),
       reason: rawResult?.reason || payload?.reason || null,
 
@@ -1392,6 +1399,13 @@ export default async function handler(req, res) {
         compactedForResponse: true
       },
 
+      debug: {
+        stackVisible: false,
+        source: 'api/scanner/run.js',
+        buildId: SCANNER_RUN_BUILD_ID,
+        normalResponse: true
+      },
+
       omitted: {
         fullRawResult: true,
         fullAnalyzeRows: true,
@@ -1407,9 +1421,19 @@ export default async function handler(req, res) {
     if (status === 400 || status === 405 || status === 409) {
       return res.status(status).json({
         ok: false,
+        scannerRunBuildId: SCANNER_RUN_BUILD_ID,
         ...baseFlags(),
         error: error?.message || String(error),
-        durationMs: now() - startedAt
+        name: error?.name || null,
+        details: error?.details || null,
+        stack: error?.stack || null,
+        durationMs: now() - startedAt,
+        debug: {
+          stackVisible: true,
+          source: 'api/scanner/run.js',
+          buildId: SCANNER_RUN_BUILD_ID,
+          reason: 'TEMP_DEBUG_CLIENT_OR_LOCK_ERROR'
+        }
       });
     }
 
@@ -1417,20 +1441,29 @@ export default async function handler(req, res) {
       ok: false,
       recoveredHttpStatus: 500,
       scannerRunFailed: true,
+      scannerRunBuildId: SCANNER_RUN_BUILD_ID,
 
       ...baseFlags(),
 
       error: error?.message || String(error),
+      name: error?.name || null,
+      details: error?.details || null,
+      stack: error?.stack || null,
+
       durationMs: now() - startedAt,
 
-      omitted: {
-        stack: process.env.NODE_ENV === 'production',
-        reason: 'SCANNER_ROUTE_RETURNED_200_WITH_ERROR_PAYLOAD_TO_PREVENT_ADMIN_UI_HARD_500'
+      debug: {
+        stackVisible: true,
+        source: 'api/scanner/run.js',
+        buildId: SCANNER_RUN_BUILD_ID,
+        reason: 'TEMP_DEBUG_FIND_RES_MAP_SOURCE',
+        instruction: 'Zoek in stack naar bestand en regel met res.map. Waarschijnlijk bitgetClient.js of utils.js.'
       },
 
-      stack: process.env.NODE_ENV === 'production'
-        ? undefined
-        : error?.stack
+      omitted: {
+        stackHidden: false,
+        reason: 'TEMP_DEBUG_STACK_VISIBLE_TO_FIND_RES_MAP_SOURCE'
+      }
     });
   }
 }
