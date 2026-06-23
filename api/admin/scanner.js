@@ -18,8 +18,10 @@ const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 
-const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY';
+const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
+
+const ADMIN_SCANNER_BUILD_ID = 'LONG_ADMIN_SCANNER_SAFE_ARRAY_2026_06_23_V1';
 
 const SNAPSHOT_SEARCH_LIMIT = 80;
 const STALE_8M_SEC = 8 * 60;
@@ -70,6 +72,71 @@ const CONFIRMATION_PROFILE_ORDER = [
   'D_MIXED_OK',
   'E_WEAK_CONTRA'
 ];
+
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+
+  if (Array.isArray(value?.data)) return value.data;
+  if (Array.isArray(value?.result)) return value.result;
+  if (Array.isArray(value?.rows)) return value.rows;
+  if (Array.isArray(value?.items)) return value.items;
+  if (Array.isArray(value?.list)) return value.list;
+  if (Array.isArray(value?.candidates)) return value.candidates;
+  if (Array.isArray(value?.tickers)) return value.tickers;
+  if (Array.isArray(value?.symbols)) return value.symbols;
+  if (Array.isArray(value?.universe)) return value.universe;
+
+  if (Array.isArray(value?.payload?.candidates)) return value.payload.candidates;
+  if (Array.isArray(value?.payload?.rows)) return value.payload.rows;
+  if (Array.isArray(value?.snapshot?.candidates)) return value.snapshot.candidates;
+  if (Array.isArray(value?.latest?.candidates)) return value.latest.candidates;
+
+  if (Array.isArray(value?.data?.data)) return value.data.data;
+  if (Array.isArray(value?.data?.result)) return value.data.result;
+  if (Array.isArray(value?.data?.rows)) return value.data.rows;
+  if (Array.isArray(value?.data?.items)) return value.data.items;
+  if (Array.isArray(value?.data?.list)) return value.data.list;
+  if (Array.isArray(value?.data?.candidates)) return value.data.candidates;
+  if (Array.isArray(value?.data?.tickers)) return value.data.tickers;
+  if (Array.isArray(value?.data?.symbols)) return value.data.symbols;
+  if (Array.isArray(value?.data?.universe)) return value.data.universe;
+
+  if (Array.isArray(value?.result?.data)) return value.result.data;
+  if (Array.isArray(value?.result?.rows)) return value.result.rows;
+  if (Array.isArray(value?.result?.items)) return value.result.items;
+  if (Array.isArray(value?.result?.list)) return value.result.list;
+  if (Array.isArray(value?.result?.candidates)) return value.result.candidates;
+  if (Array.isArray(value?.result?.tickers)) return value.result.tickers;
+  if (Array.isArray(value?.result?.symbols)) return value.result.symbols;
+  if (Array.isArray(value?.result?.universe)) return value.result.universe;
+
+  return [];
+}
+
+function shapeOf(value) {
+  if (Array.isArray(value)) {
+    return {
+      type: 'array',
+      length: value.length
+    };
+  }
+
+  if (value && typeof value === 'object') {
+    return {
+      type: 'object',
+      keys: Object.keys(value).slice(0, 30),
+      snapshotId: value.snapshotId || value.id || value.scanId || null,
+      hasCandidatesArray: Array.isArray(value.candidates),
+      hasRowsArray: Array.isArray(value.rows),
+      hasResult: Boolean(value.result),
+      hasData: Boolean(value.data)
+    };
+  }
+
+  return {
+    type: typeof value
+  };
+}
 
 function namespacedLongKey(key, fallback = null) {
   const raw = String(key || fallback || '').trim();
@@ -161,6 +228,8 @@ function taxonomyMeta() {
 
 function modeFlags() {
   return {
+    adminScannerBuildId: ADMIN_SCANNER_BUILD_ID,
+
     targetTradeSide: TARGET_TRADE_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
     scannerSide: TARGET_SCANNER_SIDE,
@@ -319,13 +388,13 @@ function round(value, decimals = 4) {
 }
 
 function getArray(value) {
-  return Array.isArray(value) ? value : [];
+  return asArray(value);
 }
 
 function uniqueStrings(values = []) {
   return [...new Set(
-    (Array.isArray(values) ? values : [values])
-      .flatMap((value) => Array.isArray(value) ? value : [value])
+    asArray(values)
+      .flatMap((value) => asArray(value).length ? asArray(value) : [value])
       .map((value) => String(value || '').trim())
       .filter(Boolean)
   )];
@@ -360,7 +429,15 @@ function hasFullSnapshotShape(value) {
   return Boolean(
     value &&
     typeof value === 'object' &&
-    Array.isArray(value.candidates)
+    asArray(value.candidates).length >= 0 &&
+    (
+      Array.isArray(value.candidates) ||
+      value.snapshotId ||
+      value.id ||
+      value.scanId ||
+      value.createdAt ||
+      value.completedAt
+    )
   );
 }
 
@@ -615,6 +692,8 @@ function inferTradeSide(row = {}) {
     return 'UNKNOWN';
   }
 
+  if (!row || typeof row !== 'object') return 'UNKNOWN';
+
   const directSources = [
     row.tradeSide,
     row.positionSide,
@@ -819,7 +898,7 @@ function normalizeLongCandidate(candidate = {}) {
 }
 
 function splitCandidatesBySide(candidates = []) {
-  const rows = Array.isArray(candidates) ? candidates : [];
+  const rows = asArray(candidates);
 
   const longCandidates = [];
   const shortCandidates = [];
@@ -849,42 +928,47 @@ function splitCandidatesBySide(candidates = []) {
 }
 
 function averageScannerScore(candidates = []) {
-  if (!candidates.length) return 0;
+  const rows = asArray(candidates);
 
-  const total = candidates.reduce((sum, candidate) => {
+  if (!rows.length) return 0;
+
+  const total = rows.reduce((sum, candidate) => {
     return sum + num(candidate?.scannerScore ?? candidate?.moveScore, 0);
   }, 0);
 
-  return round(total / candidates.length, 2);
+  return round(total / rows.length, 2);
 }
 
 function topSymbols(candidates = [], limit = 20) {
-  return candidates
+  return asArray(candidates)
     .slice(0, limit)
     .map((candidate) => candidate.symbol || candidate.contractSymbol)
     .filter(Boolean);
 }
 
 function buildCandidateStats(rawCandidates = [], candidates = []) {
+  const safeRawCandidates = asArray(rawCandidates);
+  const safeCandidates = asArray(candidates);
+
   const {
     longCandidates,
     shortCandidates,
     unknownSideCandidates
-  } = splitCandidatesBySide(rawCandidates);
+  } = splitCandidatesBySide(safeRawCandidates);
 
-  const scannerGateCandidates = candidates.filter((candidate) => candidate.scannerGatePassed);
-  const analyzeOnlyCandidates = candidates.filter((candidate) => (
+  const scannerGateCandidates = safeCandidates.filter((candidate) => candidate.scannerGatePassed);
+  const analyzeOnlyCandidates = safeCandidates.filter((candidate) => (
     candidate.tradeDiscoveryOnly ||
     candidate.discoveryOnly ||
     candidate.analyzeOnly
   ));
 
-  const cleanCandidates = candidates.filter((candidate) => !candidate.fakeBreakout);
-  const fakeBreakouts = candidates.filter((candidate) => candidate.fakeBreakout);
-  const fakeRiskCandidates = candidates.filter((candidate) => candidate.fakeBreakoutRisk);
+  const cleanCandidates = safeCandidates.filter((candidate) => !candidate.fakeBreakout);
+  const fakeBreakouts = safeCandidates.filter((candidate) => candidate.fakeBreakout);
+  const fakeRiskCandidates = safeCandidates.filter((candidate) => candidate.fakeBreakoutRisk);
 
   return {
-    candidates: candidates.length,
+    candidates: safeCandidates.length,
     cleanCandidates: cleanCandidates.length,
     fakeBreakouts: fakeBreakouts.length,
     fakeRiskCandidates: fakeRiskCandidates.length,
@@ -892,28 +976,26 @@ function buildCandidateStats(rawCandidates = [], candidates = []) {
     scannerGateCandidates: scannerGateCandidates.length,
     analyzeOnlyCandidates: analyzeOnlyCandidates.length,
 
-    longCandidates: candidates.length,
+    longCandidates: safeCandidates.length,
     shortCandidates: 0,
     unknownSideCandidates: 0,
 
-    bullCandidates: candidates.length,
+    bullCandidates: safeCandidates.length,
     bearCandidates: 0,
 
-    rawCandidates: rawCandidates.length,
+    rawCandidates: safeRawCandidates.length,
     rawLongCandidates: longCandidates.length,
     rawShortCandidatesIgnored: shortCandidates.length,
     rawUnknownSideCandidatesIgnored: unknownSideCandidates.length,
 
-    avgScannerScore: averageScannerScore(candidates)
+    avgScannerScore: averageScannerScore(safeCandidates)
   };
 }
 
 function normalizeLatest(latest, snapshot = null, meta = {}) {
   const snapshotId = extractSnapshotId(latest) || snapshot?.snapshotId || meta.snapshotId || null;
 
-  const candidates = Array.isArray(snapshot?.candidates)
-    ? snapshot.candidates
-    : [];
+  const candidates = asArray(snapshot?.candidates);
 
   const scannerGateCandidates = candidates.filter((candidate) => candidate.scannerGatePassed);
   const analyzeOnlyCandidates = candidates.filter((candidate) => (
@@ -971,9 +1053,7 @@ function normalizeLatest(latest, snapshot = null, meta = {}) {
 
     topSymbols: hasSnapshot
       ? topSymbols(candidates)
-      : Array.isArray(base.topSymbols)
-        ? base.topSymbols.slice(0, 20)
-        : [],
+      : asArray(base.topSymbols).slice(0, 20),
 
     scannerGateSymbols: topSymbols(scannerGateCandidates),
 
@@ -987,9 +1067,7 @@ function normalizeSnapshot(snapshot, fallbackId = null, meta = {}) {
     return null;
   }
 
-  const rawCandidates = Array.isArray(snapshot.candidates)
-    ? snapshot.candidates
-    : [];
+  const rawCandidates = asArray(snapshot.candidates);
 
   const {
     longCandidates,
@@ -1044,19 +1122,11 @@ function normalizeSnapshot(snapshot, fallbackId = null, meta = {}) {
 }
 
 function targetCandidateCount(snapshot = {}) {
-  const candidates = Array.isArray(snapshot.candidates)
-    ? snapshot.candidates
-    : [];
-
-  return candidates.filter(isLongCandidate).length;
+  return asArray(snapshot.candidates).filter(isLongCandidate).length;
 }
 
 function oppositeCandidateCount(snapshot = {}) {
-  const candidates = Array.isArray(snapshot.candidates)
-    ? snapshot.candidates
-    : [];
-
-  return candidates.filter(isShortCandidate).length;
+  return asArray(snapshot.candidates).filter(isShortCandidate).length;
 }
 
 async function safeGetSnapshotJson(redis, key, fallback = null) {
@@ -1064,11 +1134,13 @@ async function safeGetSnapshotJson(redis, key, fallback = null) {
 }
 
 async function loadRecentSnapshotCandidates(redis) {
-  const keys = await getKeys(
+  const keysRaw = await getKeys(
     redis,
     snapshotPattern(),
     SNAPSHOT_SEARCH_LIMIT
   ).catch(() => []);
+
+  const keys = asArray(keysRaw);
 
   if (!keys.length) return [];
 
@@ -1089,7 +1161,7 @@ async function loadRecentSnapshotCandidates(redis) {
     })
   );
 
-  return rows
+  return asArray(rows)
     .filter(Boolean)
     .sort((a, b) => b.createdAt - a.createdAt);
 }
@@ -1097,7 +1169,7 @@ async function loadRecentSnapshotCandidates(redis) {
 function dedupeSnapshotCandidates(candidates = []) {
   const unique = new Map();
 
-  for (const item of candidates) {
+  for (const item of asArray(candidates)) {
     if (!item?.snapshot || !hasFullSnapshotShape(item.snapshot)) continue;
 
     const id = item.snapshot?.snapshotId || item.snapshotId || item.snapshotSource;
@@ -1262,6 +1334,8 @@ function buildSummary({
   rawOppositeCount,
   snapshotsScanned
 }) {
+  const safeCandidates = asArray(candidates);
+
   return {
     ...modeFlags(),
 
@@ -1272,8 +1346,8 @@ function buildSummary({
 
     snapshotsScanned: num(snapshotsScanned, 0),
 
-    candidates: candidates.length,
-    longCandidates: candidates.length,
+    candidates: safeCandidates.length,
+    longCandidates: safeCandidates.length,
     shortCandidates: 0,
 
     rawTargetCount: num(rawTargetCount, 0),
@@ -1286,14 +1360,15 @@ function buildSummary({
     scannerGateCandidates: num(snapshot?.scannerGateCandidatesCount, 0),
     analyzeOnlyCandidates: num(snapshot?.analyzeOnlyCandidatesCount, 0),
 
-    avgScannerScore: averageScannerScore(candidates),
+    avgScannerScore: averageScannerScore(safeCandidates),
 
-    topSymbols: topSymbols(candidates)
+    topSymbols: topSymbols(safeCandidates)
   };
 }
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
+  res.setHeader('X-Admin-Scanner-Build-Id', ADMIN_SCANNER_BUILD_ID);
   res.setHeader('X-Admin-Scanner-Mode', 'long-only-scanner-discovery-75-child-contract-v1');
   res.setHeader('X-Target-Trade-Side', TARGET_TRADE_SIDE);
   res.setHeader('X-Long-Only', 'true');
@@ -1333,9 +1408,7 @@ export default async function handler(req, res) {
       snapshotsScanned
     } = await loadSnapshot(redis, latestRaw);
 
-    const candidates = Array.isArray(snapshot?.candidates)
-      ? snapshot.candidates
-      : [];
+    const candidates = asArray(snapshot?.candidates);
 
     const latest = normalizeLatest(latestRaw, snapshot, {
       snapshotId,
@@ -1397,18 +1470,41 @@ export default async function handler(req, res) {
           : null
       ].filter(Boolean)),
 
+      debug: {
+        buildId: ADMIN_SCANNER_BUILD_ID,
+        latestShape: shapeOf(latestRaw),
+        snapshotShape: shapeOf(snapshot),
+        candidatesShape: shapeOf(candidates),
+        stackVisibleOnError: true
+      },
+
       serverTs: Date.now()
     });
   } catch (error) {
-    return res.status(500).json({
+    return res.status(200).json({
       ok: false,
+      recoveredHttpStatus: 500,
+      adminScannerFailed: true,
 
       ...modeFlags(),
 
       error: error?.message || String(error),
-      stack: process.env.NODE_ENV === 'production'
-        ? undefined
-        : error?.stack
+      name: error?.name || null,
+      details: error?.details || null,
+      stack: error?.stack || null,
+
+      debug: {
+        buildId: ADMIN_SCANNER_BUILD_ID,
+        source: 'api/admin/scanner.js',
+        stackVisible: true,
+        reason: 'TEMP_DEBUG_ADMIN_SCANNER_SAFE_CATCH'
+      },
+
+      warnings: [
+        'ADMIN_SCANNER_ROUTE_FAILED_BUT_RETURNED_200_TO_PREVENT_UI_HARD_CRASH'
+      ],
+
+      serverTs: Date.now()
     });
   }
 }
