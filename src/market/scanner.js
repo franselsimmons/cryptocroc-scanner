@@ -78,8 +78,165 @@ const BLOCKED_BASE_SYMBOLS = new Set([
   'BRL'
 ]);
 
+const BITGET_TICKERS_FALLBACK_URL =
+  'https://api.bitget.com/api/v2/mix/market/tickers?productType=USDT-FUTURES';
+
 function now() {
   return Date.now();
+}
+
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+
+  if (Array.isArray(value?.data)) return value.data;
+  if (Array.isArray(value?.result)) return value.result;
+  if (Array.isArray(value?.rows)) return value.rows;
+  if (Array.isArray(value?.items)) return value.items;
+  if (Array.isArray(value?.list)) return value.list;
+  if (Array.isArray(value?.symbols)) return value.symbols;
+  if (Array.isArray(value?.tickers)) return value.tickers;
+  if (Array.isArray(value?.markets)) return value.markets;
+  if (Array.isArray(value?.universe)) return value.universe;
+
+  if (Array.isArray(value?.data?.data)) return value.data.data;
+  if (Array.isArray(value?.data?.result)) return value.data.result;
+  if (Array.isArray(value?.data?.rows)) return value.data.rows;
+  if (Array.isArray(value?.data?.items)) return value.data.items;
+  if (Array.isArray(value?.data?.list)) return value.data.list;
+  if (Array.isArray(value?.data?.symbols)) return value.data.symbols;
+  if (Array.isArray(value?.data?.tickers)) return value.data.tickers;
+  if (Array.isArray(value?.data?.markets)) return value.data.markets;
+  if (Array.isArray(value?.data?.universe)) return value.data.universe;
+
+  if (Array.isArray(value?.result?.data)) return value.result.data;
+  if (Array.isArray(value?.result?.rows)) return value.result.rows;
+  if (Array.isArray(value?.result?.items)) return value.result.items;
+  if (Array.isArray(value?.result?.list)) return value.result.list;
+  if (Array.isArray(value?.result?.symbols)) return value.result.symbols;
+  if (Array.isArray(value?.result?.tickers)) return value.result.tickers;
+  if (Array.isArray(value?.result?.markets)) return value.result.markets;
+  if (Array.isArray(value?.result?.universe)) return value.result.universe;
+
+  return [];
+}
+
+function shapeOf(value) {
+  if (Array.isArray(value)) {
+    return {
+      type: 'array',
+      length: value.length
+    };
+  }
+
+  if (value && typeof value === 'object') {
+    return {
+      type: 'object',
+      keys: Object.keys(value).slice(0, 30),
+      code: value.code ?? null,
+      msg: value.msg ?? value.message ?? null
+    };
+  }
+
+  return {
+    type: typeof value
+  };
+}
+
+async function fetchJsonWithTimeout(url, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        accept: 'application/json'
+      },
+      signal: controller.signal
+    });
+
+    const text = await response.text();
+
+    if (!response.ok) {
+      const error = new Error(`BITGET_TICKERS_FALLBACK_HTTP_${response.status}`);
+
+      error.details = {
+        status: response.status,
+        body: text.slice(0, 500)
+      };
+
+      throw error;
+    }
+
+    try {
+      return JSON.parse(text);
+    } catch {
+      const error = new Error('BITGET_TICKERS_FALLBACK_INVALID_JSON');
+
+      error.details = {
+        body: text.slice(0, 500)
+      };
+
+      throw error;
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchBitgetTickersFallback() {
+  const json = await fetchJsonWithTimeout(BITGET_TICKERS_FALLBACK_URL);
+  const rows = asArray(json);
+
+  if (!rows.length) {
+    const error = new Error('BITGET_TICKERS_FALLBACK_NO_ARRAY_ROWS');
+
+    error.details = {
+      shape: shapeOf(json)
+    };
+
+    throw error;
+  }
+
+  return rows;
+}
+
+async function fetchScannerTickers() {
+  try {
+    const result = await fetchBitgetTickers();
+    const rows = asArray(result);
+
+    if (rows.length) return rows;
+
+    const error = new Error('BITGET_TICKERS_EMPTY_AFTER_UNWRAP');
+
+    error.details = {
+      shape: shapeOf(result)
+    };
+
+    throw error;
+  } catch (primaryError) {
+    try {
+      const fallbackRows = await fetchBitgetTickersFallback();
+
+      return fallbackRows;
+    } catch (fallbackError) {
+      const error = new Error(
+        primaryError?.message ||
+          fallbackError?.message ||
+          'BITGET_TICKERS_FETCH_FAILED'
+      );
+
+      error.details = {
+        primaryError: primaryError?.message || String(primaryError),
+        primaryDetails: primaryError?.details || null,
+        fallbackError: fallbackError?.message || String(fallbackError),
+        fallbackDetails: fallbackError?.details || null
+      };
+
+      throw error;
+    }
+  }
 }
 
 function upper(value) {
@@ -655,6 +812,7 @@ function normalizeScannerTicker(rawTicker = {}) {
       rawTicker.contractSymbol ||
       rawTicker.symbol ||
       rawTicker.instId ||
+      rawTicker.instrumentId ||
       rawTicker.contractCode ||
       rawTicker.symbolName
   );
@@ -965,7 +1123,7 @@ function calcChangePct(first, last) {
 }
 
 function calcOneHourChange(candles15m) {
-  const rows = Array.isArray(candles15m) ? candles15m : [];
+  const rows = asArray(candles15m);
 
   if (rows.length < 5) return 0;
 
@@ -976,7 +1134,7 @@ function calcOneHourChange(candles15m) {
 }
 
 function calcRangePct(candles = []) {
-  const rows = Array.isArray(candles) ? candles.slice(-24) : [];
+  const rows = asArray(candles).slice(-24);
 
   if (!rows.length) return 0;
 
@@ -995,7 +1153,7 @@ function calcRangePct(candles = []) {
 }
 
 function calcRealizedVolPct(candles = []) {
-  const rows = Array.isArray(candles) ? candles.slice(-24) : [];
+  const rows = asArray(candles).slice(-24);
 
   if (rows.length < 3) return 0;
 
@@ -1357,7 +1515,7 @@ function isMarketUniverseTicker(ticker) {
 function dedupeByBaseSymbol(tickers) {
   const byBase = new Map();
 
-  for (const ticker of tickers) {
+  for (const ticker of asArray(tickers)) {
     const normalized = normalizeScannerTicker(ticker);
 
     if (!normalized) continue;
@@ -1409,7 +1567,7 @@ function sortMarketUniverse(a, b) {
 
 function buildTickerUniverse(rawTickers) {
   return dedupeByBaseSymbol(
-    (Array.isArray(rawTickers) ? rawTickers : [])
+    asArray(rawTickers)
       .map(normalizeScannerTicker)
       .filter(Boolean)
       .filter(isTradableTicker)
@@ -1421,7 +1579,7 @@ function buildTickerUniverse(rawTickers) {
 
 function buildRawMarketUniverse(rawTickers) {
   return dedupeByBaseSymbol(
-    (Array.isArray(rawTickers) ? rawTickers : [])
+    asArray(rawTickers)
       .map(normalizeScannerTicker)
       .filter(Boolean)
       .filter(isMarketUniverseTicker)
@@ -1445,7 +1603,9 @@ function createCandleCache() {
 
     if (cache.has(key)) return cache.get(key);
 
-    const promise = fetchCandles(contractSymbol, timeframe, requestedLimit).catch(() => []);
+    const promise = fetchCandles(contractSymbol, timeframe, requestedLimit)
+      .then(asArray)
+      .catch(() => []);
     cache.set(key, promise);
 
     return promise;
@@ -1464,11 +1624,11 @@ async function buildMarketUniverseRows({
     baseUniverse,
     scannerConcurrency(),
     async (ticker) => {
-      const candles15m = await getCandles(
+      const candles15m = asArray(await getCandles(
         ticker.contractSymbol,
         '15m',
         Math.max(30, candleLimit())
-      );
+      ));
 
       const change1h = candles15m.length >= 5
         ? calcOneHourChange(candles15m)
@@ -1513,12 +1673,14 @@ async function buildMarketUniverseRows({
     }
   );
 
-  return rows.filter(Boolean);
+  return asArray(rows).filter(Boolean);
 }
 
 async function buildBtcContext({ universe, getCandles }) {
+  const rows = asArray(universe);
+
   const btcTicker =
-    universe.find((row) => row.baseSymbol === 'BTC') ||
+    rows.find((row) => row.baseSymbol === 'BTC') ||
     normalizeScannerTicker({
       symbol: 'BTCUSDT',
       last: 0,
@@ -1534,11 +1696,11 @@ async function buildBtcContext({ universe, getCandles }) {
       change24h: 0
     };
 
-  const btcCandles15m = await getCandles(
+  const btcCandles15m = asArray(await getCandles(
     'BTCUSDT',
     '15m',
     candleLimit()
-  );
+  ));
 
   const btcChange1h = calcOneHourChange(btcCandles15m);
   const btcChange24h = safeNumber(btcTicker.change24h, 0);
@@ -1768,11 +1930,11 @@ async function analyzeTickerCandidate({
     };
   }
 
-  const candles15m = await getCandles(
+  const candles15m = asArray(await getCandles(
     contractSymbol,
     '15m',
     candleLimit()
-  );
+  ));
 
   if (candles15m.length < 30) {
     return {
@@ -1940,7 +2102,7 @@ async function analyzeTickerCandidate({
 }
 
 function countSkipped(results) {
-  return results.reduce((acc, row) => {
+  return asArray(results).reduce((acc, row) => {
     const reason = row?.skippedReason || (row?.candidate ? 'SELECTED' : 'UNKNOWN');
 
     acc[reason] = (acc[reason] || 0) + 1;
@@ -1950,7 +2112,7 @@ function countSkipped(results) {
 }
 
 function sortCandidates(candidates = []) {
-  return [...candidates].sort((a, b) => {
+  return [...asArray(candidates)].sort((a, b) => {
     const gateDelta = Number(Boolean(b.scannerGatePassed)) - Number(Boolean(a.scannerGatePassed));
     if (gateDelta !== 0) return gateDelta;
 
@@ -2295,6 +2457,8 @@ function buildMarketUniversePayload({
   completedAt,
   btcContext
 }) {
+  const safeRows = asArray(rows);
+
   return {
     ok: true,
     version: 'SCANNER_MARKET_UNIVERSE_V1',
@@ -2313,10 +2477,10 @@ function buildMarketUniversePayload({
     scannerSide: 'market',
     scannerSideForTrades: TARGET_SCANNER_SIDE,
 
-    rows,
-    tickers: rows,
-    universe: rows,
-    count: rows.length,
+    rows: safeRows,
+    tickers: safeRows,
+    universe: safeRows,
+    count: safeRows.length,
 
     btcState: btcContext.btcState,
     btcChange1h: btcContext.btcChange1h,
@@ -2324,7 +2488,7 @@ function buildMarketUniversePayload({
     btcAtrPct: btcContext.btcAtrPct,
     regime: btcContext.regime,
 
-    cacheHealthy: rows.length > 0,
+    cacheHealthy: safeRows.length > 0,
     ttlSec: marketUniverseTtlSec(),
 
     currentFitSoftOnly: true,
@@ -2360,7 +2524,7 @@ function pct(part, total) {
 }
 
 function avg(values = []) {
-  const nums = values
+  const nums = asArray(values)
     .map((value) => safeNumber(value, NaN))
     .filter((value) => Number.isFinite(value));
 
@@ -2370,16 +2534,17 @@ function avg(values = []) {
 }
 
 function classifyMarketTrendSideFromRows(rows = [], btcContext = {}) {
-  const total = rows.length;
+  const safeRows = asArray(rows);
+  const total = safeRows.length;
 
   if (!total) return 'UNKNOWN';
 
-  const bullish = rows.filter((row) => (
+  const bullish = safeRows.filter((row) => (
     safeNumber(row.change1h, 0) > 0 &&
     safeNumber(row.change24h, 0) >= 0
   )).length;
 
-  const bearish = rows.filter((row) => (
+  const bearish = safeRows.filter((row) => (
     safeNumber(row.change1h, 0) < 0 ||
     safeNumber(row.change24h, 0) < 0
   )).length;
@@ -2397,11 +2562,12 @@ function classifyMarketTrendSideFromRows(rows = [], btcContext = {}) {
 }
 
 function classifyMarketRegimeFromRows(rows = [], btcContext = {}) {
-  const total = rows.length;
+  const safeRows = asArray(rows);
+  const total = safeRows.length;
 
   if (!total) return 'UNKNOWN';
 
-  const squeezeRows = rows.filter((row) => {
+  const squeezeRows = safeRows.filter((row) => {
     const atrPct = safeNumber(row.atrPct, 0);
     const rangePct = safeNumber(row.rangePct, 0);
     const realizedVolPct = safeNumber(row.realizedVolPct, 0);
@@ -2416,7 +2582,7 @@ function classifyMarketRegimeFromRows(rows = [], btcContext = {}) {
     );
   }).length;
 
-  const trendRows = rows.filter((row) => {
+  const trendRows = safeRows.filter((row) => {
     const ch1 = Math.abs(safeNumber(row.change1h, 0));
     const ch24 = Math.abs(safeNumber(row.change24h, 0));
     const volumeExpansion = safeNumber(row.volumeExpansion, 1);
@@ -2440,16 +2606,17 @@ function classifyMarketRegimeFromRows(rows = [], btcContext = {}) {
 }
 
 function classifyMarketFlowFromRows(rows = []) {
-  const total = rows.length;
+  const safeRows = asArray(rows);
+  const total = safeRows.length;
 
   if (!total) return 'UNKNOWN';
 
-  const strongUp = rows.filter((row) => (
+  const strongUp = safeRows.filter((row) => (
     safeNumber(row.change1h, 0) >= 0.35 ||
     safeNumber(row.change24h, 0) >= 1.25
   )).length;
 
-  const strongDown = rows.filter((row) => (
+  const strongDown = safeRows.filter((row) => (
     safeNumber(row.change1h, 0) <= -0.35 ||
     safeNumber(row.change24h, 0) <= -1.25
   )).length;
@@ -2465,11 +2632,13 @@ function classifyMarketFlowFromRows(rows = []) {
 }
 
 function classifyMarketVolatilityFromRows(rows = []) {
-  if (!rows.length) return 'UNKNOWN';
+  const safeRows = asArray(rows);
 
-  const atrAvg = avg(rows.map((row) => row.atrPct));
-  const rangeAvg = avg(rows.map((row) => row.rangePct));
-  const realizedAvg = avg(rows.map((row) => row.realizedVolPct));
+  if (!safeRows.length) return 'UNKNOWN';
+
+  const atrAvg = avg(safeRows.map((row) => row.atrPct));
+  const rangeAvg = avg(safeRows.map((row) => row.rangePct));
+  const realizedAvg = avg(safeRows.map((row) => row.realizedVolPct));
 
   if (atrAvg >= 1.8 || rangeAvg >= 8 || realizedAvg >= 1.8) return 'HIGH_VOL';
   if (atrAvg <= 0.65 && rangeAvg <= 3.5 && realizedAvg <= 0.8) return 'LOW_VOL';
@@ -2484,21 +2653,22 @@ function buildMarketWeatherPayload({
   completedAt,
   btcContext
 }) {
-  const total = rows.length;
+  const safeRows = asArray(rows);
+  const total = safeRows.length;
 
-  const bullishCount = rows.filter((row) => (
+  const bullishCount = safeRows.filter((row) => (
     safeNumber(row.change1h, 0) > 0 &&
     safeNumber(row.change24h, 0) >= 0
   )).length;
 
-  const bearishCount = rows.filter((row) => (
+  const bearishCount = safeRows.filter((row) => (
     safeNumber(row.change1h, 0) < 0 ||
     safeNumber(row.change24h, 0) < 0
   )).length;
 
   const neutralCount = Math.max(0, total - bullishCount - bearishCount);
 
-  const squeezeCount = rows.filter((row) => (
+  const squeezeCount = safeRows.filter((row) => (
     safeNumber(row.atrPct, 0) > 0 &&
     safeNumber(row.atrPct, 0) <= 0.65 &&
     safeNumber(row.rangePct, 0) <= 3.5
@@ -2509,10 +2679,10 @@ function buildMarketWeatherPayload({
   const neutralPct = pct(neutralCount, total);
   const squeezePct = pct(squeezeCount, total);
 
-  const currentTrendSide = classifyMarketTrendSideFromRows(rows, btcContext);
-  const currentRegime = classifyMarketRegimeFromRows(rows, btcContext);
-  const currentFlow = classifyMarketFlowFromRows(rows);
-  const currentVolatilityState = classifyMarketVolatilityFromRows(rows);
+  const currentTrendSide = classifyMarketTrendSideFromRows(safeRows, btcContext);
+  const currentRegime = classifyMarketRegimeFromRows(safeRows, btcContext);
+  const currentFlow = classifyMarketFlowFromRows(safeRows);
+  const currentVolatilityState = classifyMarketVolatilityFromRows(safeRows);
 
   const confidence = total <= 0
     ? 0
@@ -2565,16 +2735,16 @@ function buildMarketWeatherPayload({
     neutralPct: Number(neutralPct.toFixed(2)),
     squeezePct: Number(squeezePct.toFixed(2)),
 
-    avgAtrPct: Number(avg(rows.map((row) => row.atrPct)).toFixed(6)),
-    avgRangePct: Number(avg(rows.map((row) => row.rangePct)).toFixed(6)),
-    avgRealizedVolPct: Number(avg(rows.map((row) => row.realizedVolPct)).toFixed(6)),
-    avgVolumeExpansion: Number(avg(rows.map((row) => row.volumeExpansion)).toFixed(4)),
+    avgAtrPct: Number(avg(safeRows.map((row) => row.atrPct)).toFixed(6)),
+    avgRangePct: Number(avg(safeRows.map((row) => row.rangePct)).toFixed(6)),
+    avgRealizedVolPct: Number(avg(safeRows.map((row) => row.realizedVolPct)).toFixed(6)),
+    avgVolumeExpansion: Number(avg(safeRows.map((row) => row.volumeExpansion)).toFixed(4)),
 
     count: total,
     universeCount: total,
-    symbols: rows.slice(0, 40).map((row) => row.symbol).filter(Boolean),
-    rows: rows.slice(0, 120),
-    universe: rows.slice(0, 120),
+    symbols: safeRows.slice(0, 40).map((row) => row.symbol).filter(Boolean),
+    rows: safeRows.slice(0, 120),
+    universe: safeRows.slice(0, 120),
 
     btcState: btcContext.btcState,
     btcChange1h: btcContext.btcChange1h,
@@ -2718,6 +2888,112 @@ async function saveMarketWeather({
   };
 }
 
+function buildSafeEmptySnapshot({
+  snapshotId,
+  startedAt,
+  completedAt,
+  reason,
+  error,
+  details = null
+}) {
+  return {
+    ok: false,
+    skipped: true,
+    persisted: false,
+    reason,
+
+    ...sideFlags(),
+    ...scopeFlags(),
+
+    snapshotId,
+    createdAt: startedAt,
+    completedAt,
+    durationMs: completedAt - startedAt,
+
+    btcState: 'UNKNOWN',
+    regime: 'UNKNOWN',
+    btcChange1h: 0,
+    btcChange24h: 0,
+    btcAtrPct: 0,
+
+    rawCount: 0,
+    filteredUniverse: 0,
+
+    marketUniverseCount: 0,
+    marketUniverseKeys: [],
+    marketUniverseSaved: false,
+    marketUniverseRole: 'MARKET_WEATHER_INPUT',
+    marketWeatherInput: true,
+
+    marketWeatherCount: 0,
+    marketWeatherKeys: [],
+    marketWeatherSaved: false,
+    marketWeatherRole: 'CURRENT_FIT_INPUT',
+
+    candidatesCount: 0,
+    scannerGateCandidatesCount: 0,
+    analyzeOnlyCandidatesCount: 0,
+
+    longCandidatesCount: 0,
+    shortCandidatesCount: 0,
+
+    rawShortCandidatesIgnored: 0,
+
+    maxSymbols: scannerMaxSymbols(),
+    maxCandidates: scannerMaxCandidates(),
+    marketUniverseMaxSymbols: marketUniverseMaxSymbols(),
+
+    strictFilters: strictScannerFiltersEnabled(),
+    blockFakeBreakout: blockFakeBreakoutEnabled(),
+    blockNoDirection: blockNoDirectionEnabled(),
+    blockSmallMove: blockSmallMoveEnabled(),
+
+    minQuoteVolume24h: minQuoteVolume24h(),
+    softMinQuoteVolume24h: softMinQuoteVolume24h(),
+    marketUniverseMinQuoteVolume24h: marketUniverseMinVolume24h(),
+
+    minAbsChange1h: minAbsChange1h(),
+    minAbsChange24h: minAbsChange24h(),
+
+    skippedCounts: {
+      [reason]: 1
+    },
+
+    topSymbols: [],
+    scannerGateSymbols: [],
+    analyzeOnlySymbols: [],
+    marketUniverseSymbols: [],
+
+    scannerMicroFamilyIdsMetadataOnly: [],
+
+    trueMicroFamilyIds: [],
+    microFamilyIds: [],
+    childTrueMicroFamilyIds: [],
+    parentTrueMicroFamilyIds: [],
+
+    candidates: [],
+
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    currentFitBlocksVirtualLearning: false,
+    currentFitBlocksShadowLearning: false,
+    learningRemainsBroad: true,
+    selectionWillBeAdaptive: true,
+    discordWillBeStrict: true,
+
+    adaptiveLayerBuilt: false,
+    adaptiveScoreBuilt: false,
+    recentMomentumScoreBuilt: false,
+    currentFitScoreBuilt: false,
+    parentDiversificationBuilt: false,
+
+    error,
+    details,
+
+    scannerRunSafeStopped: true
+  };
+}
+
 export async function runScanner(options = {}) {
   const redis = getVolatileRedis();
   const marketRedis = getDurableRedis();
@@ -2726,7 +3002,35 @@ export async function runScanner(options = {}) {
   const snapshotId = randomId('scan_long');
   const getCandles = createCandleCache();
 
-  const rawTickers = await fetchBitgetTickers();
+  let rawTickers = [];
+
+  try {
+    rawTickers = asArray(await fetchScannerTickers());
+  } catch (error) {
+    const completedAt = now();
+
+    return buildSafeEmptySnapshot({
+      snapshotId,
+      startedAt,
+      completedAt,
+      reason: 'BITGET_TICKERS_FETCH_FAILED',
+      error: error?.message || String(error),
+      details: error?.details || null
+    });
+  }
+
+  if (!rawTickers.length) {
+    const completedAt = now();
+
+    return buildSafeEmptySnapshot({
+      snapshotId,
+      startedAt,
+      completedAt,
+      reason: 'BITGET_TICKERS_EMPTY_AFTER_UNWRAP',
+      error: 'fetchScannerTickers returned no array rows',
+      details: null
+    });
+  }
 
   const marketUniverseRows = await buildMarketUniverseRows({
     rawTickers,
@@ -2755,7 +3059,9 @@ export async function runScanner(options = {}) {
     })
   );
 
-  const allCandidates = results
+  const safeResults = asArray(results);
+
+  const allCandidates = safeResults
     .map((row) => row?.candidate)
     .filter(Boolean)
     .filter(isTargetCandidate)
@@ -2799,8 +3105,8 @@ export async function runScanner(options = {}) {
   });
 
   const rawShortCandidatesIgnored =
-    results.filter((row) => row?.skippedTradeSide === OPPOSITE_TRADE_SIDE).length +
-    results
+    safeResults.filter((row) => row?.skippedTradeSide === OPPOSITE_TRADE_SIDE).length +
+    safeResults
       .map((row) => row?.candidate)
       .filter(Boolean)
       .filter(isOppositeCandidate)
@@ -2829,7 +3135,7 @@ export async function runScanner(options = {}) {
     btcChange24h: btcContext.btcChange24h,
     btcAtrPct: btcContext.btcAtrPct,
 
-    rawCount: Array.isArray(rawTickers) ? rawTickers.length : 0,
+    rawCount: rawTickers.length,
     filteredUniverse: universe.length,
 
     marketUniverseCount: marketUniverseRows.length,
@@ -2868,7 +3174,7 @@ export async function runScanner(options = {}) {
     minAbsChange1h: minAbsChange1h(),
     minAbsChange24h: minAbsChange24h(),
 
-    skippedCounts: countSkipped(results),
+    skippedCounts: countSkipped(safeResults),
 
     topSymbols: cleanCandidates
       .slice(0, 20)
