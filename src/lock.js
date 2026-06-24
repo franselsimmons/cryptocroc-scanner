@@ -20,7 +20,7 @@ const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
 const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
 const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 
-const LOCK_BUILD_ID = 'LONG_LOCK_REST_SAFE_2026_06_23_V1';
+const LOCK_BUILD_ID = 'LONG_LOCK_REST_SAFE_RATE_LIMIT_SKIP_2026_06_23_V2';
 
 const RELEASE_LOCK_SCRIPT = `
 if redis.call("GET", KEYS[1]) == ARGV[1] then
@@ -219,6 +219,20 @@ function cleanRestUrl(url = '') {
   return String(url || '').trim().replace(/\/+$/u, '');
 }
 
+function isRateLimitError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+
+  return (
+    message.includes('rate-limited') ||
+    message.includes('temporarily rate-limited') ||
+    message.includes('too many requests') ||
+    message.includes('too_many_requests') ||
+    message.includes('rate limit') ||
+    message.includes('ratelimit') ||
+    message.includes('429')
+  );
+}
+
 function unwrapPipelineResult(json) {
   if (Array.isArray(json)) {
     const first = json[0];
@@ -301,6 +315,10 @@ async function redisRestCommand(command = [], options = {}) {
       return result;
     } catch (error) {
       lastError = error;
+
+      if (isRateLimitError(error)) {
+        break;
+      }
     }
   }
 
@@ -313,6 +331,7 @@ function shouldUseRestFallback(error) {
   const message = String(error?.message || error || '');
 
   return (
+    isRateLimitError(error) ||
     message.includes('res.map is not a function') ||
     message.includes('Pipeline.exec') ||
     message.includes('AutoPipelineExecutor') ||
@@ -386,6 +405,24 @@ function isLockAcquiredResult(value) {
   return false;
 }
 
+function rateLimitedLockResult(lockKey, ttl) {
+  return {
+    ok: false,
+    acquired: false,
+    skipped: true,
+    key: lockKey,
+    ttlSec: ttl,
+    token: null,
+    reason: 'REDIS_RATE_LIMITED_LOCK_NOT_ACQUIRED',
+    rateLimited: true,
+    retryLater: true,
+    scannerRunShouldSkip: true,
+    lockNamespace: LONG_NAMESPACE,
+    lockKeyPrefix: LONG_KEY_PREFIX,
+    ...modeFlags()
+  };
+}
+
 async function safeRedisSetNx(redis, key, token, ttlSec) {
   try {
     return await redis.set(key, token, {
@@ -446,12 +483,20 @@ async function atomicRelease(redis, key, token) {
 
     return Number(result) === 1;
   } catch (restError) {
+    if (isRateLimitError(restError)) {
+      return false;
+    }
+
     if (typeof redis?.eval === 'function') {
       try {
         const result = await redis.eval(RELEASE_LOCK_SCRIPT, [key], [token]);
 
         return Number(result) === 1;
       } catch (sdkError) {
+        if (isRateLimitError(sdkError)) {
+          return false;
+        }
+
         if (!shouldUseRestFallback(sdkError)) throw sdkError;
       }
     }
@@ -461,7 +506,27 @@ async function atomicRelease(redis, key, token) {
 }
 
 async function fallbackRelease(redis, key, token) {
-  const current = await safeRedisGet(redis, key);
+  let current;
+
+  try {
+    current = await safeRedisGet(redis, key);
+  } catch (error) {
+    if (isRateLimitError(error)) {
+      return {
+        ok: false,
+        released: false,
+        reason: 'REDIS_RATE_LIMITED_LOCK_RELEASE_UNKNOWN',
+        rateLimited: true,
+        retryLater: true,
+        key,
+        lockNamespace: LONG_NAMESPACE,
+        lockKeyPrefix: LONG_KEY_PREFIX,
+        ...modeFlags()
+      };
+    }
+
+    throw error;
+  }
 
   if (String(current || '') !== token) {
     return {
@@ -475,7 +540,27 @@ async function fallbackRelease(redis, key, token) {
     };
   }
 
-  const deleted = await safeRedisDel(redis, key);
+  let deleted;
+
+  try {
+    deleted = await safeRedisDel(redis, key);
+  } catch (error) {
+    if (isRateLimitError(error)) {
+      return {
+        ok: false,
+        released: false,
+        reason: 'REDIS_RATE_LIMITED_LOCK_RELEASE_UNKNOWN',
+        rateLimited: true,
+        retryLater: true,
+        key,
+        lockNamespace: LONG_NAMESPACE,
+        lockKeyPrefix: LONG_KEY_PREFIX,
+        ...modeFlags()
+      };
+    }
+
+    throw error;
+  }
 
   return {
     ok: Number(deleted) > 0,
@@ -502,16 +587,29 @@ export async function acquireRedisLock(redis, key, ttlSec = DEFAULT_LOCK_TTL_SEC
   const token = createLockToken();
   const ttl = normalizeTtlSec(ttlSec);
 
-  const acquired = await safeRedisSetNx(redis, lockKey, token, ttl);
+  let acquired;
+
+  try {
+    acquired = await safeRedisSetNx(redis, lockKey, token, ttl);
+  } catch (error) {
+    if (isRateLimitError(error)) {
+      return rateLimitedLockResult(lockKey, ttl);
+    }
+
+    throw error;
+  }
 
   if (!isLockAcquiredResult(acquired)) {
     return {
       ok: false,
       acquired: false,
+      skipped: true,
       key: lockKey,
       ttlSec: ttl,
       token: null,
       reason: 'PREVIOUS_LONG_RUN_STILL_ACTIVE',
+      rateLimited: false,
+      retryLater: true,
       lockNamespace: LONG_NAMESPACE,
       lockKeyPrefix: LONG_KEY_PREFIX,
       ...modeFlags()
@@ -521,9 +619,12 @@ export async function acquireRedisLock(redis, key, ttlSec = DEFAULT_LOCK_TTL_SEC
   return {
     ok: true,
     acquired: true,
+    skipped: false,
     key: lockKey,
     ttlSec: ttl,
     token,
+    rateLimited: false,
+    retryLater: false,
     lockNamespace: LONG_NAMESPACE,
     lockKeyPrefix: LONG_KEY_PREFIX,
     ...modeFlags()
@@ -594,7 +695,11 @@ export async function releaseRedisLock(redis, key, token) {
       return {
         ok: false,
         released: false,
-        reason: 'LONG_LOCK_RELEASE_FAILED',
+        reason: isRateLimitError(fallbackError)
+          ? 'REDIS_RATE_LIMITED_LOCK_RELEASE_UNKNOWN'
+          : 'LONG_LOCK_RELEASE_FAILED',
+        rateLimited: isRateLimitError(fallbackError),
+        retryLater: isRateLimitError(fallbackError),
         key: lockKey,
         error: fallbackError?.message || String(fallbackError),
         lockNamespace: LONG_NAMESPACE,
@@ -620,6 +725,9 @@ export async function withRedisLock(redis, key, ttlSec, task) {
       reason: lock.reason,
       lockKey,
       ttlSec: lock.ttlSec,
+      rateLimited: Boolean(lock.rateLimited),
+      retryLater: lock.retryLater !== false,
+      scannerRunShouldSkip: true,
       lockNamespace: LONG_NAMESPACE,
       lockKeyPrefix: LONG_KEY_PREFIX,
       ...modeFlags()
@@ -672,6 +780,7 @@ export async function withRedisLock(redis, key, ttlSec, task) {
     ttlSec: lock.ttlSec,
     lockReleased: Boolean(releaseResult?.released),
     lockReleaseReason: releaseResult?.reason || null,
+    lockReleaseRateLimited: Boolean(releaseResult?.rateLimited),
     result: taskResult,
     lockNamespace: LONG_NAMESPACE,
     lockKeyPrefix: LONG_KEY_PREFIX,
