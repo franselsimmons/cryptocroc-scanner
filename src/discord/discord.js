@@ -30,6 +30,8 @@ const SOURCE_LIVE = 'LIVE';
 const SOURCE_TRADE = 'TRADE';
 const SOURCE_SHADOW = 'SHADOW';
 
+const CUSTOMER_DISCLAIMER = 'Geen financieel advies. Beheer je eigen risico.';
+
 const DISCORD_LIMITS = {
   fieldName: 256,
   fieldValue: 1024
@@ -94,6 +96,7 @@ function namespacedLongKey(key, fallback) {
 
   if (!safe) return `${LONG_KEY_PREFIX}DISCORD:LOGS`;
   if (safe.startsWith(LONG_KEY_PREFIX)) return safe;
+  if (safe.startsWith('SHORT:')) return `${LONG_KEY_PREFIX}${safe.slice('SHORT:'.length)}`;
 
   return `${LONG_KEY_PREFIX}${safe}`;
 }
@@ -193,6 +196,57 @@ function upper(value, fallback = '') {
   const text = String(value ?? '').trim();
 
   return text ? text.toUpperCase() : fallback;
+}
+
+function displaySymbol(payload = {}) {
+  const raw = upper(
+    payload.contractSymbol ||
+      payload.instId ||
+      payload.instrumentId ||
+      payload.symbol ||
+      payload.baseSymbol ||
+      ''
+  );
+
+  if (!raw) return 'UNKNOWN';
+
+  const cleaned = raw.replace(/[^A-Z0-9]/g, '');
+
+  if (cleaned.endsWith('USDT')) return cleaned;
+
+  const base = normalizeBaseSymbol(cleaned) || cleaned.replace(/USDT$/u, '');
+
+  return `${upper(base || cleaned)}USDT`;
+}
+
+function tradeDirectionEmoji(payload = {}) {
+  return isLongPayload(payload) ? '🟢' : '🔴';
+}
+
+function exitEmoji(exitType = '', resultR = null) {
+  const type = upper(exitType);
+
+  if (type === 'TP') return '✅';
+  if (type === 'SL') return '❌';
+  if (type === 'TIME') return '⏹️';
+
+  const r = Number(resultR);
+
+  if (Number.isFinite(r) && r > 0) return '✅';
+  if (Number.isFinite(r) && r < 0) return '❌';
+
+  return '⏹️';
+}
+
+function customerExitReason(exitType = '') {
+  const type = upper(exitType);
+
+  if (type === 'TP') return 'TP geraakt';
+  if (type === 'SL') return 'SL geraakt';
+  if (type === 'TIME') return 'tijdslimiet';
+  if (type === 'MANUAL') return 'handmatig gesloten';
+
+  return 'gesloten';
 }
 
 function cleanSideText(value = '') {
@@ -738,6 +792,10 @@ function extractExitPrice(outcome = {}) {
 
 function extractResultR(outcome = {}) {
   return (
+    outcome.longNetR ??
+    outcome.netLongR ??
+    outcome.longExitR ??
+    outcome.realizedLongR ??
     outcome.netR ??
     outcome.exitR ??
     outcome.realizedNetR ??
@@ -745,6 +803,69 @@ function extractResultR(outcome = {}) {
     outcome.r ??
     null
   );
+}
+
+function getLongRiskGeometry(entry = {}) {
+  const entryPrice = safeNumber(extractEntryPrice(entry), 0);
+  const sl = safeNumber(extractSlPrice(entry), 0);
+  const tp = safeNumber(extractTpPrice(entry), 0);
+  const exitPrice = safeNumber(extractExitPrice(entry), 0);
+  const currentPrice = safeNumber(entry.currentPrice ?? entry.lastPrice ?? entry.price, 0);
+
+  const riskDistance =
+    entryPrice > 0 &&
+    sl > 0 &&
+    sl < entryPrice
+      ? entryPrice - sl
+      : 0;
+
+  const validLongGeometry =
+    entryPrice > 0 &&
+    sl > 0 &&
+    sl < entryPrice &&
+    tp > entryPrice;
+
+  const longGrossR =
+    validLongGeometry &&
+    exitPrice > 0 &&
+    riskDistance > 0
+      ? (exitPrice - entryPrice) / riskDistance
+      : null;
+
+  const longCurrentR =
+    validLongGeometry &&
+    currentPrice > 0 &&
+    riskDistance > 0
+      ? (currentPrice - entryPrice) / riskDistance
+      : null;
+
+  return {
+    entry: entryPrice,
+    initialSl: sl,
+    sl,
+    tp,
+    exitPrice,
+    currentPrice,
+    riskDistance,
+    validLongGeometry,
+    validLongRiskShape: validLongGeometry,
+    longTpHit: validLongGeometry && currentPrice > 0 ? currentPrice >= tp : false,
+    longSlHit: validLongGeometry && currentPrice > 0 ? currentPrice <= sl : false,
+    longGrossR,
+    longCurrentR
+  };
+}
+
+function resultRForDiscord(outcome = {}) {
+  const direct = safeNumber(extractResultR(outcome), NaN);
+
+  if (Number.isFinite(direct)) return direct;
+
+  const risk = getLongRiskGeometry(outcome);
+
+  if (Number.isFinite(risk.longGrossR)) return risk.longGrossR;
+
+  return null;
 }
 
 function normalizeExitType(outcome = {}) {
@@ -757,18 +878,59 @@ function normalizeExitType(outcome = {}) {
       ''
   );
 
-  if (raw.includes('TAKE_PROFIT') || raw.includes('TAKEPROFIT') || raw.includes('TP')) return 'TP';
-  if (raw.includes('STOP_LOSS') || raw.includes('STOPLOSS') || raw.includes('SL') || raw.includes('STOP')) return 'SL';
-  if (raw.includes('TIME')) return 'TIME';
+  if (
+    raw === 'TP' ||
+    raw.includes('TAKE_PROFIT') ||
+    raw.includes('TAKEPROFIT') ||
+    raw.includes('TAKE PROFIT') ||
+    raw.includes('TARGET') ||
+    outcome.tpHitNow === true ||
+    outcome.tpExitArmed === true ||
+    outcome.longTpHit === true
+  ) {
+    return 'TP';
+  }
 
-  const exitPrice = safeNumber(extractExitPrice(outcome), NaN);
-  const tp = safeNumber(extractTpPrice(outcome), NaN);
-  const sl = safeNumber(extractSlPrice(outcome), NaN);
+  if (
+    raw === 'SL' ||
+    raw.includes('STOP_LOSS') ||
+    raw.includes('STOPLOSS') ||
+    raw.includes('STOP LOSS') ||
+    raw.includes('STOP') ||
+    outcome.slHitNow === true ||
+    outcome.slExitArmed === true ||
+    outcome.longSlHit === true
+  ) {
+    return 'SL';
+  }
 
-  if (Number.isFinite(exitPrice) && Number.isFinite(tp) && exitPrice >= tp) return 'TP';
-  if (Number.isFinite(exitPrice) && Number.isFinite(sl) && exitPrice <= sl) return 'SL';
+  if (
+    raw.includes('TIME') ||
+    raw.includes('TIME_STOP') ||
+    raw.includes('TIME STOP') ||
+    outcome.timeStopHitNow === true ||
+    outcome.timeStopExitArmed === true
+  ) {
+    return 'TIME';
+  }
 
-  return 'EXIT';
+  if (
+    raw.includes('MANUAL') ||
+    raw.includes('ADMIN_CLOSE') ||
+    raw.includes('FORCE_CLOSE')
+  ) {
+    return 'MANUAL';
+  }
+
+  const risk = getLongRiskGeometry(outcome);
+  const exitPrice = safeNumber(extractExitPrice(outcome), 0);
+
+  if (risk.validLongGeometry && exitPrice > 0) {
+    if (exitPrice >= risk.tp) return 'TP';
+    if (exitPrice <= risk.sl) return 'SL';
+  }
+
+  return raw || 'EXIT';
 }
 
 function trueMicroFamilyId(payload = {}) {
@@ -947,15 +1109,7 @@ function isAnalysisOnlyPayload(payload = {}) {
 }
 
 function hasValidLongTradeShape(entry = {}) {
-  const entryPrice = safeNumber(extractEntryPrice(entry), 0);
-  const sl = safeNumber(extractSlPrice(entry), 0);
-  const tp = safeNumber(extractTpPrice(entry), 0);
-
-  if (entryPrice <= 0) return false;
-  if (sl <= 0 || sl >= entryPrice) return false;
-  if (tp <= entryPrice) return false;
-
-  return true;
+  return getLongRiskGeometry(entry).validLongGeometry === true;
 }
 
 function selectedTrueMicroIdsFromPayload(payload = {}) {
@@ -1073,6 +1227,7 @@ function compactPayload(payload = {}) {
   const trueId = trueMicroFamilyId(payload);
   const parentId = parentTrueMicroFamilyId(payload);
   const parsed = parseLongTaxonomyMicroId(trueId);
+  const risk = getLongRiskGeometry(payload);
 
   return {
     symbol: payload.symbol || null,
@@ -1129,11 +1284,26 @@ function compactPayload(payload = {}) {
     entry: extractEntryPrice(payload),
     exit: extractExitPrice(payload),
     sl: extractSlPrice(payload),
+    initialSl: extractSlPrice(payload),
     tp: extractTpPrice(payload),
     rr: payload.rr ?? null,
 
+    validLongGeometry: risk.validLongGeometry,
+    validLongRiskShape: risk.validLongRiskShape,
+    longTpHit: risk.longTpHit,
+    longSlHit: risk.longSlHit,
+    riskTradeSide: TARGET_TRADE_SIDE,
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= sl',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+
     currentPrice: payload.currentPrice ?? payload.lastPrice ?? null,
-    currentR: payload.currentR ?? null,
+    currentR: payload.longCurrentR ?? risk.longCurrentR ?? payload.currentR ?? null,
+    longCurrentR: payload.longCurrentR ?? risk.longCurrentR ?? null,
     mfeR: payload.mfeR ?? null,
     maeR: payload.maeR ?? null,
 
@@ -1148,9 +1318,11 @@ function compactPayload(payload = {}) {
     profitFactor: statValue(payload, 'profitFactor'),
     avgCostR: statValue(payload, 'avgCostR'),
 
-    exitR: payload.exitR ?? null,
-    netR: payload.netR ?? null,
-    grossR: payload.grossR ?? null,
+    exitR: payload.longExitR ?? payload.exitR ?? null,
+    netR: payload.longNetR ?? payload.netR ?? null,
+    longNetR: payload.longNetR ?? payload.netR ?? null,
+    grossR: payload.longGrossR ?? risk.longGrossR ?? payload.grossR ?? null,
+    longGrossR: payload.longGrossR ?? risk.longGrossR ?? payload.grossR ?? null,
     costR: payload.costR ?? null,
     pnlPct: payload.pnlPct ?? payload.netPnlPct ?? null,
 
@@ -1181,6 +1353,7 @@ function compactPayload(payload = {}) {
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
+    shortRootTouched: false,
 
     ts: Date.now()
   };
@@ -1339,20 +1512,24 @@ export async function sendEntryAlert(entry = {}) {
     );
   }
 
-  const symbol = normalizeBaseSymbol(entry.symbol || entry.contractSymbol);
+  const symbol = displaySymbol(entry);
   const side = normalizeSideLabel(entry);
+  const directionEmoji = tradeDirectionEmoji(entry);
 
   const content = {
     username: 'Trade Alerts',
     embeds: [
       {
-        title: `${symbol || 'UNKNOWN'} ${side} ENTRY`,
+        title: `${directionEmoji} ${side} — ${symbol}`,
         color: discordColorForSide(entry),
-        fields: [
-          field('Entry', fmtPrice(extractEntryPrice(entry)), true),
-          field('TP', fmtPrice(extractTpPrice(entry)), true),
-          field('SL', fmtPrice(extractSlPrice(entry)), true)
-        ],
+        description: [
+          `Entry   ${fmtPrice(extractEntryPrice(entry))}`,
+          `TP      ${fmtPrice(extractTpPrice(entry))}`,
+          `SL      ${fmtPrice(extractSlPrice(entry))}`
+        ].join('\n'),
+        footer: {
+          text: CUSTOMER_DISCLAIMER
+        },
         timestamp: nowIso()
       }
     ]
@@ -1372,7 +1549,12 @@ export async function sendEntryAlert(entry = {}) {
     exchangeCallsDisabled: true,
     trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
     childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
-    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA
+    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= sl',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)'
   }, result);
 
   return result;
@@ -1387,25 +1569,27 @@ export async function sendExitAlert(outcome = {}) {
     );
   }
 
-  const symbol = normalizeBaseSymbol(outcome.symbol || outcome.contractSymbol);
+  const symbol = displaySymbol(outcome);
   const side = normalizeSideLabel(outcome);
   const exitPrice = extractExitPrice(outcome);
-  const resultR = extractResultR(outcome);
+  const resultR = resultRForDiscord(outcome);
   const exitType = normalizeExitType(outcome);
+  const emoji = exitEmoji(exitType, resultR);
+  const reason = customerExitReason(exitType);
 
   const content = {
     username: 'Trade Alerts',
     embeds: [
       {
-        title: `${symbol || 'UNKNOWN'} ${side} EXIT — ${exitType}`,
+        title: `${emoji} ${side} gesloten — ${symbol}`,
         color: discordColorForResult(resultR),
-        fields: [
-          field('Entry', fmtPrice(extractEntryPrice(outcome)), true),
-          field('Exit', fmtPrice(exitPrice), true),
-          field('TP', fmtPrice(extractTpPrice(outcome)), true),
-          field('SL', fmtPrice(extractSlPrice(outcome)), true),
-          field('Exit type', exitType, true)
-        ],
+        description: [
+          `Exit      ${fmtPrice(exitPrice)}`,
+          `Resultaat ${fmtR(resultR)}  (${reason})`
+        ].join('\n'),
+        footer: {
+          text: CUSTOMER_DISCLAIMER
+        },
         timestamp: nowIso()
       }
     ]
@@ -1425,7 +1609,12 @@ export async function sendExitAlert(outcome = {}) {
     exchangeCallsDisabled: true,
     trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
     childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
-    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA
+    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= sl',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)'
   }, result);
 
   return result;
