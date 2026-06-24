@@ -20,6 +20,8 @@ const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
 const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
 const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 
+const LOCK_BUILD_ID = 'LONG_LOCK_REST_SAFE_2026_06_23_V1';
+
 const RELEASE_LOCK_SCRIPT = `
 if redis.call("GET", KEYS[1]) == ARGV[1] then
   return redis.call("DEL", KEYS[1])
@@ -79,6 +81,8 @@ function taxonomyFlags() {
 
 function modeFlags() {
   return {
+    lockBuildId: LOCK_BUILD_ID,
+
     namespace: LONG_NAMESPACE,
     redisNamespace: LONG_NAMESPACE,
     keyPrefix: LONG_KEY_PREFIX,
@@ -154,6 +158,170 @@ function modeFlags() {
   };
 }
 
+function envValue(...names) {
+  for (const name of names) {
+    const value = process.env[name];
+
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return String(value).trim();
+    }
+  }
+
+  return '';
+}
+
+function redisRestConfigs() {
+  const configs = [
+    {
+      label: 'VOLATILE',
+      url: envValue(
+        'VOLATILE_REDIS_REST_URL',
+        'KV_REST_API_URL',
+        'UPSTASH_REDIS_REST_URL'
+      ),
+      token: envValue(
+        'VOLATILE_REDIS_REST_TOKEN',
+        'KV_REST_API_TOKEN',
+        'UPSTASH_REDIS_REST_TOKEN'
+      )
+    },
+    {
+      label: 'DURABLE',
+      url: envValue(
+        'DURABLE_REDIS_REST_URL',
+        'KV_REST_API_URL',
+        'UPSTASH_REDIS_REST_URL'
+      ),
+      token: envValue(
+        'DURABLE_REDIS_REST_TOKEN',
+        'KV_REST_API_TOKEN',
+        'UPSTASH_REDIS_REST_TOKEN'
+      )
+    }
+  ].filter((config) => config.url && config.token);
+
+  const seen = new Set();
+  const out = [];
+
+  for (const config of configs) {
+    const key = `${config.url}|${config.token}`;
+
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    out.push(config);
+  }
+
+  return out;
+}
+
+function cleanRestUrl(url = '') {
+  return String(url || '').trim().replace(/\/+$/u, '');
+}
+
+function unwrapPipelineResult(json) {
+  if (Array.isArray(json)) {
+    const first = json[0];
+
+    if (first && typeof first === 'object' && 'error' in first) {
+      throw new Error(String(first.error));
+    }
+
+    if (first && typeof first === 'object' && 'result' in first) {
+      return first.result;
+    }
+
+    return first ?? null;
+  }
+
+  if (Array.isArray(json?.result)) {
+    const first = json.result[0];
+
+    if (first && typeof first === 'object' && 'error' in first) {
+      throw new Error(String(first.error));
+    }
+
+    if (first && typeof first === 'object' && 'result' in first) {
+      return first.result;
+    }
+
+    return first ?? null;
+  }
+
+  if (json?.error) {
+    throw new Error(String(json.error));
+  }
+
+  if (json && typeof json === 'object' && 'result' in json) {
+    return json.result;
+  }
+
+  return json ?? null;
+}
+
+async function redisRestCommand(command = [], options = {}) {
+  const configs = redisRestConfigs();
+
+  if (!configs.length) {
+    throw new Error('UPSTASH_REST_ENV_MISSING');
+  }
+
+  const allowNull = Boolean(options.allowNull);
+  let lastError = null;
+  let sawNull = false;
+
+  for (const config of configs) {
+    try {
+      const url = cleanRestUrl(config.url);
+
+      const response = await fetch(`${url}/pipeline`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify([command])
+      });
+
+      const json = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const error = new Error(`UPSTASH_REST_PIPELINE_HTTP_${response.status}`);
+        error.details = json;
+        throw error;
+      }
+
+      const result = unwrapPipelineResult(json);
+
+      if (result === null && !allowNull) {
+        sawNull = true;
+        continue;
+      }
+
+      return result;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (sawNull) return null;
+
+  throw lastError || new Error('UPSTASH_REST_COMMAND_FAILED');
+}
+
+function shouldUseRestFallback(error) {
+  const message = String(error?.message || error || '');
+
+  return (
+    message.includes('res.map is not a function') ||
+    message.includes('Pipeline.exec') ||
+    message.includes('AutoPipelineExecutor') ||
+    message.includes('UPSTASH') ||
+    message.includes('fetch failed') ||
+    message.includes('Unexpected token')
+  );
+}
+
 function normalizeTtlSec(ttlSec) {
   const n = Number(ttlSec);
 
@@ -218,22 +386,82 @@ function isLockAcquiredResult(value) {
   return false;
 }
 
+async function safeRedisSetNx(redis, key, token, ttlSec) {
+  try {
+    return await redis.set(key, token, {
+      nx: true,
+      ex: ttlSec
+    });
+  } catch (error) {
+    if (!shouldUseRestFallback(error)) throw error;
+
+    return redisRestCommand([
+      'SET',
+      key,
+      token,
+      'NX',
+      'EX',
+      String(ttlSec)
+    ], {
+      allowNull: true
+    });
+  }
+}
+
+async function safeRedisGet(redis, key) {
+  try {
+    return await redis.get(key);
+  } catch (error) {
+    if (!shouldUseRestFallback(error)) throw error;
+
+    return redisRestCommand(['GET', key], {
+      allowNull: true
+    });
+  }
+}
+
+async function safeRedisDel(redis, key) {
+  try {
+    return await redis.del(key);
+  } catch (error) {
+    if (!shouldUseRestFallback(error)) throw error;
+
+    return redisRestCommand(['DEL', key], {
+      allowNull: true
+    });
+  }
+}
+
 async function atomicRelease(redis, key, token) {
-  if (typeof redis.eval === 'function') {
-    const result = await redis.eval(RELEASE_LOCK_SCRIPT, [key], [token]);
+  try {
+    const result = await redisRestCommand([
+      'EVAL',
+      RELEASE_LOCK_SCRIPT,
+      '1',
+      key,
+      token
+    ], {
+      allowNull: true
+    });
 
     return Number(result) === 1;
-  }
+  } catch (restError) {
+    if (typeof redis?.eval === 'function') {
+      try {
+        const result = await redis.eval(RELEASE_LOCK_SCRIPT, [key], [token]);
 
-  if (typeof redis.evalsha === 'function') {
-    return false;
-  }
+        return Number(result) === 1;
+      } catch (sdkError) {
+        if (!shouldUseRestFallback(sdkError)) throw sdkError;
+      }
+    }
 
-  return null;
+    throw restError;
+  }
 }
 
 async function fallbackRelease(redis, key, token) {
-  const current = await redis.get(key);
+  const current = await safeRedisGet(redis, key);
 
   if (String(current || '') !== token) {
     return {
@@ -247,7 +475,7 @@ async function fallbackRelease(redis, key, token) {
     };
   }
 
-  const deleted = await redis.del(key);
+  const deleted = await safeRedisDel(redis, key);
 
   return {
     ok: Number(deleted) > 0,
@@ -274,10 +502,7 @@ export async function acquireRedisLock(redis, key, ttlSec = DEFAULT_LOCK_TTL_SEC
   const token = createLockToken();
   const ttl = normalizeTtlSec(ttlSec);
 
-  const acquired = await redis.set(lockKey, token, {
-    nx: true,
-    ex: ttl
-  });
+  const acquired = await safeRedisSetNx(redis, lockKey, token, ttl);
 
   if (!isLockAcquiredResult(acquired)) {
     return {
@@ -339,9 +564,9 @@ export async function releaseRedisLock(redis, key, token) {
   }
 
   try {
-    const atomic = await atomicRelease(redis, lockKey, lockToken);
+    const released = await atomicRelease(redis, lockKey, lockToken);
 
-    if (atomic === true) {
+    if (released === true) {
       return {
         ok: true,
         released: true,
@@ -353,20 +578,16 @@ export async function releaseRedisLock(redis, key, token) {
       };
     }
 
-    if (atomic === false) {
-      return {
-        ok: false,
-        released: false,
-        reason: 'LONG_LOCK_TOKEN_MISMATCH_OR_ALREADY_EXPIRED',
-        key: lockKey,
-        lockNamespace: LONG_NAMESPACE,
-        lockKeyPrefix: LONG_KEY_PREFIX,
-        ...modeFlags()
-      };
-    }
-
-    return await fallbackRelease(redis, lockKey, lockToken);
-  } catch (error) {
+    return {
+      ok: false,
+      released: false,
+      reason: 'LONG_LOCK_TOKEN_MISMATCH_OR_ALREADY_EXPIRED',
+      key: lockKey,
+      lockNamespace: LONG_NAMESPACE,
+      lockKeyPrefix: LONG_KEY_PREFIX,
+      ...modeFlags()
+    };
+  } catch {
     try {
       return await fallbackRelease(redis, lockKey, lockToken);
     } catch (fallbackError) {
@@ -375,7 +596,7 @@ export async function releaseRedisLock(redis, key, token) {
         released: false,
         reason: 'LONG_LOCK_RELEASE_FAILED',
         key: lockKey,
-        error: fallbackError?.message || error?.message || String(fallbackError || error),
+        error: fallbackError?.message || String(fallbackError),
         lockNamespace: LONG_NAMESPACE,
         lockKeyPrefix: LONG_KEY_PREFIX,
         ...modeFlags()
@@ -439,6 +660,7 @@ export async function withRedisLock(redis, key, ttlSec, task) {
     taskError.trueMicroFamilySchema = TRUE_MICRO_SCHEMA;
     taskError.parentTrueMicroFamilySchema = PARENT_TRUE_MICRO_SCHEMA;
     taskError.childTrueMicroFamilySchema = CHILD_TRUE_MICRO_SCHEMA;
+    taskError.lockBuildId = LOCK_BUILD_ID;
 
     throw taskError;
   }
