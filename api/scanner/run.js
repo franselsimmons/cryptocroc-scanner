@@ -32,7 +32,7 @@ const MIN_COMPLETED_ACTIVE_LEARNING = 20;
 const MAX_PERSISTED_CANDIDATES = 250;
 const MAX_RESPONSE_CANDIDATES = 40;
 
-const SCANNER_RUN_BUILD_ID = 'LONG_SCANNER_RUN_DEBUG_STACK_VISIBLE_2026_06_23_V1';
+const SCANNER_RUN_BUILD_ID = 'LONG_SCANNER_RUN_SKIP_NO_PERSIST_2026_06_23_V2';
 
 const LONG_SETUP_TYPES = [
   'BREAKOUT',
@@ -1282,6 +1282,111 @@ async function persistLongScannerPayload(redis, payload = {}) {
   };
 }
 
+function skippedScannerResponse({
+  req,
+  body,
+  rawResult,
+  scannerOptions,
+  startedAt
+}) {
+  return {
+    ok: false,
+    scannerRunBuildId: SCANNER_RUN_BUILD_ID,
+
+    skipped: true,
+    reason: rawResult?.reason || 'SCANNER_RUN_SKIPPED',
+
+    source: sourceLabel(req, body),
+
+    ...baseFlags(),
+
+    force: scannerOptions.force,
+
+    rateLimited: Boolean(rawResult?.rateLimited),
+    retryLater: rawResult?.retryLater !== false,
+    scannerRunShouldSkip: true,
+
+    persisted: null,
+    longPersistence: {
+      persistedLongLatest: false,
+      persistedLongSnapshot: false,
+      skippedPayloadNotPersisted: true,
+      reason: rawResult?.reason || 'SCANNER_RUN_SKIPPED',
+      scanLatest: LONG_KEYS.scan.latest,
+      snapshotKey: null,
+      errors: {
+        latest: null,
+        snapshot: null
+      },
+      compactedForRedis: false,
+      fullPayloadNotPersisted: true
+    },
+
+    snapshotId: null,
+    createdAt: null,
+    generatedAt: null,
+    completedAt: null,
+    updatedAt: now(),
+
+    candidatesCount: 0,
+    longCandidatesCount: 0,
+    shortCandidatesCount: 0,
+
+    scannerGateCandidatesCount: 0,
+    analyzeOnlyCandidatesCount: 0,
+
+    rawCandidatesCount: 0,
+    rawShortCandidatesIgnored: 0,
+    rawUnknownSideCandidatesIgnored: 0,
+
+    filteredUniverse: 0,
+    rawUniverse: 0,
+
+    topSymbols: [],
+    scannerGateSymbols: [],
+    analyzeOnlySymbols: [],
+
+    candidates: [],
+    analyze: null,
+
+    longKeys: {
+      namespace: LONG_NAMESPACE,
+      prefix: LONG_KEY_PREFIX,
+      scanLock: LONG_KEYS.scan.lock,
+      scanLatest: LONG_KEYS.scan.latest,
+      scanSnapshotPattern: LONG_KEYS.scan.snapshotPattern,
+      snapshotKey: null
+    },
+
+    durationMs: now() - startedAt,
+
+    resultSummary: {
+      ok: false,
+      skipped: true,
+      reason: rawResult?.reason || 'SCANNER_RUN_SKIPPED',
+      fullResultOmitted: true,
+      compactedForResponse: true
+    },
+
+    debug: {
+      stackVisible: false,
+      source: 'api/scanner/run.js',
+      buildId: SCANNER_RUN_BUILD_ID,
+      skipHandledBeforePersistence: true,
+      normalResponse: true
+    },
+
+    omitted: {
+      fullRawResult: true,
+      fullAnalyzeRows: true,
+      fullCandidatesArray: true,
+      responseCandidateLimit: MAX_RESPONSE_CANDIDATES,
+      persistedCandidateLimit: MAX_PERSISTED_CANDIDATES,
+      reason: 'LOCK_SKIP_OR_RATE_LIMIT_NOT_PERSISTED_AS_SCANNER_SNAPSHOT'
+    }
+  };
+}
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
   res.setHeader('X-Scanner-Run-Build-Id', SCANNER_RUN_BUILD_ID);
@@ -1327,6 +1432,16 @@ export default async function handler(req, res) {
       lockTtlSec,
       async () => runScanner(scannerOptions)
     );
+
+    if (rawResult?.skipped === true) {
+      return res.status(200).json(skippedScannerResponse({
+        req,
+        body,
+        rawResult,
+        scannerOptions,
+        startedAt
+      }));
+    }
 
     const payload = normalizePayload(unwrapPayload(rawResult));
     const responsePayload = compactScannerResponse(payload);
@@ -1403,6 +1518,7 @@ export default async function handler(req, res) {
         stackVisible: false,
         source: 'api/scanner/run.js',
         buildId: SCANNER_RUN_BUILD_ID,
+        skipHandledBeforePersistence: false,
         normalResponse: true
       },
 
