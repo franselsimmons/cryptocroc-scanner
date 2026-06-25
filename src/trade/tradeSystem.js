@@ -1497,24 +1497,177 @@ function buildVirtualEntryAction({
   };
 }
 
-function maybeSendDiscordEntryAlert(entry = {}) {
+function buildDiscordEntryAlertPayload(entry = {}) {
+  const microId = upper(
+    entry.trueMicroFamilyId ||
+      entry.childTrueMicroFamilyId ||
+      entry.microFamilyId ||
+      entry.analyzeMicroFamilyId ||
+      entry.learningMicroFamilyId
+  );
+
+  const rotationId =
+    entry.activeRotationId ||
+    entry.rotationId ||
+    entry.selectedRotationId ||
+    `manual_${PERSISTENT_LEARNING_KEY}`;
+
+  return {
+    ...entry,
+
+    action: 'ENTRY',
+
+    source: 'VIRTUAL',
+    sourceMode: 'VIRTUAL',
+    outcomeSource: 'VIRTUAL',
+    positionSource: 'VIRTUAL',
+
+    virtualOnly: true,
+    virtualTracked: true,
+    paperTrade: true,
+    paperPosition: true,
+
+    observationOnly: false,
+    analysisInputOnly: false,
+    learningOnly: false,
+    analyzeOnly: false,
+    discoveryOnly: false,
+    tradeDiscoveryOnly: false,
+    scannerOnly: false,
+
+    realTrade: false,
+    realOrder: false,
+    exchangeOrder: false,
+    bitgetOrderPlaced: false,
+    liveOrder: false,
+    orderPlaced: false,
+
+    tradeSide: TARGET_TRADE_SIDE,
+    positionSide: TARGET_TRADE_SIDE,
+    direction: TARGET_TRADE_SIDE,
+    signalSide: TARGET_TRADE_SIDE,
+    entrySide: TARGET_TRADE_SIDE,
+    side: TARGET_DASHBOARD_SIDE,
+    scannerSide: TARGET_SCANNER_SIDE,
+    actualScannerSide: TARGET_SCANNER_SIDE,
+    analysisSide: TARGET_TRADE_SIDE,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+    entry: entry.entry,
+    entryPrice: entry.entry,
+
+    tp: entry.tp,
+    takeProfit: entry.tp,
+    target: entry.tp,
+    targetPrice: entry.tp,
+
+    sl: entry.sl ?? entry.initialSl,
+    initialSl: entry.sl ?? entry.initialSl,
+    stopLoss: entry.sl ?? entry.initialSl,
+    stop: entry.sl ?? entry.initialSl,
+    stopPrice: entry.sl ?? entry.initialSl,
+
+    trueMicroFamilyId: microId,
+    childTrueMicroFamilyId: microId,
+    microFamilyId: microId,
+    analyzeMicroFamilyId: microId,
+    learningMicroFamilyId: microId,
+
+    rotationId,
+    activeRotationId: rotationId,
+    selectedRotationId: rotationId,
+
+    rotationMatchType: 'EXACT_75_CHILD_TRUE_MICRO',
+    matchType: 'EXACT_75_CHILD_TRUE_MICRO',
+
+    discordAlertEligible: true,
+    selectedForDiscord: true,
+    liveEligible: true,
+
+    selectedTrueMicroFamilyId: microId,
+    selectedMicroFamilyId: microId,
+    activeTrueMicroFamilyId: microId,
+    activeMicroFamilyId: microId,
+
+    selectedTrueMicroFamilyIds: [microId],
+    selectedMicroFamilyIds: [microId],
+    activeTrueMicroFamilyIds: [microId],
+    activeMicroFamilyIds: [microId],
+    trueMicroFamilyIds: [microId],
+    childTrueMicroFamilyIds: [microId],
+    microFamilyIds: [microId],
+
+    discordPayloadSanitizedForEntryAlert: true
+  };
+}
+
+async function maybeSendDiscordEntryAlert(entry = {}, cfg = tradeConfig()) {
   if (!entry.discordAlertEligible) {
     return {
       sent: false,
       skipped: true,
       queued: false,
+      awaited: false,
+      fireAndForget: false,
       reason: entry.discordAlertReason || 'TRUE_MICRO_FAMILY_NOT_SELECTED_OR_CURRENT_FIT_BLOCKED'
     };
   }
 
-  Promise.resolve(sendEntryAlert(entry)).catch(() => null);
+  const discordPayload = buildDiscordEntryAlertPayload(entry);
+
+  const timeoutMs = Math.min(
+    Math.max(cfg.savePositionTimeoutMs || DEFAULT_SAVE_POSITION_TIMEOUT_MS, 500),
+    2500
+  );
+
+  const result = await withTimeout(
+    sendEntryAlert(discordPayload),
+    timeoutMs,
+    {
+      ok: false,
+      skipped: false,
+      timeout: true,
+      error: 'DISCORD_ENTRY_ALERT_TIMEOUT'
+    }
+  );
+
+  if (result?.skipped) {
+    return {
+      sent: false,
+      skipped: true,
+      queued: false,
+      awaited: true,
+      fireAndForget: false,
+      reason: result.reason || 'DISCORD_ENTRY_ALERT_SKIPPED_BY_DISCORD_FILTER',
+      result
+    };
+  }
+
+  if (result?.ok) {
+    return {
+      sent: true,
+      skipped: false,
+      queued: false,
+      awaited: true,
+      fireAndForget: false,
+      reason: 'DISCORD_ENTRY_ALERT_SENT',
+      result
+    };
+  }
 
   return {
     sent: false,
     skipped: false,
-    queued: true,
-    fireAndForget: true,
-    reason: 'DISCORD_ENTRY_ALERT_QUEUED_FIRE_AND_FORGET'
+    failed: true,
+    queued: false,
+    awaited: true,
+    fireAndForget: false,
+    reason: result?.error || 'DISCORD_ENTRY_ALERT_FAILED',
+    result
   };
 }
 
@@ -1577,7 +1730,11 @@ function compactAction(row = {}) {
     tp: row.tp ?? null,
     rr: row.rr ?? null,
     currentFit: row.currentFit || row.entryCurrentFit || null,
-    discordAlertEligible: Boolean(row.discordAlertEligible)
+    discordAlertEligible: Boolean(row.discordAlertEligible),
+    discordAlertQueued: Boolean(row.discordAlertQueued),
+    discordAlertSent: Boolean(row.discordAlertSent),
+    discordAlertFailed: Boolean(row.discordAlertFailed),
+    discordAlertReason: row.discordAlertResult?.reason || row.discordAlertReason || null
   };
 }
 
@@ -1702,7 +1859,8 @@ function compactRunForRedis(result = {}) {
 
     discordAlertEligibleRows: safeNumber(result.discordAlertEligibleRows, 0),
     discordAlertsQueued: safeNumber(result.discordAlertsQueued, 0),
-    discordAlertsSent: 0,
+    discordAlertsSent: safeNumber(result.discordAlertsSent, 0),
+    discordAlertsFailed: safeNumber(result.discordAlertsFailed, 0),
     discordAlertsSkippedNoSelectedMicro: safeNumber(result.discordAlertsSkippedNoSelectedMicro, 0),
     discordAlertsSkippedCurrentFit: safeNumber(result.discordAlertsSkippedCurrentFit, 0),
     selectedMicroMatchRows: safeNumber(result.selectedMicroMatchRows, 0),
@@ -1942,6 +2100,8 @@ async function saveLastProcessedSnapshot({
       virtualExitRows: result.virtualExitRows || 0,
       openPositionCountBeforeEntries: result.openPositionCountBeforeEntries || 0,
       openPositionCountAfterEntries: result.openPositionCountAfterEntries || 0,
+      discordAlertsSent: result.discordAlertsSent || 0,
+      discordAlertsFailed: result.discordAlertsFailed || 0,
       ...sideFlags(),
       ...virtualFlags(),
       ...isolationFlags(),
@@ -2128,6 +2288,8 @@ export async function runTradeSystem(options = {}) {
 
   let discordAlertEligibleRows = 0;
   let discordAlertsQueued = 0;
+  let discordAlertsSent = 0;
+  let discordAlertsFailed = 0;
   let discordAlertsSkippedNoSelectedMicro = 0;
   let discordAlertsSkippedCurrentFit = 0;
   let selectedMicroMatchRows = 0;
@@ -2232,14 +2394,18 @@ export async function runTradeSystem(options = {}) {
     entryRows += 1;
     virtualCreatedRows += 1;
 
-    const discordResult = maybeSendDiscordEntryAlert(entry);
+    const discordResult = await maybeSendDiscordEntryAlert(entry, cfg);
+
     if (discordResult.queued) discordAlertsQueued += 1;
+    if (discordResult.sent) discordAlertsSent += 1;
+    if (discordResult.failed) discordAlertsFailed += 1;
 
     actions.push({
       ...entry,
       discordAlertResult: discordResult,
       discordAlertQueued: Boolean(discordResult.queued),
-      discordAlertSent: false
+      discordAlertSent: Boolean(discordResult.sent),
+      discordAlertFailed: Boolean(discordResult.failed)
     });
   }
 
@@ -2338,7 +2504,8 @@ export async function runTradeSystem(options = {}) {
 
     discordAlertEligibleRows,
     discordAlertsQueued,
-    discordAlertsSent: 0,
+    discordAlertsSent,
+    discordAlertsFailed,
     discordAlertsSkippedNoSelectedMicro,
     discordAlertsSkippedCurrentFit,
     selectedMicroMatchRows,
