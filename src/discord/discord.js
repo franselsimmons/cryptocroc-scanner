@@ -198,6 +198,21 @@ function upper(value, fallback = '') {
   return text ? text.toUpperCase() : fallback;
 }
 
+function isEntryAction(value = '') {
+  const action = upper(value);
+
+  if (!action) return true;
+
+  return (
+    action === 'ENTRY' ||
+    action === 'VIRTUAL_ENTRY' ||
+    action === 'OPEN' ||
+    action === 'TRADE_OPEN' ||
+    action === 'POSITION_OPEN' ||
+    action === 'VIRTUAL_POSITION_OPEN'
+  );
+}
+
 function displaySymbol(payload = {}) {
   const raw = upper(
     payload.contractSymbol ||
@@ -1198,7 +1213,7 @@ function shouldSendEntryAlert(entry = {}) {
   if (isRealOrderSource(entry)) return false;
   if (!isVirtualSource(entry)) return false;
 
-  if (entry.action && upper(entry.action) !== 'ENTRY') return false;
+  if (entry.action && !isEntryAction(entry.action)) return false;
 
   if (!hasSelectedMicroRotationMatch(entry)) return false;
   if (!hasValidLongTradeShape(entry)) return false;
@@ -1463,7 +1478,7 @@ function entrySkipReason(entry = {}) {
   if (isAnalysisOnlyPayload(entry)) return 'DISCORD_SKIPPED_ANALYSIS_ONLY';
   if (isRealOrderSource(entry)) return 'DISCORD_REAL_ORDER_SOURCE_BLOCKED';
   if (!isVirtualSource(entry)) return 'DISCORD_VIRTUAL_SOURCE_REQUIRED';
-  if (entry.action && upper(entry.action) !== 'ENTRY') return 'DISCORD_SKIPPED_NOT_ENTRY_ACTION';
+  if (entry.action && !isEntryAction(entry.action)) return 'DISCORD_SKIPPED_NOT_ENTRY_ACTION';
   if (!trueMicroFamilyId(entry)) return 'ENTRY_EXACT_75_CHILD_TRUE_MICRO_FAMILY_ID_MISSING';
   if (!validLearningChildId(trueMicroFamilyId(entry))) return 'ENTRY_ONLY_EXACT_75_CHILD_TRUE_MICRO_ALLOWED';
   if (!hasSelectedMicroRotationMatch(entry)) return 'ENTRY_NOT_SELECTED_MANUAL_75_CHILD_TRUE_MICRO_MATCH';
