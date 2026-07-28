@@ -28,6 +28,35 @@ const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 
+const TEMPORAL_CONTEXT_VERSION =
+'LONG_TEMPORAL_CONTEXT_UTC_V1';
+const WEEKEND_POLICY_VERSION =
+'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
+const SESSION_POLICY_VERSION =
+'LONG_SESSION_OBSERVE_V1';
+const WEEKEND_MODE = 'OBSERVE';
+const SESSION_MODE = 'OBSERVE';
+
+const DAY_NAMES_UTC = Object.freeze([
+  'SUNDAY',
+  'MONDAY',
+  'TUESDAY',
+  'WEDNESDAY',
+  'THURSDAY',
+  'FRIDAY',
+  'SATURDAY'
+]);
+
+const PRIMARY_SESSION_BUCKETS = Object.freeze([
+  'ASIA',
+  'EUROPE',
+  'US',
+  'ASIA_EU_OVERLAP',
+  'EU_US_OVERLAP',
+  'OFF_HOURS'
+]);
+
+
 
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY';
 const LEARNING_GRANULARITY =
@@ -35,6 +64,17 @@ const LEARNING_GRANULARITY =
 
 
 const MIN_COMPLETED_ACTIVE_LEARNING = 20;
+
+const EMPIRICAL_VETO_MIN_COMPLETED = 35;
+const EMPIRICAL_VETO_MAX_AVG_R = 0;
+const MEASUREMENT_FIX_VERSION =
+'LONG_MEASUREMENT_FIX_TRIGGER_BOUNDARY_EXIT_FILL_V2';
+const EXIT_FILL_MODEL_VERSION =
+'LONG_TRIGGER_BOUNDARY_FILL_PLUS_COST_MODEL_V1';
+const EMPIRICAL_VETO_POLICY_VERSION =
+'LONG_EXACT_75_CHILD_NET_EDGE_VETO_V1';
+const OUTCOME_MEASUREMENT_GATE_MODE = 'STRICT_EXACT_VERSION';
+
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 
 
@@ -101,11 +141,12 @@ function callMaybeKey(value, fallback = null) {
 
 
 function namespacedLongKey(key, fallback = null) {
-     const raw = String(callMaybeKey(key, fallback) || '').trim();
+     let raw = String(callMaybeKey(key, fallback) || '').trim();
 
 
      if (!raw) return null;
     if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
+    if (raw.startsWith('SHORT:')) raw = raw.slice('SHORT:'.length);
 
 
     return `${LONG_KEY_PREFIX}${raw}`;
@@ -188,6 +229,309 @@ const LOCK_KEYS = {
 function now() {
      return Date.now();
 }
+
+function normalizeTemporalTimestamp(value, fallback = Date.now()) {
+  const n = Number(value);
+
+  if (!Number.isFinite(n) || n <= 0) {
+    return Number.isFinite(Number(fallback))
+      ? Number(fallback)
+      : Date.now();
+  }
+
+  return n < 10_000_000_000
+    ? Math.floor(n * 1000)
+    : Math.floor(n);
+}
+
+function buildTemporalContext(value = Date.now()) {
+  const contextTs = normalizeTemporalTimestamp(value, Date.now());
+  const date = new Date(contextTs);
+  const hourUtc = date.getUTCHours();
+  const dayIndexUtc = date.getUTCDay();
+  const dayOfWeekUtc = DAY_NAMES_UTC[dayIndexUtc] || 'UNKNOWN';
+  const isWeekend = dayIndexUtc === 0 || dayIndexUtc === 6;
+
+  const asiaActive = hourUtc >= 0 && hourUtc < 8;
+  const europeActive = hourUtc >= 7 && hourUtc < 16;
+  const usActive = hourUtc >= 13 && hourUtc < 22;
+
+  const sessionTags = [];
+  if (asiaActive) sessionTags.push('ASIA');
+  if (europeActive) sessionTags.push('EUROPE');
+  if (usActive) sessionTags.push('US');
+
+  let primarySessionBucket = 'OFF_HOURS';
+
+  if (europeActive && usActive) {
+    primarySessionBucket = 'EU_US_OVERLAP';
+  } else if (asiaActive && europeActive) {
+    primarySessionBucket = 'ASIA_EU_OVERLAP';
+  } else if (asiaActive) {
+    primarySessionBucket = 'ASIA';
+  } else if (europeActive) {
+    primarySessionBucket = 'EUROPE';
+  } else if (usActive) {
+    primarySessionBucket = 'US';
+  }
+
+  return {
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    contextTs,
+    hourUtc,
+    dayOfWeekUtc,
+    dayType: isWeekend ? 'WEEKEND' : 'WEEKDAY',
+    isWeekend,
+    sessionTags,
+    primarySessionBucket,
+    sessionOverlap: sessionTags.length > 1,
+    offHours: primarySessionBucket === 'OFF_HOURS'
+  };
+}
+
+function resolveRecordTemporalContext(record = {}, fallbackTs = Date.now()) {
+  const source = record && typeof record === 'object'
+    ? record
+    : {};
+
+  const rawTs =
+    source.contextTs ??
+    source.entryTs ??
+    source.createdAt ??
+    source.completedAt ??
+    source.ts ??
+    source.scannerTs ??
+    source.updatedAt ??
+    fallbackTs;
+
+  const computed = buildTemporalContext(rawTs);
+  const explicitBucket = String(
+    source.primarySessionBucket ||
+    source.sessionBucket ||
+    ''
+  ).trim().toUpperCase();
+
+  const explicitTags = Array.isArray(source.sessionTags)
+    ? source.sessionTags
+        .map((value) => String(value || '').trim().toUpperCase())
+        .filter((value) => ['ASIA', 'EUROPE', 'US'].includes(value))
+    : computed.sessionTags;
+
+  const primarySessionBucket = PRIMARY_SESSION_BUCKETS.includes(explicitBucket)
+    ? explicitBucket
+    : computed.primarySessionBucket;
+
+  const isWeekend = typeof source.isWeekend === 'boolean'
+    ? source.isWeekend
+    : computed.isWeekend;
+
+  return {
+    temporalContextVersion:
+      source.temporalContextVersion ||
+      TEMPORAL_CONTEXT_VERSION,
+    contextTs: normalizeTemporalTimestamp(
+      source.contextTs ?? rawTs,
+      computed.contextTs
+    ),
+    hourUtc: Number.isFinite(Number(source.hourUtc))
+      ? Number(source.hourUtc)
+      : computed.hourUtc,
+    dayOfWeekUtc:
+      source.dayOfWeekUtc ||
+      computed.dayOfWeekUtc,
+    dayType:
+      source.dayType ||
+      (isWeekend ? 'WEEKEND' : 'WEEKDAY'),
+    isWeekend,
+    sessionTags: explicitTags,
+    primarySessionBucket,
+    sessionOverlap: typeof source.sessionOverlap === 'boolean'
+      ? source.sessionOverlap
+      : explicitTags.length > 1,
+    offHours: typeof source.offHours === 'boolean'
+      ? source.offHours
+      : primarySessionBucket === 'OFF_HOURS'
+  };
+}
+
+function buildEntryExitTemporalMetadata(record = {}) {
+  const source = record && typeof record === 'object'
+    ? record
+    : {};
+
+  const entryTsRaw =
+    source.entryTs ??
+    source.openedAt ??
+    source.openTs ??
+    source.positionOpenedAt ??
+    source.createdAt ??
+    null;
+
+  const exitTsRaw =
+    source.exitTs ??
+    source.closedAt ??
+    source.closeTs ??
+    source.positionClosedAt ??
+    null;
+
+  const output = {};
+
+  if (entryTsRaw !== null && entryTsRaw !== undefined && entryTsRaw !== '') {
+    const entry = buildTemporalContext(entryTsRaw);
+
+    output.entryTs = normalizeTemporalTimestamp(entryTsRaw, entry.contextTs);
+    output.entryHourUtc = Number.isFinite(Number(source.entryHourUtc))
+      ? Number(source.entryHourUtc)
+      : entry.hourUtc;
+    output.entryDayOfWeekUtc =
+      source.entryDayOfWeekUtc ||
+      entry.dayOfWeekUtc;
+    output.entryDayType =
+      source.entryDayType ||
+      entry.dayType;
+    output.entryIsWeekend = typeof source.entryIsWeekend === 'boolean'
+      ? source.entryIsWeekend
+      : entry.isWeekend;
+    output.entrySessionTags = Array.isArray(source.entrySessionTags)
+      ? source.entrySessionTags
+      : entry.sessionTags;
+    output.entrySessionBucket =
+      source.entrySessionBucket ||
+      entry.primarySessionBucket;
+    output.entrySessionOverlap =
+      typeof source.entrySessionOverlap === 'boolean'
+        ? source.entrySessionOverlap
+        : entry.sessionOverlap;
+    output.entryOffHours = typeof source.entryOffHours === 'boolean'
+      ? source.entryOffHours
+      : entry.offHours;
+  }
+
+  if (exitTsRaw !== null && exitTsRaw !== undefined && exitTsRaw !== '') {
+    const exit = buildTemporalContext(exitTsRaw);
+
+    output.exitTs = normalizeTemporalTimestamp(exitTsRaw, exit.contextTs);
+    output.exitHourUtc = Number.isFinite(Number(source.exitHourUtc))
+      ? Number(source.exitHourUtc)
+      : exit.hourUtc;
+    output.exitDayOfWeekUtc =
+      source.exitDayOfWeekUtc ||
+      exit.dayOfWeekUtc;
+    output.exitDayType =
+      source.exitDayType ||
+      exit.dayType;
+    output.exitIsWeekend = typeof source.exitIsWeekend === 'boolean'
+      ? source.exitIsWeekend
+      : exit.isWeekend;
+    output.exitSessionTags = Array.isArray(source.exitSessionTags)
+      ? source.exitSessionTags
+      : exit.sessionTags;
+    output.exitSessionBucket =
+      source.exitSessionBucket ||
+      exit.primarySessionBucket;
+    output.exitSessionOverlap =
+      typeof source.exitSessionOverlap === 'boolean'
+        ? source.exitSessionOverlap
+        : exit.sessionOverlap;
+    output.exitOffHours = typeof source.exitOffHours === 'boolean'
+      ? source.exitOffHours
+      : exit.offHours;
+  }
+
+  return output;
+}
+
+function temporalPolicyFlags(context = buildTemporalContext()) {
+  const resolved = context && typeof context === 'object'
+    ? context
+    : buildTemporalContext();
+
+  return {
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendDiscordEntryAllowed: resolved.isWeekend !== true,
+    weekendDiscordEntryBlocked: resolved.isWeekend === true,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true,
+
+    temporalContextDoesNotSplitMicroFamily: true,
+    dayTypeExcludedFromFamilyId: true,
+    sessionExcludedFromFamilyId: true,
+    primarySessionBucketCountedOnce: true,
+    sessionTagsMetadataOnly: true,
+    familyGateStillRequired: true,
+    currentFitCannotOverrideFamilyGate: true
+  };
+}
+
+function emptyTemporalStats() {
+  const emptyBucket = () => ({
+    seen: 0,
+    observations: 0,
+    completed: 0,
+    wins: 0,
+    losses: 0,
+    flats: 0,
+    totalR: 0,
+    avgR: 0,
+    grossWinR: 0,
+    grossLossR: 0,
+    profitFactor: 0,
+    directSLCount: 0,
+    directSLPct: 0,
+    totalCostR: 0,
+    avgCostR: 0
+  });
+
+  return {
+    contextStats: {
+      WEEKDAY: emptyBucket(),
+      WEEKEND: emptyBucket()
+    },
+    sessionStats: {
+      ASIA: emptyBucket(),
+      EUROPE: emptyBucket(),
+      US: emptyBucket(),
+      ASIA_EU_OVERLAP: emptyBucket(),
+      EU_US_OVERLAP: emptyBucket(),
+      OFF_HOURS: emptyBucket()
+    }
+  };
+}
+
+function temporalStatsFields(record = {}) {
+  const defaults = emptyTemporalStats();
+  const source = record && typeof record === 'object'
+    ? record
+    : {};
+
+  return {
+    contextStats:
+      source.contextStats &&
+      typeof source.contextStats === 'object' &&
+      !Array.isArray(source.contextStats)
+        ? source.contextStats
+        : defaults.contextStats,
+    sessionStats:
+      source.sessionStats &&
+      typeof source.sessionStats === 'object' &&
+      !Array.isArray(source.sessionStats)
+        ? source.sessionStats
+        : defaults.sessionStats
+  };
+}
+
 
 
 function upper(value) {
@@ -319,6 +663,7 @@ function buildTaxonomyMeta() {
 
 function modeFlags() {
     return {
+         ...temporalPolicyFlags(),
          targetTradeSide: TARGET_TRADE_SIDE,
          dashboardSide: TARGET_DASHBOARD_SIDE,
          scannerSide: TARGET_SCANNER_SIDE,
@@ -448,11 +793,34 @@ manualSelectionResetEndpoint: true,
 
 
          minCompletedForActiveLearning: MIN_COMPLETED_ACTIVE_LEARNING,
+         measurementFixVersion: MEASUREMENT_FIX_VERSION,
+         acceptedOutcomeMeasurementVersion: MEASUREMENT_FIX_VERSION,
+         outcomeMeasurementGateMode: OUTCOME_MEASUREMENT_GATE_MODE,
+         completedCurrentMeasurementOnly: true,
+         legacyOutcomeMeasurementsExcluded: true,
+         exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
+         empiricalVetoEnabled: true,
+         empiricalVetoPolicyVersion: EMPIRICAL_VETO_POLICY_VERSION,
+         empiricalVetoMinCompleted: EMPIRICAL_VETO_MIN_COMPLETED,
+         empiricalVetoMaxAvgR: EMPIRICAL_VETO_MAX_AVG_R,
+
          statusRules: {
               OBSERVING: 'completed == 0',
-              EARLY_OUTCOMES: `completed > 0 && completed <
-${MIN_COMPLETED_ACTIVE_LEARNING}`,
-              ACTIVE_LEARNING: `completed >= ${MIN_COMPLETED_ACTIVE_LEARNING}`
+              EARLY_OUTCOMES:
+                `completed >= 1 && completed < ${MIN_COMPLETED_ACTIVE_LEARNING}`,
+              ACTIVE_LEARNING:
+                `completed >= ${MIN_COMPLETED_ACTIVE_LEARNING} && completed < ${EMPIRICAL_VETO_MIN_COMPLETED}`,
+              PASSED:
+                `completed >= ${EMPIRICAL_VETO_MIN_COMPLETED} && avgR > ${EMPIRICAL_VETO_MAX_AVG_R}`,
+              EMPIRICAL_VETO:
+                `completed >= ${EMPIRICAL_VETO_MIN_COMPLETED} && avgR <= ${EMPIRICAL_VETO_MAX_AVG_R}`
+         },
+
+         activationGateRules: {
+              PASSED:
+                `completed >= ${EMPIRICAL_VETO_MIN_COMPLETED} && avgR > ${EMPIRICAL_VETO_MAX_AVG_R}`,
+              EMPIRICAL_VETO:
+                `completed >= ${EMPIRICAL_VETO_MIN_COMPLETED} && avgR <= ${EMPIRICAL_VETO_MAX_AVG_R}`
          },
 
 
@@ -858,6 +1226,9 @@ const report = {
      },
 
 
+     temporalContext: buildTemporalContext(),
+     temporalContextKeysPreserved: true,
+     weekendAndSessionLearningDataPreserved: true,
      resetAt: now()
 };
 
