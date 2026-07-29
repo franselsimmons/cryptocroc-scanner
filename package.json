@@ -1,6 +1,6 @@
 {
   "_fileTitle": "package.json",
-  "name": "clean-micro-trading-system",
+  "name": "clean-micro-long-trading-system",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -11,12 +11,21 @@
     "analyze:activate": "node scripts/activateRotation.js",
     "trace:scanner": "node --trace-deprecation scripts/runScanner.js",
     "trace:trade": "node --trace-deprecation scripts/runTradeSystem.js",
-    "check:node": "node -v"
+    "check:node": "node -v",
+    "check:json": "node -e \"const fs=require('node:fs'); for (const file of ['package.json','vercel.json']) JSON.parse(fs.readFileSync(file,'utf8')); console.log('JSON syntax OK: package.json, vercel.json');\"",
+    "check:js": "node -e \"const fs=require('node:fs'); const path=require('node:path'); const cp=require('node:child_process'); const roots=['src','api','scripts']; const files=[]; const walk=(dir)=>{if(!fs.existsSync(dir)) return; for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const file=path.join(dir,entry.name); if(entry.isDirectory()) walk(file); else if(entry.isFile() && file.endsWith('.js')) files.push(file);}}; roots.forEach(walk); if(!files.length) throw new Error('No JavaScript files found under src, api, or scripts'); files.sort(); for(const file of files){const result=cp.spawnSync(process.execPath,['--check',file],{stdio:'inherit'}); if(result.status!==0) process.exit(result.status ?? 1);} console.log('JavaScript syntax OK: '+files.length+' files');\"",
+    "check:long-root": "node -e \"Promise.all([import('./src/keys.js'), import('./src/config.js')]).then(([keys,config])=>{const seen=new Set(); const violations=[]; const walk=(value,path)=>{if(typeof value==='string'){if(value.includes('LONG:SHORT:')) violations.push(path+'='+value); return;} if(value===null || (typeof value!=='object' && typeof value!=='function') || seen.has(value)) return; seen.add(value); for(const key of Object.keys(value)){let next; try{next=value[key];}catch{continue;} walk(next,path+'.'+key);}}; walk(keys,'keys'); walk(config,'config'); if(violations.length){console.error('Forbidden LONG:SHORT: exported value found: '+violations.join(', ')); process.exit(1);} console.log('LONG exported key/config prefix isolation OK');})\"",
+    "check:trade": "node --check src/trade/tradeSystem.js",
+    "check:lock": "node -e \"import('./src/lock.js').then(() => console.log('src/lock.js import OK'))\"",
+    "check:analyze": "node -e \"import('./src/analyze/analyzeEngine.js').then(() => console.log('src/analyze/analyzeEngine.js import OK'))\"",
+    "check:imports": "node -e \"Promise.all([import('./src/config.js'), import('./src/redis.js'), import('./src/keys.js'), import('./src/utils.js'), import('./src/lock.js'), import('./src/market/bitgetClient.js'), import('./src/market/indicators.js'), import('./src/market/fakeBreakout.js'), import('./src/market/marketWeather.js'), import('./src/market/scanner.js'), import('./src/trade/costModel.js'), import('./src/trade/positionSizing.js'), import('./src/trade/positionEngine.js'), import('./src/trade/riskEngine.js'), import('./src/trade/tradeSystem.js'), import('./src/analyze/microFamilies.js'), import('./src/analyze/scoring.js'), import('./src/analyze/rotationEngine.js'), import('./src/analyze/analyzeEngine.js'), import('./src/discord/discord.js')]).then(() => console.log('All critical LONG module imports OK'))\"",
+    "check:syntax": "npm run check:json && npm run check:js && npm run check:long-root",
+    "validate": "npm run check:node && npm run check:syntax && npm run check:trade && npm run check:lock && npm run check:analyze && npm run check:imports"
   },
   "dependencies": {
     "@upstash/redis": "^1.34.3"
   },
   "engines": {
-    "node": "20.x"
+    "node": "24.x"
   }
 }
