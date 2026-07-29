@@ -1,19 +1,4 @@
 // ================= FILE: src/market/marketWeather.js =================
-//
-// MarketWeatherEngine.
-//
-// Belangrijke bouwregel:
-// - Dit bestand berekent marktcontext en soft currentFit.
-// - Dit bestand blokkeert GEEN virtual/shadow learning.
-// - Dit bestand activeert GEEN adaptiveScore, recentMomentumScore of parent-diversificatie.
-// - Selection/rotation/Discord mogen dit later gebruiken.
-// - Learning blijft breed.
-//
-// Meetlat-regel:
-// - Geen nieuwe architectuur bouwen bovenop vervuilde data.
-// - Deze engine schrijft alleen context/fit-metadata.
-// - completed, avgCostR, directSL en seen-dedupe blijven de verantwoordelijkheid van
-//   analyzeEngine/scoring/positionEngine/costModel.
 
 import { CONFIG } from '../config.js';
 import { KEYS } from '../keys.js';
@@ -21,7 +6,9 @@ import { getDurableRedis, getJson, setJson } from '../redis.js';
 import { clamp, safeNumber, sideToTradeSide } from '../utils.js';
 
 const MARKET_WEATHER_VERSION = 'MARKET_WEATHER_ENGINE_V1';
-const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
+const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_TRIGGER_BOUNDARY_EXIT_FILL_V2';
+const PREVIOUS_MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
+const EXIT_FILL_MODEL_VERSION = 'LONG_TRIGGER_BOUNDARY_FILL_PLUS_COST_MODEL_V1';
 
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
@@ -31,6 +18,12 @@ const OPPOSITE_TRADE_SIDE = 'SHORT';
 const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
+
+const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
+const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
+const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
+const WEEKEND_MODE = 'OBSERVE';
+const SESSION_MODE = 'OBSERVE';
 
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
@@ -73,15 +66,15 @@ const WEATHER_REGIME = Object.freeze({
 });
 
 const TREND_SIDE = Object.freeze({
-  LONG: 'LONG',
   SHORT: 'SHORT',
+  LONG: 'LONG',
   NEUTRAL: 'NEUTRAL',
   UNKNOWN: 'UNKNOWN'
 });
 
 const FLOW_STATE = Object.freeze({
-  FLOW_WITH_LONG: 'FLOW_WITH_LONG',
   FLOW_WITH_SHORT: 'FLOW_WITH_SHORT',
+  FLOW_WITH_LONG: 'FLOW_WITH_LONG',
   FLOW_MIXED: 'FLOW_MIXED',
   FLOW_QUIET: 'FLOW_QUIET',
   FLOW_UNKNOWN: 'FLOW_UNKNOWN'
@@ -138,6 +131,78 @@ function now() {
   return Date.now();
 }
 
+const UTC_DAY_NAMES = Object.freeze([
+  'SUNDAY',
+  'MONDAY',
+  'TUESDAY',
+  'WEDNESDAY',
+  'THURSDAY',
+  'FRIDAY',
+  'SATURDAY'
+]);
+
+function normalizeTemporalTs(value = Date.now()) {
+  const n = Number(value);
+
+  if (!Number.isFinite(n) || n <= 0) return Date.now();
+
+  return n < 10_000_000_000 ? n * 1000 : n;
+}
+
+export function buildTemporalContextUtc(value = Date.now()) {
+  const contextTs = normalizeTemporalTs(value);
+  const date = new Date(contextTs);
+  const dayIndex = date.getUTCDay();
+  const hourUtc = date.getUTCHours();
+  const isWeekend = dayIndex === 0 || dayIndex === 6;
+
+  const asia = hourUtc >= 0 && hourUtc < 8;
+  const europe = hourUtc >= 7 && hourUtc < 16;
+  const us = hourUtc >= 13 && hourUtc < 22;
+
+  const sessionTags = [];
+  if (asia) sessionTags.push('ASIA');
+  if (europe) sessionTags.push('EUROPE');
+  if (us) sessionTags.push('US');
+
+  let primarySessionBucket = 'OFF_HOURS';
+  if (europe && us) primarySessionBucket = 'EU_US_OVERLAP';
+  else if (asia && europe) primarySessionBucket = 'ASIA_EU_OVERLAP';
+  else if (asia) primarySessionBucket = 'ASIA';
+  else if (europe) primarySessionBucket = 'EUROPE';
+  else if (us) primarySessionBucket = 'US';
+
+  return {
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+
+    contextTs,
+    hourUtc,
+    dayOfWeekUtc: UTC_DAY_NAMES[dayIndex],
+    dayType: isWeekend ? 'WEEKEND' : 'WEEKDAY',
+    isWeekend,
+
+    sessionTags,
+    primarySessionBucket,
+    sessionOverlap: sessionTags.length > 1,
+    offHours: primarySessionBucket === 'OFF_HOURS',
+
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendDiscordEntryAllowed: !isWeekend,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true
+  };
+}
+
 function upper(value) {
   return String(value || '').trim().toUpperCase();
 }
@@ -191,6 +256,16 @@ function firstValue(...values) {
   return null;
 }
 
+function namespacedLongKey(key, fallback) {
+  const raw = String(key || fallback || '').trim();
+
+  if (!raw) return `${LONG_KEY_PREFIX}MARKET:WEATHER:LATEST`;
+  if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
+  if (raw.startsWith('SHORT:')) return `${LONG_KEY_PREFIX}${raw.slice('SHORT:'.length)}`;
+
+  return `${LONG_KEY_PREFIX}${raw}`;
+}
+
 function configNumber(path = [], fallback) {
   let cur = CONFIG;
 
@@ -240,37 +315,62 @@ function keyCandidate(value) {
 
 function defaultUniverseKeys() {
   return uniqueStrings([
-    keyCandidate(KEYS.market?.universeLatest),
-    keyCandidate(KEYS.market?.universe),
     keyCandidate(KEYS.long?.market?.universeLatest),
+    keyCandidate(KEYS.long?.market?.universe),
     keyCandidate(KEYS.long?.scan?.universeLatest),
-    keyCandidate(KEYS.scanner?.universeLatest),
-    keyCandidate(KEYS.scan?.universeLatest),
     keyCandidate(KEYS.long?.scan?.latest),
-    keyCandidate(KEYS.scan?.latest),
+    keyCandidate(KEYS.market?.longUniverseLatest),
+    keyCandidate(KEYS.scan?.longUniverseLatest),
+    keyCandidate(KEYS.scan?.longLatest),
 
     'MARKET:UNIVERSE:LATEST',
     'MARKET:SCANNER:UNIVERSE:LATEST',
-    'LONG:MARKET:UNIVERSE:LATEST',
-    'LONG:SCAN:LATEST',
-    'LONG:SCANNER:LATEST'
-  ]);
+    'SCAN:LATEST',
+    'SCANNER:LATEST'
+  ]).map((key) => namespacedLongKey(key));
 }
 
 function defaultWeatherKeys() {
   return uniqueStrings([
-    keyCandidate(KEYS.market?.weatherLatest),
-    keyCandidate(KEYS.market?.weather),
     keyCandidate(KEYS.long?.market?.weatherLatest),
     keyCandidate(KEYS.long?.market?.weather),
+    keyCandidate(KEYS.market?.longWeatherLatest),
+    keyCandidate(KEYS.market?.longWeather),
 
-    'MARKET:WEATHER:LATEST',
-    'LONG:MARKET:WEATHER:LATEST'
-  ]);
+    'MARKET:WEATHER:LATEST'
+  ]).map((key) => namespacedLongKey(key));
+}
+
+function cleanSideText(value = '') {
+  return upper(value)
+    .replaceAll('SHORT_DISABLED_FALSE', '')
+    .replaceAll('SHORTDISABLED_FALSE', '')
+    .replaceAll('BLOCK_SHORT_FALSE', '')
+    .replaceAll('SHORT_ENABLED_FALSE', '')
+    .replaceAll('SHORT_ONLY_FALSE', '')
+    .replaceAll('LONG_DISABLED_FALSE', '')
+    .replaceAll('LONGDISABLED_FALSE', '')
+    .replaceAll('BLOCK_LONG_FALSE', '')
+    .replaceAll('LONG_ENABLED_FALSE', '')
+    .replaceAll('LONG_ONLY_FALSE', '')
+    .replaceAll('SHORT_DISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('SHORTDISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('SHORT_DISABLED_TRUE', 'LONG')
+    .replaceAll('SHORTDISABLED_TRUE', 'LONG')
+    .replaceAll('BLOCK_SHORT_TRUE', 'LONG')
+    .replaceAll('BLOCK_SHORT', 'LONG')
+    .replaceAll('SHORT_DISABLED', 'LONG')
+    .replaceAll('SHORTDISABLED', 'LONG')
+    .replaceAll('LONG_ONLY_MODE', 'LONG')
+    .replaceAll('LONG_ONLY', 'LONG')
+    .replaceAll('LONG-ONLY', 'LONG')
+    .replaceAll('SHORT_ONLY_MODE', 'SHORT')
+    .replaceAll('SHORT_ONLY', 'SHORT')
+    .replaceAll('SHORT-ONLY', 'SHORT');
 }
 
 function normalizeTradeSide(value = '') {
-  const raw = upper(value);
+  const raw = cleanSideText(value);
 
   if (!raw) return 'UNKNOWN';
 
@@ -311,8 +411,8 @@ function normalizeWeatherRegime(value) {
 function normalizeWeatherTrendSide(value) {
   const raw = upper(value);
 
-  if (['LONG', 'BULL', 'BULLISH', 'BUY', 'UP', 'UPSIDE', 'GREEN'].includes(raw)) return TREND_SIDE.LONG;
   if (['SHORT', 'BEAR', 'BEARISH', 'SELL', 'DOWN', 'DOWNSIDE', 'RED'].includes(raw)) return TREND_SIDE.SHORT;
+  if (['LONG', 'BULL', 'BULLISH', 'BUY', 'UP', 'UPSIDE', 'GREEN'].includes(raw)) return TREND_SIDE.LONG;
   if (['NEUTRAL', 'MIXED', 'SIDEWAYS', 'CHOP', 'FLAT'].includes(raw)) return TREND_SIDE.NEUTRAL;
 
   return TREND_SIDE.UNKNOWN;
@@ -668,17 +768,11 @@ function findBtcTicker(rows = []) {
 function classifyBtcTrendSide(btc = null, t = thresholds()) {
   if (!btc) return TREND_SIDE.UNKNOWN;
 
-  if (
-    btc.change1h > t.btcTrend1hPct &&
-    btc.change24h > t.btcTrend24hPct
-  ) {
+  if (btc.change1h > t.btcTrend1hPct && btc.change24h > t.btcTrend24hPct) {
     return TREND_SIDE.LONG;
   }
 
-  if (
-    btc.change1h < -t.btcTrend1hPct &&
-    btc.change24h < -t.btcTrend24hPct
-  ) {
+  if (btc.change1h < -t.btcTrend1hPct && btc.change24h < -t.btcTrend24hPct) {
     return TREND_SIDE.SHORT;
   }
 
@@ -686,28 +780,17 @@ function classifyBtcTrendSide(btc = null, t = thresholds()) {
 }
 
 function classifyTickerDirection(row, t = thresholds()) {
-  const advancing =
-    row.change1h > t.advancing1hPct &&
-    row.change24h > t.advancing24hPct;
-
-  const declining =
-    row.change1h < t.declining1hPct &&
-    row.change24h < t.declining24hPct;
-
-  const strongBullish =
-    row.change1h > t.strongBullish1hPct ||
-    row.change24h > t.strongBullish24hPct;
-
-  const strongBearish =
-    row.change1h < t.strongBearish1hPct ||
-    row.change24h < t.strongBearish24hPct;
+  const advancing = row.change1h > t.advancing1hPct && row.change24h > t.advancing24hPct;
+  const declining = row.change1h < t.declining1hPct && row.change24h < t.declining24hPct;
+  const strongBullish = row.change1h > t.strongBullish1hPct || row.change24h > t.strongBullish24hPct;
+  const strongBearish = row.change1h < t.strongBearish1hPct || row.change24h < t.strongBearish24hPct;
 
   return {
     advancing,
     declining,
     neutral: !advancing && !declining,
-    strongBullish,
-    strongBearish
+    strongBearish,
+    strongBullish
   };
 }
 
@@ -751,8 +834,8 @@ function confidenceFromSignals({
   advanceRatio,
   declineRatio,
   neutralRatio,
-  strongBullishRatio,
   strongBearishRatio,
+  strongBullishRatio,
   medianChange1h,
   medianChange24h,
   volatilityState,
@@ -769,7 +852,7 @@ function confidenceFromSignals({
   const breadthDominance = Math.max(advanceRatio, declineRatio);
   confidence += clamp((breadthDominance - 0.5) * 80, 0, 25);
 
-  const strongDominance = Math.max(strongBullishRatio, strongBearishRatio);
+  const strongDominance = Math.max(strongBearishRatio, strongBullishRatio);
   confidence += clamp(strongDominance * 50, 0, 15);
 
   const directionalMedian =
@@ -799,8 +882,8 @@ function classifyWeatherFromBreadth({
   advancingCount,
   decliningCount,
   neutralCount,
-  strongBullishCount,
   strongBearishCount,
+  strongBullishCount,
   medianChange1h,
   medianChange24h,
   medianAbs1h,
@@ -812,8 +895,8 @@ function classifyWeatherFromBreadth({
   const advanceRatio = sampleSize > 0 ? advancingCount / sampleSize : 0;
   const declineRatio = sampleSize > 0 ? decliningCount / sampleSize : 0;
   const neutralRatio = sampleSize > 0 ? neutralCount / sampleSize : 0;
-  const strongBullishRatio = sampleSize > 0 ? strongBullishCount / sampleSize : 0;
   const strongBearishRatio = sampleSize > 0 ? strongBearishCount / sampleSize : 0;
+  const strongBullishRatio = sampleSize > 0 ? strongBullishCount / sampleSize : 0;
   const trendDominance = Math.max(advanceRatio, declineRatio);
 
   const volatilityState = classifyVolatilityState({
@@ -836,8 +919,8 @@ function classifyWeatherFromBreadth({
       advanceRatio,
       declineRatio,
       neutralRatio,
-      strongBullishRatio,
       strongBearishRatio,
+      strongBullishRatio,
       medianChange1h,
       medianChange24h,
       volatilityState,
@@ -870,8 +953,8 @@ function classifyWeatherFromBreadth({
       advanceRatio,
       declineRatio,
       neutralRatio,
-      strongBullishRatio,
       strongBearishRatio,
+      strongBullishRatio,
       medianChange1h,
       medianChange24h,
       volatilityState,
@@ -904,8 +987,8 @@ function classifyWeatherFromBreadth({
       advanceRatio,
       declineRatio,
       neutralRatio,
-      strongBullishRatio,
       strongBearishRatio,
+      strongBullishRatio,
       medianChange1h,
       medianChange24h,
       volatilityState,
@@ -930,8 +1013,8 @@ function classifyWeatherFromBreadth({
     advanceRatio,
     declineRatio,
     neutralRatio,
-    strongBullishRatio,
     strongBearishRatio,
+    strongBullishRatio,
     medianChange1h,
     medianChange24h,
     volatilityState,
@@ -963,6 +1046,85 @@ function currentFitLabels() {
     FIT_LABEL.MISFIT,
     FIT_LABEL.UNKNOWN
   ];
+}
+
+function longModeFlags() {
+  return {
+    targetTradeSide: TARGET_TRADE_SIDE,
+    targetScannerSide: TARGET_SCANNER_SIDE,
+    dashboardSide: TARGET_DASHBOARD_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
+    side: TARGET_DASHBOARD_SIDE,
+    tradeSide: TARGET_TRADE_SIDE,
+    positionSide: TARGET_TRADE_SIDE,
+    direction: TARGET_TRADE_SIDE,
+    scannerSide: TARGET_SCANNER_SIDE,
+    actualScannerSide: TARGET_SCANNER_SIDE,
+    analysisSide: TARGET_TRADE_SIDE,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
+
+
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true,
+
+    virtualOnly: true,
+    virtualLearning: true,
+    virtualTracked: true,
+    shadowOnly: true,
+
+    realTrade: false,
+    realOrder: false,
+    exchangeOrder: false,
+    bitgetOrderPlaced: false,
+    noRealOrders: true,
+    realOrdersDisabled: true,
+    exchangeOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeCallsDisabled: true,
+    noExchangeOrders: true,
+
+    riskTradeSide: TARGET_TRADE_SIDE,
+    longRiskShape: 'sl < entry < tp',
+    validLongRiskShape: 'entry > 0 && sl < entry && entry < tp',
+    validLongGeometry: 'sl < entry < tp',
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= initialSl',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longExitRules: {
+      tp: 'price >= tp',
+      sl: 'price <= initialSl',
+      timeStop: 'TIME_STOP'
+    },
+
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
+
+    redisNamespace: LONG_NAMESPACE,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    redisKeysSeparatedFromShortRoot: true,
+    shortRootTouched: false
+  };
 }
 
 function emptyWeather({
@@ -1012,13 +1174,13 @@ function emptyWeather({
       advancingCount: 0,
       decliningCount: 0,
       neutralCount: 0,
-      strongBullishCount: 0,
       strongBearishCount: 0,
+      strongBullishCount: 0,
       advanceRatio: 0,
       declineRatio: 0,
       neutralRatio: 0,
-      strongBullishRatio: 0,
       strongBearishRatio: 0,
+      strongBullishRatio: 0,
       medianChange1h: 0,
       medianChange24h: 0,
       medianAbs1h: 0,
@@ -1054,13 +1216,13 @@ function emptyWeather({
     parentDiversificationBuilt: false,
 
     measurementFixVersion: MEASUREMENT_FIX_VERSION,
+    previousMeasurementFixVersion: PREVIOUS_MEASUREMENT_FIX_VERSION,
+    exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
     avgCostRRequiredBeforeAdaptiveSelection: true,
     directSLRequiredBeforeAdaptiveSelection: true,
     observationDedupeRequiredBeforeAdaptiveSelection: true,
 
-    redisNamespace: LONG_NAMESPACE,
-    redisKeyPrefix: LONG_KEY_PREFIX,
-    persistentLearningKey: PERSISTENT_LEARNING_KEY
+    ...longModeFlags()
   };
 }
 
@@ -1089,20 +1251,20 @@ function normalizeMarketWeatherPayload(weather = {}) {
   const ageMs = generatedAt > 0 ? Math.max(0, now() - generatedAt) : null;
   const cacheStale = ageMs !== null ? ageMs > staleAfterMs() : bool(weather.cacheStale, false);
 
-  const bullishPctRaw = safeNumber(weather.bullishPct, null);
   const bearishPctRaw = safeNumber(weather.bearishPct, null);
+  const bullishPctRaw = safeNumber(weather.bullishPct, null);
   const neutralPctRaw = safeNumber(weather.neutralPct, null);
 
   const advanceRatio = weather.breadth?.advanceRatio !== undefined
     ? safeNumber(weather.breadth.advanceRatio, 0)
-    : Number.isFinite(bullishPctRaw)
-      ? bullishPctRaw / 100
+    : Number.isFinite(bearishPctRaw)
+      ? bearishPctRaw / 100
       : 0;
 
   const declineRatio = weather.breadth?.declineRatio !== undefined
     ? safeNumber(weather.breadth.declineRatio, 0)
-    : Number.isFinite(bearishPctRaw)
-      ? bearishPctRaw / 100
+    : Number.isFinite(bullishPctRaw)
+      ? bullishPctRaw / 100
       : 0;
 
   const neutralRatio = weather.breadth?.neutralRatio !== undefined
@@ -1149,14 +1311,14 @@ function normalizeMarketWeatherPayload(weather = {}) {
       advancingCount: safeNumber(weather.breadth?.advancingCount ?? weather.bullishCount, 0),
       decliningCount: safeNumber(weather.breadth?.decliningCount ?? weather.bearishCount, 0),
       neutralCount: safeNumber(weather.breadth?.neutralCount ?? weather.neutralCount, 0),
-      strongBullishCount: safeNumber(weather.breadth?.strongBullishCount, 0),
       strongBearishCount: safeNumber(weather.breadth?.strongBearishCount, 0),
+      strongBullishCount: safeNumber(weather.breadth?.strongBullishCount, 0),
 
       advanceRatio: round4(advanceRatio),
       declineRatio: round4(declineRatio),
       neutralRatio: round4(neutralRatio),
-      strongBullishRatio: safeNumber(weather.breadth?.strongBullishRatio, 0),
       strongBearishRatio: safeNumber(weather.breadth?.strongBearishRatio, 0),
+      strongBullishRatio: safeNumber(weather.breadth?.strongBullishRatio, 0),
 
       medianChange1h: safeNumber(weather.breadth?.medianChange1h, 0),
       medianChange24h: safeNumber(weather.breadth?.medianChange24h, 0),
@@ -1194,6 +1356,8 @@ function normalizeMarketWeatherPayload(weather = {}) {
     parentDiversificationBuilt: false,
 
     measurementFixVersion: MEASUREMENT_FIX_VERSION,
+    previousMeasurementFixVersion: PREVIOUS_MEASUREMENT_FIX_VERSION,
+    exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
     avgCostRRequiredBeforeAdaptiveSelection: true,
     directSLRequiredBeforeAdaptiveSelection: true,
     observationDedupeRequiredBeforeAdaptiveSelection: true,
@@ -1209,9 +1373,7 @@ function normalizeMarketWeatherPayload(weather = {}) {
     learningGranularity: LEARNING_GRANULARITY,
     parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
 
-    redisNamespace: LONG_NAMESPACE,
-    redisKeyPrefix: LONG_KEY_PREFIX,
-    persistentLearningKey: PERSISTENT_LEARNING_KEY
+    ...longModeFlags()
   };
 
   if (
@@ -1252,8 +1414,8 @@ export function buildMarketWeatherFromTickers(tickers = [], {
   let advancingCount = 0;
   let decliningCount = 0;
   let neutralCount = 0;
-  let strongBullishCount = 0;
   let strongBearishCount = 0;
+  let strongBullishCount = 0;
 
   for (const row of universe) {
     const direction = classifyTickerDirection(row, t);
@@ -1261,8 +1423,8 @@ export function buildMarketWeatherFromTickers(tickers = [], {
     if (direction.advancing) advancingCount += 1;
     if (direction.declining) decliningCount += 1;
     if (direction.neutral) neutralCount += 1;
-    if (direction.strongBullish) strongBullishCount += 1;
     if (direction.strongBearish) strongBearishCount += 1;
+    if (direction.strongBullish) strongBullishCount += 1;
   }
 
   const change1hValues = universe.map((row) => row.change1h);
@@ -1299,8 +1461,8 @@ export function buildMarketWeatherFromTickers(tickers = [], {
     advancingCount,
     decliningCount,
     neutralCount,
-    strongBullishCount,
     strongBearishCount,
+    strongBullishCount,
     medianChange1h,
     medianChange24h,
     medianAbs1h,
@@ -1313,8 +1475,8 @@ export function buildMarketWeatherFromTickers(tickers = [], {
   const advanceRatio = sampleSize > 0 ? advancingCount / sampleSize : 0;
   const declineRatio = sampleSize > 0 ? decliningCount / sampleSize : 0;
   const neutralRatio = sampleSize > 0 ? neutralCount / sampleSize : 0;
-  const strongBullishRatio = sampleSize > 0 ? strongBullishCount / sampleSize : 0;
   const strongBearishRatio = sampleSize > 0 ? strongBearishCount / sampleSize : 0;
+  const strongBullishRatio = sampleSize > 0 ? strongBullishCount / sampleSize : 0;
 
   return normalizeMarketWeatherPayload({
     ok: true,
@@ -1325,6 +1487,8 @@ export function buildMarketWeatherFromTickers(tickers = [], {
 
     generatedAt,
     updatedAt: generatedAt,
+
+    ...buildTemporalContextUtc(generatedAt || now()),
 
     currentRegime: classified.currentRegime,
     regime: classified.currentRegime,
@@ -1355,14 +1519,14 @@ export function buildMarketWeatherFromTickers(tickers = [], {
       advancingCount,
       decliningCount,
       neutralCount,
-      strongBullishCount,
       strongBearishCount,
+      strongBullishCount,
 
       advanceRatio: round4(advanceRatio),
       declineRatio: round4(declineRatio),
       neutralRatio: round4(neutralRatio),
-      strongBullishRatio: round4(strongBullishRatio),
       strongBearishRatio: round4(strongBearishRatio),
+      strongBullishRatio: round4(strongBullishRatio),
 
       medianChange1h: round4(medianChange1h),
       medianChange24h: round4(medianChange24h),
@@ -1501,15 +1665,19 @@ export async function saveMarketWeather(weather, {
     currentFitScoreBuilt: false,
     parentDiversificationBuilt: false,
 
-    measurementFixVersion: MEASUREMENT_FIX_VERSION
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
+    previousMeasurementFixVersion: PREVIOUS_MEASUREMENT_FIX_VERSION,
+    exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
+
+    ...longModeFlags()
   });
 
   const savedKeys = [];
 
   for (const key of keys) {
     try {
-      await setJson(redis, key, payload);
-      savedKeys.push(key);
+      await setJson(redis, namespacedLongKey(key), payload);
+      savedKeys.push(namespacedLongKey(key));
     } catch {
       // Keep saving other compatibility keys.
     }
@@ -1529,7 +1697,7 @@ export async function loadMarketWeather({
 } = {}) {
   for (const key of keys) {
     try {
-      const rawWeather = await getJson(redis, key, null);
+      const rawWeather = await getJson(redis, namespacedLongKey(key), null);
 
       if (!rawWeather) continue;
 
@@ -1539,7 +1707,7 @@ export async function loadMarketWeather({
 
       return normalizeMarketWeatherPayload({
         ...rawWeather,
-        loadedFromKey: key,
+        loadedFromKey: namespacedLongKey(key),
         loadedAt: now(),
         ageMs,
         stale,
@@ -1549,7 +1717,8 @@ export async function loadMarketWeather({
         currentFitSoftOnly: true,
         currentFitBlocksLearning: false,
         currentFitBlocksVirtualLearning: false,
-        currentFitBlocksShadowLearning: false
+        currentFitBlocksShadowLearning: false,
+        ...longModeFlags()
       });
     } catch {
       // Try next key.
@@ -1719,6 +1888,12 @@ export function computeCurrentFit(rowOrMicroId = {}, weather = null) {
     return {
       currentFit: 0,
       currentFitScore: 0,
+      longCurrentFit: 0,
+      bullCurrentFit: 0,
+      bullishCurrentFit: 0,
+      shortCurrentFit: 0,
+      bearCurrentFit: 0,
+      bearishCurrentFit: 0,
       currentFitLabel: FIT_LABEL.UNKNOWN,
       currentFitReason: 'NO_EXACT_75_CHILD_MICRO_ID',
       currentFitConfidence: 0,
@@ -1729,7 +1904,9 @@ export function computeCurrentFit(rowOrMicroId = {}, weather = null) {
       currentFitSoftOnly: true,
       learningRemainsBroad: true,
       selectionWillBeAdaptive: true,
-      discordWillBeStrict: true
+      discordWillBeStrict: true,
+      currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+      currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT'
     };
   }
 
@@ -1739,6 +1916,12 @@ export function computeCurrentFit(rowOrMicroId = {}, weather = null) {
     return {
       currentFit: 0,
       currentFitScore: 0,
+      longCurrentFit: 0,
+      bullCurrentFit: 0,
+      bullishCurrentFit: 0,
+      shortCurrentFit: 0,
+      bearCurrentFit: 0,
+      bearishCurrentFit: 0,
       currentFitLabel: FIT_LABEL.MISFIT,
       currentFitReason: 'NON_LONG_FAMILY_FOR_LONG_WEATHER',
       currentFitConfidence: safeNumber(weatherRow.currentMarketFitConfidence ?? weatherRow.confidence, 0),
@@ -1749,7 +1932,9 @@ export function computeCurrentFit(rowOrMicroId = {}, weather = null) {
       currentFitSoftOnly: true,
       learningRemainsBroad: true,
       selectionWillBeAdaptive: true,
-      discordWillBeStrict: true
+      discordWillBeStrict: true,
+      currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+      currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT'
     };
   }
 
@@ -1762,6 +1947,12 @@ export function computeCurrentFit(rowOrMicroId = {}, weather = null) {
     return {
       currentFit: 0,
       currentFitScore: 0,
+      longCurrentFit: 0,
+      bullCurrentFit: 0,
+      bullishCurrentFit: 0,
+      shortCurrentFit: 0,
+      bearCurrentFit: 0,
+      bearishCurrentFit: 0,
       currentFitLabel: FIT_LABEL.UNKNOWN,
       currentFitReason: 'NO_VALID_MARKET_WEATHER',
       currentFitConfidence: 0,
@@ -1774,7 +1965,9 @@ export function computeCurrentFit(rowOrMicroId = {}, weather = null) {
       currentFitSoftOnly: true,
       learningRemainsBroad: true,
       selectionWillBeAdaptive: true,
-      discordWillBeStrict: true
+      discordWillBeStrict: true,
+      currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+      currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT'
     };
   }
 
@@ -1804,6 +1997,12 @@ export function computeCurrentFit(rowOrMicroId = {}, weather = null) {
   return {
     currentFit,
     currentFitScore: currentFit,
+    longCurrentFit: currentFit,
+    bullCurrentFit: currentFit,
+    bullishCurrentFit: currentFit,
+    shortCurrentFit: -currentFit,
+    bearCurrentFit: -currentFit,
+    bearishCurrentFit: -currentFit,
     currentFitLabel: fitLabel(currentFit, weatherRow),
     currentFitReason: [
       `REGIME=${parsed.regime}:${round2(regimeScore)}`,
@@ -1823,7 +2022,9 @@ export function computeCurrentFit(rowOrMicroId = {}, weather = null) {
     currentFitSoftOnly: true,
     learningRemainsBroad: true,
     selectionWillBeAdaptive: true,
-    discordWillBeStrict: true
+    discordWillBeStrict: true,
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT'
   };
 }
 
@@ -1831,6 +2032,8 @@ export function compactMarketWeatherForEntry(weather = {}) {
   const weatherRow = normalizeMarketWeatherPayload(weather);
 
   return {
+    ...buildTemporalContextUtc(weatherRow.generatedAt || weatherRow.updatedAt || now()),
+
     version: weatherRow.version || MARKET_WEATHER_VERSION,
     generatedAt: weatherRow.generatedAt || weatherRow.updatedAt || null,
 
@@ -1869,7 +2072,11 @@ export function compactMarketWeatherForEntry(weather = {}) {
     currentFitBlocksLearning: false,
     currentFitBlocksVirtualLearning: false,
     currentFitBlocksShadowLearning: false,
-    learningRemainsBroad: true
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
+    learningRemainsBroad: true,
+
+    ...longModeFlags()
   };
 }
 
@@ -1900,6 +2107,13 @@ export function annotateWithCurrentFit(row = {}, weather = {}) {
     entryCurrentFitScore: fit.currentFitScore,
     currentFitScore: fit.currentFitScore,
 
+    longCurrentFit: fit.longCurrentFit,
+    bullCurrentFit: fit.bullCurrentFit,
+    bullishCurrentFit: fit.bullishCurrentFit,
+    shortCurrentFit: fit.shortCurrentFit,
+    bearCurrentFit: fit.bearCurrentFit,
+    bearishCurrentFit: fit.bearishCurrentFit,
+
     entryCurrentFitLabel: fit.currentFitLabel,
     currentFitLabel: fit.currentFitLabel,
 
@@ -1918,6 +2132,8 @@ export function annotateWithCurrentFit(row = {}, weather = {}) {
     currentFitBlocksVirtualLearning: false,
     currentFitBlocksShadowLearning: false,
     currentFitAffectsSelectionOnly: true,
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
     learningRemainsBroad: true,
     selectionWillBeAdaptive: true,
     discordWillBeStrict: true,
@@ -1926,7 +2142,11 @@ export function annotateWithCurrentFit(row = {}, weather = {}) {
     adaptiveScore: row.adaptiveScore ?? null,
     currentFitScoreBuilt: false,
 
-    measurementFixVersion: MEASUREMENT_FIX_VERSION
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
+    previousMeasurementFixVersion: PREVIOUS_MEASUREMENT_FIX_VERSION,
+    exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
+
+    ...longModeFlags()
   };
 }
 
@@ -1980,6 +2200,22 @@ export function marketWeatherIdentityFlags() {
     shortOnly: false,
     longDisabled: false,
 
+    virtualOnly: true,
+    virtualLearning: true,
+    virtualTracked: true,
+    shadowOnly: true,
+
+    realTrade: false,
+    realOrder: false,
+    exchangeOrder: false,
+    bitgetOrderPlaced: false,
+    noRealOrders: true,
+    realOrdersDisabled: true,
+    exchangeOrdersDisabled: true,
+    bitgetOrdersDisabled: true,
+    exchangeCallsDisabled: true,
+    noExchangeOrders: true,
+
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
 
     trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
@@ -2000,6 +2236,8 @@ export function marketWeatherIdentityFlags() {
     currentFitBlocksVirtualLearning: false,
     currentFitBlocksShadowLearning: false,
     currentFitAffectsSelectionOnly: true,
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
 
     adaptiveLayerBuilt: false,
     adaptiveScoreBuilt: false,
@@ -2016,13 +2254,34 @@ export function marketWeatherIdentityFlags() {
     avgCostRShown: true,
     avgCostRSource: 'costR',
 
+    riskTradeSide: TARGET_TRADE_SIDE,
+    longRiskShape: 'sl < entry < tp',
+    validLongRiskShape: 'entry > 0 && sl < entry && entry < tp',
+    validLongGeometry: 'sl < entry < tp',
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= initialSl',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longExitRules: {
+      tp: 'price >= tp',
+      sl: 'price <= initialSl',
+      timeStop: 'TIME_STOP'
+    },
+
     measurementFixVersion: MEASUREMENT_FIX_VERSION,
+    previousMeasurementFixVersion: PREVIOUS_MEASUREMENT_FIX_VERSION,
+    exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
     avgCostRRequiredBeforeAdaptiveSelection: true,
     directSLRequiredBeforeAdaptiveSelection: true,
     observationDedupeRequiredBeforeAdaptiveSelection: true,
 
     redisNamespace: LONG_NAMESPACE,
-    redisKeyPrefix: LONG_KEY_PREFIX
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    redisKeysSeparatedFromShortRoot: true,
+    shortRootTouched: false
   };
 }
 
