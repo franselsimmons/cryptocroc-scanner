@@ -18,6 +18,16 @@ const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 
+const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
+const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
+const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
+const WEEKEND_MODE = 'OBSERVE';
+const SESSION_MODE = 'OBSERVE';
+const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_TRIGGER_BOUNDARY_EXIT_FILL_V2';
+const EXIT_FILL_MODEL_VERSION = 'LONG_TRIGGER_BOUNDARY_FILL_PLUS_COST_MODEL_V1';
+const EMPIRICAL_VETO_POLICY_VERSION = 'LONG_EXACT_75_CHILD_NET_EDGE_VETO_V1';
+const FAMILY_GATE_REQUIRED = 'PASSED';
+
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
 const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
@@ -29,8 +39,6 @@ const SOURCE_REAL = 'REAL';
 const SOURCE_LIVE = 'LIVE';
 const SOURCE_TRADE = 'TRADE';
 const SOURCE_SHADOW = 'SHADOW';
-
-const CUSTOMER_DISCLAIMER = 'Geen financieel advies. Beheer je eigen risico.';
 
 const DISCORD_LIMITS = {
   fieldName: 256,
@@ -113,6 +121,78 @@ const LONG_KEYS = {
   }
 };
 
+const UTC_DAY_NAMES = Object.freeze([
+  'SUNDAY',
+  'MONDAY',
+  'TUESDAY',
+  'WEDNESDAY',
+  'THURSDAY',
+  'FRIDAY',
+  'SATURDAY'
+]);
+
+function normalizeTemporalTs(value = Date.now()) {
+  const n = Number(value);
+
+  if (!Number.isFinite(n) || n <= 0) return Date.now();
+
+  return n < 10_000_000_000 ? n * 1000 : n;
+}
+
+export function buildTemporalContextUtc(value = Date.now()) {
+  const contextTs = normalizeTemporalTs(value);
+  const date = new Date(contextTs);
+  const dayIndex = date.getUTCDay();
+  const hourUtc = date.getUTCHours();
+  const isWeekend = dayIndex === 0 || dayIndex === 6;
+
+  const asia = hourUtc >= 0 && hourUtc < 8;
+  const europe = hourUtc >= 7 && hourUtc < 16;
+  const us = hourUtc >= 13 && hourUtc < 22;
+
+  const sessionTags = [];
+  if (asia) sessionTags.push('ASIA');
+  if (europe) sessionTags.push('EUROPE');
+  if (us) sessionTags.push('US');
+
+  let primarySessionBucket = 'OFF_HOURS';
+  if (europe && us) primarySessionBucket = 'EU_US_OVERLAP';
+  else if (asia && europe) primarySessionBucket = 'ASIA_EU_OVERLAP';
+  else if (asia) primarySessionBucket = 'ASIA';
+  else if (europe) primarySessionBucket = 'EUROPE';
+  else if (us) primarySessionBucket = 'US';
+
+  return {
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+
+    contextTs,
+    hourUtc,
+    dayOfWeekUtc: UTC_DAY_NAMES[dayIndex],
+    dayType: isWeekend ? 'WEEKEND' : 'WEEKDAY',
+    isWeekend,
+
+    sessionTags,
+    primarySessionBucket,
+    sessionOverlap: sessionTags.length > 1,
+    offHours: primarySessionBucket === 'OFF_HOURS',
+
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendDiscordEntryAllowed: !isWeekend,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true
+  };
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -155,7 +235,7 @@ function fmtPrice(value) {
   if (n >= 1000) return n.toFixed(2);
   if (n >= 1) return n.toFixed(6);
 
-  return n.toFixed(10).replace(/0+$/, '').replace(/\.$/, '');
+  return n.toFixed(10);
 }
 
 function fmtPct(value) {
@@ -198,72 +278,6 @@ function upper(value, fallback = '') {
   return text ? text.toUpperCase() : fallback;
 }
 
-function isEntryAction(value = '') {
-  const action = upper(value);
-
-  if (!action) return true;
-
-  return (
-    action === 'ENTRY' ||
-    action === 'VIRTUAL_ENTRY' ||
-    action === 'OPEN' ||
-    action === 'TRADE_OPEN' ||
-    action === 'POSITION_OPEN' ||
-    action === 'VIRTUAL_POSITION_OPEN'
-  );
-}
-
-function displaySymbol(payload = {}) {
-  const raw = upper(
-    payload.contractSymbol ||
-      payload.instId ||
-      payload.instrumentId ||
-      payload.symbol ||
-      payload.baseSymbol ||
-      ''
-  );
-
-  if (!raw) return 'UNKNOWN';
-
-  const cleaned = raw.replace(/[^A-Z0-9]/g, '');
-
-  if (cleaned.endsWith('USDT')) return cleaned;
-
-  const base = normalizeBaseSymbol(cleaned) || cleaned.replace(/USDT$/u, '');
-
-  return `${upper(base || cleaned)}USDT`;
-}
-
-function tradeDirectionEmoji(payload = {}) {
-  return isLongPayload(payload) ? '🟢' : '🔴';
-}
-
-function exitEmoji(exitType = '', resultR = null) {
-  const type = upper(exitType);
-
-  if (type === 'TP') return '✅';
-  if (type === 'SL') return '❌';
-  if (type === 'TIME') return '⏹️';
-
-  const r = Number(resultR);
-
-  if (Number.isFinite(r) && r > 0) return '✅';
-  if (Number.isFinite(r) && r < 0) return '❌';
-
-  return '⏹️';
-}
-
-function customerExitReason(exitType = '') {
-  const type = upper(exitType);
-
-  if (type === 'TP') return 'TP geraakt';
-  if (type === 'SL') return 'SL geraakt';
-  if (type === 'TIME') return 'tijdslimiet';
-  if (type === 'MANUAL') return 'handmatig gesloten';
-
-  return 'gesloten';
-}
-
 function cleanSideText(value = '') {
   return upper(value)
     .replaceAll('SHORT_DISABLED_FALSE', '')
@@ -272,11 +286,20 @@ function cleanSideText(value = '') {
     .replaceAll('SHORT_ENABLED_FALSE', '')
     .replaceAll('SHORT_ONLY_FALSE', '')
     .replaceAll('LONG_DISABLED_FALSE', '')
-    .replaceAll('SHORT_DISABLED_LONG_ONLY', '')
-    .replaceAll('SHORTDISABLED_LONG_ONLY', '')
-    .replaceAll('BLOCK_SHORT', '')
-    .replaceAll('SHORT_DISABLED', '')
-    .replaceAll('SHORTDISABLED', '')
+    .replaceAll('LONGDISABLED_FALSE', '')
+    .replaceAll('BLOCK_LONG_FALSE', '')
+    .replaceAll('LONG_ENABLED_FALSE', '')
+    .replaceAll('LONG_ONLY_FALSE', '')
+    .replaceAll('SHORT_DISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('SHORTDISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('BLOCK_SHORT', 'LONG')
+    .replaceAll('SHORT_DISABLED', 'LONG')
+    .replaceAll('SHORTDISABLED', 'LONG')
+    .replaceAll('LONG_DISABLED_SHORT_ONLY', 'SHORT')
+    .replaceAll('LONGDISABLED_SHORT_ONLY', 'SHORT')
+    .replaceAll('BLOCK_LONG', 'SHORT')
+    .replaceAll('LONG_DISABLED', 'SHORT')
+    .replaceAll('LONGDISABLED', 'SHORT')
     .replaceAll('LONG_ONLY_MODE', 'LONG')
     .replaceAll('LONG_ONLY', 'LONG')
     .replaceAll('LONG-ONLY', 'LONG')
@@ -366,7 +389,7 @@ function normalizeSideToken(value) {
   if (longHit && !shortHit) return TARGET_TRADE_SIDE;
   if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
 
-  if (shortHit && longHit) {
+  if (longHit && shortHit) {
     if (raw.includes('TRADE_SIDE=LONG') || raw.includes('TRADESIDE=LONG')) return TARGET_TRADE_SIDE;
     if (raw.includes('TRADE_SIDE=SHORT') || raw.includes('TRADESIDE=SHORT')) return OPPOSITE_TRADE_SIDE;
     if (raw.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
@@ -409,6 +432,16 @@ function uniqueStrings(values = []) {
       .map((value) => String(value || '').trim())
       .filter(Boolean)
   )];
+}
+
+function firstFiniteNumber(...values) {
+  for (const value of flattenValues(values)) {
+    const n = safeNumber(value, NaN);
+
+    if (Number.isFinite(n)) return n;
+  }
+
+  return null;
 }
 
 function isScannerFamilyId(id = '') {
@@ -749,7 +782,7 @@ function normalizeSideLabel(payload = {}) {
 }
 
 function discordColorForSide(payload = {}) {
-  return isLongPayload(payload) ? 0x22c55e : 0x64748b;
+  return isLongPayload(payload) ? 0x16a34a : 0x64748b;
 }
 
 function discordColorForResult(value) {
@@ -759,38 +792,6 @@ function discordColorForResult(value) {
   if (r < 0) return 0xdc2626;
 
   return 0x94a3b8;
-}
-
-function extractEntryPrice(payload = {}) {
-  return (
-    payload.entry ??
-    payload.entryPrice ??
-    payload.open ??
-    payload.openPrice ??
-    payload.price ??
-    null
-  );
-}
-
-function extractTpPrice(payload = {}) {
-  return (
-    payload.tp ??
-    payload.takeProfit ??
-    payload.target ??
-    payload.targetPrice ??
-    null
-  );
-}
-
-function extractSlPrice(payload = {}) {
-  return (
-    payload.sl ??
-    payload.initialSl ??
-    payload.stopLoss ??
-    payload.stop ??
-    payload.stopPrice ??
-    null
-  );
 }
 
 function extractExitPrice(outcome = {}) {
@@ -818,134 +819,6 @@ function extractResultR(outcome = {}) {
     outcome.r ??
     null
   );
-}
-
-function getLongRiskGeometry(entry = {}) {
-  const entryPrice = safeNumber(extractEntryPrice(entry), 0);
-  const sl = safeNumber(extractSlPrice(entry), 0);
-  const tp = safeNumber(extractTpPrice(entry), 0);
-  const exitPrice = safeNumber(extractExitPrice(entry), 0);
-  const currentPrice = safeNumber(entry.currentPrice ?? entry.lastPrice ?? entry.price, 0);
-
-  const riskDistance =
-    entryPrice > 0 &&
-    sl > 0 &&
-    sl < entryPrice
-      ? entryPrice - sl
-      : 0;
-
-  const validLongGeometry =
-    entryPrice > 0 &&
-    sl > 0 &&
-    sl < entryPrice &&
-    tp > entryPrice;
-
-  const longGrossR =
-    validLongGeometry &&
-    exitPrice > 0 &&
-    riskDistance > 0
-      ? (exitPrice - entryPrice) / riskDistance
-      : null;
-
-  const longCurrentR =
-    validLongGeometry &&
-    currentPrice > 0 &&
-    riskDistance > 0
-      ? (currentPrice - entryPrice) / riskDistance
-      : null;
-
-  return {
-    entry: entryPrice,
-    initialSl: sl,
-    sl,
-    tp,
-    exitPrice,
-    currentPrice,
-    riskDistance,
-    validLongGeometry,
-    validLongRiskShape: validLongGeometry,
-    longTpHit: validLongGeometry && currentPrice > 0 ? currentPrice >= tp : false,
-    longSlHit: validLongGeometry && currentPrice > 0 ? currentPrice <= sl : false,
-    longGrossR,
-    longCurrentR
-  };
-}
-
-function resultRForDiscord(outcome = {}) {
-  const direct = safeNumber(extractResultR(outcome), NaN);
-
-  if (Number.isFinite(direct)) return direct;
-
-  const risk = getLongRiskGeometry(outcome);
-
-  if (Number.isFinite(risk.longGrossR)) return risk.longGrossR;
-
-  return null;
-}
-
-function normalizeExitType(outcome = {}) {
-  const raw = upper(
-    outcome.exitType ||
-      outcome.exitReason ||
-      outcome.reason ||
-      outcome.closeReason ||
-      outcome.status ||
-      ''
-  );
-
-  if (
-    raw === 'TP' ||
-    raw.includes('TAKE_PROFIT') ||
-    raw.includes('TAKEPROFIT') ||
-    raw.includes('TAKE PROFIT') ||
-    raw.includes('TARGET') ||
-    outcome.tpHitNow === true ||
-    outcome.tpExitArmed === true ||
-    outcome.longTpHit === true
-  ) {
-    return 'TP';
-  }
-
-  if (
-    raw === 'SL' ||
-    raw.includes('STOP_LOSS') ||
-    raw.includes('STOPLOSS') ||
-    raw.includes('STOP LOSS') ||
-    raw.includes('STOP') ||
-    outcome.slHitNow === true ||
-    outcome.slExitArmed === true ||
-    outcome.longSlHit === true
-  ) {
-    return 'SL';
-  }
-
-  if (
-    raw.includes('TIME') ||
-    raw.includes('TIME_STOP') ||
-    raw.includes('TIME STOP') ||
-    outcome.timeStopHitNow === true ||
-    outcome.timeStopExitArmed === true
-  ) {
-    return 'TIME';
-  }
-
-  if (
-    raw.includes('MANUAL') ||
-    raw.includes('ADMIN_CLOSE') ||
-    raw.includes('FORCE_CLOSE')
-  ) {
-    return 'MANUAL';
-  }
-
-  const risk = getLongRiskGeometry(outcome);
-  const exitPrice = safeNumber(extractExitPrice(outcome), 0);
-
-  if (risk.validLongGeometry && exitPrice > 0) {
-    if (exitPrice >= risk.tp) return 'TP';
-    if (exitPrice <= risk.sl) return 'SL';
-  }
-
-  return raw || 'EXIT';
 }
 
 function trueMicroFamilyId(payload = {}) {
@@ -1058,6 +931,88 @@ function fingerprint(payload = {}) {
   );
 }
 
+function marketBiasHaystack(payload = {}) {
+  return [
+    payload.currentMarketBias,
+    payload.marketBias,
+    payload.currentTrendSide,
+    payload.entryCurrentTrendSide,
+    payload.currentRegime,
+    payload.entryCurrentRegime,
+    payload.currentFit,
+    payload.entryCurrentFit,
+    payload.currentMarketFit,
+    payload.currentFitReason,
+    payload.marketWeather,
+    payload.entryMarketWeather,
+    payload.reason,
+    payload.signalReason,
+    ...(Array.isArray(payload.definitionParts) ? payload.definitionParts : [])
+  ]
+    .map((value) => upper(value))
+    .filter(Boolean)
+    .join('|');
+}
+
+function getLongCurrentFit(payload = {}) {
+  const explicitLong = firstFiniteNumber(
+    payload.longCurrentFit,
+    payload.bullCurrentFit,
+    payload.bullishCurrentFit,
+    payload.longFitScore,
+    payload.bullFitScore,
+    payload.longMarketFit,
+    payload.bullMarketFit
+  );
+
+  if (explicitLong !== null) return explicitLong;
+
+  const explicitShort = firstFiniteNumber(
+    payload.shortCurrentFit,
+    payload.bearCurrentFit,
+    payload.bearishCurrentFit,
+    payload.shortFitScore,
+    payload.bearFitScore,
+    payload.shortMarketFit,
+    payload.bearMarketFit
+  );
+
+  if (explicitShort !== null) return -Math.abs(explicitShort);
+
+  const raw = firstFiniteNumber(
+    payload.currentFitScore,
+    payload.entryCurrentFitScore,
+    payload.marketFitScore,
+    payload.currentMarketFitScore,
+    payload.currentFit,
+    payload.entryCurrentFit,
+    payload.currentMarketFit,
+    payload.fitScore
+  );
+
+  if (raw === null) return null;
+
+  const bias = marketBiasHaystack(payload);
+  const bullish =
+    bias.includes('BULL') ||
+    bias.includes('BULLISH') ||
+    bias.includes('LONG') ||
+    bias.includes('BUY') ||
+    bias.includes('UP');
+
+  const bearish =
+    bias.includes('BEAR') ||
+    bias.includes('BEARISH') ||
+    bias.includes('SHORT') ||
+    bias.includes('SELL') ||
+    bias.includes('DOWN');
+
+  if (bullish && !bearish) return Math.abs(raw);
+  if (bearish && !bullish) return -Math.abs(raw);
+
+  return raw;
+}
+
 function isRealOrderSource(payload = {}) {
   const sources = [
     payload.source,
@@ -1121,6 +1076,38 @@ function isAnalysisOnlyPayload(payload = {}) {
     payload.tradeDiscoveryOnly === true ||
     payload.scannerOnly === true
   );
+}
+
+function getLongRiskGeometry(entry = {}) {
+  const entryPrice = safeNumber(entry.entry ?? entry.entryPrice, 0);
+  const sl = safeNumber(entry.initialSl ?? entry.sl ?? entry.stopLoss, 0);
+  const tp = safeNumber(entry.tp ?? entry.takeProfit, 0);
+  const exitPrice = safeNumber(extractExitPrice(entry), 0);
+  const currentPrice = safeNumber(entry.currentPrice ?? entry.lastPrice ?? entry.price, 0);
+  const riskDistance = entryPrice > 0 && sl > 0 && sl < entryPrice ? entryPrice - sl : 0;
+  const validLongGeometry = entryPrice > 0 && sl > 0 && sl < entryPrice && tp > entryPrice;
+  const longGrossR = validLongGeometry && exitPrice > 0 && riskDistance > 0
+    ? (exitPrice - entryPrice) / riskDistance
+    : null;
+  const longCurrentR = validLongGeometry && currentPrice > 0 && riskDistance > 0
+    ? (currentPrice - entryPrice) / riskDistance
+    : null;
+
+  return {
+    entry: entryPrice,
+    initialSl: sl,
+    sl,
+    tp,
+    exitPrice,
+    currentPrice,
+    riskDistance,
+    validLongGeometry,
+    validLongRiskShape: validLongGeometry,
+    longTpHit: validLongGeometry && currentPrice > 0 ? currentPrice >= tp : false,
+    longSlHit: validLongGeometry && currentPrice > 0 ? currentPrice <= sl : false,
+    longGrossR,
+    longCurrentR
+  };
 }
 
 function hasValidLongTradeShape(entry = {}) {
@@ -1206,17 +1193,132 @@ function hasSelectedMicroRotationMatch(entry = {}) {
   return true;
 }
 
+
+function rowMeasurementFixVersion(payload = {}) {
+  return upper(
+    payload.measurementFixVersion ??
+    payload.outcomeMeasurementVersion ??
+    payload.positionMeasurementFixVersion ??
+    payload.measurementVersion ??
+    payload.stats?.measurementFixVersion ??
+    payload.weeklyStats?.measurementFixVersion ??
+    ''
+  );
+}
+
+function familyGateStatus(payload = {}) {
+  return upper(
+    payload.familyGate ??
+    payload.familyGateStatus ??
+    payload.activationGate ??
+    payload.activationGateStatus ??
+    payload.learningGate ??
+    payload.gateStatus ??
+    payload.stats?.familyGate ??
+    payload.stats?.activationGate ??
+    payload.weeklyStats?.familyGate ??
+    payload.weeklyStats?.activationGate ??
+    payload.learningStatus ??
+    payload.status ??
+    ''
+  );
+}
+
+function currentFitEligible(payload = {}) {
+  if (
+    payload.currentFitBlocked === true ||
+    payload.currentFitEligible === false ||
+    payload.currentFitGatePassed === false ||
+    payload.currentFitStatus === 'BLOCKED'
+  ) return false;
+
+  if (
+    payload.currentFitEligible === true ||
+    payload.currentFitGatePassed === true ||
+    ['PASSED', 'ELIGIBLE', 'ALLOW', 'ALLOWED'].includes(upper(payload.currentFitStatus))
+  ) return true;
+
+  const fit = getLongCurrentFit(payload);
+  return fit !== null && fit > 0;
+}
+
+function cooldownOrDedupeBlocked(payload = {}) {
+  return Boolean(
+    payload.cooldownBlocked === true ||
+    payload.symbolCooldownBlocked === true ||
+    payload.reentryCooldownBlocked === true ||
+    payload.duplicateBlocked === true ||
+    payload.dedupeBlocked === true ||
+    payload.recentSignalDuplicate === true
+  );
+}
+
+function entryTemporalContext(payload = {}) {
+  const ts =
+    payload.entryTs ??
+    payload.openedAt ??
+    payload.entryCreatedAt ??
+    payload.createdAt ??
+    payload.ts ??
+    Date.now();
+  const derived = buildTemporalContextUtc(ts);
+  const explicitWeekend = typeof payload.entryIsWeekend === 'boolean'
+    ? payload.entryIsWeekend
+    : typeof payload.isWeekend === 'boolean'
+      ? payload.isWeekend
+      : derived.isWeekend;
+
+  return {
+    ...derived,
+    entryTs: normalizeTemporalTs(ts),
+    entryHourUtc: Number.isFinite(Number(payload.entryHourUtc)) ? Number(payload.entryHourUtc) : derived.hourUtc,
+    entryDayOfWeekUtc: payload.entryDayOfWeekUtc || derived.dayOfWeekUtc,
+    entryDayType: payload.entryDayType || (explicitWeekend ? 'WEEKEND' : 'WEEKDAY'),
+    entryIsWeekend: explicitWeekend,
+    entrySessionTags: Array.isArray(payload.entrySessionTags) ? payload.entrySessionTags : derived.sessionTags,
+    entrySessionBucket: payload.entrySessionBucket || derived.primarySessionBucket,
+    entrySessionOverlap: typeof payload.entrySessionOverlap === 'boolean' ? payload.entrySessionOverlap : derived.sessionOverlap,
+    entryOffHours: typeof payload.entryOffHours === 'boolean' ? payload.entryOffHours : derived.offHours,
+    weekendDiscordEntryAllowed: !explicitWeekend,
+    sessionDiscordEntryAllowed: true
+  };
+}
+
+function exitTemporalContext(payload = {}) {
+  const ts = payload.exitTs ?? payload.closedAt ?? payload.updatedAt ?? payload.ts ?? Date.now();
+  const derived = buildTemporalContextUtc(ts);
+
+  return {
+    ...derived,
+    exitTs: normalizeTemporalTs(ts),
+    exitHourUtc: Number.isFinite(Number(payload.exitHourUtc)) ? Number(payload.exitHourUtc) : derived.hourUtc,
+    exitDayOfWeekUtc: payload.exitDayOfWeekUtc || derived.dayOfWeekUtc,
+    exitDayType: payload.exitDayType || derived.dayType,
+    exitIsWeekend: typeof payload.exitIsWeekend === 'boolean' ? payload.exitIsWeekend : derived.isWeekend,
+    exitSessionTags: Array.isArray(payload.exitSessionTags) ? payload.exitSessionTags : derived.sessionTags,
+    exitSessionBucket: payload.exitSessionBucket || derived.primarySessionBucket,
+    exitSessionOverlap: typeof payload.exitSessionOverlap === 'boolean' ? payload.exitSessionOverlap : derived.sessionOverlap,
+    exitOffHours: typeof payload.exitOffHours === 'boolean' ? payload.exitOffHours : derived.offHours
+  };
+}
+
 function shouldSendEntryAlert(entry = {}) {
   if (!isLongPayload(entry)) return false;
   if (isMirrorPayload(entry)) return false;
   if (isAnalysisOnlyPayload(entry)) return false;
   if (isRealOrderSource(entry)) return false;
   if (!isVirtualSource(entry)) return false;
-
-  if (entry.action && !isEntryAction(entry.action)) return false;
-
+  if (entry.action && upper(entry.action) !== 'ENTRY') return false;
   if (!hasSelectedMicroRotationMatch(entry)) return false;
   if (!hasValidLongTradeShape(entry)) return false;
+  if (rowMeasurementFixVersion(entry) !== MEASUREMENT_FIX_VERSION) return false;
+  if (familyGateStatus(entry) !== FAMILY_GATE_REQUIRED) return false;
+  if (!currentFitEligible(entry)) return false;
+  if (cooldownOrDedupeBlocked(entry)) return false;
+
+  const temporal = entryTemporalContext(entry);
+  if (!temporal.weekendDiscordEntryAllowed) return false;
+  if (!temporal.sessionDiscordEntryAllowed) return false;
 
   return true;
 }
@@ -1243,6 +1345,10 @@ function compactPayload(payload = {}) {
   const parentId = parentTrueMicroFamilyId(payload);
   const parsed = parseLongTaxonomyMicroId(trueId);
   const risk = getLongRiskGeometry(payload);
+  const longCurrentFit = getLongCurrentFit(payload);
+  const temporal = upper(payload.action) === 'EXIT' || payload.exitReason
+    ? exitTemporalContext(payload)
+    : entryTemporalContext(payload);
 
   return {
     symbol: payload.symbol || null,
@@ -1257,6 +1363,8 @@ function compactPayload(payload = {}) {
     action: payload.action || null,
     reason: payload.reason || null,
     exitReason: payload.exitReason || null,
+
+    ...temporal,
 
     source: normalizeSource(payload.source),
     sourceMode: payload.sourceMode || null,
@@ -1296,13 +1404,14 @@ function compactPayload(payload = {}) {
     executionFingerprintRole: 'METADATA_ONLY',
     scannerFingerprintRole: payload.scannerFingerprintRole || 'METADATA_ONLY',
 
-    entry: extractEntryPrice(payload),
+    entry: payload.entry ?? null,
     exit: extractExitPrice(payload),
-    sl: extractSlPrice(payload),
-    initialSl: extractSlPrice(payload),
-    tp: extractTpPrice(payload),
+    sl: payload.sl ?? payload.initialSl ?? null,
+    initialSl: payload.initialSl ?? payload.sl ?? null,
+    tp: payload.tp ?? null,
     rr: payload.rr ?? null,
 
+    riskDistance: risk.riskDistance,
     validLongGeometry: risk.validLongGeometry,
     validLongRiskShape: risk.validLongRiskShape,
     longTpHit: risk.longTpHit,
@@ -1310,7 +1419,7 @@ function compactPayload(payload = {}) {
     riskTradeSide: TARGET_TRADE_SIDE,
     riskGeometryRule: 'LONG: sl < entry < tp',
     tpHitRule: 'LONG: price >= tp',
-    slHitRule: 'LONG: price <= sl',
+    slHitRule: 'LONG: price <= initialSl',
     grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
     currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
     longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
@@ -1321,6 +1430,21 @@ function compactPayload(payload = {}) {
     longCurrentR: payload.longCurrentR ?? risk.longCurrentR ?? null,
     mfeR: payload.mfeR ?? null,
     maeR: payload.maeR ?? null,
+
+    currentFit: longCurrentFit,
+    longCurrentFit,
+    bullCurrentFit: longCurrentFit,
+    bearishCurrentFit: longCurrentFit === null ? null : -Math.abs(longCurrentFit),
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
+    currentFitEligible: currentFitEligible(payload),
+    familyGate: familyGateStatus(payload),
+    familyGateRequired: FAMILY_GATE_REQUIRED,
+    measurementFixVersion: rowMeasurementFixVersion(payload),
+    acceptedOutcomeMeasurementVersion: MEASUREMENT_FIX_VERSION,
+    exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
+    empiricalVetoPolicyVersion: EMPIRICAL_VETO_POLICY_VERSION,
+    cooldownOrDedupeBlocked: cooldownOrDedupeBlocked(payload),
 
     reachedHalfR: Boolean(payload.reachedHalfR),
     reachedOneR: Boolean(payload.reachedOneR),
@@ -1366,8 +1490,24 @@ function compactPayload(payload = {}) {
     parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
 
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true,
+
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
+    redisKeysSeparatedFromShortRoot: true,
     shortRootTouched: false,
 
     ts: Date.now()
@@ -1431,10 +1571,13 @@ async function logDiscord(type, payload, result) {
         result,
         longOnly: true,
         shortDisabled: true,
+        shortOnly: false,
+        longDisabled: false,
         redisNamespace: LONG_NAMESPACE,
         redisKeyPrefix: LONG_KEY_PREFIX,
         redisKey: LONG_KEYS.discord.logList,
         persistentLearningKey: PERSISTENT_LEARNING_KEY,
+        redisKeysSeparatedFromShortRoot: true,
         shortRootTouched: false,
         ts: Date.now()
       },
@@ -1464,6 +1607,7 @@ async function skipDiscord(type, payload = {}, reason = 'DISCORD_SKIPPED') {
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    redisKeysSeparatedFromShortRoot: true,
     shortRootTouched: false
   };
 
@@ -1478,11 +1622,17 @@ function entrySkipReason(entry = {}) {
   if (isAnalysisOnlyPayload(entry)) return 'DISCORD_SKIPPED_ANALYSIS_ONLY';
   if (isRealOrderSource(entry)) return 'DISCORD_REAL_ORDER_SOURCE_BLOCKED';
   if (!isVirtualSource(entry)) return 'DISCORD_VIRTUAL_SOURCE_REQUIRED';
-  if (entry.action && !isEntryAction(entry.action)) return 'DISCORD_SKIPPED_NOT_ENTRY_ACTION';
+  if (entry.action && upper(entry.action) !== 'ENTRY') return 'DISCORD_SKIPPED_NOT_ENTRY_ACTION';
   if (!trueMicroFamilyId(entry)) return 'ENTRY_EXACT_75_CHILD_TRUE_MICRO_FAMILY_ID_MISSING';
   if (!validLearningChildId(trueMicroFamilyId(entry))) return 'ENTRY_ONLY_EXACT_75_CHILD_TRUE_MICRO_ALLOWED';
   if (!hasSelectedMicroRotationMatch(entry)) return 'ENTRY_NOT_SELECTED_MANUAL_75_CHILD_TRUE_MICRO_MATCH';
   if (!hasValidLongTradeShape(entry)) return 'ENTRY_INVALID_LONG_TRADE_SHAPE_SL_ENTRY_TP_REQUIRED';
+  if (rowMeasurementFixVersion(entry) !== MEASUREMENT_FIX_VERSION) return 'ENTRY_CURRENT_V2_MEASUREMENT_REQUIRED';
+  if (familyGateStatus(entry) !== FAMILY_GATE_REQUIRED) return 'ENTRY_FAMILY_GATE_PASSED_REQUIRED';
+  if (!currentFitEligible(entry)) return 'ENTRY_CURRENT_FIT_NOT_ELIGIBLE';
+  if (cooldownOrDedupeBlocked(entry)) return 'ENTRY_COOLDOWN_OR_DEDUPE_BLOCKED';
+  if (!entryTemporalContext(entry).weekendDiscordEntryAllowed) return 'ENTRY_WEEKEND_DISCORD_BLOCKED_OBSERVE_MODE';
+  if (!entryTemporalContext(entry).sessionDiscordEntryAllowed) return 'ENTRY_SESSION_POLICY_BLOCKED';
 
   return 'ENTRY_NOT_ELIGIBLE';
 }
@@ -1514,7 +1664,9 @@ function entryReasonText(entry = {}) {
     `SAMPLE=${fmtNumber(statsSample, 2)}`,
     `AVG_R=${fmtR(avgR)}`,
     `TOTAL_R=${fmtR(totalR)}`,
-    `AVG_COST_R=${fmtR(avgCostR)}`
+    `AVG_COST_R=${fmtR(avgCostR)}`,
+    `SESSION=${entryTemporalContext(entry).entrySessionBucket}`,
+    `DAY=${entryTemporalContext(entry).entryDayType}`
   ].join(' | ');
 }
 
@@ -1527,24 +1679,76 @@ export async function sendEntryAlert(entry = {}) {
     );
   }
 
-  const symbol = displaySymbol(entry);
+  const symbol = normalizeBaseSymbol(entry.symbol || entry.contractSymbol);
   const side = normalizeSideLabel(entry);
-  const directionEmoji = tradeDirectionEmoji(entry);
+
+  const stats = weeklyStats(entry);
+  const sample = completedSample(entry);
+  const wr = bestWinrate(entry);
+  const avgR = statValue(entry, 'avgR');
+  const totalR = statValue(entry, 'totalR');
+  const profitFactor = statValue(entry, 'profitFactor');
+  const directSLPct = statValue(entry, 'directSLPct');
+  const sampleReliability = statValue(entry, 'sampleReliability');
+  const avgCostR = statValue(entry, 'avgCostR');
+  const parsed = parseLongTaxonomyMicroId(trueMicroFamilyId(entry));
+  const longCurrentFit = getLongCurrentFit(entry);
 
   const content = {
-    username: 'Trade Alerts',
+    username: 'Micro-Family Trader',
     embeds: [
       {
-        title: `${directionEmoji} ${side} — ${symbol}`,
+        title: `${symbol || 'UNKNOWN'} ${side} VIRTUAL SNIPER ENTRY`,
         color: discordColorForSide(entry),
-        description: [
-          `Entry   ${fmtPrice(extractEntryPrice(entry))}`,
-          `TP      ${fmtPrice(extractTpPrice(entry))}`,
-          `SL      ${fmtPrice(extractSlPrice(entry))}`
-        ].join('\n'),
-        footer: {
-          text: CUSTOMER_DISCLAIMER
-        },
+        description: truncate(entryReasonText(entry), 300),
+        fields: [
+          field('Source', SOURCE_VIRTUAL, true),
+          field('Entry', fmtPrice(entry.entry), true),
+          field('TP', fmtPrice(entry.tp), true),
+          field('SL', fmtPrice(entry.sl ?? entry.initialSl), true),
+          field('RR', fmtR(entry.rr), true),
+          field('Risk', fmtPct(entry.riskPct), true),
+          field('Spread', fmtPct(entry.spreadPct ?? entry.liveSpreadPct), true),
+
+          field('Risk geometry', 'LONG: sl < entry < tp', false),
+          field('TP rule', 'LONG: price >= tp', true),
+          field('SL rule', 'LONG: price <= initialSl', true),
+          field('Current fit', longCurrentFit === null ? 'NA' : fmtNumber(longCurrentFit, 2), true),
+          field('Family gate', familyGateStatus(entry) || 'NA', true),
+          field('Day type', entryTemporalContext(entry).entryDayType, true),
+          field('UTC session', entryTemporalContext(entry).entrySessionBucket, true),
+
+          field('True micro 75-child', trueMicroFamilyId(entry) || 'NA', false),
+          field('Parent 15', parentTrueMicroFamilyId(entry) || 'NA', false),
+          field('Setup', parsed.setupType || entry.setupType || 'NA', true),
+          field('Regime', parsed.regimeBucket || entry.regimeBucket || 'NA', true),
+          field('Confirmation', parsed.confirmationProfile || entry.confirmationProfile || 'NA', true),
+
+          field('Fingerprint metadata', fingerprint(entry), true),
+          field('Rotation', entry.activeRotationId || entry.rotationId || 'NA', true),
+          field('Match', entry.rotationMatchType || 'TRUE_MICRO_EXACT_75_CHILD', true),
+
+          field('Winrate fair', fmtPctSmart(wr), true),
+          field('Completed', fmtNumber(sample, 2), true),
+          field('Reliability', fmtPctSmart(sampleReliability), true),
+          field('Avg R', fmtR(avgR), true),
+          field('Total R', fmtR(totalR), true),
+          field('Avg cost', fmtR(avgCostR), true),
+          field('Profit factor', fmtNumber(profitFactor, 2), true),
+          field('Direct SL', fmtPctSmart(directSLPct), true),
+
+          field(
+            'Confluence',
+            [
+              `RSI=${entry.rsiZone || stats.rsiZone || 'NA'}`,
+              `FLOW=${entry.flow || stats.flow || 'NA'}`,
+              `OB=${entry.obRelation || stats.obRelation || 'NA'}`,
+              `BTC=${entry.btcRelation || stats.btcRelation || 'NA'}`,
+              `REGIME=${entry.regime || stats.regime || 'NA'}`
+            ].join(' | '),
+            false
+          )
+        ],
         timestamp: nowIso()
       }
     ]
@@ -1553,12 +1757,15 @@ export async function sendEntryAlert(entry = {}) {
   const result = await postDiscord(content);
   await logDiscord('ENTRY', {
     ...entry,
+    ...entryTemporalContext(entry),
     source: SOURCE_VIRTUAL,
     outcomeSource: SOURCE_VIRTUAL,
     virtualOnly: true,
     virtualTracked: true,
     longOnly: true,
     shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
     realOrdersDisabled: true,
     bitgetOrdersDisabled: true,
     exchangeCallsDisabled: true,
@@ -1567,9 +1774,11 @@ export async function sendEntryAlert(entry = {}) {
     parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
     riskGeometryRule: 'LONG: sl < entry < tp',
     tpHitRule: 'LONG: price >= tp',
-    slHitRule: 'LONG: price <= sl',
+    slHitRule: 'LONG: price <= initialSl',
     grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
-    currentRFormula: '(currentPrice - entry) / (entry - initialSl)'
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT'
   }, result);
 
   return result;
@@ -1584,27 +1793,47 @@ export async function sendExitAlert(outcome = {}) {
     );
   }
 
-  const symbol = displaySymbol(outcome);
+  const symbol = normalizeBaseSymbol(outcome.symbol || outcome.contractSymbol);
   const side = normalizeSideLabel(outcome);
   const exitPrice = extractExitPrice(outcome);
-  const resultR = resultRForDiscord(outcome);
-  const exitType = normalizeExitType(outcome);
-  const emoji = exitEmoji(exitType, resultR);
-  const reason = customerExitReason(exitType);
+  const resultR = extractResultR(outcome);
+  const parsed = parseLongTaxonomyMicroId(trueMicroFamilyId(outcome));
+  const risk = getLongRiskGeometry(outcome);
 
   const content = {
-    username: 'Trade Alerts',
+    username: 'Micro-Family Trader',
     embeds: [
       {
-        title: `${emoji} ${side} gesloten — ${symbol}`,
+        title: `${symbol || 'UNKNOWN'} ${side} VIRTUAL EXIT`,
         color: discordColorForResult(resultR),
-        description: [
-          `Exit      ${fmtPrice(exitPrice)}`,
-          `Resultaat ${fmtR(resultR)}  (${reason})`
-        ].join('\n'),
-        footer: {
-          text: CUSTOMER_DISCLAIMER
-        },
+        fields: [
+          field('Source', SOURCE_VIRTUAL, true),
+          field('Exit', fmtPrice(exitPrice), true),
+          field('Result net', fmtR(resultR), true),
+          field('Reason', outcome.exitReason || 'EXIT', true),
+          field('Cost', fmtR(outcome.costR), true),
+          field('PnL net', fmtPct(outcome.pnlPct ?? outcome.netPnlPct), true),
+          field('Gross R', fmtR(outcome.longGrossR ?? risk.longGrossR ?? outcome.grossR), true),
+          field('Current R', fmtR(outcome.longCurrentR ?? risk.longCurrentR ?? outcome.currentR), true),
+          field('MFE', fmtR(outcome.mfeR), true),
+          field('MAE', fmtR(outcome.maeR), true),
+          field('Entry day', entryTemporalContext(outcome).entryDayType, true),
+          field('Entry session', entryTemporalContext(outcome).entrySessionBucket, true),
+          field('Exit session', exitTemporalContext(outcome).exitSessionBucket, true),
+
+          field('Risk geometry', 'LONG: sl < entry < tp', false),
+          field('TP rule', 'LONG: price >= tp', true),
+          field('SL rule', 'LONG: price <= initialSl', true),
+
+          field('True micro 75-child', trueMicroFamilyId(outcome) || 'NA', false),
+          field('Parent 15', parentTrueMicroFamilyId(outcome) || 'NA', false),
+          field('Setup', parsed.setupType || outcome.setupType || 'NA', true),
+          field('Regime', parsed.regimeBucket || outcome.regimeBucket || 'NA', true),
+          field('Confirmation', parsed.confirmationProfile || outcome.confirmationProfile || 'NA', true),
+
+          field('Fingerprint metadata', fingerprint(outcome), true),
+          field('Rotation', outcome.activeRotationId || outcome.rotationId || 'NA', true)
+        ],
         timestamp: nowIso()
       }
     ]
@@ -1613,12 +1842,15 @@ export async function sendExitAlert(outcome = {}) {
   const result = await postDiscord(content);
   await logDiscord('EXIT', {
     ...outcome,
+    ...exitTemporalContext(outcome),
     source: SOURCE_VIRTUAL,
     outcomeSource: SOURCE_VIRTUAL,
     virtualOnly: true,
     virtualTracked: true,
     longOnly: true,
     shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
     realOrdersDisabled: true,
     bitgetOrdersDisabled: true,
     exchangeCallsDisabled: true,
@@ -1627,9 +1859,11 @@ export async function sendExitAlert(outcome = {}) {
     parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
     riskGeometryRule: 'LONG: sl < entry < tp',
     tpHitRule: 'LONG: price >= tp',
-    slHitRule: 'LONG: price <= sl',
+    slHitRule: 'LONG: price <= initialSl',
     grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
-    currentRFormula: '(currentPrice - entry) / (entry - initialSl)'
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT'
   }, result);
 
   return result;
@@ -1764,7 +1998,14 @@ export async function sendWeeklyRotationReport(rotationInput = {}, label = 'WEEK
     exchangeCallsDisabled: true,
     trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
     childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
-    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA
+    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= initialSl',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT'
   }, result);
 
   return result;
@@ -1812,6 +2053,7 @@ export async function sendResetReport(report = {}) {
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    redisKeysSeparatedFromShortRoot: true,
     shortRootTouched: false
   }, result);
 
