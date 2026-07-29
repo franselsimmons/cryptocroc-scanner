@@ -28,7 +28,11 @@ const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
 const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
 const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 
-const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
+const MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_TRIGGER_BOUNDARY_EXIT_FILL_V2';
+const PREVIOUS_MEASUREMENT_FIX_VERSION = 'LONG_MEASUREMENT_FIX_AVGCOST_DIRECTSL_SEEN_DEDUPE_V1';
+const EXIT_FILL_MODEL_VERSION = 'LONG_TRIGGER_BOUNDARY_FILL_PLUS_COST_MODEL_V1';
+const OUTCOME_MEASUREMENT_GATE_MODE = 'STRICT_EXACT_VERSION';
+const CURRENT_FIT_VERSION = 'LONG_CURRENTFIT_PERSISTENCE_SNAPSHOT_V2';
 
 const SOURCE_VIRTUAL = 'VIRTUAL';
 const SOURCE_REAL = 'REAL';
@@ -59,6 +63,395 @@ const CONFIRMATION_PROFILE_ORDER = Object.freeze([
 ]);
 
 const LONG_CONFIRMATION_PROFILES = new Set(CONFIRMATION_PROFILE_ORDER);
+
+const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
+const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
+const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
+const WEEKEND_MODE = 'OBSERVE';
+const SESSION_MODE = 'OBSERVE';
+
+const DAY_OF_WEEK_UTC = Object.freeze([
+  'SUNDAY',
+  'MONDAY',
+  'TUESDAY',
+  'WEDNESDAY',
+  'THURSDAY',
+  'FRIDAY',
+  'SATURDAY'
+]);
+
+const PRIMARY_SESSION_BUCKETS = Object.freeze([
+  'ASIA',
+  'EUROPE',
+  'US',
+  'ASIA_EU_OVERLAP',
+  'EU_US_OVERLAP',
+  'OFF_HOURS'
+]);
+
+const PRIMARY_SESSION_BUCKET_SET = new Set(PRIMARY_SESSION_BUCKETS);
+
+function temporalTimestamp(...values) {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return now();
+}
+
+function uniqueTemporalStrings(values = []) {
+  return [...new Set(
+    (Array.isArray(values) ? values : [values])
+      .flat(Infinity)
+      .map((value) => String(value || '').trim().toUpperCase())
+      .filter(Boolean)
+  )];
+}
+
+export function buildTemporalContext(timestamp = now()) {
+  const contextTs = temporalTimestamp(timestamp);
+  const date = new Date(contextTs);
+  const hourUtc = date.getUTCHours();
+  const dayIndex = date.getUTCDay();
+  const dayOfWeekUtc = DAY_OF_WEEK_UTC[dayIndex] || 'UNKNOWN';
+  const isWeekend = dayIndex === 0 || dayIndex === 6;
+
+  const asia = hourUtc >= 0 && hourUtc < 8;
+  const europe = hourUtc >= 7 && hourUtc < 16;
+  const us = hourUtc >= 13 && hourUtc < 22;
+
+  const sessionTags = [];
+  if (asia) sessionTags.push('ASIA');
+  if (europe) sessionTags.push('EUROPE');
+  if (us) sessionTags.push('US');
+
+  let primarySessionBucket = 'OFF_HOURS';
+  if (europe && us) primarySessionBucket = 'EU_US_OVERLAP';
+  else if (asia && europe) primarySessionBucket = 'ASIA_EU_OVERLAP';
+  else if (asia) primarySessionBucket = 'ASIA';
+  else if (europe) primarySessionBucket = 'EUROPE';
+  else if (us) primarySessionBucket = 'US';
+
+  return {
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    contextTs,
+    hourUtc,
+    dayOfWeekUtc,
+    dayType: isWeekend ? 'WEEKEND' : 'WEEKDAY',
+    isWeekend,
+    sessionTags,
+    primarySessionBucket,
+    sessionOverlap: sessionTags.length > 1,
+    offHours: sessionTags.length === 0
+  };
+}
+
+function normalizeTemporalContext(value = {}, fallbackTs = now()) {
+  const source = value && typeof value === 'object' && !Array.isArray(value)
+    ? value
+    : {};
+
+  const derived = buildTemporalContext(
+    temporalTimestamp(source.contextTs, source.ts, fallbackTs)
+  );
+
+  const dayType = String(source.dayType || '').trim().toUpperCase();
+  const explicitWeekend = source.isWeekend;
+  const isWeekend = dayType === 'WEEKEND'
+    ? true
+    : dayType === 'WEEKDAY'
+      ? false
+      : typeof explicitWeekend === 'boolean'
+        ? explicitWeekend
+        : derived.isWeekend;
+
+  const tags = uniqueTemporalStrings(source.sessionTags)
+    .filter((tag) => ['ASIA', 'EUROPE', 'US'].includes(tag));
+
+  const sessionTags = tags.length > 0 ? tags : derived.sessionTags;
+  const requestedBucket = String(source.primarySessionBucket || '').trim().toUpperCase();
+  const primarySessionBucket = PRIMARY_SESSION_BUCKET_SET.has(requestedBucket)
+    ? requestedBucket
+    : derived.primarySessionBucket;
+
+  return {
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    contextTs: derived.contextTs,
+    hourUtc: Number.isInteger(Number(source.hourUtc))
+      ? Math.max(0, Math.min(23, Number(source.hourUtc)))
+      : derived.hourUtc,
+    dayOfWeekUtc: String(source.dayOfWeekUtc || derived.dayOfWeekUtc).trim().toUpperCase(),
+    dayType: isWeekend ? 'WEEKEND' : 'WEEKDAY',
+    isWeekend,
+    sessionTags,
+    primarySessionBucket,
+    sessionOverlap: typeof source.sessionOverlap === 'boolean'
+      ? source.sessionOverlap
+      : sessionTags.length > 1,
+    offHours: typeof source.offHours === 'boolean'
+      ? source.offHours
+      : primarySessionBucket === 'OFF_HOURS'
+  };
+}
+
+export function resolveEntryTemporalContext(row = {}) {
+  const nested = row.entryTemporalContext || row.temporalContext || {};
+  return normalizeTemporalContext({
+    ...nested,
+    contextTs:
+      row.entryTs ??
+      row.openedAt ??
+      row.entryAt ??
+      row.createdAt ??
+      row.observedAt ??
+      row.contextTs ??
+      row.ts,
+    hourUtc: row.entryHourUtc ?? nested.hourUtc ?? row.hourUtc,
+    dayOfWeekUtc: row.entryDayOfWeekUtc ?? nested.dayOfWeekUtc ?? row.dayOfWeekUtc,
+    dayType: row.entryDayType ?? nested.dayType ?? row.dayType,
+    isWeekend: row.entryIsWeekend ?? nested.isWeekend ?? row.isWeekend,
+    sessionTags: row.entrySessionTags ?? nested.sessionTags ?? row.sessionTags,
+    primarySessionBucket:
+      row.entrySessionBucket ??
+      nested.primarySessionBucket ??
+      row.primarySessionBucket,
+    sessionOverlap:
+      row.entrySessionOverlap ??
+      nested.sessionOverlap ??
+      row.sessionOverlap,
+    offHours: row.entryOffHours ?? nested.offHours ?? row.offHours
+  }, temporalTimestamp(row.createdAt, row.observedAt, row.ts));
+}
+
+export function resolveExitTemporalContext(row = {}) {
+  const nested = row.exitTemporalContext || {};
+  return normalizeTemporalContext({
+    ...nested,
+    contextTs:
+      row.exitTs ??
+      row.closedAt ??
+      row.completedAt ??
+      row.exitAt ??
+      row.updatedAt ??
+      row.ts,
+    hourUtc: row.exitHourUtc ?? nested.hourUtc,
+    dayOfWeekUtc: row.exitDayOfWeekUtc ?? nested.dayOfWeekUtc,
+    dayType: row.exitDayType ?? nested.dayType,
+    isWeekend: row.exitIsWeekend ?? nested.isWeekend,
+    sessionTags: row.exitSessionTags ?? nested.sessionTags,
+    primarySessionBucket: row.exitSessionBucket ?? nested.primarySessionBucket,
+    sessionOverlap: row.exitSessionOverlap ?? nested.sessionOverlap,
+    offHours: row.exitOffHours ?? nested.offHours
+  }, temporalTimestamp(row.closedAt, row.completedAt, row.updatedAt, row.ts));
+}
+
+export function temporalPolicyFlags(context = buildTemporalContext()) {
+  const normalized = normalizeTemporalContext(context, context?.contextTs);
+  const weekendDiscordEntryAllowed = !(
+    WEEKEND_MODE === 'OBSERVE' && normalized.isWeekend
+  );
+
+  return {
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendDiscordEntryAllowed,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true
+  };
+}
+
+export function entryTemporalFields(row = {}) {
+  const context = resolveEntryTemporalContext(row);
+  return {
+    ...context,
+    ...temporalPolicyFlags(context),
+    entryTs: context.contextTs,
+    entryHourUtc: context.hourUtc,
+    entryDayOfWeekUtc: context.dayOfWeekUtc,
+    entryDayType: context.dayType,
+    entryIsWeekend: context.isWeekend,
+    entrySessionTags: context.sessionTags,
+    entrySessionBucket: context.primarySessionBucket,
+    entrySessionOverlap: context.sessionOverlap,
+    entryOffHours: context.offHours,
+    entryTemporalContext: context
+  };
+}
+
+export function exitTemporalFields(row = {}) {
+  const context = resolveExitTemporalContext(row);
+  return {
+    exitTs: context.contextTs,
+    exitHourUtc: context.hourUtc,
+    exitDayOfWeekUtc: context.dayOfWeekUtc,
+    exitDayType: context.dayType,
+    exitIsWeekend: context.isWeekend,
+    exitSessionTags: context.sessionTags,
+    exitSessionBucket: context.primarySessionBucket,
+    exitSessionOverlap: context.sessionOverlap,
+    exitOffHours: context.offHours,
+    exitTemporalContext: context
+  };
+}
+
+function createTemporalMetricBucket() {
+  return {
+    seen: 0,
+    observations: 0,
+    completed: 0,
+    wins: 0,
+    losses: 0,
+    flats: 0,
+    totalR: 0,
+    avgR: 0,
+    grossWinR: 0,
+    grossLossR: 0,
+    profitFactor: 0,
+    directSLCount: 0,
+    directSLPct: 0,
+    totalCostR: 0,
+    avgCostR: 0
+  };
+}
+
+function normalizeTemporalMetricBucket(value = {}) {
+  const bucket = {
+    ...createTemporalMetricBucket(),
+    ...(value && typeof value === 'object' && !Array.isArray(value) ? value : {})
+  };
+
+  for (const key of Object.keys(createTemporalMetricBucket())) {
+    bucket[key] = safeNumber(bucket[key], 0);
+  }
+
+  return refreshTemporalMetricBucket(bucket);
+}
+
+function refreshTemporalMetricBucket(bucket = {}) {
+  const completed = Math.max(0, safeNumber(bucket.completed, 0));
+  bucket.avgR = completed > 0 ? safeNumber(bucket.totalR, 0) / completed : 0;
+  bucket.avgCostR = completed > 0 ? safeNumber(bucket.totalCostR, 0) / completed : 0;
+  bucket.directSLPct = completed > 0 ? safeNumber(bucket.directSLCount, 0) / completed : 0;
+  const grossLossR = Math.max(0, safeNumber(bucket.grossLossR, 0));
+  const grossWinR = Math.max(0, safeNumber(bucket.grossWinR, 0));
+  bucket.profitFactor = grossLossR > 0
+    ? grossWinR / grossLossR
+    : grossWinR > 0
+      ? 999
+      : 0;
+  return bucket;
+}
+
+export function ensureTemporalStats(stats = {}) {
+  const contextSource = stats.contextStats && typeof stats.contextStats === 'object'
+    ? stats.contextStats
+    : {};
+  const sessionSource = stats.sessionStats && typeof stats.sessionStats === 'object'
+    ? stats.sessionStats
+    : {};
+
+  stats.contextStats = {
+    WEEKDAY: normalizeTemporalMetricBucket(contextSource.WEEKDAY),
+    WEEKEND: normalizeTemporalMetricBucket(contextSource.WEEKEND)
+  };
+
+  stats.sessionStats = Object.fromEntries(
+    PRIMARY_SESSION_BUCKETS.map((bucket) => [
+      bucket,
+      normalizeTemporalMetricBucket(sessionSource[bucket])
+    ])
+  );
+
+  stats.temporalContextVersion = TEMPORAL_CONTEXT_VERSION;
+  stats.weekendPolicyVersion = WEEKEND_POLICY_VERSION;
+  stats.sessionPolicyVersion = SESSION_POLICY_VERSION;
+  stats.weekendMode = WEEKEND_MODE;
+  stats.sessionMode = SESSION_MODE;
+  stats.weekendLearningAllowed = true;
+  stats.weekendVirtualEntryAllowed = true;
+  stats.weekendDiscordEntryAllowed = false;
+  stats.weekendExitMonitoringAllowed = true;
+  stats.weekendOutcomeRecordingAllowed = true;
+  stats.sessionLearningAllowed = true;
+  stats.sessionVirtualEntryAllowed = true;
+  stats.sessionDiscordEntryAllowed = true;
+  stats.sessionPolicyObservedOnly = true;
+
+  return stats;
+}
+
+export function recordTemporalObservation(stats = {}, row = {}) {
+  ensureTemporalStats(stats);
+  const context = resolveEntryTemporalContext(row);
+  const dayBucket = stats.contextStats[context.dayType];
+  const sessionBucket = stats.sessionStats[context.primarySessionBucket];
+
+  for (const bucket of [dayBucket, sessionBucket]) {
+    bucket.seen = safeNumber(bucket.seen, 0) + 1;
+    bucket.observations = safeNumber(bucket.observations, 0) + 1;
+    refreshTemporalMetricBucket(bucket);
+  }
+
+  stats.lastTemporalContext = context;
+  stats.lastObservationTemporalContext = context;
+  stats.lastObservationDayType = context.dayType;
+  stats.lastObservationSessionBucket = context.primarySessionBucket;
+  return context;
+}
+
+export function recordTemporalOutcome(stats = {}, row = {}, metrics = {}) {
+  ensureTemporalStats(stats);
+  const context = resolveEntryTemporalContext(row);
+  const dayBucket = stats.contextStats[context.dayType];
+  const sessionBucket = stats.sessionStats[context.primarySessionBucket];
+  const netR = safeNumber(metrics.netR ?? row.netR ?? row.exitR, 0);
+  const grossR = safeNumber(metrics.grossR ?? row.grossR ?? row.rawR, netR);
+  const costR = Math.max(0, safeNumber(metrics.costR ?? row.costR, Math.max(0, grossR - netR)));
+  const directSL = Boolean(metrics.directSL ?? row.directSL ?? row.directToSL);
+
+  for (const bucket of [dayBucket, sessionBucket]) {
+    bucket.completed = safeNumber(bucket.completed, 0) + 1;
+    bucket.wins = safeNumber(bucket.wins, 0) + (netR > 0 ? 1 : 0);
+    bucket.losses = safeNumber(bucket.losses, 0) + (netR < 0 ? 1 : 0);
+    bucket.flats = safeNumber(bucket.flats, 0) + (netR === 0 ? 1 : 0);
+    bucket.totalR = safeNumber(bucket.totalR, 0) + netR;
+    bucket.grossWinR = safeNumber(bucket.grossWinR, 0) + (netR > 0 ? netR : 0);
+    bucket.grossLossR = safeNumber(bucket.grossLossR, 0) + (netR < 0 ? Math.abs(netR) : 0);
+    bucket.directSLCount = safeNumber(bucket.directSLCount, 0) + (directSL ? 1 : 0);
+    bucket.totalCostR = safeNumber(bucket.totalCostR, 0) + costR;
+    refreshTemporalMetricBucket(bucket);
+  }
+
+  stats.lastOutcomeTemporalContext = context;
+  stats.lastOutcomeDayType = context.dayType;
+  stats.lastOutcomeSessionBucket = context.primarySessionBucket;
+  return context;
+}
+
+export function resetTemporalOutcomeMetrics(stats = {}) {
+  ensureTemporalStats(stats);
+  const buckets = [
+    ...Object.values(stats.contextStats),
+    ...Object.values(stats.sessionStats)
+  ];
+
+  for (const bucket of buckets) {
+    const seen = safeNumber(bucket.seen, 0);
+    const observations = safeNumber(bucket.observations, 0);
+    Object.assign(bucket, createTemporalMetricBucket(), { seen, observations });
+  }
+
+  return stats;
+}
 
 function now() {
   return Date.now();
@@ -168,6 +561,504 @@ function finiteOrNull(value) {
   const n = Number(value);
 
   return Number.isFinite(n) ? n : null;
+}
+
+
+function normalizeMeasurementFixVersion(value = '') {
+  return upper(value);
+}
+
+function rowMeasurementFixVersion(row = {}) {
+  return normalizeMeasurementFixVersion(
+    row.measurementFixVersion ??
+      row.outcomeMeasurementVersion ??
+      row.positionMeasurementFixVersion ??
+      row.measurementVersion ??
+      row.exitMeasurementVersion ??
+      ''
+  );
+}
+
+function isCurrentMeasurementOutcome(row = {}) {
+  return rowMeasurementFixVersion(row) === MEASUREMENT_FIX_VERSION;
+}
+
+function outcomeResetNumericFields() {
+  return [
+    'virtualCompleted',
+    'realCompleted',
+    'shadowCompleted',
+    'completed',
+    'winrateSample',
+
+    'wins',
+    'losses',
+    'flats',
+
+    'virtualWins',
+    'virtualLosses',
+    'virtualFlats',
+
+    'realWins',
+    'realLosses',
+    'realFlats',
+
+    'shadowWins',
+    'shadowLosses',
+    'shadowFlats',
+
+    'totalR',
+    'virtualTotalR',
+    'realTotalR',
+    'shadowTotalR',
+
+    'totalPnlPct',
+    'virtualTotalPnlPct',
+    'realTotalPnlPct',
+    'shadowTotalPnlPct',
+
+    'totalCostR',
+    'virtualTotalCostR',
+    'realTotalCostR',
+    'shadowTotalCostR',
+
+    'grossWinR',
+    'grossLossR',
+
+    'virtualGrossWinR',
+    'virtualGrossLossR',
+    'realGrossWinR',
+    'realGrossLossR',
+    'shadowGrossWinR',
+    'shadowGrossLossR',
+
+    'avgR',
+    'avgWinR',
+    'avgLossR',
+    'sampleAdjustedAvgR',
+    'avgRScore',
+    'avgPnlPct',
+    'avgCostR',
+
+    'directSLCount',
+    'nearTpCount',
+    'reachedHalfRCount',
+    'reachedOneRCount',
+
+    'beWouldExitCount',
+    'gaveBackAfterHalfRCount',
+    'gaveBackAfterOneRCount',
+    'nearTpThenLossCount',
+
+    'winrate',
+    'bayesianWinrate',
+    'wilsonLowerBound',
+    'fairWinrate',
+    'sampleAdjustedWinrate',
+
+    'sampleRawWinrate',
+    'sampleBayesianWinrate',
+    'sampleWilsonLowerBound',
+    'sampleReliabilityOld',
+
+    'profitFactor',
+    'sampleReliability',
+    'balancedScore',
+    'dashboardBalancedScore',
+
+    'directSLPct',
+    'nearTpPct',
+    'reachedHalfRPct',
+    'reachedOneRPct',
+
+    'beWouldExitPct',
+    'gaveBackAfterHalfRPct',
+    'gaveBackAfterOneRPct',
+    'nearTpThenLossPct'
+  ];
+}
+
+function hasStoredOutcomeMeasurementData(stats = {}) {
+  if (
+    Array.isArray(stats.recentOutcomes) &&
+    stats.recentOutcomes.length > 0
+  ) {
+    return true;
+  }
+
+  return outcomeResetNumericFields().some(
+    (field) => safeNumber(stats[field], 0) !== 0
+  );
+}
+
+function storedCompletedForMeasurementIntegrity(stats = {}) {
+  const sourceCompleted =
+    safeNumber(stats.virtualCompleted, 0) +
+    safeNumber(stats.shadowCompleted, 0);
+
+  return Math.max(
+    sourceCompleted,
+    safeNumber(stats.completed, 0),
+    0
+  );
+}
+
+function currentMeasurementAggregateIntegrity(stats = {}) {
+  const completed = storedCompletedForMeasurementIntegrity(stats);
+  const acceptedOutcomeCount = Math.max(
+    0,
+    safeNumber(stats.measurementVersionAcceptedOutcomeCount, 0)
+  );
+
+  const recentOutcomes = Array.isArray(stats.recentOutcomes)
+    ? stats.recentOutcomes
+    : [];
+
+  const nonCurrentRecentOutcomeCount = recentOutcomes
+    .filter((outcome) => !isCurrentMeasurementOutcome(outcome))
+    .length;
+
+  const acceptedCountCoversCompleted =
+    completed <= 0 || acceptedOutcomeCount >= completed;
+
+  return {
+    valid:
+      acceptedCountCoversCompleted &&
+      nonCurrentRecentOutcomeCount === 0,
+    completed,
+    acceptedOutcomeCount,
+    acceptedCountCoversCompleted,
+    recentOutcomeCount: recentOutcomes.length,
+    nonCurrentRecentOutcomeCount
+  };
+}
+
+function applyOutcomeMeasurementPolicyFlags(stats = {}) {
+  stats.measurementFixVersion = MEASUREMENT_FIX_VERSION;
+  stats.outcomeMeasurementVersion = MEASUREMENT_FIX_VERSION;
+  stats.acceptedOutcomeMeasurementVersion = MEASUREMENT_FIX_VERSION;
+  stats.previousSupportedMeasurementFixVersion = PREVIOUS_MEASUREMENT_FIX_VERSION;
+
+  stats.outcomeMeasurementGateMode = OUTCOME_MEASUREMENT_GATE_MODE;
+  stats.outcomeMeasurementVersionRequired = true;
+  stats.strictOutcomeMeasurementGate = true;
+  stats.legacyOutcomeMeasurementsExcluded = true;
+  stats.completedCurrentMeasurementOnly = true;
+
+  stats.exitFillModelVersion = EXIT_FILL_MODEL_VERSION;
+  stats.exitFillPolicy = 'TP_SL_USE_TRIGGER_BOUNDARY_TIME_STOP_USES_OBSERVED_PRICE';
+  stats.exitFillAssumption = 'TRIGGER_BOUNDARY_PLUS_COST_MODEL';
+
+  return stats;
+}
+
+function migrateOutcomeMeasurementVersion(stats = {}) {
+  const storedVersion = rowMeasurementFixVersion(stats);
+  const alreadyCurrent = storedVersion === MEASUREMENT_FIX_VERSION;
+  const integrity = currentMeasurementAggregateIntegrity(stats);
+
+  if (alreadyCurrent && integrity.valid) {
+    stats.recentOutcomes = Array.isArray(stats.recentOutcomes)
+      ? stats.recentOutcomes
+          .filter(isCurrentMeasurementOutcome)
+          .slice(-50)
+      : [];
+
+    stats.currentMeasurementAggregateIntegrityValid = true;
+    stats.currentMeasurementAggregateIntegrityCheckedAt =
+      stats.currentMeasurementAggregateIntegrityCheckedAt || now();
+    stats.currentMeasurementAggregateCompleted = integrity.completed;
+    stats.currentMeasurementAcceptedOutcomeCount =
+      integrity.acceptedOutcomeCount;
+    stats.currentMeasurementNonCurrentRecentOutcomeCount = 0;
+
+    return applyOutcomeMeasurementPolicyFlags(stats);
+  }
+
+  const migrationAt = now();
+  const hadLegacyOutcomeData = hasStoredOutcomeMeasurementData(stats);
+
+  const legacyCompleted = integrity.completed;
+  const legacyAcceptedOutcomeCount = integrity.acceptedOutcomeCount;
+  const legacyTotalR = safeNumber(stats.totalR, 0);
+  const legacyTotalCostR = safeNumber(stats.totalCostR, 0);
+  const legacyAvgR = legacyCompleted > 0
+    ? legacyTotalR / legacyCompleted
+    : 0;
+
+  const legacyRecentOutcomeCount = Array.isArray(stats.recentOutcomes)
+    ? stats.recentOutcomes.length
+    : 0;
+
+  for (const field of outcomeResetNumericFields()) {
+    stats[field] = 0;
+  }
+
+  resetTemporalOutcomeMetrics(stats);
+
+  stats.measurementVersionAcceptedOutcomeCount = 0;
+  stats.lastAcceptedOutcomeMeasurementVersion = null;
+  stats.lastAcceptedOutcomeMeasurementAt = null;
+
+  stats.recentOutcomes = [];
+  stats.costStatsInferredFromRecent = false;
+  stats.directSLStatsInferredFromRecent = false;
+
+  stats.learningStatus = 'OBSERVING';
+  stats.status = 'OBSERVING';
+  stats.awaitingOutcomes = safeNumber(stats.seen, 0) > 0;
+  stats.tooEarly = true;
+
+  stats.previousMeasurementFixVersion = alreadyCurrent
+    ? 'CURRENT_VERSION_WITH_UNVERIFIED_AGGREGATES'
+    : storedVersion || 'UNVERSIONED';
+
+  stats.outcomeMeasurementMigrationApplied = true;
+  stats.outcomeMeasurementMigrationAt =
+    stats.outcomeMeasurementMigrationAt ||
+    migrationAt;
+
+  stats.outcomeMeasurementMigrationReason = alreadyCurrent
+    ? 'CURRENT_VERSION_AGGREGATE_INTEGRITY_MISMATCH_LEGACY_DATA_EXCLUDED'
+    : 'LEGACY_TRIGGER_OVERSHOOT_OUTCOMES_EXCLUDED_FROM_CLEAN_DATASET';
+
+  stats.currentMeasurementAggregateIntegrityValid = true;
+  stats.currentMeasurementAggregateIntegrityMismatchDetected = alreadyCurrent;
+  stats.currentMeasurementAggregateIntegrityCheckedAt = migrationAt;
+  stats.currentMeasurementAggregateCompleted = 0;
+  stats.currentMeasurementAcceptedOutcomeCount = 0;
+  stats.currentMeasurementNonCurrentRecentOutcomeCount = 0;
+
+  stats.legacyOutcomeDataWasPresent = hadLegacyOutcomeData;
+  stats.legacyExcludedCompleted = round4(legacyCompleted);
+  stats.legacyExcludedTotalR = round4(legacyTotalR);
+  stats.legacyExcludedAvgR = round4(legacyAvgR);
+  stats.legacyExcludedTotalCostR = round4(legacyTotalCostR);
+  stats.legacyExcludedRecentOutcomeCount = legacyRecentOutcomeCount;
+  stats.legacyExcludedAcceptedOutcomeCount = round4(
+    legacyAcceptedOutcomeCount
+  );
+  stats.legacyExcludedNonCurrentRecentOutcomeCount =
+    integrity.nonCurrentRecentOutcomeCount;
+
+  stats.lastOutcomeMeasurementResetAt = migrationAt;
+  stats.updatedAt = migrationAt;
+
+  return applyOutcomeMeasurementPolicyFlags(stats);
+}
+
+function normalizeCurrentFitLabel(value = '') {
+  const raw = upper(value);
+
+  if (
+    raw === 'MATCH' ||
+    raw === 'FIT'
+  ) {
+    return 'FIT';
+  }
+
+  if (
+    raw === 'WEAK_MATCH' ||
+    raw === 'WEAKMATCH' ||
+    raw === 'OK'
+  ) {
+    return 'OK';
+  }
+
+  if (raw === 'NEUTRAL') return 'NEUTRAL';
+  if (raw === 'MISFIT') return 'MISFIT';
+
+  return 'UNKNOWN';
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(
+    object || {},
+    key
+  );
+}
+
+function hasUsableCurrentFitSnapshot(value = {}) {
+  const label = normalizeCurrentFitLabel(
+    value.currentFit ||
+      value.currentFitLabel ||
+      value.entryCurrentFit ||
+      value.lastKnownCurrentFit
+  );
+
+  return (
+    label !== 'UNKNOWN' ||
+    value.currentMarketWeatherAvailable === true ||
+    value.currentFitScoreBuilt === true
+  );
+}
+
+function applyCurrentFitSnapshot(stats = {}, row = {}) {
+  const hasExplicitLabel =
+    hasOwn(row, 'currentFit') ||
+    hasOwn(row, 'currentFitLabel') ||
+    hasOwn(row, 'entryCurrentFit');
+
+  const hasExplicitScore =
+    hasOwn(row, 'currentFitScore') ||
+    hasOwn(row, 'fitScore');
+
+  const hasExplicitConfidence =
+    hasOwn(row, 'currentFitConfidence') ||
+    hasOwn(row, 'entryCurrentFitConfidence') ||
+    hasOwn(row, 'currentMarketFitConfidence');
+
+  const hasWeatherContext = Boolean(
+    row.currentMarketWeather ||
+    row.entryMarketWeather ||
+    row.currentMarketWeatherAvailable === true ||
+    row.currentRegime ||
+    row.currentMarketRegime ||
+    row.currentTrendSide ||
+    row.currentMarketTrendSide
+  );
+
+  if (
+    !hasExplicitLabel &&
+    !hasExplicitScore &&
+    !hasExplicitConfidence &&
+    !hasWeatherContext
+  ) {
+    return stats;
+  }
+
+  const label = normalizeCurrentFitLabel(
+    row.currentFit ||
+      row.currentFitLabel ||
+      row.entryCurrentFit
+  );
+
+  const score = finiteOrNull(
+    row.currentFitScore ??
+      row.fitScore
+  );
+
+  const confidence = finiteOrNull(
+    row.currentFitConfidence ??
+      row.entryCurrentFitConfidence ??
+      row.currentMarketFitConfidence
+  );
+
+  const reasons = Array.isArray(row.currentFitReasons)
+    ? row.currentFitReasons
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+        .slice(0, 20)
+    : [];
+
+  const updatedAt = safeNumber(
+    row.currentFitUpdatedAt ??
+      row.liveDataTs ??
+      row.updatedAt ??
+      row.createdAt ??
+      row.ts,
+    now()
+  );
+
+  if (hasExplicitLabel) {
+    stats.currentFit = label;
+    stats.currentFitLabel = label;
+  } else {
+    stats.currentFit ||= 'UNKNOWN';
+    stats.currentFitLabel ||= stats.currentFit;
+  }
+
+  if (score !== null) {
+    stats.currentFitScore = score;
+    stats.fitScore = score;
+  }
+
+  if (confidence !== null) {
+    stats.currentFitConfidence = confidence;
+  }
+
+  stats.currentFitReason =
+    row.currentFitReason ||
+    stats.currentFitReason ||
+    null;
+
+  if (reasons.length > 0) {
+    stats.currentFitReasons = reasons;
+  } else if (!Array.isArray(stats.currentFitReasons)) {
+    stats.currentFitReasons = [];
+  }
+
+  stats.currentRegime =
+    row.currentRegime ||
+    row.currentMarketRegime ||
+    stats.currentRegime ||
+    'UNKNOWN';
+
+  stats.currentMarketRegime =
+    row.currentMarketRegime ||
+    row.currentRegime ||
+    stats.currentMarketRegime ||
+    'UNKNOWN';
+
+  stats.currentTrendSide =
+    row.currentTrendSide ||
+    row.currentMarketTrendSide ||
+    stats.currentTrendSide ||
+    'UNKNOWN';
+
+  stats.currentMarketTrendSide =
+    row.currentMarketTrendSide ||
+    row.currentTrendSide ||
+    stats.currentMarketTrendSide ||
+    'UNKNOWN';
+
+  stats.currentBearishPct = finiteOrNull(
+    row.currentBearishPct ??
+      row.bearishPct
+  ) ?? stats.currentBearishPct ?? null;
+
+  stats.currentBullishPct = finiteOrNull(
+    row.currentBullishPct ??
+      row.bullishPct
+  ) ?? stats.currentBullishPct ?? null;
+
+  stats.currentSqueezePct = finiteOrNull(
+    row.currentSqueezePct ??
+      row.squeezePct
+  ) ?? stats.currentSqueezePct ?? null;
+
+  stats.currentMarketWeatherAgeSec = finiteOrNull(
+    row.currentMarketWeatherAgeSec
+  ) ?? stats.currentMarketWeatherAgeSec ?? null;
+
+  stats.currentMarketWeatherStale = Boolean(
+    row.currentMarketWeatherStale
+  );
+
+  stats.currentMarketWeatherAvailable = Boolean(
+    row.currentMarketWeatherAvailable === true ||
+    row.currentMarketWeather ||
+    row.entryMarketWeather
+  );
+
+  stats.currentFitVersion =
+    row.currentFitVersion ||
+    stats.currentFitVersion ||
+    CURRENT_FIT_VERSION;
+
+  stats.currentFitUpdatedAt = updatedAt;
+  stats.currentFitScoreBuilt =
+    label !== 'UNKNOWN' &&
+    score !== null;
+
+  if (label !== 'UNKNOWN') {
+    stats.lastKnownCurrentFit = label;
+    stats.lastKnownCurrentFitScore = score ?? safeNumber(stats.currentFitScore, 0);
+    stats.lastKnownCurrentFitConfidence = confidence ?? safeNumber(stats.currentFitConfidence, 0);
+    stats.lastKnownCurrentFitAt = updatedAt;
+  }
+
+  return stats;
 }
 
 function inc(obj, key, amount = 1) {
@@ -355,11 +1246,19 @@ function cleanSideText(value = '') {
     .replaceAll('SHORT_ENABLED_FALSE', '')
     .replaceAll('SHORT_ONLY_FALSE', '')
     .replaceAll('LONG_DISABLED_FALSE', '')
-    .replaceAll('SHORT_DISABLED_LONG_ONLY', '')
-    .replaceAll('SHORTDISABLED_LONG_ONLY', '')
-    .replaceAll('BLOCK_SHORT', '')
-    .replaceAll('SHORT_DISABLED', '')
-    .replaceAll('SHORTDISABLED', '')
+    .replaceAll('LONGDISABLED_FALSE', '')
+    .replaceAll('LONG_ENABLED_FALSE', '')
+    .replaceAll('LONG_ONLY_FALSE', '')
+    .replaceAll('SHORT_DISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('SHORTDISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('BLOCK_SHORT', 'LONG')
+    .replaceAll('SHORT_DISABLED', 'LONG')
+    .replaceAll('SHORTDISABLED', 'LONG')
+    .replaceAll('LONG_DISABLED_SHORT_ONLY', 'SHORT')
+    .replaceAll('LONGDISABLED_SHORT_ONLY', 'SHORT')
+    .replaceAll('BLOCK_LONG', 'SHORT')
+    .replaceAll('LONG_DISABLED', 'SHORT')
+    .replaceAll('LONGDISABLED', 'SHORT')
     .replaceAll('LONG_ONLY_MODE', 'LONG')
     .replaceAll('LONG_ONLY', 'LONG')
     .replaceAll('LONG-ONLY', 'LONG')
@@ -455,7 +1354,7 @@ function normalizeTradeSide(value) {
   if (longHit && !shortHit) return TARGET_TRADE_SIDE;
   if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
 
-  if (shortHit && longHit) {
+  if (longHit && shortHit) {
     if (raw.includes('TRADE_SIDE=LONG') || raw.includes('TRADESIDE=LONG')) return TARGET_TRADE_SIDE;
     if (raw.includes('TRADE_SIDE=SHORT') || raw.includes('TRADESIDE=SHORT')) return OPPOSITE_TRADE_SIDE;
     if (raw.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
@@ -550,7 +1449,7 @@ function definitionSide(row = {}) {
   if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
   if (longHit && !shortHit) return TARGET_TRADE_SIDE;
 
-  if (shortHit && longHit) {
+  if (longHit && shortHit) {
     const text = values
       .map((value) => cleanSideText(value))
       .filter(Boolean)
@@ -848,6 +1747,97 @@ function fixedTaxonomyMeta(row = {}) {
   };
 }
 
+function longRiskGeometry(row = {}) {
+  const entry = safeNumber(row.entry ?? row.entryPrice, 0);
+  const initialSl = safeNumber(row.initialSl ?? row.sl ?? row.stopLoss, 0);
+  const tp = safeNumber(row.tp ?? row.takeProfit, 0);
+  const exitPrice = safeNumber(row.exitPrice ?? row.exit ?? row.closePrice, 0);
+  const currentPrice = safeNumber(row.currentPrice ?? row.markPrice ?? row.price, 0);
+
+  const riskDistance =
+    entry > 0 &&
+    initialSl > 0 &&
+    initialSl < entry
+      ? entry - initialSl
+      : 0;
+
+  const validLongRiskShape =
+    entry > 0 &&
+    initialSl > 0 &&
+    tp > 0 &&
+    initialSl < entry &&
+    entry < tp;
+
+  const longGrossR =
+    validLongRiskShape &&
+    riskDistance > 0 &&
+    exitPrice > 0
+      ? (exitPrice - entry) / riskDistance
+      : null;
+
+  const longCurrentR =
+    validLongRiskShape &&
+    riskDistance > 0 &&
+    currentPrice > 0
+      ? (currentPrice - entry) / riskDistance
+      : null;
+
+  return {
+    entry,
+    initialSl,
+    sl: initialSl,
+    tp,
+    exitPrice,
+    currentPrice,
+    riskDistance,
+    validLongRiskShape,
+    validLongGeometry: validLongRiskShape,
+    longTpHit: validLongRiskShape && currentPrice > 0 ? currentPrice >= tp : false,
+    longSlHit: validLongRiskShape && currentPrice > 0 ? currentPrice <= initialSl : false,
+    longGrossR,
+    longCurrentR
+  };
+}
+
+function outcomeExitR(row = {}) {
+  const explicitLong = finiteOrNull(
+    row.longNetR ??
+      row.netLongR ??
+      row.longExitR ??
+      row.realizedLongR
+  );
+
+  if (explicitLong !== null) return explicitLong;
+
+  const explicitGeneric = finiteOrNull(
+    row.netR ??
+      row.exitR ??
+      row.realizedNetR ??
+      row.realizedR ??
+      row.r
+  );
+
+  if (explicitGeneric !== null) return explicitGeneric;
+
+  const geometry = longRiskGeometry(row);
+
+  if (geometry.longGrossR !== null) return geometry.longGrossR;
+
+  const explicitLongGross = finiteOrNull(row.longGrossR ?? row.grossLongR);
+
+  if (explicitLongGross !== null) return explicitLongGross;
+
+  const explicitGross = finiteOrNull(
+    row.grossR ??
+      row.rawR ??
+      row.realizedGrossR
+  );
+
+  if (explicitGross !== null) return explicitGross;
+
+  return 0;
+}
+
 function applyLearningIdentityFlags(stats = {}, row = {}) {
   const id = rowMicroId({
     ...stats,
@@ -862,6 +1852,8 @@ function applyLearningIdentityFlags(stats = {}, row = {}) {
   stats.redisNamespace = LONG_NAMESPACE;
   stats.redisKeyPrefix = LONG_KEY_PREFIX;
   stats.persistentLearningKey = PERSISTENT_LEARNING_KEY;
+  stats.redisKeysSeparatedFromShortRoot = true;
+  stats.shortRootTouched = false;
 
   stats.trueMicroOnly = true;
   stats.exactTrueMicroOnly = true;
@@ -928,6 +1920,8 @@ function applyLearningIdentityFlags(stats = {}, row = {}) {
 
   stats.completedDefinition = 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES';
   stats.completedOnlyClosedVirtualOrShadow = true;
+  stats.completedMeasurementFilter = MEASUREMENT_FIX_VERSION;
+  stats.completedCurrentMeasurementOnly = true;
   stats.scoringRSource = 'netR';
   stats.winsLossesFlatsSource = 'netR';
   stats.winrateDefinition = 'netR > 0';
@@ -936,7 +1930,7 @@ function applyLearningIdentityFlags(stats = {}, row = {}) {
   stats.avgCostRShown = true;
   stats.avgCostRSource = 'costR';
 
-  stats.measurementFixVersion = MEASUREMENT_FIX_VERSION;
+  applyOutcomeMeasurementPolicyFlags(stats);
   stats.seenDefinition = 'UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY';
   stats.observationDedupeRequired = true;
   stats.observationAlwaysCounted = false;
@@ -952,6 +1946,8 @@ function applyLearningIdentityFlags(stats = {}, row = {}) {
 
   stats.currentFitSoftOnly = true;
   stats.currentFitBlocksLearning = false;
+  stats.currentFitPolarity = 'BULLISH_POSITIVE_BEARISH_NEGATIVE';
+  stats.currentFitDefinition = 'LONG_MIRRORED_CURRENT_FIT';
   stats.learningRemainsBroad = true;
   stats.selectionWillBeAdaptive = true;
   stats.discordWillBeStrict = true;
@@ -959,8 +1955,19 @@ function applyLearningIdentityFlags(stats = {}, row = {}) {
   stats.adaptiveLayerBuilt = false;
   stats.adaptiveScoreBuilt = false;
   stats.recentMomentumScoreBuilt = false;
-  stats.currentFitScoreBuilt = false;
+  stats.currentFitScoreBuilt = hasUsableCurrentFitSnapshot(stats);
   stats.parentDiversificationBuilt = false;
+
+  stats.validLongRiskShape = 'entry > 0 && sl > 0 && sl < entry && tp > entry';
+  stats.longRiskShape = 'sl < entry < tp';
+  stats.riskTradeSide = TARGET_TRADE_SIDE;
+  stats.riskGeometryRule = 'LONG: sl < entry < tp';
+  stats.tpHitRule = 'LONG: price >= tp';
+  stats.slHitRule = 'LONG: price <= sl';
+  stats.grossRFormula = '(exitPrice - entry) / (entry - initialSl)';
+  stats.currentRFormula = '(currentPrice - entry) / (entry - initialSl)';
+  stats.longGrossRFormula = '(exitPrice - entry) / (entry - initialSl)';
+  stats.longCurrentRFormula = '(currentPrice - entry) / (entry - initialSl)';
 
   stats.realOrdersDisabled = true;
   stats.exchangeOrdersDisabled = true;
@@ -1181,6 +2188,17 @@ function inferCostR(row = {}, exitR = 0) {
     return explicit;
   }
 
+  const geometry = longRiskGeometry(row);
+  const longGrossR = finiteOrNull(
+    row.longGrossR ??
+      row.grossLongR ??
+      geometry.longGrossR
+  );
+
+  if (longGrossR !== null) {
+    return Math.max(0, longGrossR - safeNumber(exitR, 0));
+  }
+
   const grossR = finiteOrNull(
     row.grossR ??
       row.rawR ??
@@ -1294,7 +2312,9 @@ function aggregateRecentOutcomes(stats = {}) {
   const statsId = rowMicroId(stats);
 
   const outcomes = Array.isArray(stats.recentOutcomes)
-    ? stats.recentOutcomes.filter(isLongRow)
+    ? stats.recentOutcomes
+        .filter(isLongRow)
+        .filter(isCurrentMeasurementOutcome)
     : [];
 
   return outcomes.reduce(
@@ -1313,7 +2333,7 @@ function aggregateRecentOutcomes(stats = {}) {
 
       const weight = sourceWeight(src);
 
-      const exitR = safeNumber(row.netR ?? row.exitR ?? row.realizedNetR ?? row.realizedR ?? row.r, 0);
+      const exitR = outcomeExitR(row);
       const pnlPct = safeNumber(row.netPnlPct ?? row.pnlPct, 0);
       const costR = inferCostR(row, exitR);
 
@@ -1530,6 +2550,8 @@ export function createMicroStats({
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    redisKeysSeparatedFromShortRoot: true,
+    shortRootTouched: false,
 
     definitionParts,
     definition: definitionParts.join(' | '),
@@ -1539,6 +2561,28 @@ export function createMicroStats({
     observationDuplicateSkippedCount: 0,
     observationDedupeKeys: [],
     observationAlwaysCounted: false,
+
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+    contextStats: {
+      WEEKDAY: createTemporalMetricBucket(),
+      WEEKEND: createTemporalMetricBucket()
+    },
+    sessionStats: Object.fromEntries(
+      PRIMARY_SESSION_BUCKETS.map((bucket) => [bucket, createTemporalMetricBucket()])
+    ),
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendDiscordEntryAllowed: false,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true,
 
     virtualCompleted: 0,
     realCompleted: 0,
@@ -1636,6 +2680,17 @@ export function createMicroStats({
     costStatsInferredFromRecent: false,
     directSLStatsInferredFromRecent: false,
 
+    validLongRiskShape: 'entry > 0 && sl > 0 && sl < entry && tp > entry',
+    longRiskShape: 'sl < entry < tp',
+    riskTradeSide: TARGET_TRADE_SIDE,
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= sl',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+
     scannerFingerprintRole: 'METADATA_ONLY',
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
@@ -1654,6 +2709,8 @@ export function createMicroStats({
 
     completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
     completedOnlyClosedVirtualOrShadow: true,
+    completedMeasurementFilter: MEASUREMENT_FIX_VERSION,
+    completedCurrentMeasurementOnly: true,
     scoringRSource: 'netR',
     winsLossesFlatsSource: 'netR',
     winrateDefinition: 'netR > 0',
@@ -1663,6 +2720,19 @@ export function createMicroStats({
     avgCostRSource: 'costR',
 
     measurementFixVersion: MEASUREMENT_FIX_VERSION,
+    outcomeMeasurementVersion: MEASUREMENT_FIX_VERSION,
+    acceptedOutcomeMeasurementVersion: MEASUREMENT_FIX_VERSION,
+    previousSupportedMeasurementFixVersion: PREVIOUS_MEASUREMENT_FIX_VERSION,
+    outcomeMeasurementGateMode: OUTCOME_MEASUREMENT_GATE_MODE,
+    outcomeMeasurementVersionRequired: true,
+    strictOutcomeMeasurementGate: true,
+    legacyOutcomeMeasurementsExcluded: true,
+    completedCurrentMeasurementOnly: true,
+    exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
+    exitFillPolicy: 'TP_SL_USE_TRIGGER_BOUNDARY_TIME_STOP_USES_OBSERVED_PRICE',
+    exitFillAssumption: 'TRIGGER_BOUNDARY_PLUS_COST_MODEL',
+    measurementVersionAcceptedOutcomeCount: 0,
+    measurementVersionRejectedOutcomeCount: 0,
     seenDefinition: 'UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY',
     observationDedupeRequired: true,
 
@@ -1675,8 +2745,34 @@ export function createMicroStats({
     rankingUsesAvgR: true,
     rankingUsesAvgCostR: true,
 
+    currentFit: 'UNKNOWN',
+    currentFitLabel: 'UNKNOWN',
+    currentFitScore: 0,
+    fitScore: 0,
+    currentFitConfidence: 0,
+    currentFitReason: null,
+    currentFitReasons: [],
+    currentFitVersion: CURRENT_FIT_VERSION,
+    currentFitUpdatedAt: null,
+    lastKnownCurrentFit: 'UNKNOWN',
+    lastKnownCurrentFitScore: 0,
+    lastKnownCurrentFitConfidence: 0,
+    lastKnownCurrentFitAt: null,
+    currentRegime: 'UNKNOWN',
+    currentMarketRegime: 'UNKNOWN',
+    currentTrendSide: 'UNKNOWN',
+    currentMarketTrendSide: 'UNKNOWN',
+    currentBearishPct: null,
+    currentBullishPct: null,
+    currentSqueezePct: null,
+    currentMarketWeatherAgeSec: null,
+    currentMarketWeatherStale: false,
+    currentMarketWeatherAvailable: false,
+
     currentFitSoftOnly: true,
     currentFitBlocksLearning: false,
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
     learningRemainsBroad: true,
     selectionWillBeAdaptive: true,
     discordWillBeStrict: true,
@@ -1704,6 +2800,9 @@ export function createMicroStats({
 }
 
 function ensureStatsShape(stats = {}) {
+  migrateOutcomeMeasurementVersion(stats);
+  ensureTemporalStats(stats);
+
   stats.counters ||= makeCounters();
   stats.counters.rsiZone ||= {};
   stats.counters.flow ||= {};
@@ -1714,7 +2813,10 @@ function ensureStatsShape(stats = {}) {
 
   stats.examples = Array.isArray(stats.examples) ? stats.examples.filter(isLongRow) : [];
   stats.recentOutcomes = Array.isArray(stats.recentOutcomes)
-    ? stats.recentOutcomes.filter(isLongRow)
+    ? stats.recentOutcomes
+        .filter(isLongRow)
+        .filter(isCurrentMeasurementOutcome)
+        .slice(-50)
     : [];
 
   stats.definitionParts = Array.isArray(stats.definitionParts)
@@ -1735,6 +2837,23 @@ function ensureStatsShape(stats = {}) {
 
   stats.minCompletedForActiveLearning = MIN_COMPLETED_ACTIVE;
 
+  stats.currentFit = normalizeCurrentFitLabel(
+    stats.currentFit ||
+      stats.currentFitLabel ||
+      stats.entryCurrentFit
+  );
+  stats.currentFitLabel = stats.currentFit;
+  stats.currentFitReasons = Array.isArray(stats.currentFitReasons)
+    ? stats.currentFitReasons
+    : [];
+  stats.currentFitVersion ||= CURRENT_FIT_VERSION;
+  stats.currentMarketRegime ||= stats.currentRegime || 'UNKNOWN';
+  stats.currentRegime ||= stats.currentMarketRegime || 'UNKNOWN';
+  stats.currentMarketTrendSide ||= stats.currentTrendSide || 'UNKNOWN';
+  stats.currentTrendSide ||= stats.currentMarketTrendSide || 'UNKNOWN';
+  stats.currentMarketWeatherAvailable = Boolean(stats.currentMarketWeatherAvailable);
+  stats.currentMarketWeatherStale = Boolean(stats.currentMarketWeatherStale);
+
   applySideIdentity(stats);
 
   const numericFields = [
@@ -1742,6 +2861,8 @@ function ensureStatsShape(stats = {}) {
     'observations',
     'observationDuplicateSkippedCount',
     'outcomeDuplicateSkippedCount',
+    'measurementVersionAcceptedOutcomeCount',
+    'measurementVersionRejectedOutcomeCount',
 
     'virtualCompleted',
     'realCompleted',
@@ -1825,6 +2946,12 @@ function ensureStatsShape(stats = {}) {
     'balancedScore',
     'dashboardBalancedScore',
 
+    'currentFitScore',
+    'fitScore',
+    'currentFitConfidence',
+    'lastKnownCurrentFitScore',
+    'lastKnownCurrentFitConfidence',
+
     'directSLPct',
     'nearTpPct',
     'reachedHalfRPct',
@@ -1852,6 +2979,8 @@ function ensureStatsShape(stats = {}) {
 
   stats.currentFitSoftOnly = true;
   stats.currentFitBlocksLearning = false;
+  stats.currentFitPolarity = 'BULLISH_POSITIVE_BEARISH_NEGATIVE';
+  stats.currentFitDefinition = 'LONG_MIRRORED_CURRENT_FIT';
   stats.learningRemainsBroad = true;
   stats.selectionWillBeAdaptive = true;
   stats.discordWillBeStrict = true;
@@ -1859,8 +2988,10 @@ function ensureStatsShape(stats = {}) {
   stats.adaptiveLayerBuilt = false;
   stats.adaptiveScoreBuilt = false;
   stats.recentMomentumScoreBuilt = false;
-  stats.currentFitScoreBuilt = false;
+  stats.currentFitScoreBuilt = hasUsableCurrentFitSnapshot(stats);
   stats.parentDiversificationBuilt = false;
+
+  applyOutcomeMeasurementPolicyFlags(stats);
 
   stats.createdAt ||= now();
   stats.updatedAt ||= now();
@@ -1876,6 +3007,7 @@ export function updateObservation(stats, row = {}) {
   }
 
   applySideIdentity(stats, row);
+  applyCurrentFitSnapshot(stats, row);
 
   const dedupeKey = observationDedupeKey({
     ...stats,
@@ -1908,6 +3040,8 @@ export function updateObservation(stats, row = {}) {
   stats.observationRecorded = true;
   stats.observationDuplicate = false;
   stats.observationAlwaysCounted = false;
+
+  const observationTemporalContext = recordTemporalObservation(stats, row);
 
   inc(stats.counters.rsiZone, row.rsiZone);
   inc(stats.counters.flow, row.flow);
@@ -1962,6 +3096,43 @@ export function updateObservation(stats, row = {}) {
       parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
       learningGranularity: LEARNING_GRANULARITY,
 
+      longOnly: true,
+      shortDisabled: true,
+      shortOnly: false,
+      longDisabled: false,
+
+      riskGeometryRule: 'LONG: sl < entry < tp',
+      tpHitRule: 'LONG: price >= tp',
+      slHitRule: 'LONG: price <= sl',
+      grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+      currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+      currentFit: normalizeCurrentFitLabel(
+        row.currentFit ||
+        row.currentFitLabel ||
+        row.entryCurrentFit
+      ),
+      currentFitScore: safeNumber(row.currentFitScore ?? row.fitScore, 0),
+      currentFitConfidence: safeNumber(
+        row.currentFitConfidence ??
+        row.entryCurrentFitConfidence,
+        0
+      ),
+      currentFitReason: row.currentFitReason || null,
+      currentRegime: row.currentRegime || row.currentMarketRegime || null,
+      currentTrendSide: row.currentTrendSide || row.currentMarketTrendSide || null,
+      currentMarketWeatherAvailable: Boolean(
+        row.currentMarketWeatherAvailable === true ||
+        row.currentMarketWeather ||
+        row.entryMarketWeather
+      ),
+      currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+      currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
+
+      ...entryTemporalFields({
+        ...row,
+        entryTemporalContext: observationTemporalContext
+      }),
+
       ts: row.createdAt || row.ts || now()
     });
   }
@@ -1984,6 +3155,28 @@ export function updateOutcome(stats, row = {}, source = SOURCE_VIRTUAL) {
   }
 
   applySideIdentity(stats, row);
+  applyCurrentFitSnapshot(stats, row);
+
+  const incomingMeasurementVersion = rowMeasurementFixVersion(row);
+
+  if (!isCurrentMeasurementOutcome(row)) {
+    stats.measurementVersionRejectedOutcomeCount =
+      safeNumber(stats.measurementVersionRejectedOutcomeCount, 0) + 1;
+
+    stats.lastRejectedOutcomeMeasurementVersion =
+      incomingMeasurementVersion ||
+      'UNVERSIONED';
+
+    stats.lastRejectedOutcomeMeasurementAt = now();
+    stats.lastRejectedOutcomeMeasurementReason =
+      'OUTCOME_MEASUREMENT_VERSION_NOT_CURRENT';
+
+    stats.outcomeRecorded = false;
+    stats.outcomeMeasurementRejected = true;
+    stats.updatedAt = now();
+
+    return refreshStats(stats);
+  }
 
   if (outcomeIsDuplicate(row)) {
     stats.outcomeDuplicateSkippedCount = safeNumber(stats.outcomeDuplicateSkippedCount, 0) + 1;
@@ -2006,17 +3199,19 @@ export function updateOutcome(stats, row = {}, source = SOURCE_VIRTUAL) {
     return refreshStats(stats);
   }
 
+  stats.measurementVersionAcceptedOutcomeCount =
+    safeNumber(stats.measurementVersionAcceptedOutcomeCount, 0) + 1;
+
+  stats.lastAcceptedOutcomeMeasurementVersion =
+    incomingMeasurementVersion;
+
+  stats.lastAcceptedOutcomeMeasurementAt = now();
+  stats.outcomeMeasurementRejected = false;
+
   const weight = sourceWeight(src);
+  const geometry = longRiskGeometry(row);
 
-  const exitR = safeNumber(
-    row.netR ??
-      row.exitR ??
-      row.realizedNetR ??
-      row.realizedR ??
-      row.r,
-    0
-  );
-
+  const exitR = outcomeExitR(row);
   const pnlPct = safeNumber(row.netPnlPct ?? row.pnlPct, 0);
   const costR = inferCostR(row, exitR);
 
@@ -2075,6 +3270,16 @@ export function updateOutcome(stats, row = {}, source = SOURCE_VIRTUAL) {
 
   const directSL = isDirectSL(row);
 
+  recordTemporalOutcome(stats, row, {
+    netR: exitR,
+    grossR: safeNumber(
+      row.grossR ?? row.rawR ?? row.realizedGrossR ?? geometry.longGrossR,
+      exitR
+    ),
+    costR,
+    directSL
+  });
+
   if (directSL) stats.directSLCount += weight;
   if (row.nearTpSeen) stats.nearTpCount += weight;
   if (row.reachedHalfR) stats.reachedHalfRCount += weight;
@@ -2107,9 +3312,46 @@ export function updateOutcome(stats, row = {}, source = SOURCE_VIRTUAL) {
 
     exitReason: row.exitReason || row.reason || null,
 
+    measurementFixVersion: MEASUREMENT_FIX_VERSION,
+    outcomeMeasurementVersion: MEASUREMENT_FIX_VERSION,
+    exitFillModelVersion: row.exitFillModelVersion || EXIT_FILL_MODEL_VERSION,
+    exitFillSource: row.exitFillSource || null,
+    exitFillAssumption: row.exitFillAssumption || null,
+    triggerBoundaryFillApplied: Boolean(row.triggerBoundaryFillApplied),
+    exitObservedPrice: safeNumber(row.exitObservedPrice, null),
+    exitFillPrice: safeNumber(row.exitFillPrice ?? row.exitPrice, null),
+    exitTriggerPrice: safeNumber(row.exitTriggerPrice, null),
+    observedVsFillPct: safeNumber(row.observedVsFillPct, 0),
+    observedBeyondTriggerPct: safeNumber(row.observedBeyondTriggerPct, 0),
+
+    entry: geometry.entry || row.entry || row.entryPrice || null,
+    exit: geometry.exitPrice || row.exit || row.exitPrice || null,
+    exitPrice: geometry.exitPrice || row.exitPrice || row.exit || null,
+    initialSl: geometry.initialSl || row.initialSl || row.sl || null,
+    sl: geometry.sl || row.sl || null,
+    tp: geometry.tp || row.tp || null,
+    currentPrice: geometry.currentPrice || row.currentPrice || null,
+
+    validLongRiskShape: geometry.validLongRiskShape,
+    validLongGeometry: geometry.validLongGeometry,
+    riskTradeSide: TARGET_TRADE_SIDE,
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= sl',
+    longTpHit: geometry.longTpHit,
+    longSlHit: geometry.longSlHit,
+
     exitR,
-    netR: safeNumber(row.netR ?? exitR, exitR),
-    grossR: safeNumber(row.grossR ?? row.rawR ?? row.realizedGrossR, 0),
+    netR: safeNumber(row.netR ?? row.longNetR ?? exitR, exitR),
+    longNetR: safeNumber(row.longNetR ?? row.netR ?? exitR, exitR),
+    grossR: safeNumber(row.grossR ?? row.rawR ?? row.realizedGrossR ?? geometry.longGrossR, 0),
+    longGrossR: safeNumber(row.longGrossR ?? geometry.longGrossR ?? row.grossR, 0),
+    longCurrentR: safeNumber(row.longCurrentR ?? geometry.longCurrentR, 0),
+
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
 
     pnlPct,
     netPnlPct: safeNumber(row.netPnlPct ?? pnlPct, pnlPct),
@@ -2145,6 +3387,32 @@ export function updateOutcome(stats, row = {}, source = SOURCE_VIRTUAL) {
     entryCurrentFitConfidence: safeNumber(row.entryCurrentFitConfidence ?? row.currentMarketFitConfidence, null),
     entryWeatherFitMatchedFamily: row.entryWeatherFitMatchedFamily ?? null,
 
+    currentFit: normalizeCurrentFitLabel(
+      row.currentFit ||
+      row.currentFitLabel ||
+      row.entryCurrentFit
+    ),
+    currentFitScore: safeNumber(row.currentFitScore ?? row.fitScore, 0),
+    currentFitConfidence: safeNumber(
+      row.currentFitConfidence ??
+      row.entryCurrentFitConfidence,
+      0
+    ),
+    currentFitReason: row.currentFitReason || null,
+    currentRegime: row.currentRegime || row.currentMarketRegime || null,
+    currentTrendSide: row.currentTrendSide || row.currentMarketTrendSide || null,
+    currentMarketWeatherAvailable: Boolean(
+      row.currentMarketWeatherAvailable === true ||
+      row.currentMarketWeather ||
+      row.entryMarketWeather
+    ),
+
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
+
+    ...entryTemporalFields(row),
+    ...exitTemporalFields(row),
+
     isMirrorMicroFamily: false,
     outcomeMirror: false,
     mirrorOfSide: null,
@@ -2153,6 +3421,11 @@ export function updateOutcome(stats, row = {}, source = SOURCE_VIRTUAL) {
     childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
     parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
     learningGranularity: LEARNING_GRANULARITY,
+
+    longOnly: true,
+    shortDisabled: true,
+    shortOnly: false,
+    longDisabled: false,
 
     ts: row.closedAt || row.completedAt || now()
   });
@@ -2623,6 +3896,8 @@ export function refreshStats(stats) {
 
     completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
     completedOnlyClosedVirtualOrShadow: true,
+    completedMeasurementFilter: MEASUREMENT_FIX_VERSION,
+    completedCurrentMeasurementOnly: true,
     scoringRSource: 'netR',
     winsLossesFlatsSource: 'netR',
     winrateDefinition: 'netR > 0',
@@ -2632,6 +3907,19 @@ export function refreshStats(stats) {
     avgCostRSource: 'costR',
 
     measurementFixVersion: MEASUREMENT_FIX_VERSION,
+    outcomeMeasurementVersion: MEASUREMENT_FIX_VERSION,
+    acceptedOutcomeMeasurementVersion: MEASUREMENT_FIX_VERSION,
+    previousSupportedMeasurementFixVersion: PREVIOUS_MEASUREMENT_FIX_VERSION,
+    outcomeMeasurementGateMode: OUTCOME_MEASUREMENT_GATE_MODE,
+    outcomeMeasurementVersionRequired: true,
+    strictOutcomeMeasurementGate: true,
+    legacyOutcomeMeasurementsExcluded: true,
+    completedCurrentMeasurementOnly: true,
+    exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
+    exitFillPolicy: 'TP_SL_USE_TRIGGER_BOUNDARY_TIME_STOP_USES_OBSERVED_PRICE',
+    exitFillAssumption: 'TRIGGER_BOUNDARY_PLUS_COST_MODEL',
+    measurementVersionAcceptedOutcomeCount: round4(stats.measurementVersionAcceptedOutcomeCount),
+    measurementVersionRejectedOutcomeCount: round4(stats.measurementVersionRejectedOutcomeCount),
     seenDefinition: 'UNIQUE_OBSERVATION_DEDUPE_KEY_ONLY',
     observationDedupeRequired: true,
     observationAlwaysCounted: false,
@@ -2645,8 +3933,27 @@ export function refreshStats(stats) {
     rankingUsesAvgR: true,
     rankingUsesAvgCostR: true,
 
+    currentFit: normalizeCurrentFitLabel(
+      stats.currentFit ||
+      stats.currentFitLabel ||
+      stats.lastKnownCurrentFit
+    ),
+    currentFitLabel: normalizeCurrentFitLabel(
+      stats.currentFit ||
+      stats.currentFitLabel ||
+      stats.lastKnownCurrentFit
+    ),
+    currentFitScore: round4(stats.currentFitScore),
+    fitScore: round4(stats.fitScore ?? stats.currentFitScore),
+    currentFitConfidence: round4(stats.currentFitConfidence),
+    currentFitVersion: stats.currentFitVersion || CURRENT_FIT_VERSION,
+    currentFitReasons: Array.isArray(stats.currentFitReasons)
+      ? stats.currentFitReasons.slice(0, 20)
+      : [],
     currentFitSoftOnly: true,
     currentFitBlocksLearning: false,
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
     learningRemainsBroad: true,
     selectionWillBeAdaptive: true,
     discordWillBeStrict: true,
@@ -2654,12 +3961,25 @@ export function refreshStats(stats) {
     adaptiveLayerBuilt: false,
     adaptiveScoreBuilt: false,
     recentMomentumScoreBuilt: false,
-    currentFitScoreBuilt: false,
+    currentFitScoreBuilt: hasUsableCurrentFitSnapshot(stats),
     parentDiversificationBuilt: false,
+
+    validLongRiskShape: 'entry > 0 && sl > 0 && sl < entry && tp > entry',
+    longRiskShape: 'sl < entry < tp',
+    riskTradeSide: TARGET_TRADE_SIDE,
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= sl',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
 
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    redisKeysSeparatedFromShortRoot: true,
+    shortRootTouched: false,
 
     tooEarly: closedCompleted < MIN_COMPLETED_ACTIVE,
     minCompletedForActiveLearning: MIN_COMPLETED_ACTIVE,
