@@ -21,6 +21,12 @@ const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 
+const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
+const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
+const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
+const WEEKEND_MODE = 'OBSERVE';
+const SESSION_MODE = 'OBSERVE';
+
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
 const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
@@ -33,17 +39,6 @@ const WICK_REJECT_THRESHOLD = 0.45;
 const WEAK_BODY_THRESHOLD = 0.35;
 const EXHAUSTION_VOLUME_EXPANSION = 1.4;
 
-const SHORT_TOKENS = new Set([
-  'SHORT',
-  'BEAR',
-  'BEARISH',
-  'SELL',
-  'ASK',
-  'DOWN',
-  'DOWNSIDE',
-  'RED'
-]);
-
 const LONG_TOKENS = new Set([
   'LONG',
   'BULL',
@@ -55,8 +50,91 @@ const LONG_TOKENS = new Set([
   'GREEN'
 ]);
 
+const SHORT_TOKENS = new Set([
+  'SHORT',
+  'BEAR',
+  'BEARISH',
+  'SELL',
+  'ASK',
+  'DOWN',
+  'DOWNSIDE',
+  'RED'
+]);
+
 function now() {
   return Date.now();
+}
+
+const UTC_DAY_NAMES = Object.freeze([
+  'SUNDAY',
+  'MONDAY',
+  'TUESDAY',
+  'WEDNESDAY',
+  'THURSDAY',
+  'FRIDAY',
+  'SATURDAY'
+]);
+
+function normalizeTemporalTs(value = Date.now()) {
+  const n = Number(value);
+
+  if (!Number.isFinite(n) || n <= 0) return Date.now();
+
+  return n < 10_000_000_000 ? n * 1000 : n;
+}
+
+export function buildTemporalContextUtc(value = Date.now()) {
+  const contextTs = normalizeTemporalTs(value);
+  const date = new Date(contextTs);
+  const dayIndex = date.getUTCDay();
+  const hourUtc = date.getUTCHours();
+  const isWeekend = dayIndex === 0 || dayIndex === 6;
+
+  const asia = hourUtc >= 0 && hourUtc < 8;
+  const europe = hourUtc >= 7 && hourUtc < 16;
+  const us = hourUtc >= 13 && hourUtc < 22;
+
+  const sessionTags = [];
+  if (asia) sessionTags.push('ASIA');
+  if (europe) sessionTags.push('EUROPE');
+  if (us) sessionTags.push('US');
+
+  let primarySessionBucket = 'OFF_HOURS';
+  if (europe && us) primarySessionBucket = 'EU_US_OVERLAP';
+  else if (asia && europe) primarySessionBucket = 'ASIA_EU_OVERLAP';
+  else if (asia) primarySessionBucket = 'ASIA';
+  else if (europe) primarySessionBucket = 'EUROPE';
+  else if (us) primarySessionBucket = 'US';
+
+  return {
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+
+    contextTs,
+    hourUtc,
+    dayOfWeekUtc: UTC_DAY_NAMES[dayIndex],
+    dayType: isWeekend ? 'WEEKEND' : 'WEEKDAY',
+    isWeekend,
+
+    sessionTags,
+    primarySessionBucket,
+    sessionOverlap: sessionTags.length > 1,
+    offHours: primarySessionBucket === 'OFF_HOURS',
+
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendDiscordEntryAllowed: !isWeekend,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true
+  };
 }
 
 function upper(value) {
@@ -105,6 +183,20 @@ function longMachineFlags() {
     exchangeCallsDisabled: true,
 
     scannerBullishOnly: true,
+
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true,
     scannerDoesNotTrade: true,
     scannerDoesNotSelectMicroFamilies: true,
     scannerDoesNotSendDiscord: true,
@@ -154,9 +246,33 @@ function longMachineFlags() {
     bucketGranularity: 'LOW_MID_HIGH',
     bucketsCoarseOnly: true,
 
+    riskTradeSide: TARGET_TRADE_SIDE,
+    longRiskShape: 'sl < entry < tp',
+    validLongRiskShape: 'entry > 0 && sl < entry && entry < tp',
+    validLongGeometry: 'sl < entry < tp',
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= initialSl',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longExitRules: {
+      tp: 'price >= tp',
+      sl: 'price <= initialSl',
+      timeStop: 'TIME_STOP'
+    },
+
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    redisKeysSeparatedFromShortRoot: true,
     shortRootTouched: false
   };
 }
@@ -192,23 +308,37 @@ function learningIdentityPlaceholders() {
 
 function cleanSideText(value = '') {
   return upper(value)
-    .replaceAll('SHORT_DISABLED_TRUE', '')
-    .replaceAll('SHORTDISABLED_TRUE', '')
-    .replaceAll('BLOCK_SHORT_TRUE', '')
     .replaceAll('SHORT_DISABLED_FALSE', '')
     .replaceAll('SHORTDISABLED_FALSE', '')
     .replaceAll('BLOCK_SHORT_FALSE', '')
     .replaceAll('SHORT_ENABLED_FALSE', '')
     .replaceAll('SHORT_ONLY_FALSE', '')
-    .replaceAll('SHORT_DISABLED_LONG_ONLY', '')
-    .replaceAll('SHORTDISABLED_LONG_ONLY', '')
-    .replaceAll('SHORT_DISABLED', '')
-    .replaceAll('SHORTDISABLED', '')
-    .replaceAll('BLOCK_SHORT', '')
     .replaceAll('LONG_DISABLED_FALSE', '')
+    .replaceAll('LONGDISABLED_FALSE', '')
+    .replaceAll('LONG_ENABLED_FALSE', '')
+    .replaceAll('LONG_ONLY_FALSE', '')
+    .replaceAll('SHORT_DISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('SHORTDISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('SHORT_DISABLED_TRUE', 'LONG')
+    .replaceAll('SHORTDISABLED_TRUE', 'LONG')
+    .replaceAll('BLOCK_SHORT_TRUE', 'LONG')
+    .replaceAll('BLOCK_SHORT', 'LONG')
+    .replaceAll('SHORT_DISABLED', 'LONG')
+    .replaceAll('SHORTDISABLED', 'LONG')
+    .replaceAll('LONG_DISABLED_SHORT_ONLY', 'SHORT')
+    .replaceAll('LONGDISABLED_SHORT_ONLY', 'SHORT')
+    .replaceAll('LONG_DISABLED_TRUE', 'SHORT')
+    .replaceAll('LONGDISABLED_TRUE', 'SHORT')
+    .replaceAll('BLOCK_LONG_TRUE', 'SHORT')
+    .replaceAll('BLOCK_LONG', 'SHORT')
+    .replaceAll('LONG_DISABLED', 'SHORT')
+    .replaceAll('LONGDISABLED', 'SHORT')
     .replaceAll('LONG_ONLY_MODE', 'LONG')
     .replaceAll('LONG_ONLY', 'LONG')
-    .replaceAll('LONG-ONLY', 'LONG');
+    .replaceAll('LONG-ONLY', 'LONG')
+    .replaceAll('SHORT_ONLY_MODE', 'SHORT')
+    .replaceAll('SHORT_ONLY', 'SHORT')
+    .replaceAll('SHORT-ONLY', 'SHORT');
 }
 
 function normalizedSignalText(value = '') {
@@ -228,33 +358,6 @@ function hasSignalPattern(value = '', patterns = []) {
     text.endsWith(`_${pattern}`) ||
     text.includes(`_${pattern}_`)
   ));
-}
-
-function textHasShortSignal(value = '') {
-  const raw = cleanSideText(value);
-
-  if (!raw) return false;
-  if (SHORT_TOKENS.has(raw)) return true;
-
-  return hasSignalPattern(raw, [
-    'SHORT',
-    'BEAR',
-    'BEARISH',
-    'SELL',
-    'SIDE_SHORT',
-    'TRADE_SIDE_SHORT',
-    'TRADESIDE_SHORT',
-    'POSITION_SIDE_SHORT',
-    'POSITIONSIDE_SHORT',
-    'DIRECTION_SHORT',
-    'SIDE_BEAR',
-    'TRADE_SIDE_BEAR',
-    'DIRECTION_BEAR',
-    'SIDE_SELL',
-    'DIRECTION_SELL',
-    'MICRO_SHORT',
-    'FAMILY_SHORT'
-  ]);
 }
 
 function textHasLongSignal(value = '') {
@@ -284,6 +387,33 @@ function textHasLongSignal(value = '') {
   ]);
 }
 
+function textHasShortSignal(value = '') {
+  const raw = cleanSideText(value);
+
+  if (!raw) return false;
+  if (SHORT_TOKENS.has(raw)) return true;
+
+  return hasSignalPattern(raw, [
+    'SHORT',
+    'BEAR',
+    'BEARISH',
+    'SELL',
+    'SIDE_SHORT',
+    'TRADE_SIDE_SHORT',
+    'TRADESIDE_SHORT',
+    'POSITION_SIDE_SHORT',
+    'POSITIONSIDE_SHORT',
+    'DIRECTION_SHORT',
+    'SIDE_BEAR',
+    'TRADE_SIDE_BEAR',
+    'DIRECTION_BEAR',
+    'SIDE_SELL',
+    'DIRECTION_SELL',
+    'MICRO_SHORT',
+    'FAMILY_SHORT'
+  ]);
+}
+
 function normalizeSide(side) {
   const raw = cleanSideText(side);
 
@@ -294,14 +424,20 @@ function normalizeSide(side) {
   if (direct === TARGET_TRADE_SIDE) return TARGET_SCANNER_SIDE;
   if (direct === OPPOSITE_TRADE_SIDE) return 'short_disabled';
 
-  const shortHit = textHasShortSignal(raw);
   const longHit = textHasLongSignal(raw);
+  const shortHit = textHasShortSignal(raw);
 
-  if (shortHit && !longHit) return 'short_disabled';
   if (longHit && !shortHit) return TARGET_SCANNER_SIDE;
+  if (shortHit && !longHit) return 'short_disabled';
 
-  if (longHit) return TARGET_SCANNER_SIDE;
-  if (shortHit) return 'short_disabled';
+  if (longHit && shortHit) {
+    if (raw.includes('TRADE_SIDE=LONG') || raw.includes('TRADESIDE=LONG')) return TARGET_SCANNER_SIDE;
+    if (raw.includes('MICRO_LONG_')) return TARGET_SCANNER_SIDE;
+    if (raw.includes('TRADE_SIDE=SHORT') || raw.includes('TRADESIDE=SHORT')) return 'short_disabled';
+    if (raw.includes('MICRO_SHORT_')) return 'short_disabled';
+
+    return TARGET_SCANNER_SIDE;
+  }
 
   if (raw === TARGET_DASHBOARD_SIDE.toUpperCase()) return TARGET_SCANNER_SIDE;
 
@@ -340,18 +476,23 @@ function scannerBucketFromBreakout({
   return 'BULL_RANGE_NEUTRAL';
 }
 
-function baseResult(reason = null) {
+function baseResult(reason = null, contextTs = now()) {
   return {
     fakeBreakout: false,
+    fakeBreakdown: false,
     fakeBreakoutRisk: false,
+    fakeBreakdownRisk: false,
     fakeBreakoutReason: null,
+    fakeBreakdownReason: null,
 
     breakoutType: 'UNKNOWN',
+    breakdownType: 'UNKNOWN',
     breakoutValid: false,
-    longContinuation: false,
+    breakdownValid: false,
     shortContinuation: false,
-    avoidLong: false,
+    longContinuation: false,
     avoidShort: false,
+    avoidLong: false,
 
     pullbackConfirmed: false,
     sweepConfirmed: false,
@@ -370,17 +511,19 @@ function baseResult(reason = null) {
     legacy25Bucket: null,
 
     reason,
-    createdAt: now(),
+    createdAt: contextTs,
 
+    ...buildTemporalContextUtc(contextTs),
     ...learningIdentityPlaceholders(),
     ...longMachineFlags()
   };
 }
 
-function emptyResult(reason = 'INSUFFICIENT_DATA') {
+function emptyResult(reason = 'INSUFFICIENT_DATA', contextTs = now()) {
   return {
-    ...baseResult(reason),
+    ...baseResult(reason, contextTs),
     breakoutType: 'NONE',
+    breakdownType: 'NONE',
     scannerBucket: reason,
     side: 'unknown',
     tradeSide: 'UNKNOWN',
@@ -431,7 +574,6 @@ function upperWickPct(candle = {}) {
   const low = safeNumber(candle.low, 0);
   const open = safeNumber(candle.open, 0);
   const close = safeNumber(candle.close, 0);
-
   const range = high - low;
 
   if (range <= 0) return 0;
@@ -487,14 +629,8 @@ function inferConfirmationProfileHint({
     return 'A_STRONG_ALIGN';
   }
 
-  if (validBreakout && btcWith) {
-    return 'B_FLOW_ALIGN';
-  }
-
-  if (validBreakout && volumeExpansion >= 1.25) {
-    return 'C_VOLUME_ALIGN';
-  }
-
+  if (validBreakout && btcWith) return 'B_FLOW_ALIGN';
+  if (validBreakout && volumeExpansion >= 1.25) return 'C_VOLUME_ALIGN';
   if (!fake && !fakeBreakoutRisk && !btcAgainst && !wickReject && !weakBody) {
     return 'D_MIXED_OK';
   }
@@ -507,57 +643,30 @@ function analyzeBullBreakout({
   recentHigh,
   recentLow,
   volumeExpansion,
-  btcState
+  btcState,
+  contextTs = now()
 }) {
   const close = safeNumber(last.close, 0);
   const high = safeNumber(last.high, 0);
   const low = safeNumber(last.low, 0);
-
   const upperWick = upperWickPct(last);
   const body = candleBodyPct(last);
 
   const sweptHigh = high > recentHigh && close < recentHigh;
   const closedAboveRange = close > recentHigh * (1 + BREAKOUT_BUFFER_PCT);
-
   const btcAgainst = isBtcAgainstBull(btcState);
   const btcWith = isBtcWithBull(btcState);
-
   const wickReject = upperWick >= WICK_REJECT_THRESHOLD;
   const weakBody = body <= WEAK_BODY_THRESHOLD;
   const volumeExhaustion = volumeExpansion >= EXHAUSTION_VOLUME_EXPANSION;
 
-  const fake =
-    sweptHigh &&
-    wickReject &&
-    (
-      volumeExhaustion ||
-      btcAgainst ||
-      weakBody
-    );
-
+  const fake = sweptHigh && wickReject && (volumeExhaustion || btcAgainst || weakBody);
   const retestConfirmed =
     pctDistance(close, recentHigh) <= RETEST_TOLERANCE_PCT ||
     pctDistance(low, recentHigh) <= RETEST_TOLERANCE_PCT;
-
-  const pullbackConfirmed =
-    close < recentHigh &&
-    close > recentLow;
-
-  const validBreakout =
-    closedAboveRange &&
-    !wickReject &&
-    (
-      btcWith ||
-      volumeExpansion >= 1.15
-    );
-
-  const fakeBreakoutRisk = !fake && (
-    sweptHigh ||
-    (
-      closedAboveRange &&
-      !btcWith
-    )
-  );
+  const pullbackConfirmed = close > recentLow && close < recentHigh;
+  const validBreakout = closedAboveRange && !wickReject && (btcWith || volumeExpansion >= 1.15);
+  const fakeBreakoutRisk = !fake && (sweptHigh || (closedAboveRange && !btcWith));
 
   const setupTypeHint = inferSetupHint({
     fake,
@@ -567,7 +676,6 @@ function analyzeBullBreakout({
     pullbackConfirmed,
     volumeExpansion
   });
-
   const regimeBucketHint = inferRegimeHint({
     validBreakout,
     volumeExpansion,
@@ -575,7 +683,6 @@ function analyzeBullBreakout({
     btcAgainst,
     fakeBreakoutRisk
   });
-
   const confirmationProfileHint = inferConfirmationProfileHint({
     validBreakout,
     fake,
@@ -587,7 +694,6 @@ function analyzeBullBreakout({
     weakBody,
     retestConfirmed
   });
-
   const scannerBucket = scannerBucketFromBreakout({
     fake,
     fakeBreakoutRisk,
@@ -599,62 +705,47 @@ function analyzeBullBreakout({
   });
 
   return {
-    ...baseResult(null),
-
+    ...baseResult(null, contextTs),
     fakeBreakout: fake,
+    fakeBreakdown: false,
     fakeBreakoutRisk,
-
-    fakeBreakoutReason: fake
-      ? 'HIGH_SWEEP_CLOSE_BACK_IN_RANGE'
-      : null,
-
-    breakoutType: fake
-      ? 'FAKE_BREAKOUT'
-      : validBreakout
-        ? 'VALID_BREAKOUT'
-        : 'NONE',
-
+    fakeBreakdownRisk: false,
+    fakeBreakoutReason: fake ? 'HIGH_SWEEP_CLOSE_BACK_IN_RANGE' : null,
+    fakeBreakdownReason: null,
+    breakoutType: fake ? 'FAKE_BREAKOUT' : validBreakout ? 'VALID_BREAKOUT' : 'NONE',
+    breakdownType: 'NONE',
     breakoutValid: validBreakout,
-    longContinuation: validBreakout,
+    breakdownValid: false,
     shortContinuation: false,
-    avoidLong: fake || fakeBreakoutRisk,
+    longContinuation: validBreakout,
     avoidShort: false,
-
+    avoidLong: fake || fakeBreakoutRisk,
     pullbackConfirmed,
     sweepConfirmed: sweptHigh,
     retestConfirmed,
-
     setupTypeHint,
     regimeBucketHint,
     confirmationProfileHint,
-
     setupType: setupTypeHint,
     regimeBucket: regimeBucketHint,
     confirmationProfile: confirmationProfileHint,
-
     rangeHigh: recentHigh,
     rangeLow: recentLow,
     volumeExpansion,
-
     scannerBucket,
     legacy25Bucket: scannerBucket,
-
     details: {
       recentHigh,
       recentLow,
-
       close,
       high,
       low,
-
       upperWick,
       body,
       volumeExpansion,
-
       btcState,
       btcAgainst,
       btcWith,
-
       sweptHigh,
       closedAboveRange,
       wickReject,
@@ -662,14 +753,12 @@ function analyzeBullBreakout({
       volumeExhaustion,
       validBreakout,
       fakeBreakoutRisk,
-
       scannerBucket,
       legacy25Bucket: scannerBucket,
-
       setupTypeHint,
       regimeBucketHint,
       confirmationProfileHint,
-
+      ...buildTemporalContextUtc(contextTs),
       ...learningIdentityPlaceholders(),
       ...longMachineFlags()
     }
@@ -724,11 +813,14 @@ export function detectFakeBreakout({
   const normalizedBtcState = normalizeBtcState(btcState);
   const volumeExpansion = calcVolumeExpansion(rows, lb);
 
+  const contextTs = safeNumber(last.ts, 0) || now();
+
   return analyzeBullBreakout({
     last,
     recentHigh,
     recentLow,
     volumeExpansion,
-    btcState: normalizedBtcState
+    btcState: normalizedBtcState,
+    contextTs
   });
 }
