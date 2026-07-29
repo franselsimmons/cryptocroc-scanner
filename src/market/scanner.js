@@ -44,6 +44,12 @@ const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 
+const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
+const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
+const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
+const WEEKEND_MODE = 'OBSERVE';
+const SESSION_MODE = 'OBSERVE';
+
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
 const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
@@ -56,10 +62,10 @@ const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 const SCANNER_RUN_SCOPE = 'SCANNER_ONLY';
 const SCANNER_WRITE_SCOPE = 'LONG_SCAN_MARKET_UNIVERSE_AND_MARKET_WEATHER_KEYS_ONLY';
 
-const MARKET_UNIVERSE_KEY = 'MARKET:UNIVERSE:LATEST';
+const MARKET_UNIVERSE_KEY = `${LONG_KEY_PREFIX}MARKET:UNIVERSE:LATEST`;
 const LONG_MARKET_UNIVERSE_KEY = `${LONG_KEY_PREFIX}MARKET:UNIVERSE:LATEST`;
 
-const MARKET_WEATHER_KEY = 'MARKET:WEATHER:LATEST';
+const MARKET_WEATHER_KEY = `${LONG_KEY_PREFIX}MARKET:WEATHER:LATEST`;
 const LONG_MARKET_WEATHER_KEY = `${LONG_KEY_PREFIX}MARKET:WEATHER:LATEST`;
 
 const TRUE_VALUES = new Set(['true', '1', 'yes', 'y', 'on']);
@@ -78,165 +84,80 @@ const BLOCKED_BASE_SYMBOLS = new Set([
   'BRL'
 ]);
 
-const BITGET_TICKERS_FALLBACK_URL =
-  'https://api.bitget.com/api/v2/mix/market/tickers?productType=USDT-FUTURES';
-
 function now() {
   return Date.now();
 }
 
-function asArray(value) {
-  if (Array.isArray(value)) return value;
+const UTC_DAY_NAMES = Object.freeze([
+  'SUNDAY',
+  'MONDAY',
+  'TUESDAY',
+  'WEDNESDAY',
+  'THURSDAY',
+  'FRIDAY',
+  'SATURDAY'
+]);
 
-  if (Array.isArray(value?.data)) return value.data;
-  if (Array.isArray(value?.result)) return value.result;
-  if (Array.isArray(value?.rows)) return value.rows;
-  if (Array.isArray(value?.items)) return value.items;
-  if (Array.isArray(value?.list)) return value.list;
-  if (Array.isArray(value?.symbols)) return value.symbols;
-  if (Array.isArray(value?.tickers)) return value.tickers;
-  if (Array.isArray(value?.markets)) return value.markets;
-  if (Array.isArray(value?.universe)) return value.universe;
+function normalizeTemporalTs(value = Date.now()) {
+  const n = Number(value);
 
-  if (Array.isArray(value?.data?.data)) return value.data.data;
-  if (Array.isArray(value?.data?.result)) return value.data.result;
-  if (Array.isArray(value?.data?.rows)) return value.data.rows;
-  if (Array.isArray(value?.data?.items)) return value.data.items;
-  if (Array.isArray(value?.data?.list)) return value.data.list;
-  if (Array.isArray(value?.data?.symbols)) return value.data.symbols;
-  if (Array.isArray(value?.data?.tickers)) return value.data.tickers;
-  if (Array.isArray(value?.data?.markets)) return value.data.markets;
-  if (Array.isArray(value?.data?.universe)) return value.data.universe;
+  if (!Number.isFinite(n) || n <= 0) return Date.now();
 
-  if (Array.isArray(value?.result?.data)) return value.result.data;
-  if (Array.isArray(value?.result?.rows)) return value.result.rows;
-  if (Array.isArray(value?.result?.items)) return value.result.items;
-  if (Array.isArray(value?.result?.list)) return value.result.list;
-  if (Array.isArray(value?.result?.symbols)) return value.result.symbols;
-  if (Array.isArray(value?.result?.tickers)) return value.result.tickers;
-  if (Array.isArray(value?.result?.markets)) return value.result.markets;
-  if (Array.isArray(value?.result?.universe)) return value.result.universe;
-
-  return [];
+  return n < 10_000_000_000 ? n * 1000 : n;
 }
 
-function shapeOf(value) {
-  if (Array.isArray(value)) {
-    return {
-      type: 'array',
-      length: value.length
-    };
-  }
+export function buildTemporalContextUtc(value = Date.now()) {
+  const contextTs = normalizeTemporalTs(value);
+  const date = new Date(contextTs);
+  const dayIndex = date.getUTCDay();
+  const hourUtc = date.getUTCHours();
+  const isWeekend = dayIndex === 0 || dayIndex === 6;
 
-  if (value && typeof value === 'object') {
-    return {
-      type: 'object',
-      keys: Object.keys(value).slice(0, 30),
-      code: value.code ?? null,
-      msg: value.msg ?? value.message ?? null
-    };
-  }
+  const asia = hourUtc >= 0 && hourUtc < 8;
+  const europe = hourUtc >= 7 && hourUtc < 16;
+  const us = hourUtc >= 13 && hourUtc < 22;
+
+  const sessionTags = [];
+  if (asia) sessionTags.push('ASIA');
+  if (europe) sessionTags.push('EUROPE');
+  if (us) sessionTags.push('US');
+
+  let primarySessionBucket = 'OFF_HOURS';
+  if (europe && us) primarySessionBucket = 'EU_US_OVERLAP';
+  else if (asia && europe) primarySessionBucket = 'ASIA_EU_OVERLAP';
+  else if (asia) primarySessionBucket = 'ASIA';
+  else if (europe) primarySessionBucket = 'EUROPE';
+  else if (us) primarySessionBucket = 'US';
 
   return {
-    type: typeof value
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+
+    contextTs,
+    hourUtc,
+    dayOfWeekUtc: UTC_DAY_NAMES[dayIndex],
+    dayType: isWeekend ? 'WEEKEND' : 'WEEKDAY',
+    isWeekend,
+
+    sessionTags,
+    primarySessionBucket,
+    sessionOverlap: sessionTags.length > 1,
+    offHours: primarySessionBucket === 'OFF_HOURS',
+
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendDiscordEntryAllowed: !isWeekend,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true
   };
-}
-
-async function fetchJsonWithTimeout(url, timeoutMs = 8000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        accept: 'application/json'
-      },
-      signal: controller.signal
-    });
-
-    const text = await response.text();
-
-    if (!response.ok) {
-      const error = new Error(`BITGET_TICKERS_FALLBACK_HTTP_${response.status}`);
-
-      error.details = {
-        status: response.status,
-        body: text.slice(0, 500)
-      };
-
-      throw error;
-    }
-
-    try {
-      return JSON.parse(text);
-    } catch {
-      const error = new Error('BITGET_TICKERS_FALLBACK_INVALID_JSON');
-
-      error.details = {
-        body: text.slice(0, 500)
-      };
-
-      throw error;
-    }
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function fetchBitgetTickersFallback() {
-  const json = await fetchJsonWithTimeout(BITGET_TICKERS_FALLBACK_URL);
-  const rows = asArray(json);
-
-  if (!rows.length) {
-    const error = new Error('BITGET_TICKERS_FALLBACK_NO_ARRAY_ROWS');
-
-    error.details = {
-      shape: shapeOf(json)
-    };
-
-    throw error;
-  }
-
-  return rows;
-}
-
-async function fetchScannerTickers() {
-  try {
-    const result = await fetchBitgetTickers();
-    const rows = asArray(result);
-
-    if (rows.length) return rows;
-
-    const error = new Error('BITGET_TICKERS_EMPTY_AFTER_UNWRAP');
-
-    error.details = {
-      shape: shapeOf(result)
-    };
-
-    throw error;
-  } catch (primaryError) {
-    try {
-      const fallbackRows = await fetchBitgetTickersFallback();
-
-      return fallbackRows;
-    } catch (fallbackError) {
-      const error = new Error(
-        primaryError?.message ||
-          fallbackError?.message ||
-          'BITGET_TICKERS_FETCH_FAILED'
-      );
-
-      error.details = {
-        primaryError: primaryError?.message || String(primaryError),
-        primaryDetails: primaryError?.details || null,
-        fallbackError: fallbackError?.message || String(fallbackError),
-        fallbackDetails: fallbackError?.details || null
-      };
-
-      throw error;
-    }
-  }
 }
 
 function upper(value) {
@@ -248,6 +169,7 @@ function namespacedLongKey(key, fallback) {
 
   if (!raw) return `${LONG_KEY_PREFIX}${String(fallback || '').trim()}`;
   if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
+  if (raw.startsWith('SHORT:')) return `${LONG_KEY_PREFIX}${raw.slice('SHORT:'.length)}`;
 
   return `${LONG_KEY_PREFIX}${raw}`;
 }
@@ -312,22 +234,16 @@ function marketUniverseKeys(options = {}) {
   return [
     options.keys?.marketUniverseLatest,
     options.marketUniverseLatest,
-    KEYS.market?.universeLatest,
-    KEYS.market?.universe,
     KEYS.long?.market?.universeLatest,
     KEYS.long?.scan?.universeLatest,
+    KEYS.market?.longUniverseLatest,
+    KEYS.scan?.longUniverseLatest,
     MARKET_UNIVERSE_KEY,
     LONG_MARKET_UNIVERSE_KEY
   ]
     .map((key) => String(key || '').trim())
     .filter(Boolean)
-    .map((key) => {
-      if (key === MARKET_UNIVERSE_KEY) return key;
-      if (key.startsWith('MARKET:')) return key;
-      if (key.startsWith(LONG_KEY_PREFIX)) return key;
-
-      return namespacedLongKey(key, key);
-    })
+    .map((key) => namespacedLongKey(key, key))
     .filter((key, index, arr) => arr.indexOf(key) === index);
 }
 
@@ -335,22 +251,16 @@ function marketWeatherKeys(options = {}) {
   return [
     options.keys?.marketWeatherLatest,
     options.marketWeatherLatest,
-    KEYS.market?.weatherLatest,
-    KEYS.market?.weather,
     KEYS.long?.market?.weatherLatest,
     KEYS.long?.scan?.weatherLatest,
+    KEYS.market?.longWeatherLatest,
+    KEYS.scan?.longWeatherLatest,
     MARKET_WEATHER_KEY,
     LONG_MARKET_WEATHER_KEY
   ]
     .map((key) => String(key || '').trim())
     .filter(Boolean)
-    .map((key) => {
-      if (key === MARKET_WEATHER_KEY) return key;
-      if (key.startsWith('MARKET:')) return key;
-      if (key.startsWith(LONG_KEY_PREFIX)) return key;
-
-      return namespacedLongKey(key, key);
-    })
+    .map((key) => namespacedLongKey(key, key))
     .filter((key, index, arr) => arr.indexOf(key) === index);
 }
 
@@ -401,17 +311,43 @@ function scopeFlags() {
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    redisKeysSeparatedFromShortRoot: true,
     shortRootTouched: false
   };
 }
 
 function learningFlags() {
   return {
+
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true,
+
     virtualLearning: true,
     virtualOnly: true,
+    virtualTracked: true,
+    shadowOnly: true,
+
+    realTrade: false,
+    realOrder: false,
+    exchangeOrder: false,
+    bitgetOrderPlaced: false,
+    noRealOrders: true,
     realOrdersDisabled: true,
     bitgetOrdersDisabled: true,
+    exchangeOrdersDisabled: true,
     exchangeCallsDisabled: true,
+    noExchangeOrders: true,
 
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
@@ -459,8 +395,29 @@ function learningFlags() {
     selectionGranularity: 'EXACT_75_CHILD',
     fallbackRankingGranularity: 'PARENT_15_UNTIL_CHILD_MIN_COMPLETED',
 
+    riskTradeSide: TARGET_TRADE_SIDE,
+    longRiskShape: 'sl < entry < tp',
+    validLongRiskShape: 'entry > 0 && sl < entry && entry < tp',
+    validLongGeometry: 'sl < entry < tp',
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= initialSl',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longExitRules: {
+      tp: 'price >= tp',
+      sl: 'price <= initialSl',
+      timeStop: 'TIME_STOP'
+    },
+
     currentFitSoftOnly: true,
     currentFitBlocksLearning: false,
+    currentFitBlocksVirtualLearning: false,
+    currentFitBlocksShadowLearning: false,
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
     learningRemainsBroad: true,
     selectionWillBeAdaptive: true,
     discordWillBeStrict: true
@@ -535,7 +492,7 @@ function sideFlags() {
     positionTimeStopMinDefault: DEFAULT_POSITION_TIME_STOP_MIN,
     positionTimeStopMin: Math.max(
       1,
-      Math.floor(safeNumber(CONFIG.trade?.positionTimeStopMin, DEFAULT_POSITION_TIME_STOP_MIN))
+      Math.floor(safeNumber(CONFIG.long?.trade?.positionTimeStopMin ?? CONFIG.trade?.positionTimeStopMin, DEFAULT_POSITION_TIME_STOP_MIN))
     ),
 
     scannerFingerprintRole: 'METADATA_ONLY',
@@ -553,17 +510,16 @@ function sideFlags() {
     activateFreezeCronDisabled: true,
     resetCronDisabled: true,
 
-    currentFitSoftOnly: true,
-    currentFitBlocksLearning: false,
-    learningRemainsBroad: true,
-    selectionWillBeAdaptive: true,
-    discordWillBeStrict: true,
-
     adaptiveLayerBuilt: false,
     adaptiveScoreBuilt: false,
     recentMomentumScoreBuilt: false,
     currentFitScoreBuilt: false,
     parentDiversificationBuilt: false,
+
+    redisNamespace: LONG_NAMESPACE,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    redisKeysSeparatedFromShortRoot: true,
+    shortRootTouched: false,
 
     ...learningFlags()
   };
@@ -812,7 +768,6 @@ function normalizeScannerTicker(rawTicker = {}) {
       rawTicker.contractSymbol ||
       rawTicker.symbol ||
       rawTicker.instId ||
-      rawTicker.instrumentId ||
       rawTicker.contractCode ||
       rawTicker.symbolName
   );
@@ -903,20 +858,21 @@ function cleanSideText(value = '') {
   return String(value || '')
     .trim()
     .toUpperCase()
-    .replaceAll('SHORT_DISABLED_TRUE', '')
-    .replaceAll('SHORTDISABLED_TRUE', '')
-    .replaceAll('BLOCK_SHORT_TRUE', '')
+    .replaceAll('SHORT_DISABLED_TRUE', 'LONG')
+    .replaceAll('SHORTDISABLED_TRUE', 'LONG')
+    .replaceAll('BLOCK_SHORT_TRUE', 'LONG')
     .replaceAll('SHORT_DISABLED_FALSE', '')
     .replaceAll('SHORTDISABLED_FALSE', '')
     .replaceAll('BLOCK_SHORT_FALSE', '')
     .replaceAll('SHORT_ENABLED_FALSE', '')
     .replaceAll('SHORT_ONLY_FALSE', '')
     .replaceAll('LONG_DISABLED_FALSE', '')
-    .replaceAll('SHORT_DISABLED_LONG_ONLY', '')
-    .replaceAll('SHORTDISABLED_LONG_ONLY', '')
-    .replaceAll('BLOCK_SHORT', '')
-    .replaceAll('SHORT_DISABLED', '')
-    .replaceAll('SHORTDISABLED', '')
+    .replaceAll('LONGDISABLED_FALSE', '')
+    .replaceAll('SHORT_DISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('SHORTDISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('BLOCK_SHORT', 'LONG')
+    .replaceAll('SHORT_DISABLED', 'LONG')
+    .replaceAll('SHORTDISABLED', 'LONG')
     .replaceAll('LONG_ONLY_MODE', 'LONG')
     .replaceAll('LONG_ONLY', 'LONG')
     .replaceAll('LONG-ONLY', 'LONG')
@@ -997,10 +953,10 @@ function inferTradeSideFromText(value) {
     text.endsWith('_SELL')
   );
 
-  if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
   if (longHit && !shortHit) return TARGET_TRADE_SIDE;
+  if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
 
-  if (longHit && shortHit) {
+  if (shortHit && longHit) {
     if (text.includes('TRADE_SIDE=LONG') || text.includes('TRADESIDE=LONG')) return TARGET_TRADE_SIDE;
     if (text.includes('TRADE_SIDE=SHORT') || text.includes('TRADESIDE=SHORT')) return OPPOSITE_TRADE_SIDE;
     if (text.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
@@ -1123,7 +1079,7 @@ function calcChangePct(first, last) {
 }
 
 function calcOneHourChange(candles15m) {
-  const rows = asArray(candles15m);
+  const rows = Array.isArray(candles15m) ? candles15m : [];
 
   if (rows.length < 5) return 0;
 
@@ -1134,7 +1090,7 @@ function calcOneHourChange(candles15m) {
 }
 
 function calcRangePct(candles = []) {
-  const rows = asArray(candles).slice(-24);
+  const rows = Array.isArray(candles) ? candles.slice(-24) : [];
 
   if (!rows.length) return 0;
 
@@ -1153,7 +1109,7 @@ function calcRangePct(candles = []) {
 }
 
 function calcRealizedVolPct(candles = []) {
-  const rows = asArray(candles).slice(-24);
+  const rows = Array.isArray(candles) ? candles.slice(-24) : [];
 
   if (rows.length < 3) return 0;
 
@@ -1176,6 +1132,10 @@ function calcRealizedVolPct(candles = []) {
   return Math.sqrt(variance);
 }
 
+function isRisingMove({ change1h, change24h }) {
+  return safeNumber(change1h, 0) > 0 || safeNumber(change24h, 0) > 0;
+}
+
 function isFallingMove({ change1h, change24h }) {
   return safeNumber(change1h, 0) < 0 || safeNumber(change24h, 0) < 0;
 }
@@ -1184,24 +1144,18 @@ function inferSide({ change1h, change24h, btcState }) {
   const ch1 = safeNumber(change1h, 0);
   const ch24 = safeNumber(change24h, 0);
 
-  if (isFallingMove({ change1h: ch1, change24h: ch24 })) {
-    return 'neutral';
-  }
+  if (isFallingMove({ change1h: ch1, change24h: ch24 })) return 'neutral';
 
   const min1 = minAbsChange1h();
   const min24 = minAbsChange24h();
 
   if (ch1 >= min1) return TARGET_SCANNER_SIDE;
   if (ch24 >= min24) return TARGET_SCANNER_SIDE;
-
   if (ch1 > 0 && ch24 >= 0) return TARGET_SCANNER_SIDE;
   if (ch24 > 0 && ch1 >= 0) return TARGET_SCANNER_SIDE;
 
   const state = String(btcState || '').toUpperCase();
-
-  if (state.includes('BULL') && (ch1 > 0 || ch24 > 0)) {
-    return TARGET_SCANNER_SIDE;
-  }
+  if (state.includes('BULL') && (ch1 > 0 || ch24 > 0)) return TARGET_SCANNER_SIDE;
 
   return 'neutral';
 }
@@ -1231,7 +1185,7 @@ function safeToken(value, fallback = 'NA') {
 function bucketSignedChange(value, prefix = 'MOVE') {
   const n = safeNumber(value, 0);
   const abs = Math.abs(n);
-  const direction = n < 0 ? 'DOWN' : n > 0 ? 'UP' : 'FLAT';
+  const direction = n > 0 ? 'UP' : n < 0 ? 'DOWN' : 'FLAT';
 
   if (abs >= 5) return `${prefix}_${direction}_XL`;
   if (abs >= 2.5) return `${prefix}_${direction}_L`;
@@ -1515,7 +1469,7 @@ function isMarketUniverseTicker(ticker) {
 function dedupeByBaseSymbol(tickers) {
   const byBase = new Map();
 
-  for (const ticker of asArray(tickers)) {
+  for (const ticker of tickers) {
     const normalized = normalizeScannerTicker(ticker);
 
     if (!normalized) continue;
@@ -1543,7 +1497,7 @@ function longUniverseScore(ticker = {}) {
 
   if (change24h < 0) return -1_000_000 + change24h;
 
-  const bullishPressure = Math.abs(change24h) * 120;
+  const bullishPressure = Math.max(0, change24h) * 120;
   const volumeScore = Math.log10(Math.max(10, volume24h)) * 4;
 
   return bullishPressure + volumeScore;
@@ -1567,7 +1521,7 @@ function sortMarketUniverse(a, b) {
 
 function buildTickerUniverse(rawTickers) {
   return dedupeByBaseSymbol(
-    asArray(rawTickers)
+    (Array.isArray(rawTickers) ? rawTickers : [])
       .map(normalizeScannerTicker)
       .filter(Boolean)
       .filter(isTradableTicker)
@@ -1579,7 +1533,7 @@ function buildTickerUniverse(rawTickers) {
 
 function buildRawMarketUniverse(rawTickers) {
   return dedupeByBaseSymbol(
-    asArray(rawTickers)
+    (Array.isArray(rawTickers) ? rawTickers : [])
       .map(normalizeScannerTicker)
       .filter(Boolean)
       .filter(isMarketUniverseTicker)
@@ -1603,9 +1557,7 @@ function createCandleCache() {
 
     if (cache.has(key)) return cache.get(key);
 
-    const promise = fetchCandles(contractSymbol, timeframe, requestedLimit)
-      .then(asArray)
-      .catch(() => []);
+    const promise = fetchCandles(contractSymbol, timeframe, requestedLimit).catch(() => []);
     cache.set(key, promise);
 
     return promise;
@@ -1624,11 +1576,11 @@ async function buildMarketUniverseRows({
     baseUniverse,
     scannerConcurrency(),
     async (ticker) => {
-      const candles15m = asArray(await getCandles(
+      const candles15m = await getCandles(
         ticker.contractSymbol,
         '15m',
         Math.max(30, candleLimit())
-      ));
+      );
 
       const change1h = candles15m.length >= 5
         ? calcOneHourChange(candles15m)
@@ -1665,6 +1617,8 @@ async function buildMarketUniverseRows({
         marketWeatherInput: true,
         usedForMarketWeather: true,
 
+        ...buildTemporalContextUtc(startedAt),
+
         source: 'SCANNER_MARKET_UNIVERSE',
         snapshotId,
         ts: startedAt,
@@ -1673,14 +1627,12 @@ async function buildMarketUniverseRows({
     }
   );
 
-  return asArray(rows).filter(Boolean);
+  return rows.filter(Boolean);
 }
 
 async function buildBtcContext({ universe, getCandles }) {
-  const rows = asArray(universe);
-
   const btcTicker =
-    rows.find((row) => row.baseSymbol === 'BTC') ||
+    universe.find((row) => row.baseSymbol === 'BTC') ||
     normalizeScannerTicker({
       symbol: 'BTCUSDT',
       last: 0,
@@ -1696,11 +1648,11 @@ async function buildBtcContext({ universe, getCandles }) {
       change24h: 0
     };
 
-  const btcCandles15m = asArray(await getCandles(
+  const btcCandles15m = await getCandles(
     'BTCUSDT',
     '15m',
     candleLimit()
-  ));
+  );
 
   const btcChange1h = calcOneHourChange(btcCandles15m);
   const btcChange24h = safeNumber(btcTicker.change24h, 0);
@@ -1737,58 +1689,29 @@ function buildGateFlags({
 }) {
   const ch1 = safeNumber(change1h, 0);
   const ch24 = safeNumber(change24h, 0);
-
-  const passesMoveFilter =
-    ch1 >= minAbsChange1h() ||
-    ch24 >= minAbsChange24h();
-
+  const passesMoveFilter = ch1 >= minAbsChange1h() || ch24 >= minAbsChange24h();
   const passesVolumeFilter = safeNumber(volume24h, 0) >= minQuoteVolume24h();
   const hasDirectionalSide = side === TARGET_SCANNER_SIDE;
   const fallingMove = isFallingMove({ change1h: ch1, change24h: ch24 });
 
-  const hardBlockedByDirection =
-    blockNoDirectionEnabled() &&
-    (!hasDirectionalSide || fallingMove);
-
-  const hardBlockedByMove =
-    blockSmallMoveEnabled() &&
-    !passesMoveFilter;
-
-  const hardBlockedByFake =
-    blockFakeBreakoutEnabled() &&
-    Boolean(fake.fakeBreakout);
-
-  const hardBlocked =
-    hardBlockedByDirection ||
-    hardBlockedByMove ||
-    hardBlockedByFake;
-
-  const scannerGatePassed =
-    !hardBlocked &&
-    !fallingMove &&
-    passesMoveFilter &&
-    hasDirectionalSide &&
-    !fake.fakeBreakout;
-
-  const analyzeEligible =
-    !hardBlocked &&
-    !fallingMove &&
-    hasDirectionalSide;
-
-  const tradeDiscoveryOnly =
-    !scannerGatePassed;
+  const hardBlockedByDirection = blockNoDirectionEnabled() && (!hasDirectionalSide || fallingMove);
+  const hardBlockedByMove = blockSmallMoveEnabled() && !passesMoveFilter;
+  const hardBlockedByFake = blockFakeBreakoutEnabled() && Boolean(fake.fakeBreakout);
+  const hardBlocked = hardBlockedByDirection || hardBlockedByMove || hardBlockedByFake;
+  const scannerGatePassed = !hardBlocked && !fallingMove && passesMoveFilter && hasDirectionalSide && !fake.fakeBreakout;
+  const analyzeEligible = !hardBlocked && !fallingMove && hasDirectionalSide;
+  const tradeDiscoveryOnly = !scannerGatePassed;
 
   return {
     passesMoveFilter,
     passesVolumeFilter,
     hasDirectionalSide,
+    risingMove: !fallingMove && isRisingMove({ change1h: ch1, change24h: ch24 }),
     fallingMove,
-
     hardBlocked,
     hardBlockedByDirection,
     hardBlockedByMove,
     hardBlockedByFake,
-
     scannerGatePassed,
     analyzeEligible,
     tradeDiscoveryOnly,
@@ -1884,6 +1807,10 @@ function normalizeLongCandidate(candidate = {}) {
 
     currentFitSoftOnly: true,
     currentFitBlocksLearning: false,
+    currentFitBlocksVirtualLearning: false,
+    currentFitBlocksShadowLearning: false,
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
     learningRemainsBroad: true,
     selectionWillBeAdaptive: true,
     discordWillBeStrict: true,
@@ -1930,11 +1857,11 @@ async function analyzeTickerCandidate({
     };
   }
 
-  const candles15m = asArray(await getCandles(
+  const candles15m = await getCandles(
     contractSymbol,
     '15m',
     candleLimit()
-  ));
+  );
 
   if (candles15m.length < 30) {
     return {
@@ -2086,9 +2013,15 @@ async function analyzeTickerCandidate({
 
     currentFitSoftOnly: true,
     currentFitBlocksLearning: false,
+    currentFitBlocksVirtualLearning: false,
+    currentFitBlocksShadowLearning: false,
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
     learningRemainsBroad: true,
     selectionWillBeAdaptive: true,
     discordWillBeStrict: true,
+
+    ...buildTemporalContextUtc(startedAt),
 
     scannerTs: startedAt,
     createdAt: startedAt
@@ -2102,7 +2035,7 @@ async function analyzeTickerCandidate({
 }
 
 function countSkipped(results) {
-  return asArray(results).reduce((acc, row) => {
+  return results.reduce((acc, row) => {
     const reason = row?.skippedReason || (row?.candidate ? 'SELECTED' : 'UNKNOWN');
 
     acc[reason] = (acc[reason] || 0) + 1;
@@ -2112,7 +2045,7 @@ function countSkipped(results) {
 }
 
 function sortCandidates(candidates = []) {
-  return [...asArray(candidates)].sort((a, b) => {
+  return [...candidates].sort((a, b) => {
     const gateDelta = Number(Boolean(b.scannerGatePassed)) - Number(Boolean(a.scannerGatePassed));
     if (gateDelta !== 0) return gateDelta;
 
@@ -2140,6 +2073,21 @@ function buildSnapshotSummary(snapshot) {
     createdAt: snapshot.createdAt,
     completedAt: snapshot.completedAt,
     durationMs: snapshot.durationMs,
+
+    temporalContextVersion: snapshot.temporalContextVersion,
+    weekendPolicyVersion: snapshot.weekendPolicyVersion,
+    sessionPolicyVersion: snapshot.sessionPolicyVersion,
+    contextTs: snapshot.contextTs,
+    hourUtc: snapshot.hourUtc,
+    dayOfWeekUtc: snapshot.dayOfWeekUtc,
+    dayType: snapshot.dayType,
+    isWeekend: snapshot.isWeekend,
+    sessionTags: snapshot.sessionTags,
+    primarySessionBucket: snapshot.primarySessionBucket,
+    sessionOverlap: snapshot.sessionOverlap,
+    offHours: snapshot.offHours,
+    weekendDiscordEntryAllowed: snapshot.weekendDiscordEntryAllowed,
+    sessionDiscordEntryAllowed: snapshot.sessionDiscordEntryAllowed,
 
     btcState: snapshot.btcState,
     regime: snapshot.regime,
@@ -2255,17 +2203,15 @@ function assertMarketUniverseWriteKey(key, allowedKeys = []) {
       marketUniverseWriteOnly: true,
       writesLearningFamilies: false,
       writesMicroFamilies: false,
+      writesPositions: false,
+      writesRotation: false,
       shortRootTouched: false
     };
 
     throw error;
   }
 
-  if (
-    value === MARKET_UNIVERSE_KEY ||
-    value.startsWith('MARKET:') ||
-    value.startsWith(`${LONG_KEY_PREFIX}MARKET:`)
-  ) {
+  if (value.startsWith(`${LONG_KEY_PREFIX}MARKET:`)) {
     return true;
   }
 
@@ -2274,7 +2220,6 @@ function assertMarketUniverseWriteKey(key, allowedKeys = []) {
   error.details = {
     key: value,
     allowedPrefixes: [
-      'MARKET:',
       `${LONG_KEY_PREFIX}MARKET:`
     ],
     shortRootTouched: false
@@ -2307,11 +2252,7 @@ function assertMarketWeatherWriteKey(key, allowedKeys = []) {
     throw error;
   }
 
-  if (
-    value === MARKET_WEATHER_KEY ||
-    value.startsWith('MARKET:') ||
-    value.startsWith(`${LONG_KEY_PREFIX}MARKET:`)
-  ) {
+  if (value.startsWith(`${LONG_KEY_PREFIX}MARKET:`)) {
     return true;
   }
 
@@ -2320,7 +2261,6 @@ function assertMarketWeatherWriteKey(key, allowedKeys = []) {
   error.details = {
     key: value,
     allowedPrefixes: [
-      'MARKET:',
       `${LONG_KEY_PREFIX}MARKET:`
     ],
     shortRootTouched: false
@@ -2364,7 +2304,7 @@ async function setMarketUniverseJson(redis, key, value, options = {}, {
     key,
     {
       ...value,
-      scannerStorageRole: role || 'MARKET_UNIVERSE_LATEST',
+      scannerStorageRole: role || 'LONG_MARKET_UNIVERSE_LATEST',
       marketUniverseRole: 'MARKET_WEATHER_INPUT',
       marketWeatherInput: true,
 
@@ -2379,6 +2319,10 @@ async function setMarketUniverseJson(redis, key, value, options = {}, {
 
       currentFitSoftOnly: true,
       currentFitBlocksLearning: false,
+      currentFitBlocksVirtualLearning: false,
+      currentFitBlocksShadowLearning: false,
+      currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+      currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
       learningRemainsBroad: true,
       selectionWillBeAdaptive: true,
       discordWillBeStrict: true,
@@ -2389,9 +2333,10 @@ async function setMarketUniverseJson(redis, key, value, options = {}, {
       currentFitScoreBuilt: false,
       parentDiversificationBuilt: false,
 
-      redisNamespace: value.redisNamespace || null,
-      redisKeyPrefix: value.redisKeyPrefix || null,
+      redisNamespace: LONG_NAMESPACE,
+      redisKeyPrefix: LONG_KEY_PREFIX,
       persistentLearningKey: PERSISTENT_LEARNING_KEY,
+      redisKeysSeparatedFromShortRoot: true,
       shortRootTouched: false,
 
       ...scopeFlags()
@@ -2411,7 +2356,7 @@ async function setMarketWeatherJson(redis, key, value, options = {}, {
     key,
     {
       ...value,
-      scannerStorageRole: role || 'MARKET_WEATHER_LATEST',
+      scannerStorageRole: role || 'LONG_MARKET_WEATHER_LATEST',
       marketWeatherRole: 'CURRENT_FIT_INPUT',
       marketWeatherInput: true,
 
@@ -2429,6 +2374,8 @@ async function setMarketWeatherJson(redis, key, value, options = {}, {
       currentFitBlocksLearning: false,
       currentFitBlocksVirtualLearning: false,
       currentFitBlocksShadowLearning: false,
+      currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+      currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
       learningRemainsBroad: true,
       selectionWillBeAdaptive: true,
       discordWillBeStrict: true,
@@ -2439,9 +2386,10 @@ async function setMarketWeatherJson(redis, key, value, options = {}, {
       currentFitScoreBuilt: false,
       parentDiversificationBuilt: false,
 
-      redisNamespace: value.redisNamespace || null,
-      redisKeyPrefix: value.redisKeyPrefix || null,
+      redisNamespace: LONG_NAMESPACE,
+      redisKeyPrefix: LONG_KEY_PREFIX,
       persistentLearningKey: PERSISTENT_LEARNING_KEY,
+      redisKeysSeparatedFromShortRoot: true,
       shortRootTouched: false,
 
       ...scopeFlags()
@@ -2457,8 +2405,6 @@ function buildMarketUniversePayload({
   completedAt,
   btcContext
 }) {
-  const safeRows = asArray(rows);
-
   return {
     ok: true,
     version: 'SCANNER_MARKET_UNIVERSE_V1',
@@ -2472,15 +2418,17 @@ function buildMarketUniversePayload({
     completedAt,
     updatedAt: completedAt,
 
+    ...buildTemporalContextUtc(completedAt),
+
     targetTradeSide: TARGET_TRADE_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
     scannerSide: 'market',
     scannerSideForTrades: TARGET_SCANNER_SIDE,
 
-    rows: safeRows,
-    tickers: safeRows,
-    universe: safeRows,
-    count: safeRows.length,
+    rows,
+    tickers: rows,
+    universe: rows,
+    count: rows.length,
 
     btcState: btcContext.btcState,
     btcChange1h: btcContext.btcChange1h,
@@ -2488,11 +2436,15 @@ function buildMarketUniversePayload({
     btcAtrPct: btcContext.btcAtrPct,
     regime: btcContext.regime,
 
-    cacheHealthy: safeRows.length > 0,
+    cacheHealthy: rows.length > 0,
     ttlSec: marketUniverseTtlSec(),
 
     currentFitSoftOnly: true,
     currentFitBlocksLearning: false,
+    currentFitBlocksVirtualLearning: false,
+    currentFitBlocksShadowLearning: false,
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
     learningRemainsBroad: true,
     selectionWillBeAdaptive: true,
     discordWillBeStrict: true,
@@ -2509,8 +2461,10 @@ function buildMarketUniversePayload({
     observationDedupeRequiredBeforeAdaptiveSelection: true,
 
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
-    redisNamespace: 'MARKET',
-    redisKeyPrefix: 'MARKET:'
+    redisNamespace: LONG_NAMESPACE,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    redisKeysSeparatedFromShortRoot: true,
+    shortRootTouched: false
   };
 }
 
@@ -2524,7 +2478,7 @@ function pct(part, total) {
 }
 
 function avg(values = []) {
-  const nums = asArray(values)
+  const nums = values
     .map((value) => safeNumber(value, NaN))
     .filter((value) => Number.isFinite(value));
 
@@ -2534,40 +2488,38 @@ function avg(values = []) {
 }
 
 function classifyMarketTrendSideFromRows(rows = [], btcContext = {}) {
-  const safeRows = asArray(rows);
-  const total = safeRows.length;
+  const total = rows.length;
 
   if (!total) return 'UNKNOWN';
 
-  const bullish = safeRows.filter((row) => (
+  const bullish = rows.filter((row) => (
     safeNumber(row.change1h, 0) > 0 &&
     safeNumber(row.change24h, 0) >= 0
   )).length;
 
-  const bearish = safeRows.filter((row) => (
+  const bearish = rows.filter((row) => (
     safeNumber(row.change1h, 0) < 0 ||
     safeNumber(row.change24h, 0) < 0
   )).length;
 
-  const bullishPct = pct(bullish, total);
   const bearishPct = pct(bearish, total);
+  const bullishPct = pct(bullish, total);
   const btcState = upper(btcContext.btcState);
 
-  if (bullishPct >= 58 && bearishPct <= 32) return 'BULL';
-  if (bearishPct >= 55 && bullishPct <= 35) return 'BEAR';
-  if (btcState.includes('BULL') && bullishPct >= 50) return 'BULL';
-  if (btcState.includes('BEAR') && bearishPct >= 45) return 'BEAR';
+  if (bullishPct >= 55 && bearishPct <= 35) return 'BULL';
+  if (bearishPct >= 58 && bullishPct <= 32) return 'BEAR';
+  if (btcState.includes('BULL') && bullishPct >= 45) return 'BULL';
+  if (btcState.includes('BEAR') && bearishPct >= 50) return 'BEAR';
 
   return 'MIXED';
 }
 
 function classifyMarketRegimeFromRows(rows = [], btcContext = {}) {
-  const safeRows = asArray(rows);
-  const total = safeRows.length;
+  const total = rows.length;
 
   if (!total) return 'UNKNOWN';
 
-  const squeezeRows = safeRows.filter((row) => {
+  const squeezeRows = rows.filter((row) => {
     const atrPct = safeNumber(row.atrPct, 0);
     const rangePct = safeNumber(row.rangePct, 0);
     const realizedVolPct = safeNumber(row.realizedVolPct, 0);
@@ -2582,7 +2534,7 @@ function classifyMarketRegimeFromRows(rows = [], btcContext = {}) {
     );
   }).length;
 
-  const trendRows = safeRows.filter((row) => {
+  const trendRows = rows.filter((row) => {
     const ch1 = Math.abs(safeNumber(row.change1h, 0));
     const ch24 = Math.abs(safeNumber(row.change24h, 0));
     const volumeExpansion = safeNumber(row.volumeExpansion, 1);
@@ -2606,17 +2558,16 @@ function classifyMarketRegimeFromRows(rows = [], btcContext = {}) {
 }
 
 function classifyMarketFlowFromRows(rows = []) {
-  const safeRows = asArray(rows);
-  const total = safeRows.length;
+  const total = rows.length;
 
   if (!total) return 'UNKNOWN';
 
-  const strongUp = safeRows.filter((row) => (
+  const strongUp = rows.filter((row) => (
     safeNumber(row.change1h, 0) >= 0.35 ||
     safeNumber(row.change24h, 0) >= 1.25
   )).length;
 
-  const strongDown = safeRows.filter((row) => (
+  const strongDown = rows.filter((row) => (
     safeNumber(row.change1h, 0) <= -0.35 ||
     safeNumber(row.change24h, 0) <= -1.25
   )).length;
@@ -2626,19 +2577,17 @@ function classifyMarketFlowFromRows(rows = []) {
 
   if (upPct >= 45 && downPct <= 30) return 'BULLISH_FLOW';
   if (downPct >= 45 && upPct <= 30) return 'BEARISH_FLOW';
-  if (upPct >= 30 && downPct >= 30) return 'MIXED_FLOW';
+  if (downPct >= 30 && upPct >= 30) return 'MIXED_FLOW';
 
   return 'QUIET_FLOW';
 }
 
 function classifyMarketVolatilityFromRows(rows = []) {
-  const safeRows = asArray(rows);
+  if (!rows.length) return 'UNKNOWN';
 
-  if (!safeRows.length) return 'UNKNOWN';
-
-  const atrAvg = avg(safeRows.map((row) => row.atrPct));
-  const rangeAvg = avg(safeRows.map((row) => row.rangePct));
-  const realizedAvg = avg(safeRows.map((row) => row.realizedVolPct));
+  const atrAvg = avg(rows.map((row) => row.atrPct));
+  const rangeAvg = avg(rows.map((row) => row.rangePct));
+  const realizedAvg = avg(rows.map((row) => row.realizedVolPct));
 
   if (atrAvg >= 1.8 || rangeAvg >= 8 || realizedAvg >= 1.8) return 'HIGH_VOL';
   if (atrAvg <= 0.65 && rangeAvg <= 3.5 && realizedAvg <= 0.8) return 'LOW_VOL';
@@ -2653,36 +2602,35 @@ function buildMarketWeatherPayload({
   completedAt,
   btcContext
 }) {
-  const safeRows = asArray(rows);
-  const total = safeRows.length;
+  const total = rows.length;
 
-  const bullishCount = safeRows.filter((row) => (
+  const bullishCount = rows.filter((row) => (
     safeNumber(row.change1h, 0) > 0 &&
     safeNumber(row.change24h, 0) >= 0
   )).length;
 
-  const bearishCount = safeRows.filter((row) => (
+  const bearishCount = rows.filter((row) => (
     safeNumber(row.change1h, 0) < 0 ||
     safeNumber(row.change24h, 0) < 0
   )).length;
 
-  const neutralCount = Math.max(0, total - bullishCount - bearishCount);
+  const neutralCount = Math.max(0, total - bearishCount - bullishCount);
 
-  const squeezeCount = safeRows.filter((row) => (
+  const squeezeCount = rows.filter((row) => (
     safeNumber(row.atrPct, 0) > 0 &&
     safeNumber(row.atrPct, 0) <= 0.65 &&
     safeNumber(row.rangePct, 0) <= 3.5
   )).length;
 
-  const bullishPct = pct(bullishCount, total);
   const bearishPct = pct(bearishCount, total);
+  const bullishPct = pct(bullishCount, total);
   const neutralPct = pct(neutralCount, total);
   const squeezePct = pct(squeezeCount, total);
 
-  const currentTrendSide = classifyMarketTrendSideFromRows(safeRows, btcContext);
-  const currentRegime = classifyMarketRegimeFromRows(safeRows, btcContext);
-  const currentFlow = classifyMarketFlowFromRows(safeRows);
-  const currentVolatilityState = classifyMarketVolatilityFromRows(safeRows);
+  const currentTrendSide = classifyMarketTrendSideFromRows(rows, btcContext);
+  const currentRegime = classifyMarketRegimeFromRows(rows, btcContext);
+  const currentFlow = classifyMarketFlowFromRows(rows);
+  const currentVolatilityState = classifyMarketVolatilityFromRows(rows);
 
   const confidence = total <= 0
     ? 0
@@ -2692,7 +2640,7 @@ function buildMarketWeatherPayload({
           100,
           Math.round(
             35 +
-            Math.abs(bullishPct - bearishPct) * 0.45 +
+            Math.abs(bearishPct - bullishPct) * 0.45 +
             Math.min(20, total * 0.15)
           )
         )
@@ -2710,6 +2658,8 @@ function buildMarketWeatherPayload({
     completedAt,
     updatedAt: completedAt,
 
+    ...buildTemporalContextUtc(completedAt),
+
     currentRegime,
     regime: currentRegime,
 
@@ -2725,26 +2675,26 @@ function buildMarketWeatherPayload({
     confidence,
     weatherConfidence: confidence,
 
-    bullishCount,
     bearishCount,
+    bullishCount,
     neutralCount,
     squeezeCount,
 
-    bullishPct: Number(bullishPct.toFixed(2)),
     bearishPct: Number(bearishPct.toFixed(2)),
+    bullishPct: Number(bullishPct.toFixed(2)),
     neutralPct: Number(neutralPct.toFixed(2)),
     squeezePct: Number(squeezePct.toFixed(2)),
 
-    avgAtrPct: Number(avg(safeRows.map((row) => row.atrPct)).toFixed(6)),
-    avgRangePct: Number(avg(safeRows.map((row) => row.rangePct)).toFixed(6)),
-    avgRealizedVolPct: Number(avg(safeRows.map((row) => row.realizedVolPct)).toFixed(6)),
-    avgVolumeExpansion: Number(avg(safeRows.map((row) => row.volumeExpansion)).toFixed(4)),
+    avgAtrPct: Number(avg(rows.map((row) => row.atrPct)).toFixed(6)),
+    avgRangePct: Number(avg(rows.map((row) => row.rangePct)).toFixed(6)),
+    avgRealizedVolPct: Number(avg(rows.map((row) => row.realizedVolPct)).toFixed(6)),
+    avgVolumeExpansion: Number(avg(rows.map((row) => row.volumeExpansion)).toFixed(4)),
 
     count: total,
     universeCount: total,
-    symbols: safeRows.slice(0, 40).map((row) => row.symbol).filter(Boolean),
-    rows: safeRows.slice(0, 120),
-    universe: safeRows.slice(0, 120),
+    symbols: rows.slice(0, 40).map((row) => row.symbol).filter(Boolean),
+    rows: rows.slice(0, 120),
+    universe: rows.slice(0, 120),
 
     btcState: btcContext.btcState,
     btcChange1h: btcContext.btcChange1h,
@@ -2764,6 +2714,8 @@ function buildMarketWeatherPayload({
     currentFitBlocksLearning: false,
     currentFitBlocksVirtualLearning: false,
     currentFitBlocksShadowLearning: false,
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
 
     learningRemainsBroad: true,
     selectionWillBeAdaptive: true,
@@ -2781,8 +2733,10 @@ function buildMarketWeatherPayload({
     observationDedupeRequiredBeforeAdaptiveSelection: true,
 
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
-    redisNamespace: 'MARKET',
-    redisKeyPrefix: 'MARKET:'
+    redisNamespace: LONG_NAMESPACE,
+    redisKeyPrefix: LONG_KEY_PREFIX,
+    redisKeysSeparatedFromShortRoot: true,
+    shortRootTouched: false
   };
 }
 
@@ -2813,17 +2767,15 @@ async function saveMarketUniverse({
       key,
       {
         ...payload,
-        redisNamespace: key.startsWith(LONG_KEY_PREFIX) ? LONG_NAMESPACE : 'MARKET',
-        redisKeyPrefix: key.startsWith(LONG_KEY_PREFIX) ? LONG_KEY_PREFIX : 'MARKET:'
+        redisNamespace: LONG_NAMESPACE,
+        redisKeyPrefix: LONG_KEY_PREFIX
       },
       {
         ex: ttlSec
       },
       {
         allowedKeys: keys,
-        role: key.startsWith(LONG_KEY_PREFIX)
-          ? 'LONG_MARKET_UNIVERSE_LATEST'
-          : 'MARKET_UNIVERSE_LATEST'
+        role: 'LONG_MARKET_UNIVERSE_LATEST'
       }
     );
 
@@ -2864,17 +2816,15 @@ async function saveMarketWeather({
       key,
       {
         ...payload,
-        redisNamespace: key.startsWith(LONG_KEY_PREFIX) ? LONG_NAMESPACE : 'MARKET',
-        redisKeyPrefix: key.startsWith(LONG_KEY_PREFIX) ? LONG_KEY_PREFIX : 'MARKET:'
+        redisNamespace: LONG_NAMESPACE,
+        redisKeyPrefix: LONG_KEY_PREFIX
       },
       {
         ex: ttlSec
       },
       {
         allowedKeys: keys,
-        role: key.startsWith(LONG_KEY_PREFIX)
-          ? 'LONG_MARKET_WEATHER_LATEST'
-          : 'MARKET_WEATHER_LATEST'
+        role: 'LONG_MARKET_WEATHER_LATEST'
       }
     );
 
@@ -2888,112 +2838,6 @@ async function saveMarketWeather({
   };
 }
 
-function buildSafeEmptySnapshot({
-  snapshotId,
-  startedAt,
-  completedAt,
-  reason,
-  error,
-  details = null
-}) {
-  return {
-    ok: false,
-    skipped: true,
-    persisted: false,
-    reason,
-
-    ...sideFlags(),
-    ...scopeFlags(),
-
-    snapshotId,
-    createdAt: startedAt,
-    completedAt,
-    durationMs: completedAt - startedAt,
-
-    btcState: 'UNKNOWN',
-    regime: 'UNKNOWN',
-    btcChange1h: 0,
-    btcChange24h: 0,
-    btcAtrPct: 0,
-
-    rawCount: 0,
-    filteredUniverse: 0,
-
-    marketUniverseCount: 0,
-    marketUniverseKeys: [],
-    marketUniverseSaved: false,
-    marketUniverseRole: 'MARKET_WEATHER_INPUT',
-    marketWeatherInput: true,
-
-    marketWeatherCount: 0,
-    marketWeatherKeys: [],
-    marketWeatherSaved: false,
-    marketWeatherRole: 'CURRENT_FIT_INPUT',
-
-    candidatesCount: 0,
-    scannerGateCandidatesCount: 0,
-    analyzeOnlyCandidatesCount: 0,
-
-    longCandidatesCount: 0,
-    shortCandidatesCount: 0,
-
-    rawShortCandidatesIgnored: 0,
-
-    maxSymbols: scannerMaxSymbols(),
-    maxCandidates: scannerMaxCandidates(),
-    marketUniverseMaxSymbols: marketUniverseMaxSymbols(),
-
-    strictFilters: strictScannerFiltersEnabled(),
-    blockFakeBreakout: blockFakeBreakoutEnabled(),
-    blockNoDirection: blockNoDirectionEnabled(),
-    blockSmallMove: blockSmallMoveEnabled(),
-
-    minQuoteVolume24h: minQuoteVolume24h(),
-    softMinQuoteVolume24h: softMinQuoteVolume24h(),
-    marketUniverseMinQuoteVolume24h: marketUniverseMinVolume24h(),
-
-    minAbsChange1h: minAbsChange1h(),
-    minAbsChange24h: minAbsChange24h(),
-
-    skippedCounts: {
-      [reason]: 1
-    },
-
-    topSymbols: [],
-    scannerGateSymbols: [],
-    analyzeOnlySymbols: [],
-    marketUniverseSymbols: [],
-
-    scannerMicroFamilyIdsMetadataOnly: [],
-
-    trueMicroFamilyIds: [],
-    microFamilyIds: [],
-    childTrueMicroFamilyIds: [],
-    parentTrueMicroFamilyIds: [],
-
-    candidates: [],
-
-    currentFitSoftOnly: true,
-    currentFitBlocksLearning: false,
-    currentFitBlocksVirtualLearning: false,
-    currentFitBlocksShadowLearning: false,
-    learningRemainsBroad: true,
-    selectionWillBeAdaptive: true,
-    discordWillBeStrict: true,
-
-    adaptiveLayerBuilt: false,
-    adaptiveScoreBuilt: false,
-    recentMomentumScoreBuilt: false,
-    currentFitScoreBuilt: false,
-    parentDiversificationBuilt: false,
-
-    error,
-    details,
-
-    scannerRunSafeStopped: true
-  };
-}
-
 export async function runScanner(options = {}) {
   const redis = getVolatileRedis();
   const marketRedis = getDurableRedis();
@@ -3002,35 +2846,7 @@ export async function runScanner(options = {}) {
   const snapshotId = randomId('scan_long');
   const getCandles = createCandleCache();
 
-  let rawTickers = [];
-
-  try {
-    rawTickers = asArray(await fetchScannerTickers());
-  } catch (error) {
-    const completedAt = now();
-
-    return buildSafeEmptySnapshot({
-      snapshotId,
-      startedAt,
-      completedAt,
-      reason: 'BITGET_TICKERS_FETCH_FAILED',
-      error: error?.message || String(error),
-      details: error?.details || null
-    });
-  }
-
-  if (!rawTickers.length) {
-    const completedAt = now();
-
-    return buildSafeEmptySnapshot({
-      snapshotId,
-      startedAt,
-      completedAt,
-      reason: 'BITGET_TICKERS_EMPTY_AFTER_UNWRAP',
-      error: 'fetchScannerTickers returned no array rows',
-      details: null
-    });
-  }
+  const rawTickers = await fetchBitgetTickers();
 
   const marketUniverseRows = await buildMarketUniverseRows({
     rawTickers,
@@ -3059,9 +2875,7 @@ export async function runScanner(options = {}) {
     })
   );
 
-  const safeResults = asArray(results);
-
-  const allCandidates = safeResults
+  const allCandidates = results
     .map((row) => row?.candidate)
     .filter(Boolean)
     .filter(isTargetCandidate)
@@ -3105,8 +2919,8 @@ export async function runScanner(options = {}) {
   });
 
   const rawShortCandidatesIgnored =
-    safeResults.filter((row) => row?.skippedTradeSide === OPPOSITE_TRADE_SIDE).length +
-    safeResults
+    results.filter((row) => row?.skippedTradeSide === OPPOSITE_TRADE_SIDE).length +
+    results
       .map((row) => row?.candidate)
       .filter(Boolean)
       .filter(isOppositeCandidate)
@@ -3124,6 +2938,8 @@ export async function runScanner(options = {}) {
 
     force: Boolean(options.force || options.forced),
 
+    ...buildTemporalContextUtc(startedAt),
+
     snapshotId,
     createdAt: startedAt,
     completedAt,
@@ -3135,7 +2951,7 @@ export async function runScanner(options = {}) {
     btcChange24h: btcContext.btcChange24h,
     btcAtrPct: btcContext.btcAtrPct,
 
-    rawCount: rawTickers.length,
+    rawCount: Array.isArray(rawTickers) ? rawTickers.length : 0,
     filteredUniverse: universe.length,
 
     marketUniverseCount: marketUniverseRows.length,
@@ -3174,7 +2990,7 @@ export async function runScanner(options = {}) {
     minAbsChange1h: minAbsChange1h(),
     minAbsChange24h: minAbsChange24h(),
 
-    skippedCounts: countSkipped(safeResults),
+    skippedCounts: countSkipped(results),
 
     topSymbols: cleanCandidates
       .slice(0, 20)
@@ -3216,10 +3032,15 @@ export async function runScanner(options = {}) {
       marketWeather: marketWeatherSave.savedKeys
     },
 
+    shortRootTouched: false,
+    redisKeysSeparatedFromShortRoot: true,
+
     currentFitSoftOnly: true,
     currentFitBlocksLearning: false,
     currentFitBlocksVirtualLearning: false,
     currentFitBlocksShadowLearning: false,
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
     learningRemainsBroad: true,
     selectionWillBeAdaptive: true,
     discordWillBeStrict: true,
