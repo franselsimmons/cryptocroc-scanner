@@ -26,6 +26,150 @@ const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 
+const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
+const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
+const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
+const WEEKEND_MODE = 'OBSERVE';
+const SESSION_MODE = 'OBSERVE';
+
+const DAY_OF_WEEK_UTC = Object.freeze([
+  'SUNDAY',
+  'MONDAY',
+  'TUESDAY',
+  'WEDNESDAY',
+  'THURSDAY',
+  'FRIDAY',
+  'SATURDAY'
+]);
+
+function temporalTimestamp(...values) {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return Date.now();
+}
+
+function buildTemporalContext(timestamp = Date.now()) {
+  const contextTs = temporalTimestamp(timestamp);
+  const date = new Date(contextTs);
+  const hourUtc = date.getUTCHours();
+  const dayIndex = date.getUTCDay();
+  const dayOfWeekUtc = DAY_OF_WEEK_UTC[dayIndex] || 'UNKNOWN';
+  const isWeekend = dayIndex === 0 || dayIndex === 6;
+  const asia = hourUtc >= 0 && hourUtc < 8;
+  const europe = hourUtc >= 7 && hourUtc < 16;
+  const us = hourUtc >= 13 && hourUtc < 22;
+  const sessionTags = [];
+  if (asia) sessionTags.push('ASIA');
+  if (europe) sessionTags.push('EUROPE');
+  if (us) sessionTags.push('US');
+
+  let primarySessionBucket = 'OFF_HOURS';
+  if (europe && us) primarySessionBucket = 'EU_US_OVERLAP';
+  else if (asia && europe) primarySessionBucket = 'ASIA_EU_OVERLAP';
+  else if (asia) primarySessionBucket = 'ASIA';
+  else if (europe) primarySessionBucket = 'EUROPE';
+  else if (us) primarySessionBucket = 'US';
+
+  return {
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    contextTs,
+    hourUtc,
+    dayOfWeekUtc,
+    dayType: isWeekend ? 'WEEKEND' : 'WEEKDAY',
+    isWeekend,
+    sessionTags,
+    primarySessionBucket,
+    sessionOverlap: sessionTags.length > 1,
+    offHours: sessionTags.length === 0
+  };
+}
+
+function temporalPolicyFlags(context = buildTemporalContext()) {
+  return {
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendDiscordEntryAllowed: !(
+      WEEKEND_MODE === 'OBSERVE' && context.isWeekend
+    ),
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true
+  };
+}
+
+function entryTemporalFields(row = {}) {
+  const nested = row.entryTemporalContext || row.temporalContext || {};
+  const context = buildTemporalContext(
+    temporalTimestamp(
+      row.entryTs,
+      row.openedAt,
+      row.entryAt,
+      row.createdAt,
+      row.observedAt,
+      row.contextTs,
+      row.ts,
+      nested.contextTs
+    )
+  );
+
+  const sessionTags = Array.isArray(row.entrySessionTags)
+    ? row.entrySessionTags
+    : Array.isArray(nested.sessionTags)
+      ? nested.sessionTags
+      : context.sessionTags;
+
+  const isWeekend = typeof row.entryIsWeekend === 'boolean'
+    ? row.entryIsWeekend
+    : typeof nested.isWeekend === 'boolean'
+      ? nested.isWeekend
+      : context.isWeekend;
+
+  const primarySessionBucket = String(
+    row.entrySessionBucket ||
+    nested.primarySessionBucket ||
+    context.primarySessionBucket
+  ).toUpperCase();
+
+  const normalized = {
+    ...context,
+    dayType: isWeekend ? 'WEEKEND' : 'WEEKDAY',
+    isWeekend,
+    sessionTags,
+    primarySessionBucket,
+    sessionOverlap: typeof row.entrySessionOverlap === 'boolean'
+      ? row.entrySessionOverlap
+      : sessionTags.length > 1,
+    offHours: typeof row.entryOffHours === 'boolean'
+      ? row.entryOffHours
+      : primarySessionBucket === 'OFF_HOURS'
+  };
+
+  return {
+    ...normalized,
+    ...temporalPolicyFlags(normalized),
+    entryTs: normalized.contextTs,
+    entryHourUtc: normalized.hourUtc,
+    entryDayOfWeekUtc: normalized.dayOfWeekUtc,
+    entryDayType: normalized.dayType,
+    entryIsWeekend: normalized.isWeekend,
+    entrySessionTags: normalized.sessionTags,
+    entrySessionBucket: normalized.primarySessionBucket,
+    entrySessionOverlap: normalized.sessionOverlap,
+    entryOffHours: normalized.offHours,
+    entryTemporalContext: normalized
+  };
+}
+
 const EXECUTION_MICRO_SUFFIX = 'XR';
 const EXECUTION_MICRO_HASH_LEN = 10;
 
@@ -91,7 +235,7 @@ const SETUP_ALIASES = {
   PULLBACK: 'RETEST',
   PULL_BACK: 'RETEST',
   PB: 'RETEST',
-  DIP_BUY: 'RETEST',
+  RIP_BUY: 'RETEST',
 
   SWEEP: 'SWEEP_REVERSAL',
   LIQ_SWEEP: 'SWEEP_REVERSAL',
@@ -217,14 +361,25 @@ function cleanSideText(value = '') {
     .replaceAll('SHORT_ONLY_FALSE', '')
     .replaceAll('LONG_DISABLED_FALSE', '')
     .replaceAll('LONGDISABLED_FALSE', '')
+    .replaceAll('BLOCK_LONG_FALSE', '')
     .replaceAll('LONG_ENABLED_FALSE', '')
     .replaceAll('LONG_ONLY_FALSE', '')
-    .replaceAll('SHORT_DISABLED', '')
-    .replaceAll('SHORTDISABLED', '')
-    .replaceAll('BLOCK_SHORT', '')
+    .replaceAll('SHORT_DISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('SHORTDISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('BLOCK_SHORT', 'LONG')
+    .replaceAll('SHORT_DISABLED', 'LONG')
+    .replaceAll('SHORTDISABLED', 'LONG')
+    .replaceAll('LONG_DISABLED_SHORT_ONLY', 'SHORT')
+    .replaceAll('LONGDISABLED_SHORT_ONLY', 'SHORT')
+    .replaceAll('BLOCK_LONG', 'SHORT')
+    .replaceAll('LONG_DISABLED', 'SHORT')
+    .replaceAll('LONGDISABLED', 'SHORT')
     .replaceAll('LONG_ONLY_MODE', 'LONG')
     .replaceAll('LONG_ONLY', 'LONG')
-    .replaceAll('LONG-ONLY', 'LONG');
+    .replaceAll('LONG-ONLY', 'LONG')
+    .replaceAll('SHORT_ONLY_MODE', 'SHORT')
+    .replaceAll('SHORT_ONLY', 'SHORT')
+    .replaceAll('SHORT-ONLY', 'SHORT');
 }
 
 function normalizedSignalText(value = '') {
@@ -315,7 +470,17 @@ function tradeSideFromText(value = '') {
 
   if (longHit && !shortHit) return TARGET_TRADE_SIDE;
   if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
-  if (longHit && shortHit) return 'MIXED';
+
+  if (longHit && shortHit) {
+    const text = normalizedSignalText(raw);
+
+    if (text.includes('MICRO_LONG')) return TARGET_TRADE_SIDE;
+    if (text.includes('MICRO_SHORT')) return OPPOSITE_TRADE_SIDE;
+    if (text.includes('TRADE_SIDE_LONG') || text.includes('TRADESIDE_LONG')) return TARGET_TRADE_SIDE;
+    if (text.includes('TRADE_SIDE_SHORT') || text.includes('TRADESIDE_SHORT')) return OPPOSITE_TRADE_SIDE;
+
+    return 'MIXED';
+  }
 
   return 'UNKNOWN';
 }
@@ -419,6 +584,7 @@ function modeFlags() {
     targetTradeSide: TARGET_TRADE_SIDE,
     targetScannerSide: TARGET_SCANNER_SIDE,
     dashboardSide: TARGET_DASHBOARD_SIDE,
+    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
 
     side: TARGET_DASHBOARD_SIDE,
     tradeSide: TARGET_TRADE_SIDE,
@@ -478,14 +644,28 @@ function modeFlags() {
     maxOneOpenPositionPerSymbol: true,
     positionTimeStopMinDefault: DEFAULT_POSITION_TIME_STOP_MIN,
 
-    validLongRiskShape: 'entry > 0 && sl < entry && tp > entry',
+    validLongRiskShape: 'entry > 0 && sl > 0 && sl < entry && tp > entry',
+    longRiskShape: 'sl < entry < tp',
+    riskTradeSide: TARGET_TRADE_SIDE,
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= sl',
     longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
     longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
     longExitRules: {
       tp: 'price >= tp',
       sl: 'price <= sl',
       timeStop: 'TIME_STOP'
     },
+
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+
+    ...temporalPolicyFlags(buildTemporalContext(Date.now())),
 
     manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
     discordOnlyForSelectedMicroFamilies: true,
@@ -538,6 +718,7 @@ function modeFlags() {
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    redisKeysSeparatedFromShortRoot: true,
     shortRootTouched: false
   };
 }
@@ -1029,7 +1210,7 @@ function normalizeSetupType(value = '') {
   if (SETUP_ALIASES[raw]) return SETUP_ALIASES[raw];
 
   if (raw.includes('SWEEP') || raw.includes('STOP_RUN') || raw.includes('REVERSAL')) return 'SWEEP_REVERSAL';
-  if (raw.includes('RETEST') || raw.includes('PULLBACK') || raw.includes('DIP')) return 'RETEST';
+  if (raw.includes('RETEST') || raw.includes('PULLBACK') || raw.includes('RIP')) return 'RETEST';
   if (raw.includes('COMPRESSION') || raw.includes('SQUEEZE') || raw.includes('COIL') || raw.includes('TIGHT')) return 'COMPRESSION';
   if (raw.includes('CONTINUATION') || raw.includes('TREND_CONT')) return 'CONTINUATION';
   if (raw.includes('BREAKOUT') || raw.includes('BREAK')) return 'BREAKOUT';
@@ -1607,7 +1788,9 @@ function buildMacroDefinitionParts(metrics = {}, familyId, taxonomy = null) {
     `fundingTier=${fundingTier(metrics.fundingRate)}`,
     `entryQuality=${entryQuality(metrics)}`,
     `fakeBreakout=${boolToken(metrics.fakeBreakout)}`,
-    `scannerReason=${scannerReason}`
+    `scannerReason=${scannerReason}`,
+    'currentFitPolarity=BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    'riskGeometryRule=LONG:sl<entry<tp'
   ];
 }
 
@@ -1681,7 +1864,12 @@ function buildMicroDefinitionParts(metrics = {}, parent, taxonomy) {
     `cost=${costTier(costR)}`,
     `fakeBreakout=${boolToken(metrics.fakeBreakout)}`,
     `fakeBreakoutRisk=${boolToken(metrics.fakeBreakoutRisk)}`,
-    `scannerReason=${coarseScannerReason(metrics.scannerReason)}`
+    `scannerReason=${coarseScannerReason(metrics.scannerReason)}`,
+    'currentFitPolarity=BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    'currentFitDefinition=LONG_MIRRORED_CURRENT_FIT',
+    'riskGeometryRule=LONG:sl<entry<tp',
+    'grossRFormula=(exitPrice-entry)/(entry-initialSl)',
+    'currentRFormula=(currentPrice-entry)/(entry-initialSl)'
   ];
 }
 
@@ -1916,7 +2104,12 @@ export function buildMicroFamilyV2(metrics = {}) {
     `parentTrueMicroFamilySchema=${PARENT_TRUE_MICRO_SCHEMA}`,
     'learningIdentity=ANALYZE_TRUE_MICRO_FAMILY_FIXED_TAXONOMY_75_CHILD',
     'scannerFingerprintRole=METADATA_ONLY',
-    'executionFingerprintRole=METADATA_ONLY'
+    'executionFingerprintRole=METADATA_ONLY',
+    'currentFitPolarity=BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    'currentFitDefinition=LONG_MIRRORED_CURRENT_FIT',
+    'riskGeometryRule=LONG:sl<entry<tp',
+    'tpHitRule=LONG:price>=tp',
+    'slHitRule=LONG:price<=sl'
   ]);
 
   return {
@@ -2121,6 +2314,7 @@ export function isScannerMicroFamilyId(id) {
 
 export function attachMicroFamilies(metrics = {}) {
   const sideSafeMetrics = assertLongOnly(metrics);
+  const temporal = entryTemporalFields(sideSafeMetrics);
 
   const scannerMetadata = getScannerMetadata(sideSafeMetrics);
   const macro = buildMicroFamilyV1(sideSafeMetrics);
@@ -2128,6 +2322,7 @@ export function attachMicroFamilies(metrics = {}) {
 
   return {
     ...metrics,
+    ...temporal,
 
     side: micro.side,
     tradeSide: micro.tradeSide,
@@ -2241,9 +2436,22 @@ export function attachMicroFamilies(metrics = {}) {
     scannerBucketsMetadataOnly: true,
     legacy25BucketsMetadataOnly: true,
 
+    riskTradeSide: TARGET_TRADE_SIDE,
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= sl',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    redisKeysSeparatedFromShortRoot: true,
     shortRootTouched: false,
 
     virtualOnly: true,
