@@ -14,22 +14,17 @@ const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 
+const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
+const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
+const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
+const WEEKEND_MODE = 'OBSERVE';
+const SESSION_MODE = 'OBSERVE';
+
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
 const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
 const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
 const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
-
-const LONG_TOKENS = new Set([
-  'LONG',
-  'BULL',
-  'BULLISH',
-  'BUY',
-  'BID',
-  'UP',
-  'UPSIDE',
-  'GREEN'
-]);
 
 const SHORT_TOKENS = new Set([
   'SHORT',
@@ -40,6 +35,17 @@ const SHORT_TOKENS = new Set([
   'DOWN',
   'DOWNSIDE',
   'RED'
+]);
+
+const LONG_TOKENS = new Set([
+  'LONG',
+  'BULL',
+  'BULLISH',
+  'BUY',
+  'BID',
+  'UP',
+  'UPSIDE',
+  'GREEN'
 ]);
 
 function upper(value) {
@@ -80,6 +86,20 @@ function longIndicatorFlags() {
     exchangeCallsDisabled: true,
 
     scannerBullishOnly: true,
+
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true,
     scannerFingerprintRole: 'METADATA_ONLY',
     scannerFingerprintsMetadataOnly: true,
     scannerFingerprintsUsedAsLearningFamily: false,
@@ -115,28 +135,65 @@ function longIndicatorFlags() {
     manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
     discordOnlyForExactTrueMicroMatch: true,
 
+    riskTradeSide: TARGET_TRADE_SIDE,
+    longRiskShape: 'sl < entry < tp',
+    validLongRiskShape: 'entry > 0 && sl < entry && entry < tp',
+    validLongGeometry: 'sl < entry < tp',
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= initialSl',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longExitRules: {
+      tp: 'price >= tp',
+      sl: 'price <= initialSl',
+      timeStop: 'TIME_STOP'
+    },
+
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
+    currentFitSoftOnly: true,
+    currentFitBlocksLearning: false,
+    learningRemainsBroad: true,
+
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    redisKeysSeparatedFromShortRoot: true,
     shortRootTouched: false
   };
 }
 
 function cleanSideText(value = '') {
   return upper(value)
-    .replaceAll('SHORT_DISABLED_TRUE', '')
-    .replaceAll('SHORTDISABLED_TRUE', '')
-    .replaceAll('BLOCK_SHORT_TRUE', '')
     .replaceAll('SHORT_DISABLED_FALSE', '')
     .replaceAll('SHORTDISABLED_FALSE', '')
     .replaceAll('BLOCK_SHORT_FALSE', '')
     .replaceAll('SHORT_ENABLED_FALSE', '')
-    .replaceAll('SHORT_DISABLED_LONG_ONLY', '')
-    .replaceAll('SHORTDISABLED_LONG_ONLY', '')
-    .replaceAll('BLOCK_SHORT', '')
-    .replaceAll('SHORT_DISABLED', '')
-    .replaceAll('SHORTDISABLED', '')
+    .replaceAll('SHORT_ONLY_FALSE', '')
     .replaceAll('LONG_DISABLED_FALSE', '')
+    .replaceAll('LONGDISABLED_FALSE', '')
+    .replaceAll('BLOCK_LONG_FALSE', '')
+    .replaceAll('LONG_ENABLED_FALSE', '')
+    .replaceAll('LONG_ONLY_FALSE', '')
+    .replaceAll('SHORT_DISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('SHORTDISABLED_LONG_ONLY', 'LONG')
+    .replaceAll('SHORT_DISABLED_TRUE', 'LONG')
+    .replaceAll('SHORTDISABLED_TRUE', 'LONG')
+    .replaceAll('BLOCK_SHORT_TRUE', 'LONG')
+    .replaceAll('BLOCK_SHORT', 'LONG')
+    .replaceAll('SHORT_DISABLED', 'LONG')
+    .replaceAll('SHORTDISABLED', 'LONG')
+    .replaceAll('LONG_DISABLED_SHORT_ONLY', 'SHORT')
+    .replaceAll('LONGDISABLED_SHORT_ONLY', 'SHORT')
+    .replaceAll('LONG_DISABLED_TRUE', 'SHORT')
+    .replaceAll('LONGDISABLED_TRUE', 'SHORT')
+    .replaceAll('BLOCK_LONG_TRUE', 'SHORT')
+    .replaceAll('BLOCK_LONG', 'SHORT')
+    .replaceAll('LONG_DISABLED', 'SHORT')
+    .replaceAll('LONGDISABLED', 'SHORT')
     .replaceAll('LONG_ONLY_MODE', 'LONG')
     .replaceAll('LONG_ONLY', 'LONG')
     .replaceAll('LONG-ONLY', 'LONG')
@@ -162,33 +219,6 @@ function hasSignalPattern(value = '', patterns = []) {
     text.endsWith(`_${pattern}`) ||
     text.includes(`_${pattern}_`)
   ));
-}
-
-function hasLongSignal(value = '') {
-  const raw = cleanSideText(value);
-
-  if (!raw) return false;
-  if (LONG_TOKENS.has(raw)) return true;
-
-  return hasSignalPattern(raw, [
-    'LONG',
-    'BULL',
-    'BULLISH',
-    'BUY',
-    'SIDE_LONG',
-    'TRADE_SIDE_LONG',
-    'TRADESIDE_LONG',
-    'POSITION_SIDE_LONG',
-    'POSITIONSIDE_LONG',
-    'DIRECTION_LONG',
-    'SIDE_BULL',
-    'TRADE_SIDE_BULL',
-    'DIRECTION_BULL',
-    'SIDE_BUY',
-    'DIRECTION_BUY',
-    'MICRO_LONG',
-    'FAMILY_LONG'
-  ]);
 }
 
 function hasShortSignal(value = '') {
@@ -218,6 +248,33 @@ function hasShortSignal(value = '') {
   ]);
 }
 
+function hasLongSignal(value = '') {
+  const raw = cleanSideText(value);
+
+  if (!raw) return false;
+  if (LONG_TOKENS.has(raw)) return true;
+
+  return hasSignalPattern(raw, [
+    'LONG',
+    'BULL',
+    'BULLISH',
+    'BUY',
+    'SIDE_LONG',
+    'TRADE_SIDE_LONG',
+    'TRADESIDE_LONG',
+    'POSITION_SIDE_LONG',
+    'POSITIONSIDE_LONG',
+    'DIRECTION_LONG',
+    'SIDE_BULL',
+    'TRADE_SIDE_BULL',
+    'DIRECTION_BULL',
+    'SIDE_BUY',
+    'DIRECTION_BUY',
+    'MICRO_LONG',
+    'FAMILY_LONG'
+  ]);
+}
+
 function normalizeTradeSide(value) {
   const raw = cleanSideText(value);
 
@@ -228,16 +285,16 @@ function normalizeTradeSide(value) {
   if (direct === TARGET_TRADE_SIDE) return TARGET_TRADE_SIDE;
   if (direct === OPPOSITE_TRADE_SIDE) return OPPOSITE_TRADE_SIDE;
 
-  const longHit = hasLongSignal(raw);
   const shortHit = hasShortSignal(raw);
+  const longHit = hasLongSignal(raw);
 
-  if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
   if (longHit && !shortHit) return TARGET_TRADE_SIDE;
+  if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
 
-  if (longHit && shortHit) {
+  if (shortHit && longHit) {
     if (raw.includes('TRADE_SIDE=LONG') || raw.includes('TRADESIDE=LONG')) return TARGET_TRADE_SIDE;
-    if (raw.includes('TRADE_SIDE=SHORT') || raw.includes('TRADESIDE=SHORT')) return OPPOSITE_TRADE_SIDE;
     if (raw.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
+    if (raw.includes('TRADE_SIDE=SHORT') || raw.includes('TRADESIDE=SHORT')) return OPPOSITE_TRADE_SIDE;
     if (raw.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
   }
 
@@ -570,9 +627,9 @@ function inferLongSideFromMomentum({
 } = {}) {
   const ch1 = safeNumber(change1h, 0);
   const ch24 = safeNumber(change24h, 0);
-  const shortMovePct = calcMovePct(candles15m, 8);
+  const longMovePct = calcMovePct(candles15m, 8);
 
-  if (ch1 > 0 || shortMovePct > 0 || ch24 > 0) {
+  if (ch1 > 0 || longMovePct > 0 || ch24 > 0) {
     return TARGET_TRADE_SIDE;
   }
 
@@ -605,11 +662,11 @@ export function classifyFlow({
 
   const ch1 = safeNumber(change1h, 0);
   const ch24 = safeNumber(change24h, 0);
-  const shortMovePct = calcMovePct(candles15m, 8);
+  const longMovePct = calcMovePct(candles15m, 8);
   const volumeExpansion = calcVolumeExpansion(candles15m, 20);
 
-  const directional = ch1 > 0 && shortMovePct > 0;
-  const strong = ch1 > 0.8 || ch24 > 3 || shortMovePct > 1.2;
+  const directional = ch1 > 0 && longMovePct > 0;
+  const strong = ch1 > 0.8 || ch24 > 3 || longMovePct > 1.2;
   const volumeBacked = volumeExpansion >= 1.25;
 
   if (directional && strong && volumeBacked) return 'TREND';
