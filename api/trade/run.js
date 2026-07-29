@@ -6,54 +6,65 @@
 // - /api/scanner/run onderhoudt LONG:SCAN:LATEST;
 // - alleen compacte runmetadata wordt opgeslagen;
 // - grote scanner-, candle-, candidate- en market-weather-rows worden niet
-//      naar LONG:TRADE:RUN_META geschreven;
+//         naar LONG:TRADE:RUN_META geschreven;
 // - echte exchange-orders blijven uitgeschakeld.
-
-
 import { CONFIG } from '../../src/config.js';
 import { KEYS } from '../../src/keys.js';
 import {
-     getDurableRedis,
-     getVolatileRedis,
-     setJson
+        getDurableRedis,
+        getVolatileRedis,
+        setJson,
+        getJson
 } from '../../src/redis.js';
 import * as LockApi from '../../src/lock.js';
 import { runTradeSystem } from '../../src/trade/tradeSystem.js';
 import { sideToTradeSide } from '../../src/utils.js';
-
-
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
 const TARGET_SCANNER_SIDE = 'bull';
 const OPPOSITE_TRADE_SIDE = 'SHORT';
-
-
 const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
-
-
-
-
 const MEASUREMENT_FIX_VERSION =
-  'LONG_MEASUREMENT_FIX_TRIGGER_BOUNDARY_EXIT_FILL_V2';
+     'LONG_MEASUREMENT_FIX_TRIGGER_BOUNDARY_EXIT_FILL_V2';
 const EXIT_FILL_MODEL_VERSION =
-  'LONG_TRIGGER_BOUNDARY_FILL_PLUS_COST_MODEL_V1';
+     'LONG_TRIGGER_BOUNDARY_FILL_PLUS_COST_MODEL_V1';
 const EMPIRICAL_VETO_POLICY_VERSION =
-  'LONG_EXACT_75_CHILD_NET_EDGE_VETO_V1';
+     'LONG_EXACT_75_CHILD_NET_EDGE_VETO_V1';
 const OUTCOME_MEASUREMENT_GATE_MODE = 'STRICT_EXACT_VERSION';
 const EMPIRICAL_VETO_MIN_COMPLETED = 35;
 const EMPIRICAL_VETO_MAX_AVG_R = 0;
-
 const TEMPORAL_CONTEXT_VERSION =
-  'LONG_TEMPORAL_CONTEXT_UTC_V1';
+  'LONG_TEMPORAL_CONTEXT_UTC_V2';
 const WEEKEND_POLICY_VERSION =
-  'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
+  'LONG_WEEKEND_DEFAULT_BLOCK_POSITIVE_OVERRIDE_V1';
 const SESSION_POLICY_VERSION =
-  'LONG_SESSION_OBSERVE_V1';
+  'LONG_SESSION_NEGATIVE_VETO_WEEKLY_PROFILE_V1';
 const WEEKEND_MODE = 'OBSERVE';
 const SESSION_MODE = 'OBSERVE';
-
+const TEMPORAL_STATS_VERSION = 'LONG_TEMPORAL_FAMILY_STATS_V1';
+const TEMPORAL_POLICY_VERSION = 'LONG_TEMPORAL_NEGATIVE_VETO_WEEKLY_GENERATION_V1';
+const TEMPORAL_AGGREGATION_VERSION = 'LONG_TEMPORAL_CANONICAL_OUTCOME_V1';
+const TEMPORAL_GENERATION_VERSION = 'LONG_TEMPORAL_ROOT_GENERATION_V1';
+const TEMPORAL_POLICY_MODES = Object.freeze(['OFF', 'OBSERVE', 'ENFORCE']);
+const TEMPORAL_GATE_WINDOW_MAX_OUTCOMES = 50;
+const TEMPORAL_GATE_WINDOW_MAX_AGE_DAYS = 180;
+const TEMPORAL_VETO_MIN_COMPLETED = 35;
+const TEMPORAL_WEEKEND_APPROVAL_MIN_COMPLETED = 50;
+const TEMPORAL_VETO_MATERIAL_AVG_R = -0.10;
+const TEMPORAL_RECOVERY_MATERIAL_AVG_R = 0.05;
+const TEMPORAL_WEEKEND_MATERIAL_AVG_R = 0.10;
+const TEMPORAL_FDR_Q_MAX = 0.05;
+const TEMPORAL_VETO_CONFIRM_NEW_OUTCOMES = 5;
+const TEMPORAL_RECOVERY_START_NEW_OUTCOMES = 10;
+const TEMPORAL_RECOVERY_CONFIRM_NEW_OUTCOMES = 5;
+const TEMPORAL_WEEKEND_CONFIRM_NEW_OUTCOMES = 10;
+const TEMPORAL_CANDIDATE_MAX_FREEZES = 4;
+const TEMPORAL_GENERATION_MAX_AGE_DAYS = 14;
+const TEMPORAL_WEEKEND_FRESHNESS_DAYS = 45;
+const TEMPORAL_VETO_STALE_DAYS = 60;
+const TEMPORAL_ACTIVATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 const UTC_DAY_NAMES = Object.freeze([
   'SUNDAY',
   'MONDAY',
@@ -63,7 +74,6 @@ const UTC_DAY_NAMES = Object.freeze([
   'FRIDAY',
   'SATURDAY'
 ]);
-
 const SESSION_BUCKETS = Object.freeze([
   'ASIA',
   'EUROPE',
@@ -72,55 +82,32 @@ const SESSION_BUCKETS = Object.freeze([
   'EU_US_OVERLAP',
   'OFF_HOURS'
 ]);
-
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
-
-
 const LEARNING_GRANULARITY =
-     'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
-
-
+      'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
 const PARENT_LEARNING_GRANULARITY =
-     'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
-
-
+      'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 const RUN_SCOPE =
-     'TRADE_FROM_EXISTING_SCANNER_SNAPSHOT';
-
-
+      'TRADE_FROM_EXISTING_SCANNER_SNAPSHOT';
 const WRITE_SCOPE =
   'TRADE_AND_ANALYZE_PARTIAL';
-
-
 const READ_SCOPE =
   'READ_LONG_SCANNER_AND_MARKET_WEATHER';
-
-
 const TRADE_LOCK_RESOURCE =
   'TRADE_RUN';
-
-
 const DEFAULT_LOCK_TTL_SEC = 55;
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 const DEFAULT_RUNTIME_BUDGET_MS = 50000;
 const DEFAULT_RESPONSE_ROW_LIMIT = 50;
 const MAX_RESPONSE_ROW_LIMIT = 250;
-
-
 const MAX_RUN_META_BYTES = 1_000_000;
 const MAX_ID_LIST = 100;
 const MAX_WARNING_LIST = 50;
-
-
 const MARKET_UNIVERSE_KEY =
   `${LONG_KEY_PREFIX}MARKET:UNIVERSE:LATEST`;
-
-
 const MARKET_WEATHER_KEY =
   `${LONG_KEY_PREFIX}MARKET:WEATHER:LATEST`;
-
-
 const SETUP_TYPES = new Set([
   'BREAKOUT',
   'RETEST',
@@ -128,1283 +115,1006 @@ const SETUP_TYPES = new Set([
   'CONTINUATION',
   'COMPRESSION'
 ]);
-
-
 const REGIME_BUCKETS = new Set([
   'TREND',
   'CHOP',
   'SQUEEZE'
 ]);
-
-
 const CONFIRMATION_PROFILES = new Set([
-  'A_STRONG_ALIGN',
-  'B_FLOW_ALIGN',
-  'C_VOLUME_ALIGN',
-  'D_MIXED_OK',
-  'E_WEAK_CONTRA'
+    'A_STRONG_ALIGN',
+    'B_FLOW_ALIGN',
+    'C_VOLUME_ALIGN',
+    'D_MIXED_OK',
+    'E_WEAK_CONTRA'
 ]);
-
-
 function now() {
-    return Date.now();
+        return Date.now();
 }
-
+function normalizeTimestampMs(value, fallback = now()) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+        const safeFallback = Number(fallback);
+        return Number.isFinite(safeFallback) && safeFallback > 0
+            ? Math.floor(safeFallback)
+            : now();
+    }
+    return numeric < 10_000_000_000
+        ? Math.floor(numeric * 1000)
+        : Math.floor(numeric);
+}
+function isoWeekKeyUtc(timestamp) {
+    const date = new Date(normalizeTimestampMs(timestamp));
+    const target = new Date(Date.UTC(
+        date.getUTCFullYear(),
+        date.getUTCMonth(),
+        date.getUTCDate()
+    ));
+    const day = target.getUTCDay() || 7;
+    target.setUTCDate(target.getUTCDate() + 4 - day);
+    const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1));
+    const week = Math.ceil((((target - yearStart) / 86_400_000) + 1) / 7);
+    return `${target.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
 function buildTemporalContext(value = now()) {
-  const numeric = Number(value);
-  const contextTs = Number.isFinite(numeric) ? numeric : now();
-  const date = new Date(contextTs);
-  const hourUtc = date.getUTCHours();
-  const dayIndex = date.getUTCDay();
-  const dayOfWeekUtc = UTC_DAY_NAMES[dayIndex] || 'UNKNOWN';
-  const isWeekend = dayIndex === 0 || dayIndex === 6;
-
-  const inAsia = hourUtc >= 0 && hourUtc < 8;
-  const inEurope = hourUtc >= 7 && hourUtc < 16;
-  const inUs = hourUtc >= 13 && hourUtc < 22;
-
-  const sessionTags = [];
-  if (inAsia) sessionTags.push('ASIA');
-  if (inEurope) sessionTags.push('EUROPE');
-  if (inUs) sessionTags.push('US');
-
-  let primarySessionBucket = 'OFF_HOURS';
-  if (inEurope && inUs) {
-    primarySessionBucket = 'EU_US_OVERLAP';
-  } else if (inAsia && inEurope) {
-    primarySessionBucket = 'ASIA_EU_OVERLAP';
-  } else if (inAsia) {
-    primarySessionBucket = 'ASIA';
-  } else if (inEurope) {
-    primarySessionBucket = 'EUROPE';
-  } else if (inUs) {
-    primarySessionBucket = 'US';
-  }
-
-  return {
-    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
-    contextTs,
-    hourUtc,
-    dayOfWeekUtc,
-    dayType: isWeekend ? 'WEEKEND' : 'WEEKDAY',
-    isWeekend,
-    sessionTags,
-    primarySessionBucket,
-    sessionOverlap: sessionTags.length > 1,
-    offHours: primarySessionBucket === 'OFF_HOURS'
-  };
-}
-
-function temporalPolicyFlags(value = now()) {
-  const temporalContext = (
-    value &&
-    typeof value === 'object' &&
-    value.temporalContextVersion === TEMPORAL_CONTEXT_VERSION
-  ) ? value : buildTemporalContext(value);
-
-  return {
-    ...temporalContext,
-    temporalContext,
-    weekendMode: WEEKEND_MODE,
-    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
-    weekendLearningAllowed: true,
-    weekendVirtualEntryAllowed: true,
-    weekendDiscordEntryAllowed: !temporalContext.isWeekend,
-    weekendExitMonitoringAllowed: true,
-    weekendOutcomeRecordingAllowed: true,
-    weekendPolicyObservedOnly: true,
-    sessionMode: SESSION_MODE,
-    sessionPolicyVersion: SESSION_POLICY_VERSION,
-    sessionLearningAllowed: true,
-    sessionVirtualEntryAllowed: true,
-    sessionDiscordEntryAllowed: true,
-    sessionPolicyObservedOnly: true
-  };
-}
-
-function entryTemporalFields(row = {}) {
-  const entryTs = Number(
-    row.entryTs ??
-    row.openedAt ??
-    row.createdAt ??
-    row.signalTs ??
-    row.ts ??
-    now()
-  );
-  const context = buildTemporalContext(entryTs);
-
-  return {
-    entryTs: context.contextTs,
-    entryHourUtc: context.hourUtc,
-    entryDayOfWeekUtc: context.dayOfWeekUtc,
-    entryDayType: context.dayType,
-    entryIsWeekend: context.isWeekend,
-    entrySessionTags: context.sessionTags,
-    entrySessionBucket: context.primarySessionBucket,
-    entrySessionOverlap: context.sessionOverlap,
-    entryOffHours: context.offHours
-  };
-}
-
-function exitTemporalFields(row = {}) {
-  const rawExitTs =
-    row.exitTs ??
-    row.closedAt ??
-    row.completedAt ??
-    row.updatedAt ??
-    null;
-
-  if (rawExitTs === null || rawExitTs === undefined || rawExitTs === '') {
+    const contextTs = normalizeTimestampMs(value, now());
+    const date = new Date(contextTs);
+    const hourUtc = date.getUTCHours();
+    const dayIndex = date.getUTCDay();
+    const dayOfWeekUtc = UTC_DAY_NAMES[dayIndex] || 'UNKNOWN';
+    const isWeekend = dayIndex === 0 || dayIndex === 6;
+    const inAsia = hourUtc >= 0 && hourUtc < 8;
+    const inEurope = hourUtc >= 7 && hourUtc < 16;
+    const inUs = hourUtc >= 13 && hourUtc < 22;
+    const sessionTags = [];
+    if (inAsia) sessionTags.push('ASIA');
+    if (inEurope) sessionTags.push('EUROPE');
+    if (inUs) sessionTags.push('US');
+    let primarySessionBucket = 'OFF_HOURS';
+    if (inEurope && inUs) primarySessionBucket = 'EU_US_OVERLAP';
+    else if (inAsia && inEurope) primarySessionBucket = 'ASIA_EU_OVERLAP';
+    else if (inAsia) primarySessionBucket = 'ASIA';
+    else if (inEurope) primarySessionBucket = 'EUROPE';
+    else if (inUs) primarySessionBucket = 'US';
     return {
-      exitTs: null,
-      exitHourUtc: null,
-      exitDayOfWeekUtc: null,
-      exitDayType: null,
-      exitIsWeekend: null,
-      exitSessionTags: [],
-      exitSessionBucket: null,
-      exitSessionOverlap: false,
-      exitOffHours: null
+        temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+        contextTs,
+        hourUtc,
+        dayOfWeekUtc,
+        dayType: isWeekend ? 'WEEKEND' : 'WEEKDAY',
+        isWeekend,
+        sessionTags,
+        primarySessionBucket,
+        sessionOverlap: sessionTags.length > 1,
+        offHours: primarySessionBucket === 'OFF_HOURS',
+        entryDateUtc: date.toISOString().slice(0, 10),
+        isoWeekUtc: isoWeekKeyUtc(contextTs)
     };
-  }
-
-  const context = buildTemporalContext(rawExitTs);
-  return {
-    exitTs: context.contextTs,
-    exitHourUtc: context.hourUtc,
-    exitDayOfWeekUtc: context.dayOfWeekUtc,
-    exitDayType: context.dayType,
-    exitIsWeekend: context.isWeekend,
-    exitSessionTags: context.sessionTags,
-    exitSessionBucket: context.primarySessionBucket,
-    exitSessionOverlap: context.sessionOverlap,
-    exitOffHours: context.offHours
-  };
 }
-
+function parseBooleanFlag(value, fallback = false) {
+    if (typeof value === 'boolean') return value;
+    if (value === 1 || value === 0) return value === 1;
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (['1', 'true', 'yes', 'y', 'on', 'enabled'].includes(normalized)) return true;
+    if (['0', 'false', 'no', 'n', 'off', 'disabled'].includes(normalized)) return false;
+    return Boolean(fallback);
+}
+function normalizeTemporalPolicyMode(value, fallback = 'OBSERVE') {
+    const normalized = String(value || '').trim().toUpperCase();
+    if (TEMPORAL_POLICY_MODES.includes(normalized)) return normalized;
+    const fallbackMode = String(fallback || 'OBSERVE').trim().toUpperCase();
+    return TEMPORAL_POLICY_MODES.includes(fallbackMode) ? fallbackMode : 'OBSERVE';
+}
+function temporalConfigSource() {
+    const root = typeof CONFIG === 'object' && CONFIG ? CONFIG : {};
+    return root.long?.temporal || root.temporal?.long || root.temporal || {};
+}
+function resolveTemporalControls() {
+    const cfg = temporalConfigSource();
+    const requestedMode = normalizeTemporalPolicyMode(
+        cfg.policyMode ?? cfg.mode ??
+        process.env.LONG_TEMPORAL_POLICY_MODE ??
+        process.env.TEMPORAL_POLICY_MODE,
+        'OBSERVE'
+    );
+    const temporalStatsEnabled = parseBooleanFlag(
+        cfg.statsEnabled ?? cfg.enabled ??
+        process.env.LONG_TEMPORAL_STATS_ENABLED ??
+        process.env.TEMPORAL_STATS_ENABLED,
+        true
+    );
+    return {
+        temporalStatsEnabled,
+        requestedTemporalPolicyMode: requestedMode,
+        temporalPolicyMode: temporalStatsEnabled ? requestedMode : 'OFF',
+        temporalConfigurationValid: temporalStatsEnabled || requestedMode === 'OFF'
+    };
+}
+function resolveMarketEventClusterId(row = {}, timestamp = now()) {
+    const source = row && typeof row === 'object' ? row : {};
+    const explicit = source.marketEventClusterId || source.scannerRunId ||
+        source.marketSnapshotId || source.snapshotId || source.marketCycleId ||
+        source.scanId || null;
+    if (explicit) {
+        return `LONG_EVENT_${String(explicit).trim().replace(/[^A-Za-z0-9:_-]/g, '_')}`;
+    }
+    const ts = normalizeTimestampMs(timestamp, now());
+    const hourBucket = Math.floor(ts / 3_600_000) * 3_600_000;
+    return `LONG_EVENT_HOUR_${new Date(hourBucket).toISOString().slice(0, 13)}:00Z`;
+}
+function temporalPolicyFlags(value = now()) {
+    const temporalContext = (
+        value && typeof value === 'object' &&
+        value.temporalContextVersion === TEMPORAL_CONTEXT_VERSION
+    ) ? value : buildTemporalContext(value);
+    const controls = resolveTemporalControls();
+    return {
+        ...temporalContext,
+        temporalContext,
+        ...controls,
+        temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+        temporalStatsVersion: TEMPORAL_STATS_VERSION,
+        temporalPolicyVersion: TEMPORAL_POLICY_VERSION,
+        temporalAggregationVersion: TEMPORAL_AGGREGATION_VERSION,
+        temporalGenerationVersion: TEMPORAL_GENERATION_VERSION,
+        temporalPolicyModes: TEMPORAL_POLICY_MODES,
+        temporalGateWindowMaxOutcomes: TEMPORAL_GATE_WINDOW_MAX_OUTCOMES,
+        temporalGateWindowMaxAgeDays: TEMPORAL_GATE_WINDOW_MAX_AGE_DAYS,
+        temporalVetoMinCompleted: TEMPORAL_VETO_MIN_COMPLETED,
+        temporalWeekendApprovalMinCompleted: TEMPORAL_WEEKEND_APPROVAL_MIN_COMPLETED,
+        temporalGenerationMaxAgeDays: TEMPORAL_GENERATION_MAX_AGE_DAYS,
+        temporalWeekendFreshnessDays: TEMPORAL_WEEKEND_FRESHNESS_DAYS,
+        temporalVetoStaleDays: TEMPORAL_VETO_STALE_DAYS,
+        weekendMode: controls.temporalPolicyMode,
+        weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+        weekendLearningAllowed: controls.temporalStatsEnabled,
+        weekendVirtualEntryAllowed: true,
+        weekendDiscordEntryAllowed: !temporalContext.isWeekend,
+        weekendExitMonitoringAllowed: true,
+        weekendOutcomeRecordingAllowed: controls.temporalStatsEnabled,
+        weekendPolicyObservedOnly: controls.temporalPolicyMode !== 'ENFORCE',
+        sessionMode: controls.temporalPolicyMode,
+        sessionPolicyVersion: SESSION_POLICY_VERSION,
+        sessionLearningAllowed: controls.temporalStatsEnabled,
+        sessionVirtualEntryAllowed: true,
+        sessionDiscordEntryAllowed: true,
+        sessionPolicyObservedOnly: controls.temporalPolicyMode !== 'ENFORCE',
+        temporalContextExcludedFromFamilyId: true,
+        sessionContextExcludedFromFamilyId: true,
+        symbolExcludedFromTemporalFamilyId: true
+    };
+}
+function entryTemporalFields(row = {}) {
+    const source = row && typeof row === 'object' ? row : {};
+    const entryTs = normalizeTimestampMs(
+        source.entryTs ?? source.openedAt ?? source.openTs ??
+        source.positionOpenedAt ?? source.createdAt ?? source.signalTs ??
+        source.ts ?? now(),
+        now()
+    );
+    const context = buildTemporalContext(entryTs);
+    return {
+        temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+        entryTs: context.contextTs,
+        entryHourUtc: context.hourUtc,
+        entryDayOfWeekUtc: context.dayOfWeekUtc,
+        entryDayType: context.dayType,
+        entryIsWeekend: context.isWeekend,
+        entrySessionTags: context.sessionTags,
+        entrySessionBucket: context.primarySessionBucket,
+        entrySessionOverlap: context.sessionOverlap,
+        entryOffHours: context.offHours,
+        entryDateUtc: context.entryDateUtc,
+        entryIsoWeekUtc: context.isoWeekUtc,
+        marketEventClusterId: resolveMarketEventClusterId(source, entryTs)
+    };
+}
+function exitTemporalFields(row = {}) {
+    const source = row && typeof row === 'object' ? row : {};
+    const rawExitTs = source.exitTs ?? source.closedAt ?? source.closeTs ??
+        source.positionClosedAt ?? source.completedAt ?? source.updatedAt ?? null;
+    if (rawExitTs === null || rawExitTs === undefined || rawExitTs === '') {
+        return {
+            exitTs: null,
+            exitHourUtc: null,
+            exitDayOfWeekUtc: null,
+            exitDayType: null,
+            exitIsWeekend: null,
+            exitSessionTags: [],
+            exitSessionBucket: null,
+            exitSessionOverlap: false,
+            exitOffHours: null,
+            exitDateUtc: null,
+            exitIsoWeekUtc: null
+        };
+    }
+    const context = buildTemporalContext(rawExitTs);
+    return {
+        exitTs: context.contextTs,
+        exitHourUtc: context.hourUtc,
+        exitDayOfWeekUtc: context.dayOfWeekUtc,
+        exitDayType: context.dayType,
+        exitIsWeekend: context.isWeekend,
+        exitSessionTags: context.sessionTags,
+        exitSessionBucket: context.primarySessionBucket,
+        exitSessionOverlap: context.sessionOverlap,
+        exitOffHours: context.offHours,
+        exitDateUtc: context.entryDateUtc,
+        exitIsoWeekUtc: context.isoWeekUtc
+    };
+}
 function emptyContextStats() {
-  return {
-    WEEKDAY: {},
-    WEEKEND: {}
-  };
+    return {
+         WEEKDAY: {},
+         WEEKEND: {}
+    };
 }
-
 function emptySessionStats() {
-  return Object.fromEntries(
-    SESSION_BUCKETS.map((bucket) => [bucket, {}])
-  );
+    return Object.fromEntries(
+         SESSION_BUCKETS.map((bucket) => [bucket, {}])
+    );
 }
-
-
-
 function safeNumber(
-    value,
-    fallback = 0
+         value,
+         fallback = 0
 ) {
-    const number = Number(value);
-
-
-    return Number.isFinite(number)
-         ? number
-         : fallback;
+         const number = Number(value);
+         return Number.isFinite(number)
+              ? number
+              : fallback;
 }
-
-
 function round(
-    value,
-    decimals = 4
+         value,
+         decimals = 4
 ) {
-    return Number(
-         safeNumber(value, 0)
-           .toFixed(decimals)
-    );
-}
-
-
-function upper(value) {
-    return String(value || '')
-         .trim()
-         .toUpperCase();
-}
-
-
-function firstValue(
-    value,
-    fallback = null
-) {
-    if (Array.isArray(value)) {
-         return value[0] ?? fallback;
-    }
-
-
-    if (
-         value === undefined ||
-         value === null ||
-         value === ''
-    ) {
-         return fallback;
-    }
-
-
-    return value;
-}
-
-
-function isTrue(value) {
-    if (
-         value === true ||
-         value === 1
-    ) {
-         return true;
-    }
-
-
-    return [
-         'true',
-         '1',
-         'yes',
-         'y',
-         'on',
-         'force',
-         'forced'
-    ].includes(
-         String(value ?? '')
-           .trim()
-           .toLowerCase()
-    );
-}
-
-
-function callMaybeKey(
-    value,
-    fallback = null
-) {
-    if (typeof value !== 'function') {
-         return value || fallback;
-    }
-
-
-    try {
-         return value();
-    } catch {
-         return fallback;
-    }
-}
-
-
-function namespacedLongKey(
-    value,
-    fallback = null
-) {
-    let key = String(
-         callMaybeKey(
-           value,
-              fallback
-         ) || ''
-    ).trim();
-
-
-    if (!key) {
-         return null;
-    }
-
-
-    if (
-         key.startsWith(
-              LONG_KEY_PREFIX
-         )
-    ) {
-         return key;
-    }
-
-
-    if (key.startsWith('SHORT:')) {
-         key = key.slice(
-              'SHORT:'.length
+         return Number(
+              safeNumber(value, 0)
+                  .toFixed(decimals)
          );
+}
+function upper(value) {
+         return String(value || '')
+              .trim()
+             .toUpperCase();
+}
+function firstValue(
+      value,
+      fallback = null
+) {
+      if (Array.isArray(value)) {
+             return value[0] ?? fallback;
+      }
+      if (
+             value === undefined ||
+             value === null ||
+             value === ''
+      ) {
+             return fallback;
+      }
+      return value;
+}
+function isTrue(value) {
+      if (
+             value === true ||
+             value === 1
+      ) {
+             return true;
+      }
+      return [
+             'true',
+             '1',
+             'yes',
+             'y',
+             'on',
+             'force',
+             'forced'
+      ].includes(
+             String(value ?? '')
+               .trim()
+               .toLowerCase()
+      );
+}
+function callMaybeKey(
+      value,
+      fallback = null
+) {
+      if (typeof value !== 'function') {
+              return value || fallback;
+      }
+      try {
+              return value();
+      } catch {
+              return fallback;
+      }
+}
+function namespacedLongKey(
+      value,
+      fallback = null
+) {
+      let key = String(
+              callMaybeKey(
+                  value,
+                     fallback
+              ) || ''
+      ).trim();
+      if (!key) {
+              return null;
+      }
+      if (
+              key.startsWith(
+                     LONG_KEY_PREFIX
+              )
+      ) {
+              return key;
+      }
+    if (key.startsWith('SHORT:')) {
+             key = key.slice(
+                   'SHORT:'.length
+             );
     }
-
-
     return `${LONG_KEY_PREFIX}${key}`;
 }
-
-
 function resolveTradeLockKey() {
     if (
-         typeof LockApi.normalizeLongLockKey ===
-         'function'
+             typeof LockApi.normalizeLongLockKey ===
+             'function'
     ) {
-         return LockApi.normalizeLongLockKey(
-              TRADE_LOCK_RESOURCE
-         );
+             return LockApi.normalizeLongLockKey(
+                   TRADE_LOCK_RESOURCE
+             );
     }
-
-
     return (
-         `${LONG_KEY_PREFIX}` +
-         `LOCK:${TRADE_LOCK_RESOURCE}`
+             `${LONG_KEY_PREFIX}` +
+             `LOCK:${TRADE_LOCK_RESOURCE}`
     );
 }
-
-
 const LONG_KEYS = {
     scan: {
-         latest: namespacedLongKey(
-              KEYS.long?.scan?.latest ||
-                KEYS.scan?.longLatest ||
-                KEYS.scan?.latest,
-              'SCAN:LATEST'
-          )
-     },
-
-
-     trade: {
-          lock:
-              resolveTradeLockKey(),
-
-
-          legacyConfiguredLock:
-              namespacedLongKey(
-                   KEYS.long?.trade?.lock ||
-                     KEYS.trade?.longLock ||
-                     KEYS.trade?.lock,
-
-
-                   'TRADE:LOCK'
-              ),
-
-
-          runMeta:
-              namespacedLongKey(
-                   KEYS.long?.trade?.runMeta ||
-                     KEYS.trade?.longRunMeta ||
-                     KEYS.trade?.runMeta,
-
-
-                   'TRADE:RUN_META'
-              ),
-
-
-          lastProcessedSnapshot:
-              namespacedLongKey(
-                   KEYS.long?.trade
-                     ?.lastProcessedSnapshot ||
-                     KEYS.trade
-                       ?.longLastProcessedSnapshot ||
-                     KEYS.trade
-                       ?.lastProcessedSnapshot,
-
-
-                   'TRADE:LAST_PROCESSED_SNAPSHOT'
+             latest: namespacedLongKey(
+                   KEYS.long?.scan?.latest ||
+                      KEYS.scan?.longLatest ||
+                      KEYS.scan?.latest,
+                   'SCAN:LATEST'
               )
-     }
+        },
+        trade: {
+              lock:
+                   resolveTradeLockKey(),
+              legacyConfiguredLock:
+                   namespacedLongKey(
+                       KEYS.long?.trade?.lock ||
+                         KEYS.trade?.longLock ||
+                         KEYS.trade?.lock,
+                       'TRADE:LOCK'
+               ),
+           runMeta:
+               namespacedLongKey(
+                       KEYS.long?.trade?.runMeta ||
+                         KEYS.trade?.longRunMeta ||
+                         KEYS.trade?.runMeta,
+                       'TRADE:RUN_META'
+               ),
+           lastProcessedSnapshot:
+               namespacedLongKey(
+                       KEYS.long?.trade
+                         ?.lastProcessedSnapshot ||
+                         KEYS.trade
+                           ?.longLastProcessedSnapshot ||
+                         KEYS.trade
+                           ?.lastProcessedSnapshot,
+                       'TRADE:LAST_PROCESSED_SNAPSHOT'
+               )
+      },
+  temporal: {
+      activeGenerationId: namespacedLongKey(
+          KEYS.long?.analyze?.activeTemporalGenerationId ||
+          KEYS.analyze?.longActiveTemporalGenerationId,
+          'ANALYZE:TEMPORAL:ACTIVE_GENERATION_ID'
+      ),
+      nextGenerationId: namespacedLongKey(
+          KEYS.long?.analyze?.nextTemporalGenerationId ||
+          KEYS.analyze?.longNextTemporalGenerationId,
+          'ANALYZE:TEMPORAL:NEXT_GENERATION_ID'
+      ),
+      generation: (generationId) => namespacedLongKey(
+          null,
+          `ANALYZE:TEMPORAL:GENERATION:${generationId}`
+      )
+  }
 };
-
-
 function getPositionTimeStopMin() {
-     const value = Number(
-          CONFIG.long?.trade
-              ?.positionTimeStopMin ??
-              CONFIG.trade
-                   ?.longPositionTimeStopMin ??
-              CONFIG.trade
-                ?.positionTimeStopMin ??
-              DEFAULT_POSITION_TIME_STOP_MIN
-    );
-
-
+      const value = Number(
+           CONFIG.long?.trade
+               ?.positionTimeStopMin ??
+               CONFIG.trade
+                       ?.longPositionTimeStopMin ??
+               CONFIG.trade
+                    ?.positionTimeStopMin ??
+               DEFAULT_POSITION_TIME_STOP_MIN
+     );
     return (
-         Number.isFinite(value) &&
-         value > 0
+           Number.isFinite(value) &&
+           value > 0
     )
-         ? Math.floor(value)
-         : DEFAULT_POSITION_TIME_STOP_MIN;
+           ? Math.floor(value)
+           : DEFAULT_POSITION_TIME_STOP_MIN;
 }
-
-
 function getLockTtlSec() {
     const value = Number(
-         CONFIG.long?.trade?.lockTtlSec ??
-              CONFIG.trade?.longLockTtlSec ??
-              CONFIG.trade?.lockTtlSec ??
-              DEFAULT_LOCK_TTL_SEC
+           CONFIG.long?.trade?.lockTtlSec ??
+                CONFIG.trade?.longLockTtlSec ??
+                CONFIG.trade?.lockTtlSec ??
+                DEFAULT_LOCK_TTL_SEC
     );
-
-
     if (
-         !Number.isFinite(value) ||
-         value <= 0
+           !Number.isFinite(value) ||
+           value <= 0
     ) {
-         return DEFAULT_LOCK_TTL_SEC;
+           return DEFAULT_LOCK_TTL_SEC;
     }
-
-
     return Math.max(
-         5,
-         Math.min(
-              55,
-              Math.floor(value)
-         )
+           5,
+           Math.min(
+                55,
+                Math.floor(value)
+           )
     );
 }
-
-
 function getRuntimeBudgetMs() {
     const value = Number(
-         CONFIG.long?.trade
-              ?.runtimeBudgetMs ??
-              CONFIG.trade?.runtimeBudgetMs ??
-              DEFAULT_RUNTIME_BUDGET_MS
+           CONFIG.long?.trade
+                ?.runtimeBudgetMs ??
+                CONFIG.trade?.runtimeBudgetMs ??
+                DEFAULT_RUNTIME_BUDGET_MS
     );
-
-
     if (
-         !Number.isFinite(value) ||
-         value < 5000
-    ) {
-         return DEFAULT_RUNTIME_BUDGET_MS;
-    }
-
-
-    return Math.min(
-         50000,
-         Math.floor(value)
-    );
-}
-
-
-function getResponseRowLimit(
-    req,
-    body = {}
-) {
-    const value = Number(
-         firstValue(
-             req.query?.responseRowLimit,
-             body.responseRowLimit
-         )
-    );
-
-
-    if (
-         !Number.isFinite(value) ||
-         value <= 0
-    ) {
-         return DEFAULT_RESPONSE_ROW_LIMIT;
-    }
-
-
-    return Math.max(
-         10,
-         Math.min(
-             MAX_RESPONSE_ROW_LIMIT,
+             !Number.isFinite(value) ||
+             value < 5000
+      ) {
+             return DEFAULT_RUNTIME_BUDGET_MS;
+      }
+      return Math.min(
+             50000,
              Math.floor(value)
-         )
-    );
+      );
 }
-
-
+function getResponseRowLimit(
+      req,
+      body = {}
+) {
+      const value = Number(
+             firstValue(
+                   req.query?.responseRowLimit,
+                   body.responseRowLimit
+             )
+      );
+      if (
+             !Number.isFinite(value) ||
+             value <= 0
+      ) {
+             return DEFAULT_RESPONSE_ROW_LIMIT;
+      }
+      return Math.max(
+             10,
+             Math.min(
+                   MAX_RESPONSE_ROW_LIMIT,
+                   Math.floor(value)
+             )
+      );
+}
 function isolationFlags() {
-    return {
-         runScope:
-             RUN_SCOPE,
-
-
-         writeScope:
-             WRITE_SCOPE,
-
-
-         readScope:
+      return {
+             runScope:
+                RUN_SCOPE,
+          writeScope:
+                WRITE_SCOPE,
+          readScope:
   READ_SCOPE,
-
-
 adminPageIsolation:
   true,
-
-
 doesNotOverwriteOtherAdminPages:
   true,
-
-
 scannerPreloadBeforeTrade:
   true,
-
-
 scannerPreloadMode:
   'READ_EXISTING_LATEST',
-
-
 readsScannerLatest:
   true,
-
-
 scannerLatestReadOnlyInsideTradeSystem:
   true,
-
-
 preserveScannerLatest:
   true,
-
-
 preserveScannerSnapshot:
   true,
-
-
 preserveScannerHistory:
   true,
-
-
 scannerRunAllowed:
   false,
-
-
 scannerRunBeforeTrade:
   false,
-
-
 scannerRunDisabledInsideTradeSystem:
   true,
-
-
 noInternalScannerRunInsideTradeSystem:
   true,
-
-
 writesScanner:
   false,
-
-
 writesScannerLatest:
   false,
 writesScannerSnapshot:
   false,
-
-
 writesScannerHistory:
   false,
-
-
 writesMarketUniverse:
   false,
-
-
 writesMarketWeather:
   false,
-
-
 writesTrade:
   true,
-
-
 writesTradeRunMeta:
   true,
-
-
 writesTradePositions:
   true,
-
-
 writesAnalyze:
   true,
-
-
 writesAnalyzePartial:
   true,
-
-
 writesMicroFamilies:
   true,
-
-
 microFamiliesAppendOnly:
   true,
-
-
 microFamiliesAntiWipe:
   true,
-
-
 analyzePartialOnly:
   true,
-
-
 analyzeFullOverwriteDisabled:
   true,
-
-
 writesRotation:
   false,
-
-
 writesDiscordSelection:
   false,
-         writesManualSelection:
-           false,
-
-
-         preserveRotation:
-           true,
-
-
-         preserveManualSelection:
-           true,
-
-
+           writesManualSelection:
+             false,
+           preserveRotation:
+             true,
+           preserveManualSelection:
+             true,
          preserveDiscordSelection:
            true,
-
-
          noResetCron:
            true,
-
-
          noActivateCron:
            true,
-
-
          noFreezeCron:
            true,
-
-
          autoRotationActivationDisabled:
            true,
-
-
          ignoreGlobalMaxOpenPositions:
            true,
-
-
          noGlobalMaxOpenPositionsBlock:
            true,
-
-
          maxOneOpenPositionPerSymbol:
            true,
-
-
          oneOpenPositionPerSymbol:
            true
     };
 }
-
-
 function baseFlags() {
     return {
          ...temporalPolicyFlags(),
          targetTradeSide:
            TARGET_TRADE_SIDE,
-
-
-         dashboardSide:
-           TARGET_DASHBOARD_SIDE,
+            dashboardSide:
+              TARGET_DASHBOARD_SIDE,
 scannerSide:
   TARGET_SCANNER_SIDE,
-
-
 oppositeTradeSide:
   OPPOSITE_TRADE_SIDE,
-
-
 side:
   TARGET_DASHBOARD_SIDE,
-
-
 tradeSide:
   TARGET_TRADE_SIDE,
-
-
 positionSide:
   TARGET_TRADE_SIDE,
-
-
 direction:
   TARGET_TRADE_SIDE,
-
-
 actualScannerSide:
   TARGET_SCANNER_SIDE,
-
-
 analysisSide:
   TARGET_TRADE_SIDE,
-
-
 longOnly:
   true,
-
-
 shortDisabled:
   true,
-
-
 shortOnly:
   false,
-
-
 longDisabled:
   false,
-
-
 virtualOnly:
   true,
-
-
 virtualLearning:
   true,
-
-
 virtualLearningForced:
   true,
-
-
 virtualTracked:
   true,
 source:
   'VIRTUAL',
-
-
 outcomeSource:
   'VIRTUAL',
-
-
 realTrade:
   false,
-
-
 realOrder:
   false,
-
-
 exchangeOrder:
   false,
-
-
 bitgetOrderPlaced:
   false,
-
-
 realOrdersDisabled:
   true,
-
-
 exchangeOrdersDisabled:
   true,
-
-
 bitgetOrdersDisabled:
   true,
-
-
 exchangeCallsDisabled:
   true,
-
-
 noExchangeOrders:
   true,
-
-
 noRealOrders:
   true,
-
-
 learningOnly:
   true,
-
-
 microFamilyLearning:
   true,
-
-
 observationFirst:
   true,
-
-
 completedDefinition:
   'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
-
-
 scoringRSource:
   'netR',
-
-
 winsLossesFlatsSource:
   'netR',
-
-
 winrateDefinition:
   'netR > 0',
-
-
 avgRSource:
   'netR',
-
-
 totalRSource:
   'netR',
-
-
 avgCostRShown:
   true,
-
-
 scannerFingerprintRole:
   'METADATA_ONLY',
-
-
 scannerFingerprintsMetadataOnly:
   true,
-
-
 scannerFingerprintsUsedAsLearningFamily:
   false,
-
-
 scannerBucketsMetadataOnly:
   true,
-
-
 legacy25BucketsMetadataOnly:
   true,
-
-
 executionFingerprintRole:
   'METADATA_ONLY',
-
-
 executionFingerprintsMetadataOnly:
   true,
-
-
 executionFingerprintsUsedAsLearningFamily:
   false,
-
-
 analyzeMicroFamiliesOnly:
   true,
 learningIdentitySource:
   'ANALYZE_TRUE_MICRO_FAMILY',
-
-
 trueMicroOnly:
   true,
-
-
 exactTrueMicroOnly:
   true,
-
-
 exactTrueMicroFamilyRequired:
   true,
-
-
 trueMicroFamilySchema:
   TRUE_MICRO_SCHEMA,
-
-
 parentTrueMicroFamilySchema:
   PARENT_TRUE_MICRO_SCHEMA,
-
-
 learningGranularity:
   LEARNING_GRANULARITY,
-
-
 parentLearningGranularity:
   PARENT_LEARNING_GRANULARITY,
-
-
 selectionGranularity:
   'EXACT_75_CHILD',
-
-
 symbolExcludedFromFamilyId:
   true,
-
-
 positionTimeStopMin:
   getPositionTimeStopMin(),
-
-
 riskGeometryRule:
   'LONG: sl < entry < tp',
-
-
 tpHitRule:
   'LONG: price >= tp',
-
-
 slHitRule:
   'LONG: price <= sl',
-
-
 grossRFormula:
   '(exitPrice - entry) / (entry - initialSl)',
-
-
 currentRFormula:
   '(currentPrice - entry) / (entry - initialSl)',
          currentFitPolarity:
-           'BULLISH_POSITIVE_BEARISH_NEGATIVE',
-
-
+             'BULLISH_POSITIVE_BEARISH_NEGATIVE',
          currentFitDefinition:
-           'LONG_MIRRORED_CURRENT_FIT',
-
-
+             'LONG_MIRRORED_CURRENT_FIT',
          currentFitSoftOnly:
-           true,
-
-
+             true,
          currentFitBlocksLearning:
-           false,
-
-
+             false,
          discordOnlyForSelectedMicroFamilies:
-           true,
-
-
+             true,
          discordOnlyForManualSelection:
-           true,
-
-
+             true,
          discordOnlyForExactTrueMicroMatch:
-           true,
-
-
+             true,
          manualSelectionMatchMode:
-           'EXACT_TRUE_MICRO_FAMILY_ID',
-
-
+             'EXACT_TRUE_MICRO_FAMILY_ID',
          manualSelectionRequires75ChildTrueMicroFamilyId:
-           true,
-
-
-         persistentLearningKey:
-           PERSISTENT_LEARNING_KEY,
-
-
-         redisNamespace:
-           LONG_NAMESPACE,
-
-
-         redisKeyPrefix:
-           LONG_KEY_PREFIX,
-
-
-         redisKeysSeparatedFromShortRoot:
-           true,
-
-
-         shortRootTouched:
-           false,
-
-
-         ...isolationFlags()
+             true,
+            persistentLearningKey:
+              PERSISTENT_LEARNING_KEY,
+            redisNamespace:
+              LONG_NAMESPACE,
+            redisKeyPrefix:
+              LONG_KEY_PREFIX,
+            redisKeysSeparatedFromShortRoot:
+              true,
+            shortRootTouched:
+              false,
+            ...isolationFlags()
     };
 }
 function parseJson(text) {
     const raw =
-        String(text || '').trim();
-
-
+         String(text || '').trim();
     if (!raw) {
-        return {};
+         return {};
     }
-
-
     try {
-        return JSON.parse(raw);
+         return JSON.parse(raw);
     } catch {
-        const error =
-            new Error(
-                 'INVALID_JSON_BODY'
-            );
-
-
-        error.statusCode = 400;
-
-
-        throw error;
+         const error =
+               new Error(
+                       'INVALID_JSON_BODY'
+               );
+         error.statusCode = 400;
+         throw error;
     }
 }
-
-
 async function readBody(req) {
     if (req.method === 'GET') {
-        return {};
+         return {};
     }
-
-
     if (req.body) {
-        if (
-            typeof req.body === 'string'
-        ) {
-            return parseJson(req.body);
-        }
-
-
-        if (
-            Buffer.isBuffer(req.body)
-        ) {
-            return parseJson(
-                 req.body.toString('utf8')
-            );
-        }
-
-
-        return req.body;
+         if (
+                  typeof req.body === 'string'
+         ) {
+                  return parseJson(req.body);
+         }
+         if (
+                  Buffer.isBuffer(req.body)
+         ) {
+                  return parseJson(
+                          req.body.toString('utf8')
+                  );
+         }
+         return req.body;
     }
-
-
     const chunks = [];
     for await (const chunk of req) {
-         chunks.push(
-              Buffer.isBuffer(chunk)
-                  ? chunk
-                  : Buffer.from(chunk)
-         );
+             chunks.push(
+                       Buffer.isBuffer(chunk)
+                           ? chunk
+                           : Buffer.from(chunk)
+             );
     }
-
-
     return parseJson(
-         Buffer.concat(chunks)
-              .toString('utf8')
+             Buffer.concat(chunks)
+                       .toString('utf8')
     );
 }
-
-
 function shouldForceProcessSnapshot(
-    req,
-    body = {}
+      req,
+      body = {}
 ) {
-    return (
-         isTrue(
-              firstValue(
-                  req.query?.force,
-                  false
-              )
-         ) ||
-         isTrue(
-              firstValue(
-                  req.query?.forced,
-                  false
-              )
-         ) ||
-         isTrue(
-              firstValue(
-                  req.query
-                    ?.forceProcessSnapshot,
-                  false
-              )
-         ) ||
-         isTrue(
-              firstValue(
-                  req.query
-                    ?.force_process_snapshot,
-                  false
-              )
-         ) ||
-         isTrue(body.force) ||
-         isTrue(body.forced) ||
-         isTrue(
-             body.forceProcessSnapshot
-         ) ||
-         isTrue(
-             body.force_process_snapshot
-         )
-    );
+      return (
+             isTrue(
+                     firstValue(
+                         req.query?.force,
+                         false
+                     )
+             ) ||
+             isTrue(
+                     firstValue(
+                         req.query?.forced,
+                         false
+                     )
+             ) ||
+             isTrue(
+                     firstValue(
+                         req.query
+                           ?.forceProcessSnapshot,
+                         false
+                     )
+             ) ||
+             isTrue(
+                     firstValue(
+                         req.query
+                           ?.force_process_snapshot,
+                         false
+                     )
+             ) ||
+             isTrue(body.force) ||
+             isTrue(body.forced) ||
+             isTrue(
+                    body.forceProcessSnapshot
+             ) ||
+             isTrue(
+                    body.force_process_snapshot
+             )
+      );
 }
-
-
 function shouldMonitorOnly(
-    req,
-    body = {}
+      req,
+      body = {}
 ) {
-    return (
-         isTrue(
-             firstValue(
-                 req.query?.monitorOnly,
-                 false
-             )
-         ) ||
-         isTrue(
-             firstValue(
-                 req.query?.monitor_only,
-                 false
-             )
-         ) ||
-         isTrue(body.monitorOnly) ||
-         isTrue(body.monitor_only)
-    );
+      return (
+              isTrue(
+                     firstValue(
+                            req.query?.monitorOnly,
+                            false
+                     )
+              ) ||
+              isTrue(
+                     firstValue(
+                            req.query?.monitor_only,
+                            false
+                     )
+              ) ||
+              isTrue(body.monitorOnly) ||
+              isTrue(body.monitor_only)
+      );
 }
-
-
 function getRunSource(
-    req,
-    body = {}
+      req,
+      body = {}
 ) {
-    const manual =
-         isTrue(
-             firstValue(
-                 req.query?.manual,
-                 false
-             )
-         ) ||
-         shouldForceProcessSnapshot(
-             req,
-             body
-         ) ||
-         isTrue(body.manual);
-    return manual
-      ? 'ADMIN_MANUAL_LONG_TRADE_RUN_FROM_EXISTING_SCANNER_SNAPSHOT'
-      : 'CRON_OR_API_LONG_TRADE_RUN_FROM_EXISTING_SCANNER_SNAPSHOT';
+      const manual =
+              isTrue(
+                     firstValue(
+                            req.query?.manual,
+                            false
+                     )
+              ) ||
+              shouldForceProcessSnapshot(
+                     req,
+                     body
+              ) ||
+              isTrue(body.manual);
+      return manual
+           ? 'ADMIN_MANUAL_LONG_TRADE_RUN_FROM_EXISTING_SCANNER_SNAPSHOT'
+           : 'CRON_OR_API_LONG_TRADE_RUN_FROM_EXISTING_SCANNER_SNAPSHOT';
 }
-
-
 function cleanSideText(value = '') {
-    return upper(value)
-      .replaceAll(
-          'SHORT_DISABLED_LONG_ONLY',
-          'LONG'
-      )
-      .replaceAll(
-          'SHORT_DISABLED',
-          'LONG'
-      )
-      .replaceAll(
-          'SHORTDISABLED',
-          'LONG'
-      )
-      .replaceAll(
-          'LONG_DISABLED_SHORT_ONLY',
-          'SHORT'
-      )
-      .replaceAll(
-          'LONG_DISABLED',
-          'SHORT'
-      )
-      .replaceAll(
-          'LONGDISABLED',
-          'SHORT'
-      )
-      .replaceAll(
-          'SHORT_ONLY_MODE',
-          'SHORT'
-      )
-      .replaceAll(
-          'SHORT_ONLY',
-          'SHORT'
-      )
-      .replaceAll(
-          'SHORT-ONLY',
-          'SHORT'
-      )
-      .replaceAll(
-          'LONG_ONLY_MODE',
-          'LONG'
-        )
-        .replaceAll(
-             'LONG_ONLY',
+      return upper(value)
+           .replaceAll(
+               'SHORT_DISABLED_LONG_ONLY',
+             'LONG'
+    )
+    .replaceAll(
+             'SHORT_DISABLED',
+             'LONG'
+    )
+    .replaceAll(
+             'SHORTDISABLED',
+             'LONG'
+    )
+    .replaceAll(
+             'LONG_DISABLED_SHORT_ONLY',
+             'SHORT'
+    )
+    .replaceAll(
+             'LONG_DISABLED',
+             'SHORT'
+    )
+    .replaceAll(
+             'LONGDISABLED',
+             'SHORT'
+    )
+    .replaceAll(
+             'SHORT_ONLY_MODE',
+             'SHORT'
+    )
+    .replaceAll(
+             'SHORT_ONLY',
+             'SHORT'
+    )
+    .replaceAll(
+             'SHORT-ONLY',
+             'SHORT'
+    )
+    .replaceAll(
+             'LONG_ONLY_MODE',
              'LONG'
         )
         .replaceAll(
-             'LONG-ONLY',
-             'LONG'
+                'LONG_ONLY',
+                'LONG'
+        )
+        .replaceAll(
+                'LONG-ONLY',
+                'LONG'
         );
 }
-
-
 function normalizeTradeSide(value) {
     const raw =
-        cleanSideText(value);
-
-
+           cleanSideText(value);
     if (!raw) {
-        return 'UNKNOWN';
+           return 'UNKNOWN';
     }
-
-
     const converted =
-        sideToTradeSide(raw);
-
-
+           sideToTradeSide(raw);
     if (
-        converted ===
-        TARGET_TRADE_SIDE
+           converted ===
+           TARGET_TRADE_SIDE
     ) {
-        return TARGET_TRADE_SIDE;
-    }
-
-
-    if (
-        converted ===
-        OPPOSITE_TRADE_SIDE
-    ) {
-        return OPPOSITE_TRADE_SIDE;
-    }
-
-
-    if (
-        [
-             'LONG',
-             'BULL',
-             'BULLISH',
-             'BUY',
-             'UP'
-        ].includes(raw)
-    ) {
-        return TARGET_TRADE_SIDE;
+           return TARGET_TRADE_SIDE;
     }
     if (
-        [
-            'SHORT',
-            'BEAR',
-            'BEARISH',
-            'SELL',
-            'DOWN'
-        ].includes(raw)
+           converted ===
+           OPPOSITE_TRADE_SIDE
     ) {
-        return OPPOSITE_TRADE_SIDE;
+           return OPPOSITE_TRADE_SIDE;
     }
-
-
     if (
-        raw.includes(
-            'MICRO_LONG_'
-        )
+           [
+                'LONG',
+                'BULL',
+                'BULLISH',
+                'BUY',
+                'UP'
+           ].includes(raw)
     ) {
-        return TARGET_TRADE_SIDE;
+           return TARGET_TRADE_SIDE;
     }
-
-
     if (
-        raw.includes(
-            'MICRO_SHORT_'
-        )
-    ) {
-        return OPPOSITE_TRADE_SIDE;
-    }
-
-
-    return 'UNKNOWN';
+           [
+               'SHORT',
+               'BEAR',
+                 'BEARISH',
+                 'SELL',
+                 'DOWN'
+             ].includes(raw)
+      ) {
+             return OPPOSITE_TRADE_SIDE;
+      }
+      if (
+             raw.includes(
+                 'MICRO_LONG_'
+             )
+      ) {
+             return TARGET_TRADE_SIDE;
+      }
+      if (
+             raw.includes(
+                 'MICRO_SHORT_'
+             )
+      ) {
+             return OPPOSITE_TRADE_SIDE;
+      }
+      return 'UNKNOWN';
 }
-
-
 function inferActionTradeSide(
-    row = {}
+      row = {}
 ) {
-    if (
-        typeof row === 'string'
-    ) {
-        return normalizeTradeSide(row);
-    }
-
-
-    if (
-        !row ||
-        typeof row !== 'object'
-    ) {
-        return 'UNKNOWN';
-    }
+      if (
+             typeof row === 'string'
+      ) {
+             return normalizeTradeSide(row);
+      }
+      if (
+             !row ||
+             typeof row !== 'object'
+      ) {
+             return 'UNKNOWN';
+      }
 const direct = [
      row.tradeSide,
      row.positionSide,
@@ -1418,21 +1128,15 @@ const direct = [
      row.bias,
      row.marketBias
 ];
-
-
 for (const value of direct) {
      const side =
-         normalizeTradeSide(value);
-
-
+            normalizeTradeSide(value);
      if (
-         side !== 'UNKNOWN'
+            side !== 'UNKNOWN'
      ) {
-         return side;
+            return side;
      }
 }
-
-
 const text = [
      row.trueMicroFamilyId,
      row.microFamilyId,
@@ -1447,329 +1151,232 @@ const text = [
      row.reason,
      row.exitReason,
      row.definition,
-
-
      ...(
-         Array.isArray(
-             row.definitionParts
-         )
-             ? row.definitionParts
-             : []
-         )
-    ]
-         .map(
-             (item) =>
-               String(item || '').trim()
-         )
-         .filter(Boolean)
-         .join('|');
-
-
-    const inferred =
-         normalizeTradeSide(text);
-
-
-    if (
-         inferred !== 'UNKNOWN'
-    ) {
-         return inferred;
-    }
-
-
-    if (
-         row.longOnly === true ||
-         row.shortDisabled === true
-    ) {
-         return TARGET_TRADE_SIDE;
-    }
-
-
-    if (
-         row.shortOnly === true ||
-         row.longDisabled === true
-    ) {
-         return OPPOSITE_TRADE_SIDE;
-    }
-
-
-    return 'UNKNOWN';
+            Array.isArray(
+                row.definitionParts
+             )
+                 ? row.definitionParts
+                 : []
+             )
+      ]
+             .map(
+                 (item) =>
+                     String(item || '').trim()
+             )
+             .filter(Boolean)
+             .join('|');
+      const inferred =
+             normalizeTradeSide(text);
+      if (
+             inferred !== 'UNKNOWN'
+      ) {
+             return inferred;
+      }
+      if (
+             row.longOnly === true ||
+             row.shortDisabled === true
+      ) {
+             return TARGET_TRADE_SIDE;
+      }
+      if (
+             row.shortOnly === true ||
+             row.longDisabled === true
+      ) {
+             return OPPOSITE_TRADE_SIDE;
+      }
+      return 'UNKNOWN';
 }
-
-
 function isLongAction(
-    row = {}
+      row = {}
 ) {
-    return (
-         inferActionTradeSide(row) !==
-         OPPOSITE_TRADE_SIDE
-    );
+      return (
+             inferActionTradeSide(row) !==
+             OPPOSITE_TRADE_SIDE
+      );
 }
-
-
 function isShortAction(
-    row = {}
+      row = {}
 ) {
-    return (
-         inferActionTradeSide(row) ===
-         OPPOSITE_TRADE_SIDE
-    );
+      return (
+             inferActionTradeSide(row) ===
+             OPPOSITE_TRADE_SIDE
+      );
 }
-
-
 function parseTaxonomyId(
-    id = ''
+      id = ''
 ) {
-    const match =
-         /^MICRO_LONG_([A-Z_]+)_(TREND|CHOP|SQUEEZE)
-(?:_(A_STRONG_ALIGN|B_FLOW_ALIGN|C_VOLUME_ALIGN|D_MIXED_OK|E_WEAK_CONTRA))?$/
-           .exec(upper(id));
-
-
-    if (!match) {
-         return null;
-    }
-
-
-    const setup =
-         match[1];
-
-
-    const regime =
-         match[2];
-
-
-    const confirmation =
-         match[3] || null;
-
-
-    if (
-         !SETUP_TYPES.has(setup)
-    ) {
-         return null;
-    }
-
-
-    if (
-         !REGIME_BUCKETS.has(regime)
-    ) {
-         return null;
-    }
-
-
-    if (
-         confirmation &&
-         !CONFIRMATION_PROFILES
-           .has(confirmation)
-    ) {
-         return null;
-    }
-    const parent =
-         `MICRO_LONG_${setup}_${regime}`;
-
-
-    return {
-         parent,
-
-
-         child:
-             confirmation
-               ? `${parent}_${confirmation}`
-               : null,
-
-
-         isParent:
-             !confirmation,
-
-
-         isChild:
-             Boolean(confirmation)
-    };
+      const match =
+             /^MICRO_LONG_([A-Z_]+)_(TREND|CHOP|SQUEEZE)(?:_(A_STRONG_ALIGN|B_FLOW_ALIGN|C_VOLUME_ALIGN|D_MIXED_OK|E_WEAK_CONTRA))?$/
+                .exec(upper(id));
+      if (!match) {
+             return null;
+      }
+      const setup =
+             match[1];
+      const regime =
+             match[2];
+      const confirmation =
+             match[3] || null;
+      if (
+             !SETUP_TYPES.has(setup)
+      ) {
+             return null;
+      }
+      if (
+             !REGIME_BUCKETS.has(regime)
+      ) {
+             return null;
+      }
+      if (
+             confirmation &&
+             !CONFIRMATION_PROFILES
+               .has(confirmation)
+      ) {
+             return null;
+      }
+      const parent =
+             `MICRO_LONG_${setup}_${regime}`;
+      return {
+             parent,
+             child:
+                 confirmation
+                      ? `${parent}_${confirmation}`
+                      : null,
+             isParent:
+                 !confirmation,
+             isChild:
+                 Boolean(confirmation)
+      };
 }
-
-
 function normalizeLearningIdentity(
-    row = {}
+      row = {}
 ) {
-    const childCandidates = [
-         row.trueMicroFamilyId,
-         row.learningMicroFamilyId,
-         row.analyzeMicroFamilyId,
-         row.childTrueMicroFamilyId,
-         row.microFamilyId
+      const childCandidates = [
+             row.trueMicroFamilyId,
+             row.learningMicroFamilyId,
+            row.analyzeMicroFamilyId,
+            row.childTrueMicroFamilyId,
+            row.microFamilyId
     ];
-
-
     let child = null;
-
-
     for (
-         const value
-         of childCandidates
+            const value
+            of childCandidates
     ) {
-         const parsed =
-             parseTaxonomyId(value);
-
-
-         if (parsed?.isChild) {
-             child = parsed.child;
-             break;
-         }
+            const parsed =
+                parseTaxonomyId(value);
+            if (parsed?.isChild) {
+                child = parsed.child;
+                break;
+            }
     }
-
-
     const childParsed =
-         parseTaxonomyId(child);
+            parseTaxonomyId(child);
 const parent =
   childParsed?.parent ||
   null;
-
-
 return {
   microFamilyId:
     child,
-
-
   trueMicroFamilyId:
     child,
-
-
   analyzeMicroFamilyId:
     child,
-
-
   learningMicroFamilyId:
     child,
-
-
-  childTrueMicroFamilyId:
-    child,
-
-
-  parentTrueMicroFamilyId:
-    parent,
-
-
-  parentMicroFamilyId:
-    parent,
-
-
-  parentMacroFamilyId:
-    parent,
-
-
-  macroFamilyId:
-    parent,
-
-
-  coarseMicroFamilyId:
-    parent,
-
-
-  trueMicroFamilySchema:
-    child
-      ? TRUE_MICRO_SCHEMA
-      : null,
-
-
-  parentTrueMicroFamilySchema:
-    parent
-      ? PARENT_TRUE_MICRO_SCHEMA
-      : null,
-
-
-  learningGranularity:
-              LEARNING_GRANULARITY,
-
-
-         parentLearningGranularity:
-              PARENT_LEARNING_GRANULARITY
-    };
+    childTrueMicroFamilyId:
+      child,
+    parentTrueMicroFamilyId:
+      parent,
+    parentMicroFamilyId:
+      parent,
+    parentMacroFamilyId:
+      parent,
+    macroFamilyId:
+      parent,
+    coarseMicroFamilyId:
+      parent,
+    trueMicroFamilySchema:
+      child
+           ? TRUE_MICRO_SCHEMA
+           : null,
+    parentTrueMicroFamilySchema:
+      parent
+           ? PARENT_TRUE_MICRO_SCHEMA
+           : null,
+    learningGranularity:
+                     LEARNING_GRANULARITY,
+              parentLearningGranularity:
+                     PARENT_LEARNING_GRANULARITY
+      };
 }
-
-
 function normalizeExitMath(
-    row = {}
+       row = {}
 ) {
-    const entry =
-         safeNumber(
-              row.entry ??
-              row.entryPrice,
-              0
-         );
-
-
-    const initialSl =
-         safeNumber(
-              row.initialSl ??
-              row.initialStopLoss ??
-              row.sl ??
-              row.stopLoss,
-              0
-         );
-
-
-    const exitPrice =
-         safeNumber(
-              row.exitPrice ??
-              row.currentPrice ??
-              row.lastPrice ??
-              row.price,
-              0
-         );
-
-
-    const currentPrice =
-         safeNumber(
-              row.currentPrice ??
-              row.lastPrice ??
-              row.price ??
-              exitPrice,
-              0
-         );
-
-
-    const tp =
-         safeNumber(
-              row.tp ??
-       row.takeProfit,
-       0
+       const entry =
+              safeNumber(
+                    row.entry ??
+                    row.entryPrice,
+                    0
+              );
+       const initialSl =
+              safeNumber(
+                    row.initialSl ??
+                    row.initialStopLoss ??
+                    row.sl ??
+                    row.stopLoss,
+                    0
+              );
+       const exitPrice =
+              safeNumber(
+                    row.exitPrice ??
+                    row.currentPrice ??
+                    row.lastPrice ??
+                    row.price,
+                    0
+              );
+       const currentPrice =
+              safeNumber(
+                    row.currentPrice ??
+                    row.lastPrice ??
+                    row.price ??
+                    exitPrice,
+                    0
+              );
+       const tp =
+              safeNumber(
+                    row.tp ??
+          row.takeProfit,
+          0
   );
-
-
 const risk =
   entry > 0 &&
   initialSl > 0 &&
   initialSl < entry
        ? entry - initialSl
        : 0;
-
-
 const grossR =
   risk > 0
        ? (
-                exitPrice -
-                entry
-           ) / risk
+                   exitPrice -
+                   entry
+              ) / risk
        : safeNumber(
-                row.longGrossR ??
-                row.grossR,
-                0
-           );
-
-
+                   row.longGrossR ??
+                   row.grossR,
+                   0
+              );
 const currentR =
   risk > 0
        ? (
-                currentPrice -
-                entry
-           ) / risk
+                   currentPrice -
+                   entry
+              ) / risk
        : safeNumber(
-                row.longCurrentR ??
-                row.currentR,
-                0
-           );
-
-
+                   row.longCurrentR ??
+                   row.currentR,
+                   0
+              );
 const netR =
   safeNumber(
        row.longNetR ??
@@ -1778,495 +1385,359 @@ const netR =
        row.r ??
        row.realizedR ??
        grossR,
-
-
        grossR
   );
-
-
 return {
 entry:
   round(entry, 10),
-
-
 initialSl:
   round(initialSl, 10),
-
-
 sl:
   round(
-       row.sl ??
-       row.stopLoss ??
-       initialSl,
-       10
+         row.sl ??
+         row.stopLoss ??
+         initialSl,
+         10
   ),
-
-
 tp:
   round(tp, 10),
-
-
 exitPrice:
   round(exitPrice, 10),
-
-
 currentPrice:
   round(currentPrice, 10),
-
-
 validLongGeometry:
   tp > 0 &&
   entry > 0 &&
   initialSl > 0 &&
   initialSl < entry &&
   entry < tp,
-
-
 longTpHit:
   exitPrice > 0 &&
   tp > 0 &&
   exitPrice >= tp,
-
-
 longSlHit:
-  exitPrice > 0 &&
-  initialSl > 0 &&
-  exitPrice <= initialSl,
-
-
+    exitPrice > 0 &&
+    initialSl > 0 &&
+    exitPrice <= initialSl,
 grossR:
-  round(grossR, 4),
-
-
+    round(grossR, 4),
 currentR:
-  round(currentR, 4),
-
-
+    round(currentR, 4),
 netR:
-              round(netR, 4),
-
-
-         r:
-              round(netR, 4),
-
-
-         realizedR:
-              round(
-                   row.realizedR ??
-                   netR,
-                   4
-              ),
-
-
-         costR:
-              round(
-                   row.costR ??
-                   row.totalCostR,
-                   4
-              )
-    };
+                  round(netR, 4),
+             r:
+                  round(netR, 4),
+             realizedR:
+                  round(
+                          row.realizedR ??
+                          netR,
+                          4
+                  ),
+             costR:
+                  round(
+                          row.costR ??
+                          row.totalCostR,
+                          4
+                  )
+      };
 }
-
-
 function compactTradeRow(
-    row = {},
-    forcedAction = null
+      row = {},
+      forcedAction = null
 ) {
-    if (
-         !row ||
-         typeof row !== 'object'
+      if (
+             !row ||
+             typeof row !== 'object'
     ) {
-         return null;
+          return null;
     }
-
-
     const identity =
-         normalizeLearningIdentity(row);
-
-
+          normalizeLearningIdentity(row);
     return {
-         action:
-              forcedAction ||
-              row.action ||
-              row.type ||
-              null,
-
-
-         reason:
-              row.reason ||
-              row.exitReason ||
-              row.skipReason ||
-              null,
+          action:
+               forcedAction ||
+               row.action ||
+               row.type ||
+               null,
+          reason:
+               row.reason ||
+               row.exitReason ||
+               row.skipReason ||
+               null,
 symbol:
   row.symbol ||
   row.contractSymbol ||
   null,
-
-
 contractSymbol:
   row.contractSymbol ||
   row.symbol ||
   null,
-
-
 baseSymbol:
   row.baseSymbol ||
   null,
-
-
 side:
   TARGET_DASHBOARD_SIDE,
-
-
 tradeSide:
   TARGET_TRADE_SIDE,
-
-
 positionSide:
   TARGET_TRADE_SIDE,
-
-
 direction:
   TARGET_TRADE_SIDE,
-
-
 ...identity,
 ...normalizeExitMath(row),
 ...entryTemporalFields(row),
 ...exitTemporalFields(row),
-
-
 currentFit:
   row.currentFit ||
   row.currentFitLabel ||
   null,
-
-
 currentFitScore:
   round(
-       row.currentFitScore ??
-       row.fitScore,
-       4
+          row.currentFitScore ??
+          row.fitScore,
+          4
   ),
-
-
 selectedMicroFamilyAlert:
   Boolean(
-       row.selectedMicroFamilyAlert &&
-       identity.trueMicroFamilyId
+          row.selectedMicroFamilyAlert &&
+          identity.trueMicroFamilyId
   ),
-         discordAlertEligible:
-           Boolean(
-                row.discordAlertEligible &&
-                row.selectedMicroFamilyAlert &&
-                identity.trueMicroFamilyId
-           ),
-
-
-         source:
-           'VIRTUAL',
-
-
-         outcomeSource:
-           'VIRTUAL',
-
-
-         virtualOnly:
-           true,
-
-
-         realTrade:
-           false,
-
-
-         realOrder:
-           false,
-
-
-         createdAt:
-           row.createdAt ||
-           row.openedAt ||
-           null,
-
-
-         closedAt:
-           row.closedAt ||
-           row.completedAt ||
-           null
-    };
+              discordAlertEligible:
+                Boolean(
+                        row.discordAlertEligible &&
+                        row.selectedMicroFamilyAlert &&
+                        identity.trueMicroFamilyId
+                ),
+              source:
+                'VIRTUAL',
+              outcomeSource:
+                'VIRTUAL',
+               virtualOnly:
+                 true,
+               realTrade:
+                 false,
+               realOrder:
+                 false,
+               createdAt:
+                 row.createdAt ||
+                 row.openedAt ||
+                 null,
+               closedAt:
+                 row.closedAt ||
+                 row.completedAt ||
+                 null
+      };
 }
-
-
 function compactRows(
-    rows = [],
-    limit = DEFAULT_RESPONSE_ROW_LIMIT,
-    action = null
+      rows = [],
+      limit = DEFAULT_RESPONSE_ROW_LIMIT,
+      action = null
 ) {
-    return (
-         Array.isArray(rows)
-           ? rows
-           : []
-    )
-         .filter(isLongAction)
-         .slice(0, limit)
-        .map(
-            (row) =>
-                compactTradeRow(
-                    row,
-                    action
-                )
-        )
-        .filter(Boolean);
+      return (
+               Array.isArray(rows)
+                 ? rows
+                 : []
+      )
+               .filter(isLongAction)
+               .slice(0, limit)
+           .map(
+                  (row) =>
+                         compactTradeRow(
+                             row,
+                             action
+                         )
+           )
+             .filter(Boolean);
 }
-
-
 function firstArray(
-    payload,
-    names = []
+      payload,
+      names = []
 ) {
-    for (const name of names) {
-        if (
-            Array.isArray(
-                payload?.[name]
-            )
-        ) {
-            return payload[name];
-        }
-    }
-
-
-    return [];
+      for (const name of names) {
+             if (
+                    Array.isArray(
+                        payload?.[name]
+                    )
+             ) {
+                    return payload[name];
+             }
+      }
+      return [];
 }
-
-
 function compactPrimitiveObject(
-    value = {},
-    limit = 100
+      value = {},
+      limit = 100
 ) {
-    if (
-        !value ||
-        typeof value !== 'object' ||
-        Array.isArray(value)
-    ) {
-        return {};
-    }
-
-
-    const result = {};
-
-
-    for (
-        const [key, item]
-        of Object.entries(value)
-            .slice(0, limit)
-    ) {
-        if (
-            item === null ||
-            typeof item === 'string' ||
-            typeof item === 'number' ||
-            typeof item === 'boolean'
-        ) {
-            result[key] = item;
-        }
-    }
-
-
-    return result;
+      if (
+             !value ||
+             typeof value !== 'object' ||
+             Array.isArray(value)
+      ) {
+             return {};
+      }
+      const result = {};
+      for (
+             const [key, item]
+             of Object.entries(value)
+                    .slice(0, limit)
+      ) {
+             if (
+                    item === null ||
+                    typeof item === 'string' ||
+                 typeof item === 'number' ||
+                 typeof item === 'boolean'
+          ) {
+                 result[key] = item;
+          }
+      }
+      return result;
 }
-
-
 function compactIdList(
-    value = [],
-    limit = MAX_ID_LIST
+      value = [],
+      limit = MAX_ID_LIST
 ) {
-    return [
-        ...new Set(
-            (
-                Array.isArray(value)
-                    ? value
-                    : [value]
-            )
-                .flat(Infinity)
-                .map(
-                    (item) =>
-                      String(item || '')
-                        .trim()
-                )
-                .filter(Boolean)
-        )
-    ].slice(0, limit);
+      return [
+          ...new Set(
+                 (
+                        Array.isArray(value)
+                            ? value
+                            : [value]
+                 )
+                        .flat(Infinity)
+                        .map(
+                            (item) =>
+                                String(item || '')
+                                  .trim()
+                        )
+                        .filter(Boolean)
+          )
+      ].slice(0, limit);
 }
-
-
 function countActions(
-    rows = []
+      rows = []
 ) {
-    return (
-        Array.isArray(rows)
-            ? rows
-            : []
-    ).reduce(
-        (result, row) => {
-            const key =
-                row?.action ||
-                row?.type ||
-                'UNKNOWN';
-              result[key] =
-                  safeNumber(
-                      result[key],
-                      0
-                  ) + 1;
-
-
-              return result;
-         },
-         {}
-    );
+      return (
+          Array.isArray(rows)
+                 ? rows
+                 : []
+      ).reduce(
+          (result, row) => {
+                 const key =
+                        row?.action ||
+                        row?.type ||
+                       'UNKNOWN';
+                   result[key] =
+                         safeNumber(
+                             result[key],
+                             0
+                         ) + 1;
+                   return result;
+           },
+           {}
+      );
 }
-
-
 function mergeCounts(
-    ...objects
+      ...objects
 ) {
-    return objects.reduce(
-         (result, object) => {
-              for (
-                  const [key, value]
-                  of Object.entries(
-                      object || {}
-                  )
-              ) {
-                  result[key] =
-                      safeNumber(
-                           result[key],
-                           0
-                      ) +
-                      safeNumber(
-                           value,
-                           0
-                      );
-              }
-
-
-              return result;
-         },
-         {}
-    );
+      return objects.reduce(
+           (result, object) => {
+                   for (
+                         const [key, value]
+                         of Object.entries(
+                             object || {}
+                         )
+                   ) {
+                         result[key] =
+                             safeNumber(
+                                    result[key],
+                                    0
+                             ) +
+                             safeNumber(
+                                    value,
+                                    0
+                             );
+                   }
+                   return result;
+           },
+           {}
+      );
 }
-
-
 function compactMarketWeather(
-    weather = null
+      weather = null
 ) {
-    if (
-         !weather ||
-         typeof weather !== 'object'
+      if (
+             !weather ||
+             typeof weather !== 'object'
 ) {
-    return null;
+      return null;
 }
-
-
 return {
-    ok:
-      weather.ok !== false,
-
-
-    available:
-      weather.available !== false,
-
-
-    version:
-      weather.version ||
-      null,
-
-
-    source:
-      weather.source ||
-      null,
-
-
-    snapshotId:
-      weather.snapshotId ||
-      null,
-
-
-    generatedAt:
-      weather.generatedAt ||
-      null,
-
-
-    updatedAt:
-      weather.updatedAt ||
-      null,
-
-
-    currentRegime:
-      weather.currentRegime ||
-      weather.regime ||
-      null,
-
-
-    currentTrendSide:
-      weather.currentTrendSide ||
-      weather.trendSide ||
-      null,
-
-
-    currentFlow:
-      weather.currentFlow ||
-      weather.flow ||
-      null,
-
-
-    currentVolatilityState:
+      ok:
+        weather.ok !== false,
+      available:
+        weather.available !== false,
+      version:
+        weather.version ||
+        null,
+      source:
+        weather.source ||
+        null,
+      snapshotId:
+        weather.snapshotId ||
+        null,
+      generatedAt:
+        weather.generatedAt ||
+        null,
+      updatedAt:
+        weather.updatedAt ||
+        null,
+      currentRegime:
+        weather.currentRegime ||
+        weather.regime ||
+        null,
+       currentTrendSide:
+         weather.currentTrendSide ||
+         weather.trendSide ||
+         null,
+       currentFlow:
+         weather.currentFlow ||
+         weather.flow ||
+         null,
+       currentVolatilityState:
   weather.currentVolatilityState ||
   weather.volatilityState ||
   null,
-
-
 confidence:
   safeNumber(
-       weather.confidence ??
-       weather.weatherConfidence,
-       0
+          weather.confidence ??
+          weather.weatherConfidence,
+          0
   ),
-
-
 bearishCount:
   safeNumber(
-       weather.bearishCount,
-       0
+          weather.bearishCount,
+          0
   ),
-
-
 bullishCount:
   safeNumber(
-       weather.bullishCount,
-       0
+          weather.bullishCount,
+          0
   ),
-
-
 neutralCount:
   safeNumber(
-       weather.neutralCount,
-       0
+          weather.neutralCount,
+          0
   ),
-
-
 squeezeCount:
   safeNumber(
        weather.squeezeCount,
        0
   ),
-
-
 bearishPct:
   safeNumber(
        weather.bearishPct,
        0
   ),
-
-
 bullishPct:
   safeNumber(
        weather.bullishPct,
@@ -2277,152 +1748,118 @@ neutralPct:
        weather.neutralPct,
        0
   ),
-
-
 squeezePct:
   safeNumber(
        weather.squeezePct,
        0
   ),
-
-
 avgAtrPct:
   safeNumber(
        weather.avgAtrPct,
        0
   ),
-
-
 avgRangePct:
   safeNumber(
        weather.avgRangePct,
        0
   ),
-
-
 avgRealizedVolPct:
-  safeNumber(
-       weather.avgRealizedVolPct,
-       0
-  ),
-
-
+    safeNumber(
+              weather.avgRealizedVolPct,
+              0
+    ),
 avgVolumeExpansion:
-  safeNumber(
-       weather.avgVolumeExpansion,
-       0
-  ),
-
-
+    safeNumber(
+              weather.avgVolumeExpansion,
+              0
+    ),
 count:
-  safeNumber(
-       weather.count ??
-       weather.universeCount,
-       0
-  ),
-
-
+    safeNumber(
+              weather.count ??
+              weather.universeCount,
+              0
+    ),
 universeCount:
-  safeNumber(
-       weather.universeCount ??
-       weather.count,
-                   0
-              ),
-
-
-         symbols:
-              compactIdList(
-                   weather.symbols,
-                   40
-              ),
-
-
-         rowsExcluded:
-              true
-    };
+    safeNumber(
+              weather.universeCount ??
+              weather.count,
+                              0
+                       ),
+                  symbols:
+                       compactIdList(
+                              weather.symbols,
+                              40
+                       ),
+                  rowsExcluded:
+                       true
+         };
 }
-
-
 function sanitizeRunPayload(
-    payload = {},
-    rowLimit = DEFAULT_RESPONSE_ROW_LIMIT
+         payload = {},
+       rowLimit = DEFAULT_RESPONSE_ROW_LIMIT
 ) {
-    const rawActions =
-         Array.isArray(
-              payload.actions
-         )
-              ? payload.actions
-              : [];
-
-
-    const rawExits =
-         firstArray(
-              payload,
-              [
-                   'virtualExits',
-                   'shadowExits',
-                   'exits',
-                   'closedPositions',
-                   'outcomes'
-              ]
-         );
-
-
-    const rawEntries =
-         firstArray(
-              payload,
-              [
-                   'entryRows',
-                   'entries',
-                   'virtualCreatedRows',
-                   'shadowCreatedRows'
-              ]
-         );
+       const rawActions =
+              Array.isArray(
+                      payload.actions
+              )
+                      ? payload.actions
+                      : [];
+       const rawExits =
+              firstArray(
+                      payload,
+                      [
+                              'virtualExits',
+                              'shadowExits',
+                              'exits',
+                              'closedPositions',
+                              'outcomes'
+                      ]
+              );
+       const rawEntries =
+              firstArray(
+                      payload,
+                      [
+                              'entryRows',
+                              'entries',
+                              'virtualCreatedRows',
+                              'shadowCreatedRows'
+                      ]
+              );
 const rawWaits =
   firstArray(
-       payload,
-       [
-           'waitRows',
-           'waits'
-       ]
+          payload,
+          [
+                   'waitRows',
+                   'waits'
+          ]
   );
-
-
 const longActions =
   rawActions.filter(
-       isLongAction
+          isLongAction
   );
-
-
 const longExits =
   rawExits.filter(
        isLongAction
   );
-
-
 const entriesSource =
   rawEntries.length
        ? rawEntries
        : longActions.filter(
-                (row) => (
-                    row?.action ===
-                      'VIRTUAL_ENTRY' ||
-                    row?.action ===
-                      'ENTRY'
-                )
-           );
-
-
+                      (row) => (
+                          row?.action ===
+                            'VIRTUAL_ENTRY' ||
+                          row?.action ===
+                            'ENTRY'
+                      )
+              );
 const waitsSource =
   rawWaits.length
        ? rawWaits
        : longActions.filter(
-                (row) =>
-                    row?.action ===
-                    'WAIT'
-           );
-
-
+                      (row) =>
+                          row?.action ===
+                          'WAIT'
+              );
 const activeMicroFamilyIds =
   compactIdList(
        payload.activeMicroFamilyIds ||
@@ -2432,553 +1869,375 @@ const activeMicroFamilyIds =
   ).filter(
        (id) =>
          parseTaxonomyId(id)
-             ?.isChild === true
+                   ?.isChild === true
   );
-
-
 const selectedMicroFamilyIds =
   compactIdList(
        payload.selectedMicroFamilyIds ||
        payload.activeMicroFamilyIds ||
        [],
-
-
        MAX_ID_LIST
   ).filter(
        (id) =>
          parseTaxonomyId(id)
-             ?.isChild === true
+              ?.isChild === true
   );
-
-
 const activeMacroFamilyIds =
   compactIdList(
        payload.activeMacroFamilyIds ||
        payload.selectedMacroFamilyIds ||
        [],
-
-
        MAX_ID_LIST
   ).filter(
        (id) =>
          parseTaxonomyId(id)
-             ?.isParent === true
+              ?.isParent === true
   );
-
-
 const selectedMacroFamilyIds =
   compactIdList(
        payload.selectedMacroFamilyIds ||
        payload.activeMacroFamilyIds ||
        [],
-
-
        MAX_ID_LIST
   ).filter(
        (id) =>
          parseTaxonomyId(id)
-             ?.isParent === true
+              ?.isParent === true
   );
-
-
 const actions =
   compactRows(
        longActions,
        rowLimit
   );
-
-
 const entryRowsList =
   compactRows(
-       entriesSource,
-       rowLimit,
-       'VIRTUAL_ENTRY'
+        entriesSource,
+        rowLimit,
+        'VIRTUAL_ENTRY'
   );
-
-
 const waitRowsList =
   compactRows(
-       waitsSource,
-       rowLimit,
-       'WAIT'
+        waitsSource,
+        rowLimit,
+        'WAIT'
   );
-
-
 const virtualExits =
   compactRows(
-       longExits,
-       rowLimit,
-       'VIRTUAL_EXIT'
+        longExits,
+        rowLimit,
+        'VIRTUAL_EXIT'
   );
-
-
 return {
   ok:
-       payload.ok !== false,
-
-
+        payload.ok !== false,
   runId:
-       payload.runId ||
-       null,
-
-
+        payload.runId ||
+        null,
   startedAt:
-       payload.startedAt ||
-       null,
-
-
+        payload.startedAt ||
+        null,
   completedAt:
-       payload.completedAt ||
-       now(),
-
-
+        payload.completedAt ||
+        now(),
   durationMs:
-       safeNumber(
-            payload.durationMs,
-            0
-       ),
+          safeNumber(
+               payload.durationMs,
+               0
+          ),
 snapshotId:
   payload.snapshotId ||
   null,
-
-
 snapshotCreatedAt:
   payload.snapshotCreatedAt ||
   null,
-
-
 snapshotAgeSec:
   safeNumber(
-       payload.snapshotAgeSec,
-       0
+          payload.snapshotAgeSec,
+          0
   ),
-
-
 selectedSnapshotSource:
   payload.selectedSnapshotSource ||
   null,
-
-
 selectedSnapshotReason:
   payload.selectedSnapshotReason ||
   null,
-
-
 skipped:
   Boolean(
-       payload.skipped ||
-       payload.skippedNewEntries
+          payload.skipped ||
+          payload.skippedNewEntries
   ),
-
-
 skippedNewEntries:
   Boolean(
-       payload.skippedNewEntries
+          payload.skippedNewEntries
   ),
-
-
 reason:
   payload.reason ||
   payload.skipReason ||
   null,
-
-
 skipReason:
   payload.skipReason ||
   payload.reason ||
   null,
-
-
 candidates:
   safeNumber(
-       payload.candidates ??
-       payload.candidatesCount,
-       0
+          payload.candidates ??
+          payload.candidatesCount,
+          0
   ),
-
-
 candidatesCount:
   safeNumber(
-       payload.candidatesCount ??
-       payload.candidates,
-       0
+          payload.candidatesCount ??
+          payload.candidates,
+          0
   ),
-
-
 longCandidateCount:
   safeNumber(
-       payload.longCandidateCount ??
-       payload.targetCandidateCount,
-       0
+          payload.longCandidateCount ??
+          payload.targetCandidateCount,
+          0
   ),
-
-
 nonLongCandidateCount:
   safeNumber(
-       payload.nonLongCandidateCount ??
-       payload.nonTargetCandidateCount,
-       0
+          payload.nonLongCandidateCount ??
+          payload.nonTargetCandidateCount,
+          0
   ),
-
-
 processed:
   safeNumber(
-       payload.processed,
-       0
+          payload.processed,
+          0
   ),
-
-
 earlyActions:
   safeNumber(
        payload.earlyActions,
        0
   ),
-
-
 liveRows:
   safeNumber(
        payload.liveRows,
        0
   ),
-
-
 analyzeInputRows:
   safeNumber(
        payload.analyzeInputRows,
        0
   ),
-
-
 observationOnlyRows:
   safeNumber(
        payload.observationOnlyRows,
        0
   ),
-
-
 selectedTargetCandidateCount:
   safeNumber(
        payload.selectedTargetCandidateCount,
        0
   ),
-
-
 selectedOppositeCandidateCount:
   0,
-
-
 entryRows:
   safeNumber(
        Array.isArray(
-           payload.entryRows
+             payload.entryRows
        )
-           ? entriesSource.length
-           : payload.entryRows,
-
-
+             ? entriesSource.length
+             : payload.entryRows,
        entriesSource.length
   ),
-
-
 waitRows:
   safeNumber(
        Array.isArray(
-           payload.waitRows
+            payload.waitRows
        )
-           ? waitsSource.length
-           : payload.waitRows,
-
-
+            ? waitsSource.length
+            : payload.waitRows,
        waitsSource.length
   ),
-
-
 virtualCreatedRows:
   safeNumber(
        Array.isArray(
-           payload.virtualCreatedRows
+            payload.virtualCreatedRows
        )
-           ? payload
-               .virtualCreatedRows
-               .length
-           : payload
-               .virtualCreatedRows,
-
-
+            ? payload
+                .virtualCreatedRows
+                .length
+            : payload
+                .virtualCreatedRows,
        entriesSource.length
   ),
-
-
 virtualSkippedRows:
   safeNumber(
        payload.virtualSkippedRows,
        0
   ),
-
-
 virtualFailedRows:
   safeNumber(
        payload.virtualFailedRows,
        0
   ),
-
-
 actions,
-
-
 actionsCount:
   longActions.length,
-
-
 responseActionsTruncated:
   longActions.length >
   actions.length,
-
-
 entryRowsList,
 waitRowsList,
-
-
 virtualCreatedRowsList:
   entryRowsList,
-
-
 virtualExits,
-
-
 shadowExits:
   virtualExits,
-
-
 realExits:
   [],
-
-
 virtualExitRows:
   longExits.length,
-
-
 shadowExitRows:
   longExits.length,
 realExitRows:
   0,
-
-
 responseExitsTruncated:
   longExits.length >
   virtualExits.length,
-
-
 actionCounts:
   mergeCounts(
-       compactPrimitiveObject(
-            payload.actionCounts,
-            100
-       ),
-
-
-       countActions(
-            longActions
-       ),
-
-
-       countActions(
-            longExits.map(
-                (row) => ({
-                     ...row,
-                     action:
-                       'VIRTUAL_EXIT'
-                })
-            )
-       )
+          compactPrimitiveObject(
+               payload.actionCounts,
+               100
+          ),
+          countActions(
+               longActions
+          ),
+          countActions(
+               longExits.map(
+                     (row) => ({
+                          ...row,
+                          action:
+                             'VIRTUAL_EXIT'
+                     })
+               )
+          )
   ),
-
-
 ignoredShortActions:
   rawActions.filter(
-       isShortAction
+          isShortAction
   ).length,
-
-
 ignoredShortExitRows:
   rawExits.filter(
-       isShortAction
+          isShortAction
   ).length,
-
-
 activeRotationId:
   payload.activeRotationId ||
   null,
-
-
 selectedRotationId:
   payload.selectedRotationId ||
   payload.activeRotationId ||
   null,
-         activeMicroFamilyIds,
-         selectedMicroFamilyIds,
-         activeMacroFamilyIds,
-         selectedMacroFamilyIds,
-
-
-         activeMicroFamilies:
-           activeMicroFamilyIds.length,
-
-
-         activeMacroFamilies:
-           activeMacroFamilyIds.length,
-
-
-         currentMarketWeather:
-           compactMarketWeather(
-                payload.currentMarketWeather ||
-                payload.marketWeather
-           ),
-
-
-         warnings:
-           compactIdList(
-                payload.warnings,
-                MAX_WARNING_LIST
-           ),
-
-
-         fullPayloadExcluded:
-           true,
-
-
-         candidateRowsExcluded:
-           true,
-
-
-         candleDataExcluded:
-           true,
-
-
-         scannerRowsExcluded:
-           true,
-
-
-         marketWeatherRowsExcluded:
-           true,
-
-
-         ...baseFlags()
-    };
-}
-
-
-function compactForPersistence(
-    payload = {}
-) {
-    return {
-ok:
-  payload.ok !== false,
-
-
-skipped:
-  Boolean(
-       payload.skipped ||
-       payload.skippedNewEntries
+activeMicroFamilyIds,
+selectedMicroFamilyIds,
+activeMacroFamilyIds,
+selectedMacroFamilyIds,
+activeMicroFamilies:
+  activeMicroFamilyIds.length,
+activeMacroFamilies:
+  activeMacroFamilyIds.length,
+currentMarketWeather:
+  compactMarketWeather(
+          payload.currentMarketWeather ||
+          payload.marketWeather
   ),
-
-
+warnings:
+  compactIdList(
+          payload.warnings,
+          MAX_WARNING_LIST
+  ),
+fullPayloadExcluded:
+  true,
+candidateRowsExcluded:
+  true,
+candleDataExcluded:
+  true,
+scannerRowsExcluded:
+  true,
+marketWeatherRowsExcluded:
+  true,
+                ...baseFlags()
+         };
+}
+function compactForPersistence(
+         payload = {}
+) {
+         return {
+ok:
+    payload.ok !== false,
+skipped:
+    Boolean(
+              payload.skipped ||
+              payload.skippedNewEntries
+    ),
 reason:
-  payload.reason ||
-  payload.skipReason ||
-  null,
-
-
+    payload.reason ||
+    payload.skipReason ||
+    null,
 skipReason:
-  payload.skipReason ||
-  null,
-
-
+    payload.skipReason ||
+    null,
 runId:
-  payload.runId ||
-  null,
-
-
+    payload.runId ||
+    null,
 startedAt:
-  payload.startedAt ||
-  null,
-
-
+    payload.startedAt ||
+    null,
 completedAt:
-  payload.completedAt ||
-  now(),
-
-
+    payload.completedAt ||
+    now(),
 durationMs:
   safeNumber(
-       payload.durationMs,
-       0
+          payload.durationMs,
+          0
   ),
-
-
 snapshotId:
   payload.snapshotId ||
   null,
-
-
 snapshotCreatedAt:
   payload.snapshotCreatedAt ||
   null,
-
-
 snapshotAgeSec:
   safeNumber(
-       payload.snapshotAgeSec,
-       0
+          payload.snapshotAgeSec,
+          0
   ),
-
-
 selectedSnapshotSource:
   payload.selectedSnapshotSource ||
   null,
-
-
 selectedSnapshotReason:
   payload.selectedSnapshotReason ||
   null,
-
-
 candidates:
   safeNumber(
-       payload.candidates ??
-       payload.candidatesCount,
-       0
+          payload.candidates ??
+          payload.candidatesCount,
+          0
   ),
-
-
 processed:
   safeNumber(
-       payload.processed,
-       0
+          payload.processed,
+          0
   ),
-
-
 entryRows:
   safeNumber(
        payload.entryRows,
        0
   ),
-
-
 waitRows:
   safeNumber(
        payload.waitRows,
        0
   ),
-
-
 virtualCreatedRows:
   safeNumber(
        payload.virtualCreatedRows,
        0
   ),
-
-
 virtualExitRows:
   safeNumber(
        payload.virtualExitRows,
@@ -2989,2490 +2248,1623 @@ shadowExitRows:
        payload.shadowExitRows,
        0
   ),
-
-
 selectedTargetCandidateCount:
   safeNumber(
        payload.selectedTargetCandidateCount,
        0
   ),
-
-
 selectedOppositeCandidateCount:
   0,
-
-
 actionCounts:
   compactPrimitiveObject(
-       payload.actionCounts,
-       100
+          payload.actionCounts,
+          100
   ),
-
-
 activeRotationId:
   payload.activeRotationId ||
   null,
-
-
 selectedRotationId:
   payload.selectedRotationId ||
   payload.activeRotationId ||
   null,
-
-
 activeMicroFamilyIds:
   compactIdList(
-       payload.activeMicroFamilyIds,
-       MAX_ID_LIST
+          payload.activeMicroFamilyIds,
+          MAX_ID_LIST
   ),
-
-
 selectedMicroFamilyIds:
   compactIdList(
-       payload.selectedMicroFamilyIds,
-       MAX_ID_LIST
+          payload.selectedMicroFamilyIds,
+          MAX_ID_LIST
   ),
-
-
 activeMacroFamilyIds:
   compactIdList(
-       payload.activeMacroFamilyIds,
-       MAX_ID_LIST
-              ),
-
-
-         selectedMacroFamilyIds:
-              compactIdList(
-                   payload.selectedMacroFamilyIds,
-                   MAX_ID_LIST
-              ),
-
-
-         currentMarketWeather:
-              compactMarketWeather(
-                   payload.currentMarketWeather
-              ),
-
-
-         warnings:
-              compactIdList(
-                   payload.warnings,
-                   MAX_WARNING_LIST
-              ),
-
-
-         fullPayloadPersisted:
-              false,
-
-
-         actionsPersisted:
-              false,
-
-
-         scannerRowsPersisted:
-              false,
-
-
-         marketWeatherRowsPersisted:
-              false,
-
-
-         candidateRowsPersisted:
-              false,
-
-
-         candleDataPersisted:
-              false
+          payload.activeMacroFamilyIds,
+          MAX_ID_LIST
+                 ),
+            selectedMacroFamilyIds:
+                 compactIdList(
+                        payload.selectedMacroFamilyIds,
+                        MAX_ID_LIST
+                 ),
+            currentMarketWeather:
+                 compactMarketWeather(
+                         payload.currentMarketWeather
+                 ),
+            warnings:
+                 compactIdList(
+                         payload.warnings,
+                         MAX_WARNING_LIST
+                 ),
+            fullPayloadPersisted:
+                 false,
+            actionsPersisted:
+                 false,
+            scannerRowsPersisted:
+                 false,
+            marketWeatherRowsPersisted:
+                 false,
+            candidateRowsPersisted:
+                 false,
+            candleDataPersisted:
+                 false
     };
 }
-
-
 function jsonByteLength(value) {
     try {
-         return Buffer.byteLength(
-              JSON.stringify(value),
-              'utf8'
-         );
+            return Buffer.byteLength(
+                 JSON.stringify(value),
+                 'utf8'
+            );
     } catch {
-         return Number.POSITIVE_INFINITY;
+            return Number.POSITIVE_INFINITY;
     }
 }
-
-
 function compactScannerPreload(
-    preload = null
+      preload = null
 ) {
-    if (
-        !preload ||
-        typeof preload !== 'object'
-    ) {
-        return null;
-    }
-
-
-    return {
-        ok:
-             preload.ok === true,
-
-
-        reason:
-             preload.reason ||
-             null,
-
-
-        durationMs:
-             safeNumber(
-                  preload.durationMs,
-                  0
-             ),
-
-
-        scanner: {
-             available:
-                  preload.scanner
-                      ?.available === true,
-
-
-             source:
-                  preload.scanner
-                      ?.source ||
-                  null
-        },
-
-
-        market: {
-             universeAvailable:
-                  preload.market
-                      ?.universeAvailable === true,
-
-
-             weatherAvailable:
-                  preload.market
-                      ?.weatherAvailable === true
-        },
-         scannerExecutedInsideTradeRoute:
-           false,
-
-
-         scannerPreloadMode:
-           'READ_EXISTING_LATEST',
-
-
-         fullScannerPayloadExcluded:
-           true
-    };
+      if (
+             !preload ||
+             typeof preload !== 'object'
+      ) {
+             return null;
+      }
+      return {
+             ok:
+                   preload.ok === true,
+             reason:
+                   preload.reason ||
+                   null,
+             durationMs:
+                   safeNumber(
+                           preload.durationMs,
+                           0
+                   ),
+             scanner: {
+                   available:
+                           preload.scanner
+                                  ?.available === true,
+                   source:
+                           preload.scanner
+                                  ?.source ||
+                           null
+             },
+             market: {
+                   universeAvailable:
+                           preload.market
+                                  ?.universeAvailable === true,
+                     weatherAvailable:
+                          preload.market
+                              ?.weatherAvailable === true
+           },
+            scannerExecutedInsideTradeRoute:
+                false,
+            scannerPreloadMode:
+                'READ_EXISTING_LATEST',
+            fullScannerPayloadExcluded:
+                true
+      };
 }
-
-
 function emergencyRunMeta(
-    compact = {},
-    preload = null
+      compact = {},
+      preload = null
 ) {
-    return {
-         ok:
-           compact.ok !== false,
-
-
-         skipped:
-           Boolean(
-                compact.skipped
-           ),
-
-
-         reason:
-           compact.reason ||
-           null,
-
-
-         runId:
-           compact.runId ||
-           null,
-
-
-         snapshotId:
-           compact.snapshotId ||
-           null,
-
-
-         candidates:
-           safeNumber(
-                compact.candidates,
-                0
-           ),
-
-
-         processed:
-           safeNumber(
-                compact.processed,
-                0
-           ),
-
-
-         entryRows:
-           safeNumber(
-                compact.entryRows,
-                0
-           ),
-
-
-         waitRows:
-           safeNumber(
-                compact.waitRows,
-                0
-           ),
-
-
-         virtualCreatedRows:
-           safeNumber(
-                compact.virtualCreatedRows,
-                0
-           ),
-
-
-         virtualExitRows:
-           safeNumber(
-                compact.virtualExitRows,
-                0
-           ),
-
-
-         scannerPreload:
-           compactScannerPreload(
-                preload
-           ),
-
-
-         persistedAt:
-           now(),
-
-
-         persistedBy:
-           'api/trade/run.js',
-
-
-         emergencyCompactMeta:
-           true,
-
-
-         fullPayloadPersisted:
-           false,
-
-
-         ...baseFlags()
-    };
+      return {
+            ok:
+                compact.ok !== false,
+            skipped:
+                Boolean(
+                        compact.skipped
+                ),
+            reason:
+                compact.reason ||
+                null,
+            runId:
+                compact.runId ||
+                null,
+            snapshotId:
+                compact.snapshotId ||
+  null,
+candidates:
+  safeNumber(
+          compact.candidates,
+          0
+  ),
+processed:
+  safeNumber(
+          compact.processed,
+          0
+  ),
+entryRows:
+  safeNumber(
+          compact.entryRows,
+          0
+  ),
+waitRows:
+  safeNumber(
+          compact.waitRows,
+          0
+  ),
+virtualCreatedRows:
+  safeNumber(
+          compact.virtualCreatedRows,
+          0
+  ),
+virtualExitRows:
+  safeNumber(
+          compact.virtualExitRows,
+          0
+  ),
+scannerPreload:
+  compactScannerPreload(
+                             preload
+                     ),
+                   persistedAt:
+                     now(),
+                   persistedBy:
+                     'api/trade/run.js',
+                   emergencyCompactMeta:
+                     true,
+                   fullPayloadPersisted:
+                     false,
+                   ...baseFlags()
+         };
 }
 async function persistLongRunMeta(
-  redis,
-  payload = {},
-  preload = null
+    redis,
+    payload = {},
+    preload = null
 ) {
-  const compact =
-       compactForPersistence(
-            payload
-       );
-
-
-  const compactPreload =
-       compactScannerPreload(
-            preload
-       );
-
-
-  const persistedTemporal = temporalPolicyFlags(
-       compact.startedAt ??
-       compact.createdAt ??
-       now()
-  );
-
-
-  let runMeta = {
-       ...compact,
-       ...baseFlags(),
-       ...persistedTemporal,
-       runTemporalContext: persistedTemporal.temporalContext,
-
-
-       scannerPreload:
-            compactPreload,
-
-
-       persistedAt:
-            now(),
-
-
-       persistedBy:
-            'api/trade/run.js',
-
-
-       persistedNamespace:
-            LONG_NAMESPACE
-  };
-
-
-  let runMetaBytes =
-       jsonByteLength(
-            runMeta
-       );
-
-
-  if (
-       runMetaBytes >
-       MAX_RUN_META_BYTES
-  ) {
-       runMeta =
-            emergencyRunMeta(
-                 compact,
-                 preload
+    const compact =
+              compactForPersistence(
+                      payload
+              );
+    const compactPreload =
+              compactScannerPreload(
+                      preload
+              );
+    const persistedTemporal = temporalPolicyFlags(
+              compact.startedAt ??
+              compact.createdAt ??
+              now()
+    );
+    let runMeta = {
+            ...compact,
+            ...baseFlags(),
+            ...persistedTemporal,
+            runTemporalContext: persistedTemporal.temporalContext,
+            scannerPreload:
+                      compactPreload,
+            persistedAt:
+                      now(),
+            persistedBy:
+                      'api/trade/run.js',
+            persistedNamespace:
+                      LONG_NAMESPACE
+    };
+    let runMetaBytes =
+            jsonByteLength(
+                      runMeta
             );
-    runMetaBytes =
-         jsonByteLength(
-              runMeta
-         );
+    if (
+            runMetaBytes >
+            MAX_RUN_META_BYTES
+    ) {
+            runMeta =
+                      emergencyRunMeta(
+                              compact,
+                              preload
+                      );
+         runMetaBytes =
+                 jsonByteLength(
+                           runMeta
+                 );
 }
-
-
 let runMetaPersisted =
     false;
-
-
 let runMetaFallbackUsed =
     false;
-
-
 let runMetaError =
     null;
-
-
 try {
     await setJson(
-         redis,
-         LONG_KEYS.trade.runMeta,
-         runMeta
+            redis,
+            LONG_KEYS.trade.runMeta,
+            runMeta
     );
-
-
     runMetaPersisted =
-         true;
+            true;
 } catch (error) {
     runMetaError =
-         error?.message ||
-         String(error);
-
-
+            error?.message ||
+            String(error);
     try {
-         const fallback =
-              emergencyRunMeta(
-                   compact,
-                   preload
-              );
-
-
-         await setJson(
-              redis,
-              LONG_KEYS.trade.runMeta,
-              fallback
-         );
-
-
-         runMetaPersisted =
-              true;
-
-
-         runMetaFallbackUsed =
-              true;
+            const fallback =
+                    emergencyRunMeta(
+                            compact,
+                            preload
+                    );
+            await setJson(
+                    redis,
+                    LONG_KEYS.trade.runMeta,
+                    fallback
+            );
+            runMetaPersisted =
+                    true;
+            runMetaFallbackUsed =
+                 true;
         runMetaBytes =
              jsonByteLength(
-                  fallback
+                     fallback
              );
     } catch (fallbackError) {
         console.error(
              '[api/trade/run] run-meta write failed:',
              {
-                  primaryError:
-                    runMetaError,
-
-
-                  fallbackError:
-                    fallbackError
-                         ?.message ||
-                    String(
+                     primaryError:
+                         runMetaError,
+                     fallbackError:
                          fallbackError
-                    ),
-
-
-                  runId:
-                    compact.runId,
-
-
-                  snapshotId:
-                    compact.snapshotId
+                              ?.message ||
+                         String(
+                              fallbackError
+                         ),
+                     runId:
+                         compact.runId,
+                     snapshotId:
+                         compact.snapshotId
              }
         );
     }
 }
-
-
 let snapshotPersisted =
     false;
-
-
 if (compact.snapshotId) {
     snapshotPersisted =
         await setJson(
              redis,
-
-
              LONG_KEYS.trade
-                  .lastProcessedSnapshot,
-
-
-             {
-                  snapshotId:
-                    compact.snapshotId,
-
-
-                  runId:
-                    compact.runId,
-              processedAt:
-                   now(),
-
-
-              scannerPreload:
-                   compactPreload,
-
-
-              compactPersistence:
-                   true,
-
-
-              ...baseFlags()
-          }
+                     .lastProcessedSnapshot,
+                 {
+                          snapshotId:
+                               compact.snapshotId,
+                          runId:
+                               compact.runId,
+                     processedAt:
+                           now(),
+                     scannerPreload:
+                           compactPreload,
+                     compactPersistence:
+                           true,
+                     ...baseFlags()
+           }
       )
-          .then(() => true)
-          .catch((error) => {
-              console.error(
-                   '[api/trade/run] snapshot-meta write failed:',
-                   {
-                       message:
-                         error?.message ||
-                         String(error),
-
-
-                       snapshotId:
-                         compact.snapshotId
-                   }
-              );
-
-
-              return false;
-          });
+           .then(() => true)
+           .catch((error) => {
+                     console.error(
+                           '[api/trade/run] snapshot-meta write failed:',
+                           {
+                                  message:
+                                    error?.message ||
+                                    String(error),
+                                  snapshotId:
+                                    compact.snapshotId
+                           }
+                     );
+                     return false;
+           });
 }
-
-
 return {
     persistedLongRunMeta:
       runMetaPersisted,
-
-
-    persistedLongLastProcessedSnapshot:
-      snapshotPersisted,
-
-
-    tradeRunMeta:
-      LONG_KEYS.trade.runMeta,
-
-
-    tradeLastProcessedSnapshot:
-      LONG_KEYS.trade
-          .lastProcessedSnapshot,
-
-
-    compactPersistence:
-      true,
-         fullPayloadPersisted:
-              false,
-
-
-         runMetaBytes,
-
-
-         maxRunMetaBytes:
-              MAX_RUN_META_BYTES,
-
-
-         runMetaFallbackUsed,
-
-
-         runMetaError
-    };
+      persistedLongLastProcessedSnapshot:
+           snapshotPersisted,
+      tradeRunMeta:
+           LONG_KEYS.trade.runMeta,
+      tradeLastProcessedSnapshot:
+           LONG_KEYS.trade
+               .lastProcessedSnapshot,
+      compactPersistence:
+           true,
+              fullPayloadPersisted:
+                   false,
+              runMetaBytes,
+              maxRunMetaBytes:
+                   MAX_RUN_META_BYTES,
+              runMetaFallbackUsed,
+              runMetaError
+      };
 }
-
-
 async function keyExists(
-    redis,
-    key
+      redis,
+      key
 ) {
-    if (!redis || !key) {
-         return false;
-    }
-
-
-    try {
-         return (
-              safeNumber(
-                await redis.exists(key),
-                0
-              ) > 0
-         );
-    } catch {
-         return false;
-    }
+      if (!redis || !key) {
+              return false;
+      }
+      try {
+              return (
+                   safeNumber(
+                        await redis.exists(key),
+                        0
+                     ) > 0
+               );
+         } catch {
+               return false;
+         }
 }
-
-
 async function loadScannerPreload({
-    volatileRedis,
-    durableRedis
+         volatileRedis,
+         durableRedis
 }) {
-    const startedAt =
-         now();
-
-
-    const [
-         durableScanner,
-         volatileScanner,
-         durableUniverse,
-         volatileUniverse,
-         durableWeather,
-  volatileWeather
+         const startedAt =
+               now();
+         const [
+               durableScanner,
+               volatileScanner,
+               durableUniverse,
+               volatileUniverse,
+               durableWeather,
+    volatileWeather
 ] = await Promise.all([
-  keyExists(
-       durableRedis,
-       LONG_KEYS.scan.latest
+    keyExists(
+             durableRedis,
+             LONG_KEYS.scan.latest
+    ),
+    keyExists(
+             volatileRedis,
+             LONG_KEYS.scan.latest
+    ),
+    keyExists(
+             durableRedis,
+             MARKET_UNIVERSE_KEY
+    ),
+    keyExists(
+             volatileRedis,
+             MARKET_UNIVERSE_KEY
   ),
-
-
   keyExists(
-       volatileRedis,
-       LONG_KEYS.scan.latest
+          durableRedis,
+          MARKET_WEATHER_KEY
   ),
-
-
   keyExists(
-       durableRedis,
-       MARKET_UNIVERSE_KEY
-  ),
-
-
-  keyExists(
-       volatileRedis,
-       MARKET_UNIVERSE_KEY
-  ),
-
-
-  keyExists(
-       durableRedis,
-       MARKET_WEATHER_KEY
-  ),
-
-
-  keyExists(
-       volatileRedis,
-       MARKET_WEATHER_KEY
+          volatileRedis,
+          MARKET_WEATHER_KEY
   )
 ]);
-
-
 const scannerAvailable =
   durableScanner ||
   volatileScanner;
-
-
 return {
   ok:
-       scannerAvailable,
-
-
+          scannerAvailable,
   reason:
-       scannerAvailable
-         ? null
-         : 'SCANNER_LATEST_NOT_FOUND',
-
-
+          scannerAvailable
+            ? null
+            : 'SCANNER_LATEST_NOT_FOUND',
   scanner: {
-     available:
-       scannerAvailable,
-
-
-     source:
-       durableScanner
-         ? 'DURABLE_SCANNER_LATEST'
-         : volatileScanner
-              ? 'VOLATILE_SCANNER_LATEST'
-              : null,
-
-
-     fullSnapshotReadSkipped:
-       true
+        available:
+          scannerAvailable,
+        source:
+          durableScanner
+            ? 'DURABLE_SCANNER_LATEST'
+            : volatileScanner
+                  ? 'VOLATILE_SCANNER_LATEST'
+                  : null,
+        fullSnapshotReadSkipped:
+          true
 },
-
-
 market: {
      universeAvailable:
        durableUniverse ||
        volatileUniverse,
-
-
      weatherAvailable:
        durableWeather ||
        volatileWeather,
-
-
      universeSource:
        durableUniverse
-         ? 'DURABLE'
-         : volatileUniverse
-              ? 'VOLATILE'
-              : null,
-
-
+            ? 'DURABLE'
+            : volatileUniverse
+                 ? 'VOLATILE'
+                 : null,
      weatherSource:
        durableWeather
-         ? 'DURABLE'
-         : volatileWeather
-              ? 'VOLATILE'
-              : null
+            ? 'DURABLE'
+            : volatileWeather
+                 ? 'VOLATILE'
+                 : null
 },
-
-
 mirror: {
      marketUniverseMirrored:
        durableUniverse,
-
-
      marketWeatherMirrored:
        durableWeather
 },
-
-
 durationMs:
-              now() - startedAt,
-
-
-         scannerExecutedInsideTradeRoute:
-              false,
-
-
-         scannerRunSkippedToPreventVercelTimeout:
-              true,
-
-
-         scannerPreloadMode:
-              'READ_EXISTING_LATEST'
+                 now() - startedAt,
+            scannerExecutedInsideTradeRoute:
+                 false,
+              scannerRunSkippedToPreventVercelTimeout:
+                   true,
+              scannerPreloadMode:
+                   'READ_EXISTING_LATEST'
+      };
+}
+function temporalRuntimeOptions() {
+    const controls = resolveTemporalControls();
+    return {
+        ...controls,
+        temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+        temporalStatsVersion: TEMPORAL_STATS_VERSION,
+        temporalPolicyVersion: TEMPORAL_POLICY_VERSION,
+        temporalAggregationVersion: TEMPORAL_AGGREGATION_VERSION,
+        temporalGenerationVersion: TEMPORAL_GENERATION_VERSION,
+        temporalGenerationMaxAgeDays: TEMPORAL_GENERATION_MAX_AGE_DAYS,
+        temporalActiveGenerationPointerKey: LONG_KEYS.temporal.activeGenerationId,
+        temporalNextGenerationPointerKey: LONG_KEYS.temporal.nextGenerationId,
+        temporalGenerationKeyPrefix: `${LONG_KEY_PREFIX}ANALYZE:TEMPORAL:GENERATION:`,
+        temporalProjectionReadMode: 'UNIQUE_EXACT_75_CHILD_FAMILIES_FROM_CANDIDATE_BATCH',
+        temporalGenerationReadOncePerInvocation: true,
+        temporalMixedGenerationReadsForbidden: true,
+        temporalMissingRootGenerationFailClosedInEnforce: true,
+        temporalMissingFamilyProjectionFailClosedInEnforce: true,
+        temporalEntryGateOnly: true,
+        temporalExitGateDisabled: true
     };
 }
-
-
 function buildRunOptions(
-    req,
-    body,
-    startedAt,
-    deadlineAt,
-    runtimeBudgetMs
+      req,
+      body,
+      startedAt,
+      deadlineAt,
+      runtimeBudgetMs
 ) {
-    const runTemporal = temporalPolicyFlags(startedAt);
-    const forceProcessSnapshot =
-         shouldForceProcessSnapshot(
-              req,
-              body
-         );
-
-
-    const monitorOnly =
-         shouldMonitorOnly(
-              req,
-              body
-         );
-
-
-    return {
-         ...runTemporal,
-         entryTemporalContext: runTemporal.temporalContext,
-         weekendEntryPolicyEnforced: true,
-         sessionPolicyObservedOnly: true,
-         force:
+      const runTemporal = temporalPolicyFlags(startedAt);
+      const temporalRuntime = temporalRuntimeOptions();
+      const forceProcessSnapshot =
+              shouldForceProcessSnapshot(
+                   req,
+                   body
+              );
+      const monitorOnly =
+              shouldMonitorOnly(
+                   req,
+                   body
+              );
+      return {
+              ...runTemporal,
+              ...temporalRuntime,
+              entryTemporalContext: runTemporal.temporalContext,
+              weekendEntryPolicyEnforced: temporalRuntime.temporalPolicyMode === 'ENFORCE',
+              sessionPolicyObservedOnly: temporalRuntime.temporalPolicyMode !== 'ENFORCE',
+              finalDiscordEntryFormula: "wouldPublishWithoutTemporal && (temporalPolicyMode !== 'ENFORCE' || temporalWouldBlock === false)",
+              force:
+                   forceProcessSnapshot,
               forceProcessSnapshot,
-
-
-         forceProcessSnapshot,
-
-
-         monitorOnly,
-
-
-         monitorOpenPositionsFirst:
-              true,
-
-
-         monitorOpenPositions:
-              true,
-
-
-         processOpenPositions:
+              monitorOnly,
+          monitorOpenPositionsFirst:
+                true,
+          monitorOpenPositions:
+                true,
+          processOpenPositions:
   true,
-
-
 closeVirtualPositions:
   true,
-
-
 processScannerSnapshot:
   !monitorOnly,
-
-
 targetTradeSide:
   TARGET_TRADE_SIDE,
-
-
 tradeSide:
   TARGET_TRADE_SIDE,
-
-
 side:
   TARGET_DASHBOARD_SIDE,
-
-
 positionSide:
   TARGET_TRADE_SIDE,
-
-
 direction:
   TARGET_TRADE_SIDE,
-
-
 scannerSide:
   TARGET_SCANNER_SIDE,
-
-
 actualScannerSide:
   TARGET_SCANNER_SIDE,
-
-
 analysisSide:
   TARGET_TRADE_SIDE,
-
-
 dashboardSide:
   TARGET_DASHBOARD_SIDE,
-
-
 longOnly:
   true,
-
-
 shortDisabled:
   true,
-
-
 disableShort:
   true,
-
-
 shortOnly:
   false,
 longDisabled:
   false,
-
-
 virtualOnly:
   true,
-
-
 virtualLearning:
   true,
-
-
 virtualLearningForced:
   true,
-
-
 virtualTracked:
   true,
-
-
 source:
   'VIRTUAL',
-
-
 outcomeSource:
   'VIRTUAL',
-
-
 learningOnly:
   true,
-
-
 microFamilyLearning:
   true,
-
-
 observationFirst:
   true,
-
-
 realTrade:
   false,
-
-
 realOrder:
   false,
-
-
 exchangeOrder:
   false,
-
-
 bitgetOrderPlaced:
   false,
-
-
 realOrdersDisabled:
   true,
-
-
 exchangeOrdersDisabled:
   true,
 bitgetOrdersDisabled:
   true,
-
-
 exchangeCallsDisabled:
   true,
-
-
 noExchangeOrders:
   true,
-
-
 noRealOrders:
   true,
-
-
 scannerFingerprintRole:
   'METADATA_ONLY',
-
-
 scannerFingerprintsMetadataOnly:
   true,
-
-
 scannerFingerprintsUsedAsLearningFamily:
   false,
-
-
 executionFingerprintRole:
   'METADATA_ONLY',
-
-
 executionFingerprintsMetadataOnly:
   true,
-
-
 executionFingerprintsUsedAsLearningFamily:
   false,
-
-
 analyzeMicroFamiliesOnly:
   true,
-
-
 learningIdentitySource:
   'ANALYZE_TRUE_MICRO_FAMILY',
-
-
 exactTrueMicroFamilyRequired:
   true,
-
-
 trueMicroOnly:
   true,
-
-
 exactTrueMicroOnly:
   true,
-
-
 trueMicroFamilySchema:
   TRUE_MICRO_SCHEMA,
-
-
 parentTrueMicroFamilySchema:
   PARENT_TRUE_MICRO_SCHEMA,
-
-
 learningGranularity:
   LEARNING_GRANULARITY,
-
-
 parentLearningGranularity:
   PARENT_LEARNING_GRANULARITY,
-
-
 selectionGranularity:
   'EXACT_75_CHILD',
-
-
 symbolExcludedFromFamilyId:
   true,
-
-
 allowLearningWithoutActiveRotation:
   true,
-
-
 ignoreMaxOpenPositionsForLearning:
   true,
-
-
 ignoreGlobalMaxOpenPositions:
   true,
-
-
 ignoreRiskCapsForLearning:
   true,
-
-
 oneOpenPositionPerSymbol:
   true,
-
-
 maxOneOpenPositionPerSymbol:
   true,
-
-
 positionTimeStopMin:
   getPositionTimeStopMin(),
-
-
 riskGeometryRule:
   'LONG: sl < entry < tp',
-
-
 tpHitRule:
   'LONG: price >= tp',
-
-
 slHitRule:
   'LONG: price <= sl',
 grossRFormula:
   '(exitPrice - entry) / (entry - initialSl)',
-
-
 currentRFormula:
   '(currentPrice - entry) / (entry - initialSl)',
-
-
 currentFitPolarity:
   'BULLISH_POSITIVE_BEARISH_NEGATIVE',
-
-
 currentFitDefinition:
   'LONG_MIRRORED_CURRENT_FIT',
-
-
 discordOnlyForSelectedMicroFamilies:
   true,
-
-
 discordOnlyForManualSelection:
   true,
-
-
 discordOnlyForExactTrueMicroMatch:
   true,
-
-
 manualSelectionMatchMode:
   'EXACT_TRUE_MICRO_FAMILY_ID',
-
-
 manualSelectionRequires75ChildTrueMicroFamilyId:
   true,
-
-
 runScope:
   RUN_SCOPE,
-
-
 writeScope:
   WRITE_SCOPE,
-
-
 readScope:
   READ_SCOPE,
-
-
 namespace:
   LONG_NAMESPACE,
-
-
 keyPrefix:
   LONG_KEY_PREFIX,
-
-
 redisNamespace:
   LONG_NAMESPACE,
-
-
 redisKeyPrefix:
   LONG_KEY_PREFIX,
 persistentLearningKey:
      PERSISTENT_LEARNING_KEY,
-
-
 weekKey:
      PERSISTENT_LEARNING_KEY,
-
-
 keys: {
      scannerLatest:
-       LONG_KEYS.scan.latest,
-
-
+          LONG_KEYS.scan.latest,
      tradeLock:
        LONG_KEYS.trade.lock,
-
-
      tradeRunMeta:
        LONG_KEYS.trade.runMeta,
-
-
      tradeLastProcessedSnapshot:
        LONG_KEYS.trade
          .lastProcessedSnapshot,
-
-
      marketUniverseLatest:
        MARKET_UNIVERSE_KEY,
-
-
      longMarketUniverseLatest:
        MARKET_UNIVERSE_KEY,
-
-
      marketWeatherLatest:
        MARKET_WEATHER_KEY,
-
-
      longMarketWeatherLatest:
        MARKET_WEATHER_KEY
 },
-
-
 scannerPreloadBeforeTrade:
      true,
-
-
 scannerPreloadMode:
      'READ_EXISTING_LATEST',
-
-
 scannerRunAllowed:
      false,
-
-
 scannerRunDisabledInsideTradeSystem:
      true,
-
-
 preventScannerRun:
   true,
-
-
 doNotRunScanner:
   true,
-
-
 noInternalScannerRun:
   true,
-
-
 scannerLatestReadOnly:
   true,
-
-
 readScannerLatestOnly:
   true,
-
-
 allowTradeWrite:
   true,
-
-
 allowAnalyzePartialWrite:
   true,
-
-
 allowScannerWrite:
   false,
-
-
 allowRotationWrite:
   false,
-
-
 allowDiscordSelectionWrite:
   false,
-
-
 analyzePartialOnly:
   true,
-
-
 microFamiliesAppendOnly:
   true,
-
-
 analyzeFullOverwriteDisabled:
-  true,
-
-
+    true,
 microFamiliesAntiWipe:
-  true,
-
-
+    true,
 preserveRotation:
-  true,
-
-
+    true,
 preserveManualSelection:
-  true,
-         preserveDiscordSelection:
-              true,
-
-
-         requestStartedAt:
-              startedAt,
-
-
-         deadlineAt,
-
-
-         runtimeBudgetMs,
-
-
-         stopBeforeDeadlineMs:
-              4000,
-
-
-         abortBeforeDeadline:
-              true,
-
-
-         adminPageIsolation:
-              true,
-
-
-         doesNotOverwriteOtherAdminPages:
-              true
-    };
+    true,
+            preserveDiscordSelection:
+                 true,
+            requestStartedAt:
+                 startedAt,
+            deadlineAt,
+            runtimeBudgetMs,
+            stopBeforeDeadlineMs:
+                 4000,
+            abortBeforeDeadline:
+                 true,
+            adminPageIsolation:
+                 true,
+            doesNotOverwriteOtherAdminPages:
+                 true
+      };
 }
-
-
 async function executeWithTradeLock({
-    durableRedis,
-    lockTtlSec,
-    callback
+       durableRedis,
+       lockTtlSec,
+       callback
 }) {
-    if (
-         typeof LockApi.withLock ===
-         'function'
-    ) {
-         return LockApi.withLock(
-              TRADE_LOCK_RESOURCE,
-              callback,
-              lockTtlSec
-         );
-    }
-
-
-    if (
-         typeof LockApi.withRedisLock ===
-         'function'
-    ) {
-         return LockApi.withRedisLock(
-              durableRedis,
-              LONG_KEYS.trade.lock,
-              lockTtlSec,
-              callback
-         );
-    }
-
-
-    throw new Error(
-         'TRADE_LOCK_API_MISSING'
-    );
+       if (
+              typeof LockApi.withLock ===
+              'function'
+       ) {
+              return LockApi.withLock(
+                   TRADE_LOCK_RESOURCE,
+                   callback,
+                   lockTtlSec
+              );
+       }
+       if (
+              typeof LockApi.withRedisLock ===
+              'function'
+       ) {
+              return LockApi.withRedisLock(
+                   durableRedis,
+                   LONG_KEYS.trade.lock,
+                   lockTtlSec,
+                   callback
+              );
+       }
+       throw new Error(
+              'TRADE_LOCK_API_MISSING'
+       );
 }
-
-
 function unwrapLockResult(value) {
-    if (!value) {
-         return null;
-    }
-
-
-    if (
-         value.result
-              ?.result
-              ?.result
+       if (!value) {
+              return null;
+       }
+       if (
+              value.result
+                   ?.result
+                   ?.result
     ) {
-         return value
-              .result
-              .result
-              .result;
+            return value
+                 .result
+                 .result
+                 .result;
     }
-
-
     if (
-         value.result?.result
+            value.result?.result
     ) {
-         return value
-              .result
-              .result;
+            return value
+                 .result
+                 .result;
     }
-
-
     if (value.result) {
-         return value.result;
+            return value.result;
     }
-
-
     return value;
 }
-
-
 function lockText(value) {
     const payload =
-         unwrapLockResult(value);
-
-
+            unwrapLockResult(value);
     return [
-         value?.reason,
-        value?.error,
-        value?.message,
-        value?.code,
-
-
-        payload?.reason,
-        payload?.error,
-        payload?.message,
-        payload?.code,
-
-
-        value instanceof Error
-            ? value.message
-            : ''
+            value?.reason,
+           value?.error,
+           value?.message,
+           value?.code,
+           payload?.reason,
+           payload?.error,
+           payload?.message,
+           payload?.code,
+           value instanceof Error
+               ? value.message
+               : ''
     ]
-        .filter(Boolean)
-        .map(
-            (part) =>
-               String(part)
-                   .toUpperCase()
-        )
-        .join('|');
+           .filter(Boolean)
+           .map(
+                   (part) =>
+                      String(part)
+                          .toUpperCase()
+           )
+           .join('|');
 }
-
-
 function isLockConflict(value) {
     const text =
-        lockText(value);
-
-
+           lockText(value);
     return (
-        text.includes(
-            'LOCK_HELD'
-        ) ||
-        text.includes(
-            'LOCK_NOT_ACQUIRED'
-        ) ||
-        text.includes(
-            'TRADE_RUN_LOCK_ACTIVE'
-        ) ||
-        text.includes(
-            'LOCK_ACTIVE'
-        ) ||
-        text.includes(
-            'ALREADY_RUNNING'
-        ) ||
-        text.includes(
-            'CONFLICT_LOCK'
-        ) ||
-        text.includes(
-            'MAX_RETRIES_EXCEEDED'
-         )
+           text.includes(
+                   'LOCK_HELD'
+           ) ||
+           text.includes(
+                   'LOCK_NOT_ACQUIRED'
+           ) ||
+           text.includes(
+                   'TRADE_RUN_LOCK_ACTIVE'
+           ) ||
+           text.includes(
+                   'LOCK_ACTIVE'
+           ) ||
+           text.includes(
+                   'ALREADY_RUNNING'
+           ) ||
+           text.includes(
+                   'CONFLICT_LOCK'
+           ) ||
+           text.includes(
+                   'MAX_RETRIES_EXCEEDED'
+               )
     );
 }
-
-
 function lockSkippedResponse(
     req,
     body,
     startedAt,
     lockTtlSec,
-    error = null
+      error = null
 ) {
-    return {
-         ok:
-             true,
-
-
-         tradeOk:
-             true,
-
-
-         scannerPreloadOk:
-             null,
-
-
-         skipped:
-             true,
-
-
-         skippedNewEntries:
-             true,
-
-
-         reason:
-             'TRADE_RUN_LOCK_ACTIVE',
-
-
-         skipReason:
-             'TRADE_RUN_LOCK_ACTIVE',
-
-
-         message:
-             'Trade run overgeslagen: vorige LONG trade-run is nog actief.',
-
-
-         ...baseFlags(),
-
-
-         runSource:
-             getRunSource(
-                  req,
-                  body
-             ),
-
-
-         lock: {
-             resource:
-                  TRADE_LOCK_RESOURCE,
+      return {
+           ok:
+                 true,
+           tradeOk:
+                 true,
+           scannerPreloadOk:
+                 null,
+           skipped:
+                 true,
+           skippedNewEntries:
+                 true,
+           reason:
+                 'TRADE_RUN_LOCK_ACTIVE',
+           skipReason:
+                 'TRADE_RUN_LOCK_ACTIVE',
+           message:
+                 'Trade run overgeslagen: vorige LONG trade-run is nog actief.',
+           ...baseFlags(),
+           runSource:
+                 getRunSource(
+                         req,
+                         body
+                 ),
+           lock: {
+                 resource:
+                     TRADE_LOCK_RESOURCE,
      key:
-          LONG_KEYS.trade.lock,
-
-
+             LONG_KEYS.trade.lock,
      ttlSec:
-          lockTtlSec,
-
-
+             lockTtlSec,
      active:
-          true
+             true
 },
-
-
 entryRows:
      0,
-
-
 waitRows:
      0,
-
-
 virtualCreatedRows:
      0,
-
-
 virtualExitRows:
      0,
-
-
 entryRowsList:
      [],
-
-
 waitRowsList:
      [],
-
-
 virtualExits:
      [],
-
-
 shadowExits:
      [],
-
-
 realExits:
-     [],
-
-
+       [],
 actionCounts:
-     {},
-
-
+       {},
 counts:
-     {},
-
-
+       {},
 warnings: [
-     'TRADE_RUN_SKIPPED_BECAUSE_LOCK_ACTIVE'
+       'TRADE_RUN_SKIPPED_BECAUSE_LOCK_ACTIVE'
 ],
-         error:
-           error?.message ||
-           null,
-
-
-         durationMs:
-           now() - startedAt,
-
-
-         completedAt:
-           now()
-    };
+             error:
+               error?.message ||
+               null,
+             durationMs:
+               now() - startedAt,
+             completedAt:
+               now()
+      };
 }
-
-
 function responseCounts(
-    payload = {}
+      payload = {}
 ) {
-    return {
-         candidates:
-           safeNumber(
-                payload.candidates ??
-                payload.candidatesCount,
-                0
-           ),
-
-
-         longCandidateCount:
-           safeNumber(
-                payload.longCandidateCount,
-                0
-           ),
-
-
-         nonLongCandidateCount:
-           safeNumber(
-                payload.nonLongCandidateCount,
-                0
-           ),
-
-
-         processed:
-           safeNumber(
-                payload.processed,
-                0
-           ),
-
-
-         liveRows:
-           safeNumber(
-                payload.liveRows,
-                0
-           ),
+      return {
+             candidates:
+               safeNumber(
+                       payload.candidates ??
+                       payload.candidatesCount,
+                       0
+               ),
+             longCandidateCount:
+               safeNumber(
+                       payload.longCandidateCount,
+                       0
+               ),
+            nonLongCandidateCount:
+              safeNumber(
+                   payload.nonLongCandidateCount,
+                   0
+              ),
+            processed:
+              safeNumber(
+                   payload.processed,
+                   0
+              ),
+            liveRows:
+              safeNumber(
+                   payload.liveRows,
+                   0
+              ),
 analyzeInputRows:
   safeNumber(
        payload.analyzeInputRows,
        0
   ),
-
-
 observationOnlyRows:
   safeNumber(
        payload.observationOnlyRows,
        0
   ),
-
-
 entryRows:
   safeNumber(
        payload.entryRows,
        0
   ),
-
-
 waitRows:
   safeNumber(
        payload.waitRows,
        0
   ),
-
-
 virtualCreatedRows:
   safeNumber(
-       payload.virtualCreatedRows,
-       0
+         payload.virtualCreatedRows,
+         0
   ),
-
-
 actions:
   safeNumber(
-       payload.actionsCount,
-       0
+         payload.actionsCount,
+         0
   ),
-
-
 entries:
   safeNumber(
-       payload.entryRows,
-       0
+         payload.entryRows,
+         0
   ),
-
-
 waits:
   safeNumber(
-       payload.waitRows,
-       0
+         payload.waitRows,
+         0
   ),
-
-
 realExits:
   0,
-
-
 shadowExits:
   safeNumber(
-       payload.shadowExitRows,
-       0
+         payload.shadowExitRows,
+         0
   ),
-
-
 virtualExits:
   safeNumber(
-       payload.virtualExitRows,
-       0
+         payload.virtualExitRows,
+         0
   ),
-
-
 activeMicroFamilies:
-  safeNumber(
-       payload.activeMicroFamilies,
-       0
-  ),
-
-
+    safeNumber(
+              payload.activeMicroFamilies,
+              0
+    ),
 activeMacroFamilies:
-  safeNumber(
-       payload.activeMacroFamilies,
-       0
-  ),
-
-
+    safeNumber(
+              payload.activeMacroFamilies,
+              0
+    ),
 selectedTargetCandidateCount:
-  safeNumber(
-       payload.selectedTargetCandidateCount,
-       0
-  ),
-
-
+    safeNumber(
+              payload.selectedTargetCandidateCount,
+              0
+    ),
 selectedOppositeCandidateCount:
-  0,
-
-
+    0,
 ignoredShortActions:
-  safeNumber(
-       payload.ignoredShortActions,
-       0
-  ),
-
-
+    safeNumber(
+              payload.ignoredShortActions,
+              0
+    ),
 ignoredShortExitRows:
-  safeNumber(
-       payload.ignoredShortExitRows,
-               0
-           )
-    };
+    safeNumber(
+              payload.ignoredShortExitRows,
+                           0
+                    )
+         };
 }
-
-
 function resolveStatus(error) {
-    return Number.isFinite(
-         error?.statusCode
-    )
-         ? error.statusCode
-         : 500;
+         return Number.isFinite(
+                  error?.statusCode
+         )
+                  ? error.statusCode
+                  : 500;
 }
-
-
 export default async function handler(
-    req,
-    res
+      req,
+      res
 ) {
-    res.setHeader(
-         'Cache-Control',
-         'no-store, max-age=0'
-    );
-
-
-    res.setHeader(
-         'X-Trade-Target-Side',
-         TARGET_TRADE_SIDE
-    );
-
-
-    res.setHeader(
-         'X-Dashboard-Side',
-         TARGET_DASHBOARD_SIDE
-    );
-
-
-    res.setHeader(
-         'X-Long-Only',
-         'true'
-    );
-
-
-    res.setHeader(
-         'X-Short-Disabled',
-         'true'
-    );
-
-
-    res.setHeader(
-         'X-Virtual-Only',
-         'true'
-    );
+      res.setHeader(
+             'Cache-Control',
+             'no-store, max-age=0'
+      );
+      res.setHeader(
+             'X-Trade-Target-Side',
+             TARGET_TRADE_SIDE
+      );
+      res.setHeader(
+             'X-Dashboard-Side',
+             TARGET_DASHBOARD_SIDE
+      );
+      res.setHeader(
+             'X-Long-Only',
+             'true'
+      );
+      res.setHeader(
+             'X-Short-Disabled',
+             'true'
+      );
+      res.setHeader(
+             'X-Virtual-Only',
+             'true'
+      );
 res.setHeader(
-     'X-No-Real-Orders',
-     'true'
+       'X-No-Real-Orders',
+       'true'
 );
-
-
 res.setHeader(
      'X-Scanner-Run-Allowed',
      'false'
 );
-
-
 res.setHeader(
      'X-Scanner-Preload-Before-Trade',
      'READ_EXISTING_LATEST'
 );
-
-
 res.setHeader(
      'X-Compact-Run-Meta',
      'true'
 );
-
-
-res.setHeader('X-Weekend-Mode', WEEKEND_MODE);
-res.setHeader('X-Session-Mode', SESSION_MODE);
+const temporalControls = resolveTemporalControls();
+res.setHeader('X-Weekend-Mode', temporalControls.temporalPolicyMode);
+res.setHeader('X-Session-Mode', temporalControls.temporalPolicyMode);
+res.setHeader('X-Temporal-Context-Version', TEMPORAL_CONTEXT_VERSION);
+res.setHeader('X-Temporal-Stats-Version', TEMPORAL_STATS_VERSION);
+res.setHeader('X-Temporal-Policy-Version', TEMPORAL_POLICY_VERSION);
+res.setHeader('X-Temporal-Aggregation-Version', TEMPORAL_AGGREGATION_VERSION);
+res.setHeader('X-Temporal-Generation-Version', TEMPORAL_GENERATION_VERSION);
+res.setHeader('X-Temporal-Policy-Mode', temporalControls.temporalPolicyMode);
+res.setHeader('X-Temporal-Stats-Enabled', String(temporalControls.temporalStatsEnabled));
 res.setHeader(
      'X-Weekend-Discord-Entry-Allowed',
      String(!buildTemporalContext(now()).isWeekend)
 );
-
-
 res.setHeader(
      'X-Full-Payload-Persisted',
      'false'
 );
-
-
 const startedAt =
      now();
-
-
 const runtimeBudgetMs =
      getRuntimeBudgetMs();
-
-
 const deadlineAt =
      startedAt +
      runtimeBudgetMs;
-
-
 let body = {};
-
-
 try {
-     if (
-       req.method !== 'GET' &&
-       req.method !== 'POST'
-     ) {
-       res.setHeader(
-            'Allow',
-            'GET, POST'
-       );
+        if (
+          req.method !== 'GET' &&
+          req.method !== 'POST'
+        ) {
+          res.setHeader(
+                     'Allow',
+                     'GET, POST'
+          );
     return res
-         .status(405)
-         .json({
-           ok:
-                false,
-
-
-           error:
-                'METHOD_NOT_ALLOWED',
-
-
-           allowed: [
-                'GET',
-                'POST'
-           ],
-
-
-           ...baseFlags()
-         });
+               .status(405)
+               .json({
+                 ok:
+                         false,
+                 error:
+                         'METHOD_NOT_ALLOWED',
+                 allowed: [
+                         'GET',
+                         'POST'
+                 ],
+                 ...baseFlags()
+               });
 }
-
-
 body =
     await readBody(req);
-
-
 const rowLimit =
     getResponseRowLimit(
-         req,
-         body
+               req,
+               body
     );
-
-
 const runOptions =
     buildRunOptions(
-         req,
-         body,
-         startedAt,
-         deadlineAt,
-         runtimeBudgetMs
+               req,
+               body,
+            startedAt,
+            deadlineAt,
+            runtimeBudgetMs
     );
-
-
 const durableRedis =
     getDurableRedis();
-
-
 const volatileRedis =
     getVolatileRedis();
-
-
 const lockTtlSec =
     getLockTtlSec();
-
-
 let scannerPreload =
     null;
 const rawResult =
   await executeWithTradeLock({
     durableRedis,
     lockTtlSec,
-
-
     callback:
-      async () => {
-        scannerPreload =
-          await loadScannerPreload({
-              volatileRedis,
-              durableRedis
-          });
-
-
-        return runTradeSystem({
-          ...runOptions,
-
-
-          scannerPreloadOk:
-              scannerPreload
-                  ?.ok === true,
-
-
-          scannerSnapshotAvailable:
-              scannerPreload
-                  ?.ok === true,
-
-
-          scannerPreloadMode:
-              'READ_EXISTING_LATEST',
-
-
-          marketWeatherMirroredToDurable:
-              scannerPreload
-                  ?.mirror
-                  ?.marketWeatherMirrored ===
-              true,
-
-
-          marketUniverseMirroredToDurable:
-              scannerPreload
-                  ?.mirror
-                  ?.marketUniverseMirrored ===
-              true,
-
-
-          remainingRuntimeMs:
-              Math.max(
-                  0,
-                  deadlineAt -
-                  now()
-              )
-        });
-              }
-    });
-
-
+         async () => {
+           scannerPreload =
+             await loadScannerPreload({
+                   volatileRedis,
+                   durableRedis
+             });
+           return runTradeSystem({
+             ...runOptions,
+             scannerPreloadOk:
+                   scannerPreload
+                       ?.ok === true,
+             scannerSnapshotAvailable:
+                   scannerPreload
+                       ?.ok === true,
+               scannerPreloadMode:
+                    'READ_EXISTING_LATEST',
+               marketWeatherMirroredToDurable:
+                    scannerPreload
+                          ?.mirror
+                          ?.marketWeatherMirrored ===
+                    true,
+               marketUniverseMirroredToDurable:
+                    scannerPreload
+                          ?.mirror
+                          ?.marketUniverseMirrored ===
+                    true,
+               remainingRuntimeMs:
+                    Math.max(
+                          0,
+                          deadlineAt -
+                          now()
+                    )
+             });
+                    }
+       });
 if (
-    isLockConflict(
-         rawResult
-    )
+       isLockConflict(
+              rawResult
+       )
 ) {
-    return res
-         .status(200)
-         .json(
-              lockSkippedResponse(
-                  req,
-                  body,
-                  startedAt,
-                  lockTtlSec
-              )
-         );
+       return res
+              .status(200)
+              .json(
+                    lockSkippedResponse(
+                          req,
+                          body,
+                          startedAt,
+                          lockTtlSec
+                    )
+              );
 }
-
-
 const rawPayload =
     unwrapLockResult(
-         rawResult
+             rawResult
     ) || {};
-
-
 const payload =
     sanitizeRunPayload(
-         rawPayload,
-         rowLimit
+             rawPayload,
+             rowLimit
     );
-
-
 const compactRun =
     compactForPersistence(
-         payload
+             payload
     );
-
-
 const tradeOk =
     rawResult?.ok !== false &&
     payload.ok !== false;
-
-
 const scannerOk =
     scannerPreload
-         ?.ok === true;
-
-
+             ?.ok === true;
 const persistence =
     now() <
     deadlineAt - 2000
     ? await persistLongRunMeta(
-           durableRedis,
-           payload,
-           scannerPreload
-      )
-
-
+               durableRedis,
+               payload,
+               scannerPreload
+         )
     : {
-           persistedLongRunMeta:
-             false,
-
-
-           persistedLongLastProcessedSnapshot:
-             false,
-
-
-           reason:
-             'SKIPPED_NEAR_RUNTIME_DEADLINE',
-
-
-           compactPersistence:
-             true,
-
-
-           fullPayloadPersisted:
-             false
-      };
-
-
+               persistedLongRunMeta:
+                 false,
+               persistedLongLastProcessedSnapshot:
+                   false,
+                 reason:
+                   'SKIPPED_NEAR_RUNTIME_DEADLINE',
+                 compactPersistence:
+                   true,
+                 fullPayloadPersisted:
+                   false
+         };
 return res
   .status(200)
   .json({
-    ok:
-      tradeOk,
-
-
-    tradeOk,
-
-
-    scannerPreloadOk:
-      scannerOk,
-
-
-    skipped:
-      Boolean(
-           rawResult?.skipped ||
-           payload.skipped
-      ),
-
-
-    reason:
-      rawResult?.reason ||
-      payload.reason ||
-      (
-           !scannerOk
-             ? 'SCANNER_LATEST_NOT_AVAILABLE'
-            : null
+       ok:
+         tradeOk,
+       tradeOk,
+       scannerPreloadOk:
+         scannerOk,
+       skipped:
+         Boolean(
+                 rawResult?.skipped ||
+                 payload.skipped
+         ),
+       reason:
+         rawResult?.reason ||
+         payload.reason ||
+         (
+                 !scannerOk
+                   ? 'SCANNER_LATEST_NOT_AVAILABLE'
+                  : null
   ),
-
-
 skipReason:
   payload.skipReason ||
   null,
-
-
 ...baseFlags(),
-
-
 runSource:
   getRunSource(
-       req,
-       body
+          req,
+          body
   ),
-
-
 force:
   runOptions.force,
-
-
 forceProcessSnapshot:
   runOptions
-       .forceProcessSnapshot,
-
-
+          .forceProcessSnapshot,
 monitorOnly:
   runOptions.monitorOnly,
-
-
 monitorOpenPositionsFirst:
   true,
-
-
 monitorOpenPositions:
   true,
-
-
 processScannerSnapshot:
   runOptions
-       .processScannerSnapshot,
-
-
+          .processScannerSnapshot,
 runtimeBudgetMs,
-
-
 deadlineAt,
-
-
 remainingRuntimeMs:
   Math.max(
-       0,
-       deadlineAt -
-       now()
+          0,
+          deadlineAt -
+          now()
   ),
-
-
 scannerPreload:
   compactScannerPreload(
-       scannerPreload
+          scannerPreload
   ),
-
-
 scannerExecutedInsideTradeRoute:
   false,
-
-
 scannerRunSkippedToPreventVercelTimeout:
   true,
-
-
 marketWeatherAvailableAfterRun:
   scannerPreload
-       ?.market
-       ?.weatherAvailable ===
+          ?.market
+          ?.weatherAvailable ===
   true,
-
-
 marketUniverseAvailableAfterRun:
   scannerPreload
-       ?.market
-       ?.universeAvailable ===
+          ?.market
+          ?.universeAvailable ===
   true,
-
-
 runId:
   payload.runId,
-
-
 snapshotId:
   payload.snapshotId,
-
-
 entryRows:
   payload.entryRows,
-
-
 waitRows:
   payload.waitRows,
-
-
 virtualCreatedRows:
   payload.virtualCreatedRows,
-
-
 virtualExitRows:
   payload.virtualExitRows,
-
-
 shadowExitRows:
   payload.shadowExitRows,
-
-
 entryRowsList:
   payload.entryRowsList,
-
-
 waitRowsList:
   payload.waitRowsList,
-
-
 virtualCreatedRowsList:
   payload
-       .virtualCreatedRowsList,
-
-
+          .virtualCreatedRowsList,
 virtualExits:
   payload.virtualExits,
-
-
 shadowExits:
   payload.shadowExits,
-
-
 realExits:
   [],
-
-
 actionCounts:
   payload.actionCounts,
-
-
 counts:
   responseCounts(
        payload
   ),
-
-
 activeRotationId:
   payload.activeRotationId,
-
-
 selectedRotationId:
   payload.selectedRotationId,
-
-
 activeMicroFamilies:
   payload.activeMicroFamilies,
-
-
 activeMacroFamilies:
   payload.activeMacroFamilies,
-
-
 activeMicroFamilyIds:
   payload.activeMicroFamilyIds,
-
-
 activeMacroFamilyIds:
   payload.activeMacroFamilyIds,
-
-
 selectedMicroFamilyIds:
   payload.selectedMicroFamilyIds,
-
-
 selectedMacroFamilyIds:
   payload.selectedMacroFamilyIds,
 selectedSnapshotSource:
   payload.selectedSnapshotSource,
-
-
 selectedSnapshotReason:
   payload.selectedSnapshotReason,
-
-
 selectedTargetCandidateCount:
   payload
        .selectedTargetCandidateCount,
-
-
 selectedOppositeCandidateCount:
   0,
-
-
 scannerLatestPreserved:
   true,
-
-
 scannerSnapshotPreserved:
   true,
-
-
 scannerHistoryPreserved:
   true,
-
-
 scannerRunBlockedInsideTradeRun:
   true,
-
-
 scannerRunDisabledInsideTradeSystem:
   true,
-
-
 microFamiliesAppendOnly:
   true,
-
-
 analyzePartialOnly:
   true,
-
-
 analyzeFullOverwriteDisabled:
   true,
-
-
 rotationPreserved:
   true,
-
-
 manualSelectionPreserved:
   true,
-
-
 discordSelectionPreserved:
   true,
-
-
 longPersistence:
      persistence,
-
-
 compactResponse:
      true,
-
-
 compactPersistence:
      true,
-
-
 fullPayloadReturned:
      false,
-
-
 fullPayloadPersisted:
      false,
-
-
 maxRunMetaBytes:
      MAX_RUN_META_BYTES,
-
-
 lock: {
      resource:
-       TRADE_LOCK_RESOURCE,
-
-
+          TRADE_LOCK_RESOURCE,
      key:
-       LONG_KEYS.trade.lock,
-
-
+          LONG_KEYS.trade.lock,
      ttlSec:
-       lockTtlSec,
-
-
+          lockTtlSec,
      acquired:
-       rawResult?.ok !==
-       false,
-
-
+          rawResult?.ok !==
+          false,
      released:
-       rawResult
-            ?.lockReleased ??
+          rawResult
+               ?.lockReleased ??
        null,
-
-
      releaseReason:
        rawResult
-            ?.lockReleaseReason ||
+               ?.lockReleaseReason ||
        null
 },
-
-
 longKeys: {
      namespace:
        LONG_NAMESPACE,
-
-
      prefix:
        LONG_KEY_PREFIX,
-
-
      scanLatest:
        LONG_KEYS.scan.latest,
-
-
      tradeLock:
        LONG_KEYS.trade.lock,
-
-
      legacyConfiguredTradeLock:
        LONG_KEYS.trade
-            .legacyConfiguredLock,
-
-
+               .legacyConfiguredLock,
      tradeRunMeta:
        LONG_KEYS.trade
-            .runMeta,
-
-
+               .runMeta,
      tradeLastProcessedSnapshot:
        LONG_KEYS.trade
-            .lastProcessedSnapshot,
-
-
+               .lastProcessedSnapshot,
      marketUniverseLatest:
        MARKET_UNIVERSE_KEY,
-
-
      marketWeatherLatest:
-       MARKET_WEATHER_KEY
+          MARKET_WEATHER_KEY,
+     temporalActiveGenerationId:
+          LONG_KEYS.temporal.activeGenerationId,
+     temporalNextGenerationId:
+          LONG_KEYS.temporal.nextGenerationId
 },
-
-
 warnings: [
-     !scannerOk
-       ? 'SCANNER_LATEST_NOT_AVAILABLE_TRADE_MONITORING_CONTINUES'
+        !scannerOk
+          ? 'SCANNER_LATEST_NOT_AVAILABLE_TRADE_MONITORING_CONTINUES'
+          : null,
+        scannerPreload
+          ?.market
+          ?.weatherAvailable !==
+        true
+          ? 'MARKET_WEATHER_NOT_AVAILABLE'
+          : null,
+        scannerPreload
+          ?.market
+          ?.universeAvailable !==
+        true
+          ? 'MARKET_UNIVERSE_NOT_AVAILABLE'
+          : null,
+        payload
+       .ignoredShortActions > 0
+       ? `SHORT_ACTIONS_IGNORED:${payload.ignoredShortActions}`
        : null,
-
-
-     scannerPreload
-       ?.market
-       ?.weatherAvailable !==
-     true
-       ? 'MARKET_WEATHER_NOT_AVAILABLE'
-       : null,
-
-
-     scannerPreload
-       ?.market
-       ?.universeAvailable !==
-     true
-       ? 'MARKET_UNIVERSE_NOT_AVAILABLE'
-       : null,
-
-
      payload
-    .ignoredShortActions > 0
-    ? `SHORT_ACTIONS_IGNORED:${payload.ignoredShortActions}`
+       .ignoredShortExitRows > 0
+       ? `SHORT_EXIT_ROWS_IGNORED:${payload.ignoredShortExitRows}`
+       : null,
+     payload
+       .responseActionsTruncated
+       ? `RESPONSE_ACTIONS_TRUNCATED_TO:${rowLimit}`
+       : null,
+     payload
+       .responseExitsTruncated
+       ? `RESPONSE_EXITS_TRUNCATED_TO:${rowLimit}`
     : null,
-
-
-  payload
-    .ignoredShortExitRows > 0
-    ? `SHORT_EXIT_ROWS_IGNORED:${payload.ignoredShortExitRows}`
-    : null,
-
-
-  payload
-    .responseActionsTruncated
-    ? `RESPONSE_ACTIONS_TRUNCATED_TO:${rowLimit}`
-    : null,
-
-
-  payload
-    .responseExitsTruncated
-    ? `RESPONSE_EXITS_TRUNCATED_TO:${rowLimit}`
-    : null,
-
-
   persistence
     .runMetaFallbackUsed
     ? 'RUN_META_EMERGENCY_COMPACT_FALLBACK_USED'
     : null,
-
-
   persistence
     .persistedLongRunMeta ===
   false
     ? 'RUN_META_NOT_PERSISTED'
     : null,
-
-
   now() >=
   deadlineAt - 2000
     ? 'RUNTIME_BUDGET_ALMOST_EXHAUSTED'
     : null
 ].filter(Boolean),
-
-
 responseRowLimit:
   rowLimit,
-
-
 durationMs:
   now() - startedAt,
-
-
 completedAt:
   now(),
-
-
 run: {
   ...compactRun,
-             entryRowsList:
-               payload.entryRowsList,
-
-
-             waitRowsList:
-               payload.waitRowsList,
-
-
-             virtualExits:
-               payload.virtualExits,
-
-
-             compactResponse:
-               true
-        },
-
-
-        result: {
-             ok:
-               tradeOk,
-
-
-             skipped:
-               Boolean(
-                    rawResult?.skipped ||
-                    payload.skipped
-               ),
-
-
-             reason:
-               rawResult?.reason ||
-               payload.reason ||
-               null,
-
-
-             ...baseFlags(),
-
-
-             result:
-               compactRun
-        }
+                entryRowsList:
+                  payload.entryRowsList,
+                waitRowsList:
+                  payload.waitRowsList,
+                virtualExits:
+                  payload.virtualExits,
+                  compactResponse:
+                       true
+          },
+          result: {
+                  ok:
+                       tradeOk,
+                  skipped:
+                       Boolean(
+                               rawResult?.skipped ||
+                               payload.skipped
+                       ),
+                  reason:
+                       rawResult?.reason ||
+                       payload.reason ||
+                       null,
+                  ...baseFlags(),
+                  result:
+                       compactRun
+          }
     });
 } catch (error) {
   console.error(
     '[api/trade/run] fatal handler error:',
     {
-        name:
-             error?.name ||
-             null,
-
-
-        message:
-             error?.message ||
-             String(error),
-         code:
-              error?.code ||
-              null,
-
-
-         reason:
-              error?.reason ||
-              null,
-
-
-         stack:
-              error?.stack ||
-              null
-     }
+          name:
+                  error?.name ||
+                  null,
+          message:
+                  error?.message ||
+                  String(error),
+              code:
+                      error?.code ||
+                      null,
+           reason:
+                   error?.reason ||
+                   null,
+           stack:
+                   error?.stack ||
+                   null
+       }
 );
-
-
 const lockTtlSec =
-     getLockTtlSec();
-
-
+       getLockTtlSec();
 if (
-     isLockConflict(
-         error
-     )
+       isLockConflict(
+           error
+       )
 ) {
-     return res
-         .status(200)
-         .json(
-              lockSkippedResponse(
-                  req,
-                  body,
-                  startedAt,
-                  lockTtlSec,
-                  error
-              )
-         );
+       return res
+           .status(200)
+           .json(
+                   lockSkippedResponse(
+                          req,
+                          body,
+                          startedAt,
+                          lockTtlSec,
+                          error
+                   )
+           );
 }
-
-
 return res
-     .status(
-         resolveStatus(error)
-     )
-     .json({
-         ok:
-              false,
-
-
-         ...baseFlags(),
-
-
+       .status(
+           resolveStatus(error)
+       )
+       .json({
+           ok:
+                   false,
+           ...baseFlags(),
          error:
               error?.message ||
               String(error),
-
-
           code:
               error?.code ||
               null,
-
-
           reason:
               error?.reason ||
               null,
-
-
           durationMs:
               now() - startedAt,
-
-
           stack:
               process.env.NODE_ENV ===
               'production'
-                ? undefined
-                : error?.stack
+                   ? undefined
+                   : error?.stack
         });
     }
 }
