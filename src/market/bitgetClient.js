@@ -21,6 +21,12 @@ const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 
+const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
+const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
+const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
+const WEEKEND_MODE = 'OBSERVE';
+const SESSION_MODE = 'OBSERVE';
+
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
 const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
@@ -81,6 +87,20 @@ function longMachineFlags() {
     orderPlacementDisabled: true,
 
     scannerBullishOnly: true,
+
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true,
     scannerSearchSide: TARGET_SCANNER_SIDE,
     scannerDoesNotTrade: true,
     scannerDoesNotSelectMicroFamilies: true,
@@ -125,30 +145,47 @@ function longMachineFlags() {
     manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
     discordOnlyForExactTrueMicroMatch: true,
 
+    validLongRiskShape: 'entry > 0 && sl < entry && entry < tp',
+    longRiskShape: 'sl < entry < tp',
+    riskTradeSide: TARGET_TRADE_SIDE,
+    riskGeometryRule: 'LONG: sl < entry < tp',
+    tpHitRule: 'LONG: price >= tp',
+    slHitRule: 'LONG: price <= initialSl',
+    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
+
     redisNamespace: LONG_NAMESPACE,
     redisKeyPrefix: LONG_KEY_PREFIX,
     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+    redisKeysSeparatedFromShortRoot: true,
     shortRootTouched: false
   };
 }
 
 function bitgetConfig() {
+  const cfg = CONFIG.long?.bitget || CONFIG.bitget || {};
+
   return {
-    baseUrl: CONFIG.bitget?.baseUrl || 'https://api.bitget.com',
-    productType: CONFIG.bitget?.productType || 'USDT-FUTURES',
-    timeoutMs: Math.max(500, safeNumber(CONFIG.bitget?.timeoutMs, DEFAULT_TIMEOUT_MS)),
+    baseUrl: cfg.baseUrl || 'https://api.bitget.com',
+    productType: cfg.productType || 'USDT-FUTURES',
+    timeoutMs: Math.max(500, safeNumber(cfg.timeoutMs, DEFAULT_TIMEOUT_MS)),
     minRequestIntervalMs: Math.max(
       0,
-      safeNumber(CONFIG.bitget?.minRequestIntervalMs, DEFAULT_MIN_REQUEST_INTERVAL_MS)
+      safeNumber(cfg.minRequestIntervalMs, DEFAULT_MIN_REQUEST_INTERVAL_MS)
     ),
-    cacheEnabled: CONFIG.bitget?.cacheEnabled !== false,
+    cacheEnabled: cfg.cacheEnabled !== false,
 
     ...longMachineFlags()
   };
 }
 
 function shouldLogSkippedSymbols() {
-  return CONFIG.bitget?.logSkippedSymbols === true;
+  return (CONFIG.long?.bitget || CONFIG.bitget || {})?.logSkippedSymbols === true;
 }
 
 function normalizeProductType(value = bitgetConfig().productType) {
@@ -395,7 +432,7 @@ async function fetchJson(path, params = {}, options = {}) {
 
       if (!retryable || attempt >= retries) break;
 
-      const baseDelayMs = safeNumber(CONFIG.bitget?.retryDelayMs, 250);
+      const baseDelayMs = safeNumber((CONFIG.long?.bitget || CONFIG.bitget || {})?.retryDelayMs, 250);
       const jitterMs = Math.floor(Math.random() * 80);
       const delayMs = baseDelayMs * (attempt + 1) + jitterMs;
 
@@ -563,30 +600,38 @@ export async function isBitgetUsdtFuturesSymbol(symbol) {
   return Boolean(resolved.ok && resolved.contractSymbol);
 }
 
-function isRisingTicker(change24h) {
-  return safeNumber(change24h, 0) > 0;
+function isFallingTicker(change24h) {
+  return safeNumber(change24h, 0) < 0;
 }
 
 function longCandidateMeta(change24h) {
-  const rising = isRisingTicker(change24h);
+  const falling = isFallingTicker(change24h);
+  const currentFit = falling ? Math.min(100, Math.abs(safeNumber(change24h, 0))) : -Math.min(100, Math.abs(safeNumber(change24h, 0)));
 
   return {
-    side: rising ? TARGET_DASHBOARD_SIDE : 'rejected',
-    tradeSide: rising ? TARGET_TRADE_SIDE : 'UNKNOWN',
-    scannerSide: rising ? TARGET_SCANNER_SIDE : 'UNKNOWN',
-    actualScannerSide: rising ? TARGET_SCANNER_SIDE : 'UNKNOWN',
-    positionSide: rising ? TARGET_TRADE_SIDE : 'UNKNOWN',
-    direction: rising ? TARGET_TRADE_SIDE : 'UNKNOWN',
+    side: falling ? TARGET_DASHBOARD_SIDE : 'rejected',
+    tradeSide: falling ? TARGET_TRADE_SIDE : 'UNKNOWN',
+    scannerSide: falling ? TARGET_SCANNER_SIDE : 'UNKNOWN',
+    actualScannerSide: falling ? TARGET_SCANNER_SIDE : 'UNKNOWN',
+    positionSide: falling ? TARGET_TRADE_SIDE : 'UNKNOWN',
+    direction: falling ? TARGET_TRADE_SIDE : 'UNKNOWN',
 
-    bullishScannerCandidate: rising,
-    eligibleLongCandidate: rising,
-    isRising: rising,
-    rejectReason: rising ? null : 'NOT_BULLISH_LONG_SCANNER_ONLY',
+    bullishScannerCandidate: falling,
+    eligibleLongCandidate: falling,
+    isFalling: falling,
+    rejectReason: falling ? null : 'NOT_BULLISH_LONG_SCANNER_ONLY',
 
-    scannerBucket: rising ? 'BULLISH_RISING' : 'REJECTED_NOT_RISING',
+    scannerBucket: falling ? 'BULLISH_FALLING' : 'REJECTED_NOT_FALLING',
     legacyScannerBucket: null,
     scannerBucketRole: 'DEBUG_METADATA_ONLY',
     legacy25BucketRole: 'DEBUG_METADATA_ONLY',
+
+    currentFit,
+    longCurrentFit: currentFit,
+    bullCurrentFit: currentFit,
+    bearishCurrentFit: -Math.abs(currentFit),
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
 
     scannerMicroFamilyId: null,
     scannerFamilyId: null,
@@ -951,8 +996,8 @@ function emptyOrderBookAnalysis() {
 
     imbalance: 0,
     orderbookImbalance: 0,
-    longPressure: 0,
     shortPressure: 0,
+    longPressure: 0,
 
     mid: 0,
     bestBid: 0,
@@ -961,6 +1006,13 @@ function emptyOrderBookAnalysis() {
     bullishOrderBookCandidate: false,
     eligibleLongCandidate: false,
     rejectReason: 'ORDERBOOK_UNAVAILABLE_OR_INVALID',
+
+    currentFit: 0,
+    longCurrentFit: 0,
+    bullCurrentFit: 0,
+    bearishCurrentFit: 0,
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
 
     fetchFailed: true,
 
@@ -1030,6 +1082,9 @@ export function analyzeOrderBook(raw) {
     'NEUTRAL';
 
   const longAligned = longPressure > 0.12;
+  const currentFit = longAligned
+    ? Math.min(100, longPressure * 100)
+    : -Math.min(100, Math.abs(shortPressure) * 100);
 
   return {
     bias,
@@ -1051,8 +1106,8 @@ export function analyzeOrderBook(raw) {
 
     imbalance,
     orderbookImbalance: imbalance,
-    longPressure,
     shortPressure,
+    longPressure,
 
     mid,
     bestBid,
@@ -1061,6 +1116,13 @@ export function analyzeOrderBook(raw) {
     bullishOrderBookCandidate: longAligned,
     eligibleLongCandidate: longAligned,
     rejectReason: longAligned ? null : 'ORDERBOOK_NOT_BULLISH_LONG_ONLY',
+
+    currentFit,
+    longCurrentFit: currentFit,
+    bullCurrentFit: currentFit,
+    bearishCurrentFit: -Math.abs(currentFit),
+    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
 
     fetchFailed: false,
 
@@ -1122,6 +1184,11 @@ export async function fetchFunding(symbol) {
           0
         );
 
+        const bullishFundingFit =
+          rate < -0.0001 ? 8 :
+          rate > 0.0001 ? -8 :
+          0;
+
         return {
           rate,
           fetchFailed: false,
@@ -1132,6 +1199,14 @@ export async function fetchFunding(symbol) {
           fundingBucketRole: 'DEBUG_METADATA_ONLY',
           requestedSymbol: resolved.requestedSymbol,
           resolvedSymbol: contractSymbol,
+
+          currentFit: bullishFundingFit,
+          longCurrentFit: bullishFundingFit,
+          bullCurrentFit: bullishFundingFit,
+          bearishCurrentFit: -Math.abs(bullishFundingFit),
+          currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+          currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
+
           trueMicroFamilyId: null,
           microFamilyId: null,
           childTrueMicroFamilyId: null,
@@ -1154,6 +1229,14 @@ export async function fetchFunding(symbol) {
           fundingBucketRole: 'DEBUG_METADATA_ONLY',
           requestedSymbol: resolved.requestedSymbol,
           resolvedSymbol: contractSymbol,
+
+          currentFit: 0,
+          longCurrentFit: 0,
+          bullCurrentFit: 0,
+          bearishCurrentFit: 0,
+          currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+          currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
+
           trueMicroFamilyId: null,
           microFamilyId: null,
           childTrueMicroFamilyId: null,
