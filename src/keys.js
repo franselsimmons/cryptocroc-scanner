@@ -1,875 +1,320 @@
 // ================= FILE: src/keys.js =================
+// Redis key generation & write-scope guard for LONG-only system.
+//
+// Namespace: LONG:
+// - SCAN:* → scanner fingerprints
+// - LIVE:* → live position tracking
+// - TRADE:* → trade execution
+// - ANALYZE:* → virtual outcome learning
+// - CIRCUIT:* → circuit breakers
+// - DISCORD:* → webhook state
+// - RESET:* → reset management
+//
+// All keys are LONG-namespaced. SHORT: prefixes are refused.
+
 
 const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 
-const TARGET_TRADE_SIDE = 'LONG';
-const TARGET_DASHBOARD_SIDE = 'bull';
-const TARGET_SCANNER_SIDE = 'bull';
-const OPPOSITE_TRADE_SIDE = 'SHORT';
-
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
+const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
+const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
+const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
+const WEEKEND_MODE = 'OBSERVE';
+const SESSION_MODE = 'OBSERVE';
 
-const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
-const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
-const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
-const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
-const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 
-const LONG_FIXED_SETUP_TYPES = Object.freeze([
-  'BREAKOUT',
-  'RETEST',
-  'SWEEP_REVERSAL',
-  'CONTINUATION',
-  'COMPRESSION'
-]);
-
-const LONG_FIXED_REGIME_BUCKETS = Object.freeze([
-  'TREND',
-  'CHOP',
-  'SQUEEZE'
-]);
-
-const LONG_CONFIRMATION_PROFILES = Object.freeze([
-  'A_STRONG_ALIGN',
-  'B_FLOW_ALIGN',
-  'C_VOLUME_ALIGN',
-  'D_MIXED_OK',
-  'E_WEAK_CONTRA'
-]);
-
-const keyPart = (value, fallback = 'UNKNOWN') => {
-  const raw = value === undefined || value === null || value === ''
-    ? fallback
-    : value;
-
-  const normalized = String(raw)
-    .trim()
-    .replaceAll(':', '_')
-    .replaceAll('|', '_')
-    .replaceAll('/', '_')
-    .replaceAll('\\', '_')
-    .replace(/\s+/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '');
-
-  return normalized || fallback;
+const ALLOWED_WRITE_SCOPES = {
+     SCAN_PARTIAL: 'SCAN_PARTIAL',
+     LIVE_PARTIAL: 'LIVE_PARTIAL',
+     TRADE_PARTIAL: 'TRADE_PARTIAL',
+     ANALYZE_PARTIAL: 'ANALYZE_PARTIAL',
+     CIRCUIT_PARTIAL: 'CIRCUIT_PARTIAL',
+     DISCORD_PARTIAL: 'DISCORD_PARTIAL',
+     RESET_PARTIAL: 'RESET_PARTIAL',
+     MARKET_PARTIAL: 'MARKET_PARTIAL',
+     LONG_ANALYZE_PARTIAL: 'LONG_ANALYZE_PARTIAL',
+     ANALYZE_LONG_PARTIAL: 'ANALYZE_LONG_PARTIAL',
+     TRADE_RUN: 'TRADE_RUN'
 };
 
-const symbolPart = (value, fallback = 'UNKNOWN') => {
-  return keyPart(value, fallback)
-    .toUpperCase()
-    .replace(/[^A-Z0-9_.-]/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '') || fallback;
+
+const SCOPE_PREFIX_MAP = {
+     SCAN_PARTIAL: `${LONG_KEY_PREFIX}SCAN:`,
+     LIVE_PARTIAL: `${LONG_KEY_PREFIX}LIVE:`,
+     TRADE_PARTIAL: `${LONG_KEY_PREFIX}TRADE:`,
+     ANALYZE_PARTIAL: `${LONG_KEY_PREFIX}ANALYZE:`,
+     CIRCUIT_PARTIAL: `${LONG_KEY_PREFIX}CIRCUIT:`,
+     DISCORD_PARTIAL: `${LONG_KEY_PREFIX}DISCORD:`,
+     RESET_PARTIAL: `${LONG_KEY_PREFIX}RESET:`,
+     MARKET_PARTIAL: `${LONG_KEY_PREFIX}MARKET:`,
+     LONG_ANALYZE_PARTIAL: `${LONG_KEY_PREFIX}ANALYZE:`,
+     ANALYZE_LONG_PARTIAL: `${LONG_KEY_PREFIX}ANALYZE:`,
+     TRADE_RUN: `${LONG_KEY_PREFIX}TRADE:`
 };
 
-const deepFreeze = (object) => {
-  Object.freeze(object);
 
-  for (const value of Object.values(object)) {
-    if (
-      value &&
-      typeof value === 'object' &&
-      !Object.isFrozen(value)
-    ) {
-      deepFreeze(value);
-    }
-  }
+function validateWriteScope(scopeName, key) {
+     const allowedPrefix = SCOPE_PREFIX_MAP[scopeName];
 
-  return object;
-};
 
-const longKey = (value = '') => {
-  const raw = String(value || '').trim();
-
-  if (!raw) return LONG_KEY_PREFIX;
-  if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
-
-  return `${LONG_KEY_PREFIX}${raw}`;
-};
-
-const WRITE_SCOPE_NAMES = {
-  SCANNER_RUN: 'SCANNER_RUN',
-  TRADE_RUN: 'TRADE_RUN',
-  ANALYZE_PARTIAL: 'ANALYZE_PARTIAL',
-  ADMIN_READONLY: 'ADMIN_READONLY',
-  MANUAL_ROTATION: 'MANUAL_ROTATION',
-  FACTORY_RESET: 'FACTORY_RESET',
-  RESET_LEARNING: 'RESET_LEARNING',
-  RESET_ROTATION: 'RESET_ROTATION'
-};
-
-const exact = (key) => ({
-  type: 'exact',
-  value: key
-});
-
-const prefix = (value) => ({
-  type: 'prefix',
-  value
-});
-
-const pattern = (value) => ({
-  type: 'pattern',
-  value
-});
-
-const normalizeKey = (key) => String(key || '').trim();
-
-const ruleMatches = (rule, key) => {
-  const value = normalizeKey(key);
-
-  if (!value || !rule) return false;
-
-  if (rule.type === 'exact') return value === rule.value;
-  if (rule.type === 'prefix') return value.startsWith(rule.value);
-
-  if (rule.type === 'pattern') {
-    const raw = String(rule.value || '');
-
-    if (raw.endsWith('*')) {
-      return value.startsWith(raw.slice(0, -1));
+     if (!allowedPrefix) {
+       const error = new Error('INVALID_WRITE_SCOPE_NAME');
+       error.details = {
+         scopeName,
+              key,
+              validScopes: Object.keys(ALLOWED_WRITE_SCOPES),
+              namespace: LONG_NAMESPACE,
+              keyPrefix: LONG_KEY_PREFIX
+         };
+         throw error;
     }
 
-    return value === raw;
-  }
 
-  return false;
-};
+    if (!key.startsWith(allowedPrefix)) {
+         const error = new Error('WRITE_SCOPE_VIOLATION');
+         error.details = {
+              scopeName,
+              key,
+              requiredPrefix: allowedPrefix,
+              namespace: LONG_NAMESPACE,
+              keyPrefix: LONG_KEY_PREFIX,
+              shortRootTouched: false
+         };
+         throw error;
+    }
 
-const taxonomyFlags = () => ({
-  trueMicroSchema: TRUE_MICRO_SCHEMA,
-  trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
-  exactTrueMicroFamilySchema: TRUE_MICRO_SCHEMA,
 
-  parentTrueMicroSchema: PARENT_TRUE_MICRO_SCHEMA,
-  parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
-
-  childTrueMicroSchema: CHILD_TRUE_MICRO_SCHEMA,
-  childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
-
-  learningGranularity: LEARNING_GRANULARITY,
-  parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
-
-  fixedTaxonomyPreferred: true,
-  trueMicroOnly: true,
-  exactTrueMicroOnly: true,
-  exactTrueMicroFamilyRequired: true,
-
-  parentLearningEnabled: true,
-  childLearningEnabled: true,
-  selectionGranularity: 'EXACT_75_CHILD',
-  fallbackRankingGranularity: 'PARENT_15_UNTIL_CHILD_MIN_COMPLETED',
-
-  parentSelectable: false,
-  childSelectable: true,
-  selectableFamilyCount: 75,
-  parentFamilyCount: 15,
-
-  setupTypes: LONG_FIXED_SETUP_TYPES,
-  regimeBuckets: LONG_FIXED_REGIME_BUCKETS,
-  confirmationProfiles: LONG_CONFIRMATION_PROFILES
-});
-
-const longIdentityFlags = () => ({
-  namespace: LONG_NAMESPACE,
-  keyPrefix: LONG_KEY_PREFIX,
-  redisNamespace: LONG_NAMESPACE,
-  redisKeyPrefix: LONG_KEY_PREFIX,
-  persistentLearningKey: PERSISTENT_LEARNING_KEY,
-
-  targetTradeSide: TARGET_TRADE_SIDE,
-  dashboardSide: TARGET_DASHBOARD_SIDE,
-  scannerSide: TARGET_SCANNER_SIDE,
-  targetScannerSide: TARGET_SCANNER_SIDE,
-  oppositeTradeSide: OPPOSITE_TRADE_SIDE,
-
-  longOnly: true,
-  shortDisabled: true,
-  shortOnly: false,
-  longDisabled: false,
-
-  virtualLearning: true,
-  virtualOnly: true,
-  virtualTracked: true,
-
-  realOrdersDisabled: true,
-  bitgetOrdersDisabled: true,
-  exchangeOrdersDisabled: true,
-  exchangeCallsDisabled: true,
-  noRealOrders: true,
-  noExchangeOrders: true,
-
-  scannerFingerprintsMetadataOnly: true,
-  scannerFingerprintsUsedAsLearningFamily: false,
-  scannerBucketsMetadataOnly: true,
-  legacy25BucketsMetadataOnly: true,
-
-  executionFingerprintsMetadataOnly: true,
-  executionFingerprintsUsedAsLearningFamily: false,
-
-  analyzeMicroFamiliesOnly: true,
-  learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
-
-  symbolExcludedFromFamilyId: true,
-  coinNameExcludedFromFamilyId: true,
-  hashesExcludedFromFamilyId: true,
-
-  manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
-  discordOnlyForExactTrueMicroMatch: true,
-
-  completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
-  scoringRSource: 'netR',
-  winsLossesFlatsSource: 'netR',
-  winrateDefinition: 'netR > 0',
-  avgRSource: 'netR',
-  totalRSource: 'netR',
-  avgCostRShown: true,
-
-  shortRootTouched: false,
-
-  ...taxonomyFlags()
-});
-
-const buildKeyScope = ({
-  name,
-  description,
-  allowed = [],
-  denied = [],
-  readonly = false
-}) => ({
-  name,
-  description,
-  readonly,
-  allowed,
-  denied,
-  ...longIdentityFlags()
-});
-
-const NON_LONG_WRITE_DENY_PATTERNS = [
-  pattern('SCAN:*'),
-  pattern('LIVE:*'),
-  pattern('TRADE:*'),
-  pattern('ANALYZE:*'),
-  pattern('CIRCUIT:*'),
-  pattern('DISCORD:*'),
-  pattern('RESET:*'),
-  pattern('SHORT:*'),
-  pattern('SHORT:*:*'),
-  pattern('SHORT_LIVE:*')
-];
-
-const SCAN_LATEST_KEY = longKey('SCAN:LATEST');
-const SCAN_LOCK_KEY = longKey('SCAN:LOCK');
-const SCAN_RUN_META_KEY = longKey('SCAN:RUN:META');
-const SCAN_SNAPSHOT_PREFIX = longKey('SCAN:SNAPSHOT:');
-
-const LIVE_CACHE_PREFIX = longKey('LIVE:CACHE:');
-
-const TRADE_LOCK_KEY = longKey('TRADE:LOCK');
-const TRADE_RUN_META_KEY = longKey('TRADE:RUN:META');
-const TRADE_LAST_PROCESSED_SNAPSHOT_KEY = longKey('TRADE:LAST_PROCESSED_SNAPSHOT');
-const TRADE_OPEN_PREFIX = longKey('TRADE:OPEN:');
-const TRADE_EVENT_LOG_KEY = longKey('TRADE:EVENTS');
-const TRADE_ENTRY_LOG_KEY = longKey('TRADE:ENTRIES');
-const TRADE_EXIT_LOG_KEY = longKey('TRADE:EXITS');
-
-const ANALYZE_OBS_LAST_PREFIX = longKey('ANALYZE:OBS:LAST:');
-const ANALYZE_WEEK_PREFIX = longKey('ANALYZE:WEEK:');
-const ANALYZE_SHADOW_PREFIX = longKey('ANALYZE:SHADOW:');
-const ANALYZE_MICRO_PREFIX = longKey('ANALYZE:MICRO:');
-const ANALYZE_PARENT_PREFIX = longKey('ANALYZE:PARENT:');
-const ANALYZE_CHILD_PREFIX = longKey('ANALYZE:CHILD:');
-
-const ANALYZE_ACTIVE_ROTATION_KEY = longKey('ANALYZE:ACTIVE_ROTATION');
-const ANALYZE_NEXT_ROTATION_KEY = longKey('ANALYZE:NEXT_ROTATION');
-const ANALYZE_ROTATION_VALID_FROM_KEY = longKey('ANALYZE:ROTATION_VALID_FROM');
-const ANALYZE_MANUAL_SELECTION_LOG_KEY = longKey('ANALYZE:MANUAL_SELECTION_LOG');
-const ANALYZE_ROTATION_HISTORY_KEY = longKey('ANALYZE:ROTATION_HISTORY');
-const ANALYZE_FREEZE_LOCK_KEY = longKey('ANALYZE:WEEKLY_FREEZE_LOCK');
-const ANALYZE_ACTIVATE_LOCK_KEY = longKey('ANALYZE:ROTATION_ACTIVATE_LOCK');
-
-const CIRCUIT_PAUSED_PREFIX = longKey('CIRCUIT:PAUSED:');
-
-const DISCORD_LOGS_KEY = longKey('DISCORD:LOGS');
-const RESET_LOGS_KEY = longKey('RESET:LOGS');
-
-const LONG_PATTERNS = {
-  scan: longKey('SCAN:*'),
-  live: longKey('LIVE:*'),
-  trade: longKey('TRADE:*'),
-  analyze: longKey('ANALYZE:*'),
-  circuit: longKey('CIRCUIT:*'),
-  discord: longKey('DISCORD:*'),
-  reset: longKey('RESET:*')
-};
-
-export const WRITE_SCOPES = deepFreeze({
-  names: WRITE_SCOPE_NAMES,
-
-  scannerRun: buildKeyScope({
-    name: WRITE_SCOPE_NAMES.SCANNER_RUN,
-    description: 'LONG scanner run mag uitsluitend LONG scanner snapshot/latest/meta schrijven. Scanner selecteert geen microfamilies, triggert geen Discord en schrijft geen learning-family.',
-    allowed: [
-      exact(SCAN_LATEST_KEY),
-      exact(SCAN_RUN_META_KEY),
-      prefix(SCAN_SNAPSHOT_PREFIX)
-    ],
-    denied: [
-      ...NON_LONG_WRITE_DENY_PATTERNS,
-
-      pattern(longKey('TRADE:*')),
-      pattern(longKey('ANALYZE:*')),
-      pattern(longKey('CIRCUIT:*')),
-      pattern(longKey('DISCORD:*')),
-      pattern(longKey('RESET:*')),
-      pattern(longKey('LIVE:*'))
-    ]
-  }),
-
-  tradeRun: buildKeyScope({
-    name: WRITE_SCOPE_NAMES.TRADE_RUN,
-    description: 'LONG trade run mag LONG virtual trade state schrijven en Analyze alleen via partial learning updates. Geen scanner overwrite, geen rotation overwrite, geen echte orders.',
-    allowed: [
-      exact(TRADE_RUN_META_KEY),
-      exact(TRADE_LAST_PROCESSED_SNAPSHOT_KEY),
-      prefix(TRADE_OPEN_PREFIX),
-      exact(TRADE_EVENT_LOG_KEY),
-      exact(TRADE_ENTRY_LOG_KEY),
-      exact(TRADE_EXIT_LOG_KEY),
-
-      prefix(ANALYZE_OBS_LAST_PREFIX),
-      prefix(ANALYZE_WEEK_PREFIX),
-      prefix(ANALYZE_SHADOW_PREFIX),
-      prefix(ANALYZE_MICRO_PREFIX),
-      prefix(ANALYZE_PARENT_PREFIX),
-      prefix(ANALYZE_CHILD_PREFIX)
-    ],
-    denied: [
-      ...NON_LONG_WRITE_DENY_PATTERNS,
-
-      exact(SCAN_LATEST_KEY),
-      prefix(SCAN_SNAPSHOT_PREFIX),
-      exact(SCAN_RUN_META_KEY),
-
-      exact(ANALYZE_ACTIVE_ROTATION_KEY),
-      exact(ANALYZE_NEXT_ROTATION_KEY),
-      exact(ANALYZE_ROTATION_VALID_FROM_KEY),
-      exact(ANALYZE_MANUAL_SELECTION_LOG_KEY),
-      exact(ANALYZE_ROTATION_HISTORY_KEY),
-      exact(ANALYZE_FREEZE_LOCK_KEY),
-      exact(ANALYZE_ACTIVATE_LOCK_KEY),
-
-      pattern(longKey('DISCORD:*')),
-      pattern(longKey('RESET:*'))
-    ]
-  }),
-
-  analyzePartial: buildKeyScope({
-    name: WRITE_SCOPE_NAMES.ANALYZE_PARTIAL,
-    description: 'LONG Analyze mag observations/outcomes cumulatief bijwerken op exact 75-child trueMicroFamilyId en parent 15 context, maar geen rotation/manual selectie overschrijven.',
-    allowed: [
-      prefix(ANALYZE_OBS_LAST_PREFIX),
-      prefix(ANALYZE_WEEK_PREFIX),
-      prefix(ANALYZE_SHADOW_PREFIX),
-      prefix(ANALYZE_MICRO_PREFIX),
-      prefix(ANALYZE_PARENT_PREFIX),
-      prefix(ANALYZE_CHILD_PREFIX)
-    ],
-    denied: [
-      ...NON_LONG_WRITE_DENY_PATTERNS,
-
-      exact(SCAN_LATEST_KEY),
-      prefix(SCAN_SNAPSHOT_PREFIX),
-      pattern(longKey('TRADE:*')),
-
-      exact(ANALYZE_ACTIVE_ROTATION_KEY),
-      exact(ANALYZE_NEXT_ROTATION_KEY),
-      exact(ANALYZE_ROTATION_VALID_FROM_KEY),
-      exact(ANALYZE_MANUAL_SELECTION_LOG_KEY),
-      exact(ANALYZE_ROTATION_HISTORY_KEY),
-      exact(ANALYZE_FREEZE_LOCK_KEY),
-      exact(ANALYZE_ACTIVATE_LOCK_KEY),
-
-      pattern(longKey('DISCORD:*')),
-      pattern(longKey('RESET:*'))
-    ]
-  }),
-
-  adminReadonly: buildKeyScope({
-    name: WRITE_SCOPE_NAMES.ADMIN_READONLY,
-    description: 'Admin GET/API read-only endpoints mogen niets schrijven.',
-    readonly: true,
-    allowed: [],
-    denied: [
-      ...NON_LONG_WRITE_DENY_PATTERNS,
-
-      pattern(longKey('SCAN:*')),
-      pattern(longKey('LIVE:*')),
-      pattern(longKey('TRADE:*')),
-      pattern(longKey('ANALYZE:*')),
-      pattern(longKey('CIRCUIT:*')),
-      pattern(longKey('DISCORD:*')),
-      pattern(longKey('RESET:*'))
-    ]
-  }),
-
-  manualRotation: buildKeyScope({
-    name: WRITE_SCOPE_NAMES.MANUAL_ROTATION,
-    description: 'Alleen expliciete LONG admin manual selection mag LONG rotation/Discord selectie aanpassen. Alleen exact 75-child trueMicroFamilyId is selecteerbaar.',
-    allowed: [
-      exact(ANALYZE_ACTIVE_ROTATION_KEY),
-      exact(ANALYZE_NEXT_ROTATION_KEY),
-      exact(ANALYZE_ROTATION_VALID_FROM_KEY),
-      exact(ANALYZE_MANUAL_SELECTION_LOG_KEY),
-      exact(ANALYZE_ROTATION_HISTORY_KEY),
-      exact(ANALYZE_FREEZE_LOCK_KEY),
-      exact(ANALYZE_ACTIVATE_LOCK_KEY),
-      exact(DISCORD_LOGS_KEY)
-    ],
-    denied: [
-      ...NON_LONG_WRITE_DENY_PATTERNS,
-
-      exact(SCAN_LATEST_KEY),
-      prefix(SCAN_SNAPSHOT_PREFIX),
-      pattern(longKey('TRADE:*')),
-
-      prefix(ANALYZE_WEEK_PREFIX),
-      prefix(ANALYZE_OBS_LAST_PREFIX),
-      prefix(ANALYZE_MICRO_PREFIX),
-      prefix(ANALYZE_PARENT_PREFIX),
-      prefix(ANALYZE_CHILD_PREFIX),
-      prefix(ANALYZE_SHADOW_PREFIX),
-
-      pattern(longKey('RESET:*'))
-    ]
-  }),
-
-  factoryReset: buildKeyScope({
-    name: WRITE_SCOPE_NAMES.FACTORY_RESET,
-    description: 'Alleen LONG factory reset endpoints met expliciete bevestiging mogen LONG keys verwijderen/schrijven.',
-    allowed: [
-      pattern(longKey('SCAN:*')),
-      pattern(longKey('LIVE:*')),
-      pattern(longKey('TRADE:*')),
-      pattern(longKey('ANALYZE:*')),
-      pattern(longKey('CIRCUIT:*')),
-      pattern(longKey('DISCORD:*')),
-      pattern(longKey('RESET:*'))
-    ],
-    denied: [
-      ...NON_LONG_WRITE_DENY_PATTERNS
-    ]
-  }),
-
-  resetLearning: buildKeyScope({
-    name: WRITE_SCOPE_NAMES.RESET_LEARNING,
-    description: 'Reset alleen LONG learning/analyze data. Rotation, manual selection, scanner, trade state, open virtual positions en Discord blijven bewaard.',
-    allowed: [
-      prefix(ANALYZE_OBS_LAST_PREFIX),
-      prefix(ANALYZE_WEEK_PREFIX),
-      prefix(ANALYZE_SHADOW_PREFIX),
-      prefix(ANALYZE_MICRO_PREFIX),
-      prefix(ANALYZE_PARENT_PREFIX),
-      prefix(ANALYZE_CHILD_PREFIX),
-      exact(RESET_LOGS_KEY)
-    ],
-    denied: [
-      ...NON_LONG_WRITE_DENY_PATTERNS,
-
-      pattern(longKey('SCAN:*')),
-      pattern(longKey('LIVE:*')),
-      pattern(longKey('TRADE:*')),
-
-      exact(ANALYZE_ACTIVE_ROTATION_KEY),
-      exact(ANALYZE_NEXT_ROTATION_KEY),
-      exact(ANALYZE_ROTATION_VALID_FROM_KEY),
-      exact(ANALYZE_MANUAL_SELECTION_LOG_KEY),
-      exact(ANALYZE_ROTATION_HISTORY_KEY),
-      exact(ANALYZE_FREEZE_LOCK_KEY),
-      exact(ANALYZE_ACTIVATE_LOCK_KEY),
-
-      pattern(longKey('DISCORD:*'))
-    ]
-  }),
-
-  resetRotation: buildKeyScope({
-    name: WRITE_SCOPE_NAMES.RESET_ROTATION,
-    description: 'Reset alleen LONG active/next rotation en manual selection metadata. Learning/outcomes/open positions/scanner blijven bewaard.',
-    allowed: [
-      exact(ANALYZE_ACTIVE_ROTATION_KEY),
-      exact(ANALYZE_NEXT_ROTATION_KEY),
-      exact(ANALYZE_ROTATION_VALID_FROM_KEY),
-      exact(ANALYZE_MANUAL_SELECTION_LOG_KEY),
-      exact(ANALYZE_ROTATION_HISTORY_KEY),
-      exact(ANALYZE_FREEZE_LOCK_KEY),
-      exact(ANALYZE_ACTIVATE_LOCK_KEY),
-      exact(RESET_LOGS_KEY)
-    ],
-    denied: [
-      ...NON_LONG_WRITE_DENY_PATTERNS,
-
-      pattern(longKey('SCAN:*')),
-      pattern(longKey('LIVE:*')),
-      pattern(longKey('TRADE:*')),
-
-      prefix(ANALYZE_WEEK_PREFIX),
-      prefix(ANALYZE_OBS_LAST_PREFIX),
-      prefix(ANALYZE_MICRO_PREFIX),
-      prefix(ANALYZE_PARENT_PREFIX),
-      prefix(ANALYZE_CHILD_PREFIX),
-      prefix(ANALYZE_SHADOW_PREFIX),
-
-      pattern(longKey('DISCORD:*'))
-    ]
-  })
-});
-
-export function isLongNamespacedKey(key) {
-  return normalizeKey(key).startsWith(LONG_KEY_PREFIX);
+    return true;
 }
 
-export function isKeyAllowedForWriteScope(scopeName, key) {
-  const scope = Object.values(WRITE_SCOPES)
-    .find((entry) => entry && typeof entry === 'object' && entry.name === scopeName);
-
-  if (!scope) return false;
-  if (scope.readonly) return false;
-
-  const normalized = normalizeKey(key);
-
-  if (!normalized.startsWith(LONG_KEY_PREFIX)) {
-    return false;
-  }
-
-  const denied = Array.isArray(scope.denied)
-    ? scope.denied.some((rule) => ruleMatches(rule, normalized))
-    : false;
-
-  if (denied) return false;
-
-  return Array.isArray(scope.allowed)
-    ? scope.allowed.some((rule) => ruleMatches(rule, normalized))
-    : false;
-}
 
 export function assertKeyAllowedForWriteScope(scopeName, key) {
-  if (isKeyAllowedForWriteScope(scopeName, key)) {
-    return true;
-  }
+    const normalizedKey = String(key || '').trim();
 
-  const error = new Error('WRITE_SCOPE_VIOLATION_LONG_ONLY');
 
-  error.details = {
-    scopeName,
-    key: normalizeKey(key),
-    namespace: LONG_NAMESPACE,
-    keyPrefix: LONG_KEY_PREFIX,
-    targetTradeSide: TARGET_TRADE_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-    scannerSide: TARGET_SCANNER_SIDE,
-    shortDisabled: true,
-    shortRootTouched: false,
-    realOrdersDisabled: true,
-    bitgetOrdersDisabled: true,
-    exchangeOrdersDisabled: true,
-    ...taxonomyFlags()
-  };
+    if (!normalizedKey) {
+         throw new Error('ASSERT_KEY_EMPTY');
+    }
 
-  throw error;
+
+    return validateWriteScope(scopeName, normalizedKey);
 }
 
-const scanKeys = {
-  latest: SCAN_LATEST_KEY,
-  lock: SCAN_LOCK_KEY,
 
-  snapshot: (snapshotId) => `${SCAN_SNAPSHOT_PREFIX}${keyPart(snapshotId)}`,
-  snapshotPattern: `${SCAN_SNAPSHOT_PREFIX}*`,
-
-  runMeta: SCAN_RUN_META_KEY,
-  runMetaPattern: longKey('SCAN:RUN:*'),
-
-  metadataOnly: true,
-  scannerDoesNotTrade: true,
-  scannerDoesNotSelectMicroFamilies: true,
-  scannerDoesNotSendDiscord: true,
-  scannerDoesNotWriteLearningFamilies: true
-};
-
-const liveKeys = {
-  cache: (symbol, type) => `${LIVE_CACHE_PREFIX}${symbolPart(symbol)}:${keyPart(type)}`,
-  cachePattern: `${LIVE_CACHE_PREFIX}*`,
-
-  marketDataOnly: true,
-  exchangeCallsReadOnly: true
-};
-
-const tradeKeys = {
-  lock: TRADE_LOCK_KEY,
-  runMeta: TRADE_RUN_META_KEY,
-
-  lastProcessedSnapshot: TRADE_LAST_PROCESSED_SNAPSHOT_KEY,
-
-  open: (symbol) => `${TRADE_OPEN_PREFIX}${symbolPart(symbol)}`,
-  openPattern: `${TRADE_OPEN_PREFIX}*`,
-
-  eventLog: TRADE_EVENT_LOG_KEY,
-  entryLog: TRADE_ENTRY_LOG_KEY,
-  exitLog: TRADE_EXIT_LOG_KEY,
-
-  pattern: longKey('TRADE:*'),
-
-  virtualOnly: true,
-  realOrdersDisabled: true,
-  oneOpenPositionPerSymbol: true,
-  closeRules: {
-    tp: 'price >= tp',
-    sl: 'price <= sl',
-    timeStop: 'TIME_STOP'
-  },
-  validRiskShape: 'sl < entry < tp',
-  outcomeRSource: 'netR'
-};
-
-const analyzeKeys = {
-  persistentLearningKey: PERSISTENT_LEARNING_KEY,
-
-  obsLast: (snapshotId, symbol, trueMicroFamilyId) => (
-    `${ANALYZE_OBS_LAST_PREFIX}${keyPart(snapshotId)}:${symbolPart(symbol)}:${keyPart(trueMicroFamilyId)}`
-  ),
-  obsLastPattern: `${ANALYZE_OBS_LAST_PREFIX}*`,
-
-  shadowLast: (symbol, trueMicroFamilyId) => (
-    `${longKey('ANALYZE:SHADOW:LAST:')}${symbolPart(symbol)}:${keyPart(trueMicroFamilyId)}`
-  ),
-  shadowLastPattern: longKey('ANALYZE:SHADOW:LAST:*'),
-
-  shadowOpen: (id) => `${longKey('ANALYZE:SHADOW:OPEN:')}${keyPart(id)}`,
-  shadowOpenPattern: longKey('ANALYZE:SHADOW:OPEN:*'),
-  shadowPattern: longKey('ANALYZE:SHADOW:*'),
-
-  microStats: (trueMicroFamilyId) => `${ANALYZE_MICRO_PREFIX}${keyPart(trueMicroFamilyId)}:STATS`,
-  microRegimeStats: (trueMicroFamilyId) => `${ANALYZE_MICRO_PREFIX}${keyPart(trueMicroFamilyId)}:REGIME`,
-  microOutcomes: (trueMicroFamilyId) => `${ANALYZE_MICRO_PREFIX}${keyPart(trueMicroFamilyId)}:OUTCOMES`,
-  microExamples: (trueMicroFamilyId) => `${ANALYZE_MICRO_PREFIX}${keyPart(trueMicroFamilyId)}:EXAMPLES`,
-  microPattern: `${ANALYZE_MICRO_PREFIX}*`,
-
-  childStats: (childTrueMicroFamilyId) => `${ANALYZE_CHILD_PREFIX}${keyPart(childTrueMicroFamilyId)}:STATS`,
-  childOutcomes: (childTrueMicroFamilyId) => `${ANALYZE_CHILD_PREFIX}${keyPart(childTrueMicroFamilyId)}:OUTCOMES`,
-  childPattern: `${ANALYZE_CHILD_PREFIX}*`,
-
-  parentStats: (parentTrueMicroFamilyId) => `${ANALYZE_PARENT_PREFIX}${keyPart(parentTrueMicroFamilyId)}:STATS`,
-  parentOutcomes: (parentTrueMicroFamilyId) => `${ANALYZE_PARENT_PREFIX}${keyPart(parentTrueMicroFamilyId)}:OUTCOMES`,
-  parentPattern: `${ANALYZE_PARENT_PREFIX}*`,
-
-  weekMicros: (weekKey = PERSISTENT_LEARNING_KEY) => `${ANALYZE_WEEK_PREFIX}${keyPart(weekKey)}:MICROS`,
-  weekParents: (weekKey = PERSISTENT_LEARNING_KEY) => `${ANALYZE_WEEK_PREFIX}${keyPart(weekKey)}:PARENTS`,
-  weekChildren: (weekKey = PERSISTENT_LEARNING_KEY) => `${ANALYZE_WEEK_PREFIX}${keyPart(weekKey)}:CHILDREN`,
-  weekMeta: (weekKey = PERSISTENT_LEARNING_KEY) => `${ANALYZE_WEEK_PREFIX}${keyPart(weekKey)}:META`,
-  weekPattern: `${ANALYZE_WEEK_PREFIX}*`,
-
-  activeRotation: ANALYZE_ACTIVE_ROTATION_KEY,
-  nextRotation: ANALYZE_NEXT_ROTATION_KEY,
-  rotationValidFrom: ANALYZE_ROTATION_VALID_FROM_KEY,
-
-  manualSelectionLog: ANALYZE_MANUAL_SELECTION_LOG_KEY,
-  rotationHistory: ANALYZE_ROTATION_HISTORY_KEY,
-
-  freezeLock: ANALYZE_FREEZE_LOCK_KEY,
-  activateLock: ANALYZE_ACTIVATE_LOCK_KEY,
-
-  pattern: longKey('ANALYZE:*'),
-
-  completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
-  scoringRSource: 'netR',
-  statsKeyMode: 'EXACT_75_CHILD_TRUE_MICRO_ONLY',
-
-  ...taxonomyFlags()
-};
-
-const circuitKeys = {
-  paused: (trueMicroFamilyId) => `${CIRCUIT_PAUSED_PREFIX}${keyPart(trueMicroFamilyId)}`,
-  pausedPattern: `${CIRCUIT_PAUSED_PREFIX}*`
-};
-
-const discordKeys = {
-  logList: DISCORD_LOGS_KEY,
-  pattern: longKey('DISCORD:*'),
-
-  selectedMicroOnly: true,
-  exactTrueMicroFamilyMatchOnly: true,
-  exact75ChildTrueMicroMatchOnly: true,
-  allowParentMatch: false,
-  allowMacroMatch: false,
-  allowScannerFingerprintMatch: false,
-  allowExecutionFingerprintMatch: false
-};
-
-const resetKeys = {
-  logList: RESET_LOGS_KEY,
-  pattern: longKey('RESET:*'),
-
-  factoryConfirmText: 'LONG_FACTORY_RESET_CONFIRMED',
-  learningConfirmText: 'RESET_LEARNING_LONG',
-  rotationConfirmText: 'RESET_ROTATION_LONG'
-};
-
-const taxonomyKeys = {
-  setupTypes: LONG_FIXED_SETUP_TYPES,
-  regimeBuckets: LONG_FIXED_REGIME_BUCKETS,
-  confirmationProfiles: LONG_CONFIRMATION_PROFILES,
-
-  parentTrueMicroFamily: (setup, regime) => (
-    `MICRO_LONG_${keyPart(setup).toUpperCase()}_${keyPart(regime).toUpperCase()}`
-  ),
-
-  childTrueMicroFamily: (setup, regime, confirmationProfile) => (
-    `MICRO_LONG_${keyPart(setup).toUpperCase()}_${keyPart(regime).toUpperCase()}_${keyPart(confirmationProfile).toUpperCase()}`
-  ),
-
-  ...taxonomyFlags()
-};
-
-export const KEYS = deepFreeze({
-  namespace: LONG_NAMESPACE,
-  keyPrefix: LONG_KEY_PREFIX,
-  redisNamespace: LONG_NAMESPACE,
-  redisKeyPrefix: LONG_KEY_PREFIX,
-
-  targetTradeSide: TARGET_TRADE_SIDE,
-  dashboardSide: TARGET_DASHBOARD_SIDE,
-  scannerSide: TARGET_SCANNER_SIDE,
-  targetScannerSide: TARGET_SCANNER_SIDE,
-  oppositeTradeSide: OPPOSITE_TRADE_SIDE,
-
-  longOnly: true,
-  shortDisabled: true,
-  shortOnly: false,
-  longDisabled: false,
-
-  virtualOnly: true,
-  virtualLearning: true,
-  realOrdersDisabled: true,
-  bitgetOrdersDisabled: true,
-  exchangeOrdersDisabled: true,
-  exchangeCallsDisabled: true,
-  noRealOrders: true,
-  noExchangeOrders: true,
-
-  persistentLearningKey: PERSISTENT_LEARNING_KEY,
-
-  trueMicroSchema: TRUE_MICRO_SCHEMA,
-  parentTrueMicroSchema: PARENT_TRUE_MICRO_SCHEMA,
-  childTrueMicroSchema: CHILD_TRUE_MICRO_SCHEMA,
-  learningGranularity: LEARNING_GRANULARITY,
-  parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
-
-  scopes: WRITE_SCOPE_NAMES,
-
-  scan: scanKeys,
-  live: liveKeys,
-  trade: tradeKeys,
-  analyze: analyzeKeys,
-  circuit: circuitKeys,
-  discord: discordKeys,
-  reset: resetKeys,
-  taxonomy: taxonomyKeys,
-
-  long: {
+export const KEYS = {
     namespace: LONG_NAMESPACE,
     keyPrefix: LONG_KEY_PREFIX,
-    persistentLearningKey: PERSISTENT_LEARNING_KEY,
 
-    scan: scanKeys,
-    live: liveKeys,
-    trade: tradeKeys,
-    analyze: analyzeKeys,
-    circuit: circuitKeys,
-    discord: discordKeys,
-    reset: resetKeys,
-    taxonomy: taxonomyKeys
-  },
 
-  patterns: {
-    scan: LONG_PATTERNS.scan,
-    live: LONG_PATTERNS.live,
-    trade: LONG_PATTERNS.trade,
-    analyze: LONG_PATTERNS.analyze,
-    circuit: LONG_PATTERNS.circuit,
-    discord: LONG_PATTERNS.discord,
-    reset: LONG_PATTERNS.reset,
+    scopes: ALLOWED_WRITE_SCOPES,
 
-    volatile: [
-      LONG_PATTERNS.scan,
-      LONG_PATTERNS.live
-    ],
 
-    durableLearning: [
-      LONG_PATTERNS.analyze
-    ],
+    scan: {
+         fingerprints: (snapshotId) =>
+              `${LONG_KEY_PREFIX}SCAN:FINGERPRINTS:${snapshotId}`,
 
-    durableTrade: [
-      LONG_PATTERNS.trade
-    ],
 
-    durableRotation: [
-      ANALYZE_ACTIVE_ROTATION_KEY,
-      ANALYZE_NEXT_ROTATION_KEY,
-      ANALYZE_ROTATION_VALID_FROM_KEY,
-      ANALYZE_MANUAL_SELECTION_LOG_KEY,
-      ANALYZE_ROTATION_HISTORY_KEY
-    ],
+         buckets: (snapshotId) =>
+              `${LONG_KEY_PREFIX}SCAN:BUCKETS:${snapshotId}`
+    },
+live: {
+     positions: (symbol) =>
+       `${LONG_KEY_PREFIX}LIVE:POSITIONS:${symbol}`,
 
-    durableDiscord: [
-      LONG_PATTERNS.discord
-    ],
 
-    all: [
-      LONG_PATTERNS.scan,
-      LONG_PATTERNS.live,
-      LONG_PATTERNS.trade,
-      LONG_PATTERNS.analyze,
-      LONG_PATTERNS.circuit,
-      LONG_PATTERNS.discord,
-      LONG_PATTERNS.reset
-    ],
+     openCount: () =>
+       `${LONG_KEY_PREFIX}LIVE:OPEN_COUNT`,
 
-    nonLongDenied: [
-      'SCAN:*',
-      'LIVE:*',
-      'TRADE:*',
-      'ANALYZE:*',
-      'CIRCUIT:*',
-      'DISCORD:*',
-      'RESET:*',
-      'SHORT:*',
-      'SHORT:*:*',
-      'SHORT_LIVE:*'
-    ]
-  },
 
-  guards: {
-    scannerWritesLearning: false,
-    scannerWritesDiscord: false,
-    scannerWritesTrade: false,
-    scannerBucketsAreMetadataOnly: true,
-    old25BucketsAreMetadataOnly: true,
-    coinNameExcludedFromFamilyId: true,
-    hashesExcludedFromFamilyId: true,
+     microState: (microId) =>
+       `${LONG_KEY_PREFIX}LIVE:MICRO_STATE:${microId}`
+},
 
-    tradeWritesRealOrders: false,
-    tradeWritesVirtualPositionsOnly: true,
 
-    discordRequiresManualExact75ChildMatch: true,
-    parentIdsAreContextOnly: true,
-    scannerFingerprintsAreMetadataOnly: true,
-    executionFingerprintsAreMetadataOnly: true,
+trade: {
+     execution: (tradeId) =>
+       `${LONG_KEY_PREFIX}TRADE:EXECUTION:${tradeId}`,
 
-    completedOnlyClosedVirtualOrShadow: true,
-    scoringWritesBackToExactTrueMicroFamilyId: true,
-    learningKey: PERSISTENT_LEARNING_KEY
-  },
 
-  ...longIdentityFlags()
+     history: (symbol) =>
+       `${LONG_KEY_PREFIX}TRADE:HISTORY:${symbol}`,
+
+
+     active: () =>
+       `${LONG_KEY_PREFIX}TRADE:ACTIVE`,
+
+
+     pending: () =>
+       `${LONG_KEY_PREFIX}TRADE:PENDING`
+},
+
+
+analyze: {
+     // Last observation snapshot for deduplication
+     obsLast: (snapshotId, symbol, microId) =>
+       `${LONG_KEY_PREFIX}ANALYZE:OBS_LAST:${snapshotId}:${symbol}:${microId}`,
+
+
+     // Weekly aggregates for micro-families
+     weekMicros: (weekKey) =>
+       `${LONG_KEY_PREFIX}ANALYZE:WEEK_MICROS:${weekKey}`,
+
+
+     // Weekly aggregates for parent families
+     weekParents: (weekKey) =>
+       `${LONG_KEY_PREFIX}ANALYZE:WEEK_PARENTS:${weekKey}`,
+
+
+     // Persistent stats for a micro-family
+     microStats: (microId) =>
+       `${LONG_KEY_PREFIX}ANALYZE:MICRO_STATS:${microId}`,
+
+
+     // Persistent stats for a parent family
+     parentStats: (parentId) =>
+       `${LONG_KEY_PREFIX}ANALYZE:PARENT_STATS:${parentId}`,
+          // Recent closed outcomes for a micro-family
+          microOutcomes: (microId) =>
+            `${LONG_KEY_PREFIX}ANALYZE:MICRO_OUTCOMES:${microId}`,
+
+
+          // Outcome deduplication key
+          outcomeDedup: (outcomeId) =>
+            `${LONG_KEY_PREFIX}ANALYZE:OUTCOME_DEDUP:${outcomeId}`
+     },
+
+
+     circuit: {
+          breaker: (circuitName) =>
+            `${LONG_KEY_PREFIX}CIRCUIT:BREAKER:${circuitName}`,
+
+
+          state: (circuitName) =>
+            `${LONG_KEY_PREFIX}CIRCUIT:STATE:${circuitName}`
+     },
+
+
+     discord: {
+          webhook: (webhookId) =>
+            `${LONG_KEY_PREFIX}DISCORD:WEBHOOK:${webhookId}`,
+
+
+          queue: (channelId) =>
+            `${LONG_KEY_PREFIX}DISCORD:QUEUE:${channelId}`,
+
+
+          sent: (messageId) =>
+            `${LONG_KEY_PREFIX}DISCORD:SENT:${messageId}`
+     },
+
+
+     reset: {
+          state: () =>
+            `${LONG_KEY_PREFIX}RESET:STATE`,
+
+
+          timestamp: () =>
+            `${LONG_KEY_PREFIX}RESET:TIMESTAMP`,
+
+
+          reason: () =>
+            `${LONG_KEY_PREFIX}RESET:REASON`
+     }
+
+};
+
+// Compatibility and temporal-context keys used across the separate LONG root.
+Object.assign(KEYS.scan, {
+     latest: `${LONG_KEY_PREFIX}SCAN:LATEST`,
+     longLatest: `${LONG_KEY_PREFIX}SCAN:LATEST`,
+     snapshot: (snapshotId) => `${LONG_KEY_PREFIX}SCAN:SNAPSHOT:${snapshotId}`,
+     longSnapshot: (snapshotId) => `${LONG_KEY_PREFIX}SCAN:SNAPSHOT:${snapshotId}`,
+     snapshotPattern: `${LONG_KEY_PREFIX}SCAN:SNAPSHOT:*`,
+     runMeta: `${LONG_KEY_PREFIX}SCAN:RUN_META`,
+     universeLatest: `${LONG_KEY_PREFIX}MARKET:UNIVERSE:LATEST`,
+     weatherLatest: `${LONG_KEY_PREFIX}MARKET:WEATHER:LATEST`,
+     temporalContext: (snapshotId) => `${LONG_KEY_PREFIX}SCAN:TEMPORAL_CONTEXT:${snapshotId}`,
+     longUniverseLatest: `${LONG_KEY_PREFIX}MARKET:UNIVERSE:LATEST`,
+     longWeatherLatest: `${LONG_KEY_PREFIX}MARKET:WEATHER:LATEST`
 });
+
+Object.assign(KEYS.trade, {
+     open: (symbol) => `${LONG_KEY_PREFIX}TRADE:OPEN:${symbol}`,
+     longOpen: (symbol) => `${LONG_KEY_PREFIX}TRADE:OPEN:${symbol}`,
+     openPattern: `${LONG_KEY_PREFIX}TRADE:OPEN:*`,
+     runMeta: `${LONG_KEY_PREFIX}TRADE:RUN_META`,
+     longRunMeta: `${LONG_KEY_PREFIX}TRADE:RUN_META`,
+     lastProcessedSnapshot: `${LONG_KEY_PREFIX}TRADE:LAST_PROCESSED_SNAPSHOT`,
+     longLastProcessedSnapshot: `${LONG_KEY_PREFIX}TRADE:LAST_PROCESSED_SNAPSHOT`,
+     snapshotProgress: `${LONG_KEY_PREFIX}TRADE:SNAPSHOT_PROGRESS`,
+     longOpenPattern: `${LONG_KEY_PREFIX}TRADE:OPEN:*`,
+     longSnapshotProgress: `${LONG_KEY_PREFIX}TRADE:SNAPSHOT_PROGRESS`,
+     entryTemporalContext: (tradeId) => `${LONG_KEY_PREFIX}TRADE:ENTRY_CONTEXT:${tradeId}`,
+     exitTemporalContext: (tradeId) => `${LONG_KEY_PREFIX}TRADE:EXIT_CONTEXT:${tradeId}`
+});
+
+Object.assign(KEYS.analyze, {
+     activeRotation: `${LONG_KEY_PREFIX}ANALYZE:ACTIVE_ROTATION`,
+     nextRotation: `${LONG_KEY_PREFIX}ANALYZE:NEXT_ROTATION`,
+     rotationValidFrom: `${LONG_KEY_PREFIX}ANALYZE:ROTATION_VALID_FROM`,
+     observationDedup: (id) => `${LONG_KEY_PREFIX}ANALYZE:OBSERVATION_DEDUP:${id}`,
+     contextStats: (microId, dayType) => `${LONG_KEY_PREFIX}ANALYZE:CONTEXT_STATS:${microId}:${dayType}`,
+     sessionStats: (microId, sessionBucket) => `${LONG_KEY_PREFIX}ANALYZE:SESSION_STATS:${microId}:${sessionBucket}`,
+     temporalContext: (id) => `${LONG_KEY_PREFIX}ANALYZE:TEMPORAL_CONTEXT:${id}`
+});
+
+Object.assign(KEYS.discord, {
+     logList: `${LONG_KEY_PREFIX}DISCORD:LOGS`,
+     longLogList: `${LONG_KEY_PREFIX}DISCORD:LOGS`,
+     cooldown: (symbol) => `${LONG_KEY_PREFIX}DISCORD:COOLDOWN:${symbol}`,
+     dedupe: (id) => `${LONG_KEY_PREFIX}DISCORD:DEDUPE:${id}`
+});
+
+Object.assign(KEYS.reset, {
+     logList: `${LONG_KEY_PREFIX}RESET:LOGS`
+});
+
+KEYS.market = {
+     universeLatest: `${LONG_KEY_PREFIX}MARKET:UNIVERSE:LATEST`,
+     weatherLatest: `${LONG_KEY_PREFIX}MARKET:WEATHER:LATEST`,
+     temporalContext: (id) => `${LONG_KEY_PREFIX}MARKET:TEMPORAL_CONTEXT:${id}`,
+     universe: `${LONG_KEY_PREFIX}MARKET:UNIVERSE:LATEST`,
+     weather: `${LONG_KEY_PREFIX}MARKET:WEATHER:LATEST`,
+     longUniverseLatest: `${LONG_KEY_PREFIX}MARKET:UNIVERSE:LATEST`,
+     longWeatherLatest: `${LONG_KEY_PREFIX}MARKET:WEATHER:LATEST`,
+     longWeather: `${LONG_KEY_PREFIX}MARKET:WEATHER:LATEST`
+};
+
+KEYS.long = {
+     namespace: LONG_NAMESPACE,
+     keyPrefix: LONG_KEY_PREFIX,
+     persistentLearningKey: PERSISTENT_LEARNING_KEY,
+     temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+     weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+     sessionPolicyVersion: SESSION_POLICY_VERSION,
+     weekendMode: WEEKEND_MODE,
+     sessionMode: SESSION_MODE,
+     scan: KEYS.scan,
+     live: KEYS.live,
+     trade: KEYS.trade,
+     analyze: KEYS.analyze,
+     circuit: KEYS.circuit,
+     discord: KEYS.discord,
+     reset: KEYS.reset,
+     market: KEYS.market
+};
+
+
+// Backward compatibility aliases
+export const keys = KEYS;
+
+
+export default {
+     KEYS,
+     keys,
+     assertKeyAllowedForWriteScope,
+     validateWriteScope,
+     SCOPE_PREFIX_MAP,
+     ALLOWED_WRITE_SCOPES
+};
