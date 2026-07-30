@@ -952,6 +952,66 @@ DEFAULT_CURRENT_FIT_MAX_WEATHER_AGE_SEC,
 24 * 3600
 );
 }
+function createTradeAbortError(code = 'TRADE_SYSTEM_ABORTED', details = {}) {
+const error = new Error(code);
+error.code = code;
+Object.assign(error, details);
+return error;
+}
+function throwIfTradeStopped(options = {}, phase = 'UNKNOWN') {
+if (options.signal?.aborted) {
+throw createTradeAbortError('TRADE_SYSTEM_ABORTED', {
+phase,
+reason: options.signal.reason?.message || options.signal.reason || null
+});
+}
+const deadlineAt = safeNumber(options.deadlineAt, 0);
+if (deadlineAt > 0 && now() >= deadlineAt) {
+throw createTradeAbortError('TRADE_SYSTEM_DEADLINE_REACHED', {
+phase,
+deadlineAt,
+now: now()
+});
+}
+}
+async function withRuntimeBound(promise, {
+signal = null,
+deadlineAt = 0,
+maxWaitMs = 8000,
+code = 'TRADE_RUNTIME_OPERATION_TIMEOUT'
+} = {}) {
+throwIfTradeStopped({ signal, deadlineAt }, code);
+const remainingMs = deadlineAt > 0
+? Math.max(1, deadlineAt - now() - 1000)
+: maxWaitMs;
+const timeoutMs = Math.max(250, Math.min(maxWaitMs, remainingMs));
+let timer = null;
+let abortListener = null;
+const task = Promise.resolve(promise);
+task.catch(() => null);
+try {
+return await Promise.race([
+task,
+new Promise((_, reject) => {
+timer = setTimeout(() => reject(createTradeAbortError(code, {
+deadlineAt,
+timeoutMs
+})), timeoutMs);
+if (signal) {
+abortListener = () => reject(createTradeAbortError('TRADE_SYSTEM_ABORTED', {
+phase: code,
+reason: signal.reason?.message || signal.reason || null
+}));
+if (signal.aborted) abortListener();
+else signal.addEventListener('abort', abortListener, { once: true });
+}
+})
+]);
+} finally {
+if (timer) clearTimeout(timer);
+if (signal && abortListener) signal.removeEventListener('abort', abortListener);
+}
+}
 function runtimeState(options = {}, startedAt = now()) {
 const runtimeBudgetMs = Math.max(
 5_000,
@@ -985,6 +1045,7 @@ DEFAULT_STOP_BEFORE_DEADLINE_MS
 return {
 runtimeBudgetMs,
 deadlineAt,
+signal: options.signal || null,
 stopBeforeDeadlineMs,
 remainingMs() {
 return Math.max(
@@ -994,6 +1055,7 @@ deadlineAt - now()
 },
 shouldStop(extraBufferMs = 0) {
 return (
+Boolean(options.signal?.aborted) ||
 deadlineAt - now() <=
 stopBeforeDeadlineMs +
 Math.max(
@@ -3715,7 +3777,7 @@ reason: row.standardizedLearningRisk
 : 'LONG_VIRTUAL_RISK_ENGINE_VALID'
 };
 }
-async function fetchLiveCandidateData(candidate) {
+async function fetchLiveCandidateData(candidate, options = {}) {
 const cfg = tradeConfig();
 const normalized = normalizeCandidate(candidate);
 const symbol = normalized.contractSymbol;
@@ -3735,12 +3797,20 @@ candles15m: [],
 candles1h: []
 };
 }
-const [rawOrderBook, funding, candles15m, candles1h] = await Promise.all([
+const [rawOrderBook, funding, candles15m, candles1h] = await withRuntimeBound(
+Promise.all([
 fetchOrderBook(symbol).catch(() => null),
 fetchFunding(symbol).catch(() => ({ rate: 0, fetchFailed: true })),
 fetchCandles(symbol, '15m', cfg.candleLimit).catch(() => []),
 fetchCandles(symbol, '1h', cfg.candleLimit).catch(() => [])
-]);
+]),
+{
+signal: options.signal,
+deadlineAt: options.deadlineAt,
+maxWaitMs: 8000,
+code: 'TRADE_CANDIDATE_MARKET_DATA_TIMEOUT'
+}
+);
 const ob = analyzeOrderBook(rawOrderBook);
 return {
 symbol,
@@ -3750,10 +3820,18 @@ candles15m: Array.isArray(candles15m) ? candles15m : [],
 candles1h: Array.isArray(candles1h) ? candles1h : []
 };
 }
-async function fetchMidPrice(symbol) {
+async function fetchMidPrice(symbol, options = {}) {
 const contractSymbol = normalizeContractSymbol(symbol);
 if (!contractSymbol) return 0;
-const rawOrderBook = await fetchOrderBook(contractSymbol).catch(() => null);
+const rawOrderBook = await withRuntimeBound(
+fetchOrderBook(contractSymbol).catch(() => null),
+{
+signal: options.signal,
+deadlineAt: options.deadlineAt,
+maxWaitMs: 6000,
+code: 'TRADE_POSITION_PRICE_FETCH_TIMEOUT'
+}
+).catch(() => null);
 const ob = analyzeOrderBook(rawOrderBook);
 return safeNumber(ob?.mid, 0);
 }
@@ -4363,7 +4441,7 @@ tradeSide: TARGET_TRADE_SIDE
 'LONG_NO_TP_SL_AVAILABLE_FOR_VIRTUAL_LEARNING'
 );
 }
-async function processCandidate(candidate) {
+async function processCandidate(candidate, options = {}) {
 const cfg = tradeConfig();
 const normalized = normalizeCandidate(candidate);
 if (!normalized.symbol || !normalized.contractSymbol) {
@@ -4394,7 +4472,7 @@ detectedScannerSide: scannerSide
 metrics: []
 };
 }
-const data = await fetchLiveCandidateData(normalized)
+const data = await fetchLiveCandidateData(normalized, options)
 .catch((error) => ({ error }));
 if (data.error || data.ob?.fetchFailed) {
 const fallback = buildStandardizedLongLearningRiskMetrics({
@@ -4502,9 +4580,10 @@ actions: riskWait ? [riskWait] : [],
 metrics: finalMetrics
 };
 }
-async function safeProcessCandidate(candidate) {
+async function safeProcessCandidate(candidate, options = {}) {
 try {
-return await processCandidate(candidate);
+throwIfTradeStopped(options, 'PROCESS_CANDIDATE_START');
+return await processCandidate(candidate, options);
 } catch (error) {
 const normalized = normalizeCandidate(candidate);
 const fallback = buildStandardizedLongLearningRiskMetrics({
@@ -5143,6 +5222,7 @@ finalResult
 return finalResult;
 }
 export async function runTradeSystem(options = {}) {
+throwIfTradeStopped(options, 'RUN_START');
 const cfg = tradeConfig();
 const sizing = sizingConfig();
 const durableRedis = getDurableRedis();
@@ -5158,10 +5238,17 @@ options.force);
 const monitorOnly = Boolean(options.monitorOnly);
 const marketContext = await loadMarketContext().catch(() =>
 extractMarketWeatherShape({}, {}));
-const priceFetcher = async (symbol) => fetchMidPrice(symbol);
+const priceFetcher = async (symbol, fetchOptions = {}) => fetchMidPrice(symbol, {
+...fetchOptions,
+signal: options.signal,
+deadlineAt: runtime.deadlineAt
+});
 const realExits = [];
 const virtualExits = await monitorOpenPositions({
 priceFetcher,
+signal: options.signal,
+deadlineAt: runtime.deadlineAt,
+stopBeforeDeadlineMs: runtime.stopBeforeDeadlineMs,
 tradeSide: TARGET_TRADE_SIDE,
 side: TARGET_DASHBOARD_SIDE,
 namespace: LONG_NAMESPACE,
@@ -5174,6 +5261,7 @@ bitgetOrdersDisabled: true,
 exchangeCallsDisabled: true
 });
 const shadowExits = virtualExits;
+throwIfTradeStopped(options, 'AFTER_OPEN_POSITION_MONITORING');
 if (monitorOnly) {
 const actions = [];
 
@@ -5590,11 +5678,32 @@ const candidateStartIndex =
 forceProcessSnapshot
 ? 0
 : previousNextCandidateIndex;
+const availableCandidateRuntimeMs = Math.max(
+0,
+runtime.remainingMs() -
+runtime.stopBeforeDeadlineMs -
+5000
+);
+const estimatedCandidateWaveMs = 7000;
+const affordableCandidateWaves = Math.max(
+1,
+Math.min(
+4,
+Math.floor(availableCandidateRuntimeMs / estimatedCandidateWaveMs)
+)
+);
+const runtimeSafeCandidateLimit = Math.max(
+1,
+Math.min(
+cfg.maxCandidatesPerInvocation,
+cfg.dataConcurrency * affordableCandidateWaves
+)
+);
 const candidateEndExclusive =
 Math.min(
 totalSnapshotCandidateCount,
 candidateStartIndex +
-cfg.maxCandidatesPerInvocation
+runtimeSafeCandidateLimit
 );
 const preAnalyzeBlockedActions =
 candidateStartIndex === 0 &&
@@ -5887,8 +5996,12 @@ const processed =
 await mapConcurrent(
 candidates,
 cfg.dataConcurrency,
-safeProcessCandidate
+(candidate) => safeProcessCandidate(candidate, {
+signal: options.signal,
+deadlineAt: runtime.deadlineAt
+})
 );
+throwIfTradeStopped(options, 'AFTER_CANDIDATE_MARKET_DATA');
 const earlyActions = [
 ...preAnalyzeBlockedActions,
 ...processed
