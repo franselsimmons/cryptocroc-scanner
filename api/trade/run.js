@@ -98,7 +98,9 @@ const TRADE_LOCK_RESOURCE =
   'TRADE_RUN';
 const DEFAULT_LOCK_TTL_SEC = 55;
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
-const DEFAULT_RUNTIME_BUDGET_MS = 50000;
+const DEFAULT_RUNTIME_BUDGET_MS = 40000;
+const MAX_RUNTIME_BUDGET_MS = 42000;
+const ROUTE_HARD_TIMEOUT_MS = 47000;
 const DEFAULT_RESPONSE_ROW_LIMIT = 50;
 const MAX_RESPONSE_ROW_LIMIT = 250;
 const MAX_RUN_META_BYTES = 1_000_000;
@@ -392,6 +394,28 @@ function firstValue(
       }
       return value;
 }
+const REQUEST_QUERY_CACHE = new WeakMap();
+function requestQuery(req) {
+      if (!req || typeof req !== 'object') return Object.freeze({});
+      const cached = REQUEST_QUERY_CACHE.get(req);
+      if (cached) return cached;
+      let query = {};
+      try {
+             const parsed = new URL(
+                    String(req.url || '/'),
+                    'http://localhost'
+             );
+             query = Object.fromEntries(parsed.searchParams.entries());
+      } catch {
+             query = {};
+      }
+      const frozen = Object.freeze(query);
+      REQUEST_QUERY_CACHE.set(req, frozen);
+      return frozen;
+}
+function queryValue(req, key, fallback = null) {
+      return firstValue(requestQuery(req)?.[key], fallback);
+}
 function isTrue(value) {
       if (
              value === true ||
@@ -573,7 +597,7 @@ function getRuntimeBudgetMs() {
              return DEFAULT_RUNTIME_BUDGET_MS;
       }
       return Math.min(
-             50000,
+             MAX_RUNTIME_BUDGET_MS,
              Math.floor(value)
       );
 }
@@ -583,7 +607,7 @@ function getResponseRowLimit(
 ) {
       const value = Number(
              firstValue(
-                   req.query?.responseRowLimit,
+                   queryValue(req, 'responseRowLimit'),
                    body.responseRowLimit
              )
       );
@@ -917,27 +941,25 @@ function shouldForceProcessSnapshot(
       return (
              isTrue(
                      firstValue(
-                         req.query?.force,
+                         queryValue(req, 'force'),
                          false
                      )
              ) ||
              isTrue(
                      firstValue(
-                         req.query?.forced,
+                         queryValue(req, 'forced'),
                          false
                      )
              ) ||
              isTrue(
                      firstValue(
-                         req.query
-                           ?.forceProcessSnapshot,
+                         queryValue(req, 'forceProcessSnapshot'),
                          false
                      )
              ) ||
              isTrue(
                      firstValue(
-                         req.query
-                           ?.force_process_snapshot,
+                         queryValue(req, 'force_process_snapshot'),
                          false
                      )
              ) ||
@@ -958,13 +980,13 @@ function shouldMonitorOnly(
       return (
               isTrue(
                      firstValue(
-                            req.query?.monitorOnly,
+                            queryValue(req, 'monitorOnly'),
                             false
                      )
               ) ||
               isTrue(
                      firstValue(
-                            req.query?.monitor_only,
+                            queryValue(req, 'monitor_only'),
                             false
                      )
               ) ||
@@ -979,7 +1001,7 @@ function getRunSource(
       const manual =
               isTrue(
                      firstValue(
-                            req.query?.manual,
+                            queryValue(req, 'manual'),
                             false
                      )
               ) ||
@@ -2737,7 +2759,8 @@ function buildRunOptions(
       body,
       startedAt,
       deadlineAt,
-      runtimeBudgetMs
+      runtimeBudgetMs,
+      signal = null
 ) {
       const runTemporal = temporalPolicyFlags(startedAt);
       const temporalRuntime = temporalRuntimeOptions();
@@ -2993,8 +3016,9 @@ preserveManualSelection:
                  startedAt,
             deadlineAt,
             runtimeBudgetMs,
+            signal,
             stopBeforeDeadlineMs:
-                 4000,
+                 7000,
             abortBeforeDeadline:
                  true,
             adminPageIsolation:
@@ -3295,6 +3319,49 @@ ignoredShortExitRows:
                     )
          };
 }
+function createRouteDeadlineError({ deadlineAt, startedAt } = {}) {
+      const error = new Error('TRADE_ROUTE_HARD_DEADLINE_REACHED');
+      error.code = 'TRADE_ROUTE_HARD_DEADLINE_REACHED';
+      error.reason = 'RETRY_NEXT_INVOCATION';
+      error.statusCode = 200;
+      error.deadlineAt = deadlineAt || null;
+      error.durationMs = now() - safeNumber(startedAt, now());
+      return error;
+}
+async function withRouteHardDeadline(task, {
+      signalController,
+      deadlineAt,
+      startedAt
+} = {}) {
+      const remainingMs = Math.max(1, safeNumber(deadlineAt, now() + 1) - now());
+      let timer = null;
+      const taskPromise = Promise.resolve().then(task);
+      taskPromise.catch(() => null);
+      const timeoutPromise = new Promise((_, reject) => {
+             timer = setTimeout(() => {
+                    try {
+                           signalController?.abort(
+                                  createRouteDeadlineError({ deadlineAt, startedAt })
+                           );
+                    } catch {
+                           signalController?.abort();
+                    }
+                    reject(createRouteDeadlineError({ deadlineAt, startedAt }));
+             }, remainingMs);
+      });
+      try {
+             return await Promise.race([taskPromise, timeoutPromise]);
+      } finally {
+             if (timer) clearTimeout(timer);
+      }
+}
+function isControlledDeadlineError(error) {
+      return [
+             'TRADE_ROUTE_HARD_DEADLINE_REACHED',
+             'TRADE_SYSTEM_DEADLINE_REACHED',
+             'TRADE_SYSTEM_ABORTED'
+      ].includes(String(error?.code || error?.message || '').trim());
+}
 function resolveStatus(error) {
          return Number.isFinite(
                   error?.statusCode
@@ -3371,6 +3438,10 @@ const runtimeBudgetMs =
 const deadlineAt =
      startedAt +
      runtimeBudgetMs;
+const routeHardDeadlineAt =
+     startedAt +
+     ROUTE_HARD_TIMEOUT_MS;
+const abortController = new AbortController();
 let body = {};
 try {
         if (
@@ -3408,7 +3479,8 @@ const runOptions =
                body,
             startedAt,
             deadlineAt,
-            runtimeBudgetMs
+            runtimeBudgetMs,
+            abortController.signal
     );
 const durableRedis =
     getDurableRedis();
@@ -3419,11 +3491,12 @@ const lockTtlSec =
 let scannerPreload =
     null;
 const rawResult =
-  await executeWithTradeLock({
-    durableRedis,
-    lockTtlSec,
-    callback:
-         async () => {
+  await withRouteHardDeadline(
+    () => executeWithTradeLock({
+      durableRedis,
+      lockTtlSec,
+      callback:
+           async () => {
            scannerPreload =
              await loadScannerPreload({
                    volatileRedis,
@@ -3431,6 +3504,8 @@ const rawResult =
              });
            return runTradeSystem({
              ...runOptions,
+             signal: abortController.signal,
+             routeHardDeadlineAt,
              scannerPreloadOk:
                    scannerPreload
                        ?.ok === true,
@@ -3457,7 +3532,13 @@ const rawResult =
                     )
              });
                     }
-       });
+       }),
+       {
+          signalController: abortController,
+          deadlineAt: routeHardDeadlineAt,
+          startedAt
+       }
+  );
 if (
        isLockConflict(
               rawResult
@@ -3559,6 +3640,7 @@ processScannerSnapshot:
           .processScannerSnapshot,
 runtimeBudgetMs,
 deadlineAt,
+routeHardDeadlineAt,
 remainingRuntimeMs:
   Math.max(
           0,
@@ -3802,6 +3884,8 @@ run: {
           }
     });
 } catch (error) {
+const controlledDeadline = isControlledDeadlineError(error);
+if (!controlledDeadline) {
   console.error(
     '[api/trade/run] fatal handler error:',
     {
@@ -3821,9 +3905,30 @@ run: {
                    error?.stack ||
                    null
        }
-);
+  );
+}
 const lockTtlSec =
        getLockTtlSec();
+if (controlledDeadline) {
+       return res.status(200).json({
+              ok: true,
+              tradeOk: false,
+              skipped: true,
+              reason: 'TRADE_RUN_DEFERRED_RUNTIME_DEADLINE',
+              skipReason: error?.code || error?.message || 'TRADE_RUNTIME_DEADLINE',
+              retryNextInvocation: true,
+              runtimeBudgetMs,
+              deadlineAt,
+              routeHardDeadlineAt,
+              remainingRuntimeMs: Math.max(0, deadlineAt - now()),
+              durationMs: now() - startedAt,
+              warnings: [
+                     'TRADE_RUN_STOPPED_BEFORE_VERCEL_60S_TIMEOUT',
+                     'OPEN_POSITION_MONITORING_AND_SNAPSHOT_PROGRESS_CONTINUE_NEXT_RUN'
+              ],
+              ...baseFlags()
+       });
+}
 if (
        isLockConflict(
            error
