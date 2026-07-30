@@ -541,6 +541,29 @@ function firstValue(value, fallback = null) {
     if (value === undefined || value === null || value === '') return fallback;
     return value;
 }
+
+// Read query parameters directly from the raw request URL with the
+// standardized WHATWG URL API, bypassing legacy framework query getters.
+const REQUEST_QUERY_CACHE = new WeakMap();
+function requestQuery(req = {}) {
+    if (req && typeof req === 'object' && REQUEST_QUERY_CACHE.has(req)) {
+        return REQUEST_QUERY_CACHE.get(req);
+    }
+    let query = {};
+    try {
+        const requestUrl = typeof req?.url === 'string' && req.url.trim()
+            ? req.url
+            : '/';
+        const parsed = new URL(requestUrl, 'http://localhost');
+        query = Object.fromEntries(parsed.searchParams.entries());
+    } catch {
+        query = {};
+    }
+    if (req && typeof req === 'object') {
+        REQUEST_QUERY_CACHE.set(req, query);
+    }
+    return query;
+}
 function isTrue(value) {
     if (value === true || value === 1) return true;
     const raw = String(value ?? '').trim().toLowerCase();
@@ -558,18 +581,20 @@ function getLockTtlSec() {
     return Math.floor(ttl);
 }
 function shouldForce(req, body = {}) {
+    const query = requestQuery(req);
     return (
-         isTrue(firstValue(req.query?.force, false)) ||
-         isTrue(firstValue(req.query?.forced, false)) ||
+         isTrue(firstValue(query.force, false)) ||
+         isTrue(firstValue(query.forced, false)) ||
          isTrue(body.force) ||
          isTrue(body.forced)
     );
 }
 function sourceLabel(req, body = {}) {
+    const query = requestQuery(req);
     const manual = (
-         isTrue(firstValue(req.query?.manual, false)) ||
-         isTrue(firstValue(req.query?.force, false)) ||
-         isTrue(firstValue(req.query?.forced, false)) ||
+         isTrue(firstValue(query.manual, false)) ||
+         isTrue(firstValue(query.force, false)) ||
+         isTrue(firstValue(query.forced, false)) ||
          isTrue(body.manual) ||
          isTrue(body.force) ||
          isTrue(body.forced)
