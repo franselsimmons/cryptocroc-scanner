@@ -907,6 +907,52 @@ throw new Error('OPEN_POSITION_RISK_GEOMETRY_MISSING');
 assertLearningFamilyIdentity(row);
 assertLongRiskGeometry(row);
 }
+function resolveCanonicalPositionIdentity(position = {}, { allowGenerate = false } = {}) {
+const existingCanonicalPositionId = String(
+position.canonicalPositionId || ''
+).trim();
+const existingCanonicalOutcomeId = String(
+position.canonicalOutcomeId || ''
+).trim();
+if (existingCanonicalPositionId) {
+return {
+canonicalPositionId: existingCanonicalPositionId,
+canonicalOutcomeId: existingCanonicalOutcomeId || existingCanonicalPositionId,
+canonicalIdentitySource:
+position.canonicalIdentitySource || 'POSITION_CREATION_CANONICAL_ID',
+canonicalIdentityMigrated: Boolean(position.canonicalIdentityMigrated),
+canonicalIdentityMigratedAt: position.canonicalIdentityMigratedAt || null
+};
+}
+const legacyTradeId = String(position.tradeId || '').trim();
+if (legacyTradeId) {
+return {
+canonicalPositionId: legacyTradeId,
+canonicalOutcomeId: existingCanonicalOutcomeId || legacyTradeId,
+canonicalIdentitySource: 'LEGACY_TRADE_ID_ONE_TO_ONE_MIGRATION',
+canonicalIdentityMigrated: true,
+canonicalIdentityMigratedAt: now()
+};
+}
+if (!allowGenerate) {
+return {
+canonicalPositionId: '',
+canonicalOutcomeId: '',
+canonicalIdentitySource: null,
+canonicalIdentityMigrated: false,
+canonicalIdentityMigratedAt: null
+};
+}
+const generatedCanonicalPositionId = randomId('position_long_legacy');
+return {
+canonicalPositionId: generatedCanonicalPositionId,
+canonicalOutcomeId: generatedCanonicalPositionId,
+canonicalIdentitySource: 'LEGACY_OPEN_POSITION_RANDOM_ID_MIGRATION',
+canonicalIdentityMigrated: true,
+canonicalIdentityMigratedAt: now()
+};
+}
+
 function assertPositionPersistable(position = {}) {
 assertBasePositionFields(position);
 if (position.status && String(position.status).toUpperCase() !== 'OPEN') {
@@ -1523,10 +1569,11 @@ function normalizeOpenPositionForStorage(position, keySymbol) {
 const normalized = forceLongPositionFields(position);
 const identity = normalizeMicroIdentity(normalized);
 const entryTemporal = immutableEntryFields(normalized);
-const canonicalPositionId = String(normalized.canonicalPositionId || '').trim();
-const canonicalOutcomeId = String(
-normalized.canonicalOutcomeId || canonicalPositionId
-).trim();
+const canonicalIdentity = resolveCanonicalPositionIdentity(normalized, {
+allowGenerate: true
+});
+const canonicalPositionId = canonicalIdentity.canonicalPositionId;
+const canonicalOutcomeId = canonicalIdentity.canonicalOutcomeId;
 const row = forceLongPositionFields({
 ...normalized,
 ...identity,
@@ -1534,7 +1581,9 @@ const row = forceLongPositionFields({
 ...entryTemporal,
 canonicalPositionId,
 canonicalOutcomeId,
-canonicalIdentitySource: 'POSITION_CREATION_CANONICAL_ID',
+canonicalIdentitySource: canonicalIdentity.canonicalIdentitySource,
+canonicalIdentityMigrated: canonicalIdentity.canonicalIdentityMigrated,
+canonicalIdentityMigratedAt: canonicalIdentity.canonicalIdentityMigratedAt,
 entryDecisionSnapshot: cloneImmutableSnapshot(normalized.entryDecisionSnapshot),
 temporalEntryDecisionSnapshot: cloneImmutableSnapshot(
 normalized.entryDecisionSnapshot || normalized.temporalEntryDecisionSnapshot
@@ -1595,6 +1644,33 @@ position,
 );
 
 }
+export async function ensureCanonicalPositionIdentity(position = {}) {
+assertLongInput(position, 'ENSURE_CANONICAL_POSITION_IDENTITY');
+const currentCanonicalPositionId = String(
+position.canonicalPositionId || ''
+).trim();
+const currentCanonicalOutcomeId = String(
+position.canonicalOutcomeId || ''
+).trim();
+if (currentCanonicalPositionId && currentCanonicalOutcomeId) {
+return position;
+}
+const canonicalIdentity = resolveCanonicalPositionIdentity(position, {
+allowGenerate: true
+});
+const migratedPosition = forceLongPositionFields({
+...position,
+...canonicalIdentity,
+canonicalIdentityMigrationVersion: 'LONG_LEGACY_OPEN_POSITION_CANONICAL_MIGRATION_V1',
+canonicalIdentityMigrationPersisted: true,
+updatedAt: now()
+});
+return persistOpenPositionWithoutDuplicateRead(
+migratedPosition,
+'MIGRATE_LEGACY_OPEN_POSITION_CANONICAL_IDENTITY'
+);
+}
+
 export async function deleteOpenPosition(symbol) {
 const keySymbol = storageSymbol(symbol);
 if (!keySymbol) return 0;
@@ -2114,6 +2190,7 @@ position,
 outcome: null
 };
 }
+position = await ensureCanonicalPositionIdentity(position);
 const fetchSymbol = position.contractSymbol || position.symbol;
 const price = await priceFetcher(fetchSymbol).catch(() => 0);
 if (!price) {
