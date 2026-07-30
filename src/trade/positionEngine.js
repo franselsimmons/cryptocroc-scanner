@@ -18,6 +18,19 @@ import {
 buildOutcomeFromPosition,
 recordOutcome
 } from '../analyze/analyzeEngine.js';
+import {
+buildTemporalContext,
+entryTemporalFields as buildCentralEntryTemporalFields,
+exitTemporalFields as buildCentralExitTemporalFields,
+temporalRuntimeConfig,
+TEMPORAL_CONTEXT_VERSION,
+TEMPORAL_POLICY_VERSION,
+WEEKEND_POLICY_VERSION,
+SESSION_POLICY_VERSION,
+TEMPORAL_GENERATION_SCHEMA_VERSION,
+TEMPORAL_TAXONOMY_VERSION,
+TEMPORAL_COST_MODEL_VERSION
+} from '../analyze/scoring.js';
 import { sendExitAlert } from '../discord/discord.js';
 import { applyCosts } from './costModel.js';
 const TARGET_TRADE_SIDE = 'LONG';
@@ -27,11 +40,9 @@ const OPPOSITE_TRADE_SIDE = 'SHORT';
 const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
-const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
-const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
-const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
-const WEEKEND_MODE = 'OBSERVE';
-const SESSION_MODE = 'OBSERVE';
+const ENTRY_DECISION_SNAPSHOT_VERSION =
+'LONG_TEMPORAL_ENTRY_DECISION_SNAPSHOT_V1';
+const EXIT_PUBLICATION_RESULT_VERSION = 'LONG_EXIT_PUBLICATION_RESULT_V1';
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
 const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
@@ -42,6 +53,7 @@ const POSITION_SOURCE = 'VIRTUAL';
 const OUTCOME_SOURCE = 'VIRTUAL';
 const COST_MODEL_VERSION = 'POSITION_ENGINE_LONG_NET_COST_V8';
 const EXIT_FILL_MODEL_VERSION = 'LONG_TRIGGER_BOUNDARY_FILL_PLUS_COST_MODEL_V1';
+
 const MEASUREMENT_FIX_VERSION =
 'LONG_MEASUREMENT_FIX_TRIGGER_BOUNDARY_EXIT_FILL_V2';
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
@@ -89,116 +101,48 @@ const SHORT_DIRECT = new Set([
 'RED'
 ]);
 function now() {
+
 return Date.now();
 }
-const UTC_DAY_NAMES = Object.freeze([
-'SUNDAY',
-'MONDAY',
-'TUESDAY',
-'WEDNESDAY',
-'THURSDAY',
-'FRIDAY',
-'SATURDAY'
-]);
-function normalizeTemporalTs(value = Date.now()) {
-const n = Number(value);
-if (!Number.isFinite(n) || n <= 0) return Date.now();
-return n < 10_000_000_000 ? n * 1000 : n;
-}
 export function buildTemporalContextUtc(value = Date.now()) {
-const contextTs = normalizeTemporalTs(value);
-const date = new Date(contextTs);
-const dayIndex = date.getUTCDay();
-const hourUtc = date.getUTCHours();
-const isWeekend = dayIndex === 0 || dayIndex === 6;
-const asia = hourUtc >= 0 && hourUtc < 8;
-const europe = hourUtc >= 7 && hourUtc < 16;
-const us = hourUtc >= 13 && hourUtc < 22;
-const sessionTags = [];
-if (asia) sessionTags.push('ASIA');
-if (europe) sessionTags.push('EUROPE');
-if (us) sessionTags.push('US');
-let primarySessionBucket = 'OFF_HOURS';
-if (europe && us) primarySessionBucket = 'EU_US_OVERLAP';
-else if (asia && europe) primarySessionBucket = 'ASIA_EU_OVERLAP';
-else if (asia) primarySessionBucket = 'ASIA';
-else if (europe) primarySessionBucket = 'EUROPE';
-else if (us) primarySessionBucket = 'US';
-return {
-temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
-weekendPolicyVersion: WEEKEND_POLICY_VERSION,
-sessionPolicyVersion: SESSION_POLICY_VERSION,
-weekendMode: WEEKEND_MODE,
-sessionMode: SESSION_MODE,
-contextTs,
-hourUtc,
-dayOfWeekUtc: UTC_DAY_NAMES[dayIndex],
-dayType: isWeekend ? 'WEEKEND' : 'WEEKDAY',
-isWeekend,
-sessionTags,
-primarySessionBucket,
-sessionOverlap: sessionTags.length > 1,
-offHours: primarySessionBucket === 'OFF_HOURS',
-weekendLearningAllowed: true,
-weekendVirtualEntryAllowed: true,
-weekendDiscordEntryAllowed: !isWeekend,
-weekendExitMonitoringAllowed: true,
-weekendOutcomeRecordingAllowed: true,
-sessionLearningAllowed: true,
-sessionVirtualEntryAllowed: true,
-sessionDiscordEntryAllowed: true,
-sessionPolicyObservedOnly: true
-};
+return buildTemporalContext(value);
 }
 function entryTemporalFields(source = {}, fallbackTs = Date.now()) {
-const rawTs = source.entryTs ?? source.entryCreatedAt ?? source.openedAt ?? source.createdAt ?? source.contextTs ?? fallbackTs;
-const context = buildTemporalContextUtc(rawTs);
-const entrySessionTags = Array.isArray(source.entrySessionTags)
-? [...source.entrySessionTags]
-: Array.isArray(source.sessionTags)
-? [...source.sessionTags]
-: [...context.sessionTags];
-return {
-temporalContextVersion: source.temporalContextVersion || context.temporalContextVersion,
-weekendPolicyVersion: source.weekendPolicyVersion || context.weekendPolicyVersion,
-sessionPolicyVersion: source.sessionPolicyVersion || context.sessionPolicyVersion,
-weekendMode: WEEKEND_MODE,
-sessionMode: SESSION_MODE,
-entryTs: normalizeTemporalTs(rawTs),
-entryHourUtc: source.entryHourUtc ?? source.hourUtc ?? context.hourUtc,
-entryDayOfWeekUtc: source.entryDayOfWeekUtc || source.dayOfWeekUtc || context.dayOfWeekUtc,
-entryDayType: source.entryDayType || source.dayType || context.dayType,
-entryIsWeekend: source.entryIsWeekend ?? source.isWeekend ?? context.isWeekend,
-entrySessionTags,
-entrySessionBucket: source.entrySessionBucket || source.primarySessionBucket || context.primarySessionBucket,
-entrySessionOverlap: source.entrySessionOverlap ?? source.sessionOverlap ?? context.sessionOverlap,
-entryOffHours: source.entryOffHours ?? source.offHours ?? context.offHours,
-weekendLearningAllowed: true,
-weekendVirtualEntryAllowed: true,
-weekendDiscordEntryAllowed: !(source.entryIsWeekend ?? source.isWeekend ?? context.isWeekend),
-weekendExitMonitoringAllowed: true,
-weekendOutcomeRecordingAllowed: true,
-sessionLearningAllowed: true,
-sessionVirtualEntryAllowed: true,
-sessionDiscordEntryAllowed: true,
-sessionPolicyObservedOnly: true
-};
+const entryTs = source.entryTs ?? source.entryCreatedAt ?? source.openedAt ??
+source.createdAt ?? source.contextTs ?? fallbackTs;
+return buildCentralEntryTemporalFields({
+entryTs,
+marketEventClusterId: source.marketEventClusterId,
+scannerRunId: source.scannerRunId,
+snapshotId: source.snapshotId,
+marketCycleId: source.marketCycleId
+});
 }
 function exitTemporalFields(value = Date.now()) {
-const context = buildTemporalContextUtc(value);
-return {
-exitTs: context.contextTs,
-exitHourUtc: context.hourUtc,
-exitDayOfWeekUtc: context.dayOfWeekUtc,
-exitDayType: context.dayType,
-exitIsWeekend: context.isWeekend,
-exitSessionTags: [...context.sessionTags],
-exitSessionBucket: context.primarySessionBucket,
-exitSessionOverlap: context.sessionOverlap,
-exitOffHours: context.offHours,
-weekendExitMonitoringAllowed: true,
-weekendOutcomeRecordingAllowed: true
-};
+return buildCentralExitTemporalFields(
+typeof value === 'object' && value !== null
+? value
+: { exitTs: value }
+);
+}
+function cloneImmutableSnapshot(value) {
+if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+return JSON.parse(JSON.stringify(value));
+}
+function immutableEntryFields(position = {}, fallbackTs = now()) {
+const snapshot = position.entryDecisionSnapshot ||
+position.temporalEntryDecisionSnapshot || null;
+const entryTs = safeNumber(
+snapshot?.entryTs ?? position.entryTs ?? position.openedAt ?? position.createdAt,
+fallbackTs
+);
+return entryTemporalFields({
+entryTs,
+marketEventClusterId: position.marketEventClusterId,
+scannerRunId: position.scannerRunId,
+snapshotId: position.snapshotId,
+marketCycleId: position.marketCycleId
+}, entryTs);
 }
 function upper(value) {
 return String(value || '').trim().toUpperCase();
@@ -207,8 +151,9 @@ function namespacedLongKey(key, fallback) {
 const raw = String(key || fallback || '').trim();
 if (!raw) return `${LONG_KEY_PREFIX}MISSING_KEY`;
 if (raw.startsWith(LONG_KEY_PREFIX)) return raw;
-if (raw.startsWith('SHORT:')) return
-`${LONG_KEY_PREFIX}${raw.slice('SHORT:'.length)}`;
+if (raw.startsWith('SHORT:') || raw.includes(`${LONG_KEY_PREFIX}SHORT:`)) {
+throw new Error('LONG_POSITION_KEY_REJECTED_SHORT_NAMESPACE');
+}
 return `${LONG_KEY_PREFIX}${raw}`;
 }
 function storageSymbol(input) {
@@ -224,6 +169,7 @@ KEYS.long?.trade?.openPattern ||
 KEYS.trade?.longOpenPattern ||
 KEYS.trade?.openPattern;
 return namespacedLongKey(configured, 'TRADE:OPEN:*');
+
 }
 function resolveOpenKey(symbol) {
 const keySymbol = storageSymbol(symbol);
@@ -271,6 +217,7 @@ CONFIG.long?.trade?.positionTimeStopMin ??
 CONFIG.trade?.positionTimeStopMin,
 DEFAULT_POSITION_TIME_STOP_MIN
 )
+
 )
 };
 }
@@ -318,6 +265,7 @@ return [
 row.symbol,
 row.baseSymbol,
 row.contractSymbol
+
 ]
 .map(normalizeSymbolToken)
 .filter(Boolean)
@@ -365,6 +313,7 @@ selectable: false,
 isParent: false,
 isChild: false,
 rawId: String(id || '').trim()
+
 };
 }
 let body = value.slice('MICRO_LONG_'.length);
@@ -412,6 +361,7 @@ trueMicroFamilyId: validChild ? childId : validParent ? parentId : null,
 childTrueMicroFamilyId: validChild ? childId : null,
 trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
 parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+
 childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
 learningGranularity: LEARNING_GRANULARITY,
 parentLearningGranularity: PARENT_LEARNING_GRANULARITY
@@ -459,6 +409,7 @@ return String(value || '')
 .replaceAll('SHORT_DISABLED_FALSE', '')
 .replaceAll('SHORTDISABLED_FALSE', '')
 .replaceAll('BLOCK_SHORT_FALSE', '')
+
 .replaceAll('SHORT_ENABLED_FALSE', '')
 .replaceAll('SHORT_ONLY_FALSE', '')
 .replaceAll('LONG_DISABLED_FALSE', '')
@@ -506,6 +457,7 @@ normalized.includes('DIRECTION_BUY') ||
 normalized.startsWith('LONG_') ||
 normalized.includes('_LONG_') ||
 normalized.endsWith('_LONG') ||
+
 normalized.startsWith('BULL_') ||
 normalized.includes('_BULL_') ||
 normalized.endsWith('_BULL') ||
@@ -553,6 +505,7 @@ if (normalized.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
 return 'UNKNOWN';
 }
 function normalizedTextParts(row = {}) {
+
 return [
 row.definition,
 row.microDefinition,
@@ -600,6 +553,7 @@ row.key
 }
 function hasLongIdSignal(text = '') {
 const raw = String(text || '').toUpperCase();
+
 return (
 raw.includes('MICRO_LONG_') ||
 raw.includes('LONG_') ||
@@ -647,6 +601,7 @@ haystack.includes('SIDE=BUY') ||
 haystack.includes('DIRECTION=BUY') ||
 haystack.includes('MICRO_LONG_')
 );
+
 }
 function hasShortDefinitionSignal(parts = []) {
 const haystack = parts.join('|');
@@ -694,6 +649,7 @@ return OPPOSITE_TRADE_SIDE;
 if (haystack.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
 if (haystack.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
 return 'UNKNOWN';
+
 }
 function inferPositionTradeSide(row = {}) {
 if (typeof row === 'string') return normalizeTradeSide(row);
@@ -741,6 +697,7 @@ if (isExecutionFingerprintId(raw)) continue;
 const clean = stripSymbolTokensFromLearningId(raw, row);
 if (!clean) continue;
 if (isScannerFingerprintId(clean)) continue;
+
 if (isExecutionFingerprintId(clean)) continue;
 return clean.toUpperCase();
 }
@@ -788,6 +745,7 @@ null,
 isExecutionFingerprintId(row.analyzeMicroFamilyId) ? row.analyzeMicroFamilyId
 : null,
 isExecutionFingerprintId(row.id) ? row.id : null,
+
 isExecutionFingerprintId(row.key) ? row.key : null
 ];
 return candidates.find(Boolean) || null;
@@ -835,6 +793,7 @@ throw new Error('ANALYZE_TRUE_MICRO_FAMILY_ID_REQUIRED');
 if (isScannerFingerprintId(microFamilyId)) {
 throw new Error('SCANNER_FINGERPRINT_CANNOT_BE_LEARNING_FAMILY_ID');
 }
+
 if (isExecutionFingerprintId(microFamilyId)) {
 throw new Error('EXECUTION_FINGERPRINT_CANNOT_BE_LEARNING_FAMILY_ID');
 }
@@ -882,6 +841,7 @@ scannerFingerprintsMetadataOnly: true,
 scannerFingerprintsUsedAsLearningFamily: false,
 learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
 exactTrueMicroFamilyRequired: true,
+
 symbolExcludedFromFamilyId: true,
 coinNameExcludedFromFamilyId: true,
 hashesExcludedFromFamilyId: true,
@@ -929,6 +889,7 @@ throw new Error('OPEN_POSITION_SCANNER_FINGERPRINT_METADATA_ONLY');
 if (isExecutionFingerprintId(microFamilyId)) {
 throw new Error('OPEN_POSITION_EXECUTION_FINGERPRINT_METADATA_ONLY');
 }
+
 if (!isExactLongChildTrueMicroId(microFamilyId)) {
 throw new Error('OPEN_POSITION_REQUIRES_EXACT_75_CHILD_TRUE_MICRO_FAMILY');
 }
@@ -950,6 +911,19 @@ function assertPositionPersistable(position = {}) {
 assertBasePositionFields(position);
 if (position.status && String(position.status).toUpperCase() !== 'OPEN') {
 throw new Error('OPEN_POSITION_STATUS_MUST_BE_OPEN');
+}
+if (!String(position.canonicalPositionId || '').trim()) {
+throw new Error('OPEN_POSITION_CANONICAL_POSITION_ID_REQUIRED');
+}
+if (!String(position.canonicalOutcomeId || '').trim()) {
+throw new Error('OPEN_POSITION_CANONICAL_OUTCOME_ID_REQUIRED');
+}
+if (!Number.isFinite(Number(position.entryTs)) || Number(position.entryTs) <= 0) {
+throw new Error('OPEN_POSITION_IMMUTABLE_ENTRY_TS_REQUIRED');
+}
+const snapshot = position.entryDecisionSnapshot || null;
+if (snapshot && Number(snapshot.entryTs) !== Number(position.entryTs)) {
+throw new Error('OPEN_POSITION_ENTRY_DECISION_TS_MISMATCH');
 }
 }
 function assertLongInput(row = {}, context = 'POSITION') {
@@ -976,6 +950,7 @@ currentSl,
 nextSl
 } = {}) {
 const current = safeNumber(currentSl, 0);
+
 const next = safeNumber(nextSl, 0);
 if (current <= 0 || next <= 0) return false;
 return next > current;
@@ -1023,6 +998,7 @@ if (source === 'BE') {
 position.beLiveApplied = true;
 }
 if (source === 'TRAIL') {
+
 position.trailLiveApplied = true;
 }
 return position;
@@ -1070,6 +1046,7 @@ openedAt > 0 &&
 timestamp - openedAt >= cfg.positionTimeStopMin * 60 * 1000;
 if (expired) {
 return {
+
 shouldExit: true,
 reason: 'TIME_STOP',
 trigger: 'TIME_STOP'
@@ -1117,6 +1094,7 @@ observed > 0 && fillPrice > 0
 : 0;
 return {
 exitPrice: fillPrice,
+
 exitFillPrice: fillPrice,
 exitObservedPrice: observed,
 exitTriggerPrice: triggerPrice,
@@ -1164,6 +1142,7 @@ totalRSource: 'netR',
 avgCostRShown: true,
 measurementFixVersion: MEASUREMENT_FIX_VERSION,
 exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
+
 exitFillPolicy: 'TP_SL_USE_TRIGGER_BOUNDARY_TIME_STOP_USES_OBSERVED_PRICE',
 exitFillAssumption: 'TRIGGER_BOUNDARY_PLUS_COST_MODEL',
 directSLDefinition: 'SL_EXIT_WITHOUT_MEANINGFUL_MFE',
@@ -1211,11 +1190,18 @@ EMPIRICAL_VETO: 'completed >= 35 && avgR <= 0'
 redisNamespace: LONG_NAMESPACE,
 redisKeyPrefix: LONG_KEY_PREFIX,
 persistentLearningKey: PERSISTENT_LEARNING_KEY,
+
 temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+temporalPolicyVersion: TEMPORAL_POLICY_VERSION,
+temporalGenerationSchemaVersion: TEMPORAL_GENERATION_SCHEMA_VERSION,
+temporalTaxonomyVersion: TEMPORAL_TAXONOMY_VERSION,
+temporalCostModelVersion: TEMPORAL_COST_MODEL_VERSION,
+temporalStatsEnabled: temporalRuntimeConfig().temporalStatsEnabled,
+temporalPolicyMode: temporalRuntimeConfig().temporalPolicyMode,
 weekendPolicyVersion: WEEKEND_POLICY_VERSION,
 sessionPolicyVersion: SESSION_POLICY_VERSION,
-weekendMode: WEEKEND_MODE,
-sessionMode: SESSION_MODE,
+weekendMode: temporalRuntimeConfig().temporalPolicyMode,
+sessionMode: temporalRuntimeConfig().temporalPolicyMode,
 weekendLearningAllowed: true,
 weekendVirtualEntryAllowed: true,
 weekendExitMonitoringAllowed: true,
@@ -1258,6 +1244,7 @@ noExchangeOrders: true,
 ...identityFlags()
 };
 }
+
 function buildVirtualFlags(row = {}) {
 return {
 source: POSITION_SOURCE,
@@ -1305,6 +1292,7 @@ exitPrice
 } = {}) {
 const entry = safeNumber(position.entry, 0);
 const initialSl = safeNumber(position.initialSl || position.sl, 0);
+
 const exit = safeNumber(exitPrice, 0);
 if (entry <= 0 || initialSl <= 0 || exit <= 0) return 0;
 const riskDistance = entry - initialSl;
@@ -1352,6 +1340,7 @@ position.orderbookSpreadPct ??
 CONFIG.long?.cost?.fallbackSpreadPct ??
 CONFIG.cost?.fallbackSpreadPct,
 0
+
 );
 const cost = applyCosts({
 side: TARGET_TRADE_SIDE,
@@ -1399,6 +1388,7 @@ slippagePct: safeNumber(cost.slippagePct, 0),
 costPct: safeNumber(cost.costPct, 0),
 grossPnlPct: safeNumber(cost.grossPnlPct, grossMovePct * 100),
 netPnlPct: safeNumber(cost.netPnlPct, (grossMovePct -
+
 safeNumber(cost.costRatio, 0)) * 100)
 };
 }
@@ -1446,6 +1436,7 @@ rewardPct: round6(net.rewardPct),
 grossMovePct: round6(net.grossMovePct),
 grossR: round6(net.grossR),
 rawR: round6(net.grossR),
+
 realizedGrossR: round6(net.grossR),
 longGrossR: round6(net.grossR),
 costR: round6(net.costR),
@@ -1493,6 +1484,7 @@ slHitRule: 'LONG: price <= sl',
 grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
 currentRFormula: '(currentPrice - entry) / (entry - initialSl)'
 });
+
 }
 export async function getOpenPositions() {
 const redis = getDurableRedis();
@@ -1530,10 +1522,24 @@ return row;
 function normalizeOpenPositionForStorage(position, keySymbol) {
 const normalized = forceLongPositionFields(position);
 const identity = normalizeMicroIdentity(normalized);
+const entryTemporal = immutableEntryFields(normalized);
+const canonicalPositionId = String(normalized.canonicalPositionId || '').trim();
+const canonicalOutcomeId = String(
+normalized.canonicalOutcomeId || canonicalPositionId
+).trim();
 const row = forceLongPositionFields({
 ...normalized,
 ...identity,
 ...buildVirtualFlags(normalized),
+...entryTemporal,
+canonicalPositionId,
+canonicalOutcomeId,
+canonicalIdentitySource: 'POSITION_CREATION_CANONICAL_ID',
+entryDecisionSnapshot: cloneImmutableSnapshot(normalized.entryDecisionSnapshot),
+temporalEntryDecisionSnapshot: cloneImmutableSnapshot(
+normalized.entryDecisionSnapshot || normalized.temporalEntryDecisionSnapshot
+),
+entryContextImmutable: true,
 symbol: normalized.symbol || keySymbol,
 baseSymbol: normalized.baseSymbol || keySymbol,
 contractSymbol: normalized.contractSymbol || null,
@@ -1587,6 +1593,7 @@ return persistOpenPositionWithoutDuplicateRead(
 position,
 'SAVE_EXISTING_OPEN_POSITION'
 );
+
 }
 export async function deleteOpenPosition(symbol) {
 const keySymbol = storageSymbol(symbol);
@@ -1634,6 +1641,7 @@ position.maeR = round4(Math.min(
 safeNumber(position.maeR, 0),
 position.currentR
 ));
+
 position.maxTpProgress = round4(Math.max(
 safeNumber(position.maxTpProgress, 0),
 tpProgress
@@ -1679,14 +1687,45 @@ export function buildOpenPositionFromEntry(entry) {
 assertLongInput(entry, 'BUILD_OPEN_POSITION_FROM_ENTRY');
 const normalizedEntry = forceLongPositionFields(entry);
 const keySymbol = storageSymbol(normalizedEntry);
-const openedAt = now();
-const entryTemporal = entryTemporalFields(normalizedEntry, openedAt);
+const decisionSnapshot = cloneImmutableSnapshot(
+normalizedEntry.entryDecisionSnapshot || normalizedEntry.temporalEntryDecisionSnapshot
+);
+const openedAt = safeNumber(
+decisionSnapshot?.entryTs ?? normalizedEntry.entryTs,
+now()
+);
+const entryTemporal = entryTemporalFields({
+entryTs: openedAt,
+marketEventClusterId: normalizedEntry.marketEventClusterId,
+scannerRunId: normalizedEntry.scannerRunId,
+snapshotId: normalizedEntry.snapshotId,
+marketCycleId: normalizedEntry.marketCycleId
+}, openedAt);
+const canonicalPositionId = String(
+normalizedEntry.canonicalPositionId || randomId('position_long')
+).trim();
+const canonicalOutcomeId = String(
+normalizedEntry.canonicalOutcomeId || canonicalPositionId
+).trim();
+const originReference = normalizedEntry.originReference ||
+normalizedEntry.candidateId || normalizedEntry.entryId || normalizedEntry.scannerCandidateId || null;
+
 const identity = normalizeMicroIdentity(normalizedEntry);
 const position = forceLongPositionFields({
 ...normalizedEntry,
 ...identity,
 ...buildVirtualFlags(normalizedEntry),
 ...entryTemporal,
+canonicalPositionId,
+canonicalOutcomeId,
+canonicalIdentitySource: 'POSITION_CREATION_CANONICAL_ID',
+originReference,
+positionId: normalizedEntry.positionId || canonicalPositionId,
+entryDecisionSnapshot: decisionSnapshot,
+temporalEntryDecisionSnapshot: decisionSnapshot,
+entryDecisionSnapshotVersion:
+decisionSnapshot?.snapshotVersion || ENTRY_DECISION_SNAPSHOT_VERSION,
+entryContextImmutable: true,
 tradeId: normalizedEntry.tradeId || randomId('trade_long'),
 symbol: normalizedEntry.symbol || keySymbol,
 baseSymbol: normalizedEntry.baseSymbol || keySymbol,
@@ -1728,6 +1767,7 @@ normalizedEntry.currentRegime || null,
 entryCurrentTrendSide: normalizedEntry.entryCurrentTrendSide ||
 normalizedEntry.currentTrendSide || null,
 entryCurrentFit: normalizedEntry.entryCurrentFit ?? normalizedEntry.currentFit
+
 ?? null,
 entryCurrentFitConfidence: normalizedEntry.entryCurrentFitConfidence ??
 normalizedEntry.currentMarketFitConfidence ?? null,
@@ -1740,6 +1780,10 @@ currentFitBlocksShadowLearning: false,
 currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
 currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
 learningRemainsBroad: true,
+temporalPolicyVersion: TEMPORAL_POLICY_VERSION,
+temporalGenerationSchemaVersion: TEMPORAL_GENERATION_SCHEMA_VERSION,
+temporalTaxonomyVersion: TEMPORAL_TAXONOMY_VERSION,
+temporalCostModelVersion: TEMPORAL_COST_MODEL_VERSION,
 exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
 exitFillPolicy: 'TP_SL_USE_TRIGGER_BOUNDARY_TIME_STOP_USES_OBSERVED_PRICE',
 exitFillAssumption: 'TRIGGER_BOUNDARY_PLUS_COST_MODEL',
@@ -1775,6 +1819,7 @@ exitReason
 const reason = upper(exitReason);
 const stoppedOut =
 reason === 'SL' ||
+
 reason === 'HIT_SL' ||
 reason === 'STOP' ||
 reason === 'STOP_LOSS' ||
@@ -1807,31 +1852,34 @@ const directSL = isDirectSLExit({
 position,
 exitReason
 });
-const entryTemporal = entryTemporalFields(position, openedAt || closedAt);
-const exitTemporal = exitTemporalFields(closedAt);
-const outcomeIdentity = [
-TARGET_TRADE_SIDE,
-position.tradeId || outcome.tradeId || '',
-position.symbol || position.contractSymbol || outcome.symbol || '',
-openedAt || '',
-closedAt || '',
-exitReason || '',
-safeNumber(outcome.exitPrice || outcome.exit, 0),
-identity.microFamilyId
-].join('|');
+const entryTemporal = immutableEntryFields(position, openedAt || closedAt);
+const exitTemporal = exitTemporalFields({ exitTs: closedAt });
+const canonicalPositionId = String(position.canonicalPositionId || '').trim();
+if (!canonicalPositionId) {
+throw new Error('CLOSED_POSITION_CANONICAL_POSITION_ID_MISSING');
+}
+const canonicalOutcomeId = String(
+position.canonicalOutcomeId || canonicalPositionId
+).trim();
+const outcomeIdentity = canonicalOutcomeId;
 return forceLongPositionFields({
 ...outcome,
 ...identity,
+
 ...entryTemporal,
 ...exitTemporal,
 source: OUTCOME_SOURCE,
 outcomeSource: OUTCOME_SOURCE,
 positionSource: position.source || POSITION_SOURCE,
 tradeId: position.tradeId || outcome.tradeId || null,
-outcomeId: outcome.outcomeId || `outcome_${randomId('long')}`,
+canonicalPositionId,
+canonicalOutcomeId,
+canonicalIdentitySource: 'POSITION_CREATION_CANONICAL_ID',
+originReference: position.originReference || outcome.originReference || null,
+positionId: position.positionId || canonicalPositionId,
+outcomeId: canonicalOutcomeId,
 outcomeIdentity,
-outcomeIdentityHashSource:
-'TRADE_ID_SYMBOL_OPEN_CLOSE_REASON_EXIT_TRUE_MICRO',
+outcomeIdentityHashSource: 'CANONICAL_POSITION_ID_FROM_POSITION_CREATION',
 activeRotationId: position.activeRotationId || null,
 selectedRotationId: position.selectedRotationId || position.activeRotationId
 || null,
@@ -1848,6 +1896,12 @@ selectedMicroFamilyAlert: Boolean(position.selectedMicroFamilyAlert),
 discordAlertEligible: Boolean(position.discordAlertEligible),
 selectedForDiscord: Boolean(position.selectedForDiscord ||
 position.discordAlertEligible || position.selectedMicroFamilyAlert),
+entryDecisionSnapshot: cloneImmutableSnapshot(position.entryDecisionSnapshot),
+temporalEntryDecisionSnapshot: cloneImmutableSnapshot(
+position.entryDecisionSnapshot || position.temporalEntryDecisionSnapshot
+),
+entryPublicationResult: cloneImmutableSnapshot(position.entryPublicationResult),
+temporalPolicyAppliedToExit: false,
 rotationMatchType: position.rotationMatchType || outcome.rotationMatchType ||
 null,
 weeklyStats: position.weeklyStats || null,
@@ -1869,6 +1923,7 @@ scannerDefinitionParts: Array.isArray(position.scannerDefinitionParts)
 ? position.scannerDefinitionParts
 : identity.scannerDefinitionParts || [],
 executionMicroFamilyId: position.executionMicroFamilyId ||
+
 identity.executionMicroFamilyId || null,
 executionFingerprintRole: 'METADATA_ONLY',
 executionFingerprintOnlyMetadata: Boolean(position.executionMicroFamilyId ||
@@ -1916,6 +1971,7 @@ exitFillPrice: safeNumber(outcome.exitFillPrice ?? position.exitFillPrice ??
 outcome.exitPrice, 0),
 exitObservedPrice: safeNumber(outcome.exitObservedPrice ??
 position.exitObservedPrice ?? outcome.exitPrice, 0),
+
 exitTriggerPrice: safeNumber(outcome.exitTriggerPrice ??
 position.exitTriggerPrice, 0) || null,
 exitFillSource: outcome.exitFillSource || position.exitFillSource || null,
@@ -1963,6 +2019,7 @@ entryCurrentFitConfidence: position.entryCurrentFitConfidence ??
 position.currentMarketFitConfidence ?? outcome.entryCurrentFitConfidence ??
 outcome.currentMarketFitConfidence ?? null,
 entryWeatherFitMatchedFamily: position.entryWeatherFitMatchedFamily ??
+
 outcome.entryWeatherFitMatchedFamily ?? null,
 currentFitSoftOnly: true,
 currentFitBlocksLearning: false,
@@ -1971,6 +2028,12 @@ currentFitBlocksShadowLearning: false,
 currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
 currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
 learningRemainsBroad: true,
+outcomeFinalizedTs: closedAt,
+outcomePersistedTs: 0,
+temporalPolicyVersion: TEMPORAL_POLICY_VERSION,
+temporalGenerationSchemaVersion: TEMPORAL_GENERATION_SCHEMA_VERSION,
+taxonomyVersion: TEMPORAL_TAXONOMY_VERSION,
+costModelVersion: TEMPORAL_COST_MODEL_VERSION,
 measurementFixVersion: MEASUREMENT_FIX_VERSION,
 directSLDefinition: 'SL_EXIT_WITHOUT_MEANINGFUL_MFE',
 completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
@@ -1982,37 +2045,47 @@ totalRSource: 'netR',
 avgCostRShown: true
 });
 }
+function sanitizeExitPublicationResult(result = {}, fallbackReason = null) {
+return {
+exitPublicationResultVersion: EXIT_PUBLICATION_RESULT_VERSION,
+ok: result?.ok === true,
+sent: result?.ok === true && result?.skipped !== true,
+skipped: result?.skipped === true,
+failed: result?.ok === false && result?.skipped !== true,
+reason: String(result?.reason || fallbackReason || '').trim() || null,
+status: Number.isFinite(Number(result?.status)) ? Number(result.status) : null,
+publicationType: result?.publicationType || 'DISCORD_WEBHOOK',
+responseBodyStored: false,
+sensitiveTransportMetadataStored: false,
+temporalPolicyAppliedToExit: false,
+recordedAt: now()
+};
+}
 async function maybeSendExitAlert(position, outcome) {
 if (!position.discordAlertEligible && !position.selectedMicroFamilyAlert &&
 !position.selectedForDiscord) {
-return {
-sent: false,
+return sanitizeExitPublicationResult({
+ok: true,
 skipped: true,
 reason: 'POSITION_NOT_SELECTED_FOR_DISCORD_EXIT_ALERT'
-};
+});
 }
 if (!isExactLongChildTrueMicroId(outcome.trueMicroFamilyId)) {
-return {
-sent: false,
+return sanitizeExitPublicationResult({
+ok: true,
 skipped: true,
 reason: 'EXIT_ALERT_REQUIRES_EXACT_75_CHILD_TRUE_MICRO_FAMILY'
-};
+});
 }
 try {
-await sendExitAlert(outcome);
-return {
-sent: true,
-skipped: false,
-reason: 'DISCORD_EXIT_ALERT_SENT'
-};
+const result = await sendExitAlert(outcome);
+return sanitizeExitPublicationResult(result);
 } catch (error) {
-return {
-sent: false,
+return sanitizeExitPublicationResult({
+ok: false,
 skipped: false,
-failed: true,
-reason: 'DISCORD_EXIT_ALERT_FAILED',
-error: error?.message || String(error)
-};
+reason: 'DISCORD_EXIT_ALERT_FAILED'
+}, error?.message || String(error));
 }
 }
 async function monitorOnePosition({
@@ -2057,6 +2130,7 @@ let exit = detectExit({
 position,
 price,
 timestamp
+
 });
 let exitFill = null;
 if (exit.shouldExit) {
@@ -2104,6 +2178,7 @@ exitReason: exit.reason
 }
 const closedAt = timestamp;
 const exitPrice = exitFill.exitFillPrice;
+
 const directSL = isDirectSLExit({
 position,
 exitReason: exit.reason
@@ -2114,6 +2189,8 @@ const closedPosition = forceLongPositionFields({
 status: 'CLOSED',
 closedAt,
 completedAt: closedAt,
+outcomeFinalizedTs: closedAt,
+outcomePersistedTs: 0,
 exitPrice,
 exitReason: exit.reason,
 exitTrigger: exit.trigger,
@@ -2151,6 +2228,7 @@ const analyzeOutcome = clonePlainObject(outcome);
 const discordOutcome = clonePlainObject(outcome);
 const analyzeResult = await recordOutcome(analyzeOutcome, {
 source: OUTCOME_SOURCE,
+
 weekKey: PERSISTENT_LEARNING_KEY
 });
 const analyzeAccepted =
@@ -2173,19 +2251,27 @@ analyzeResult
 };
 throw error;
 }
-const discordResult = await maybeSendExitAlert(closedPosition, discordOutcome);
+const exitPublicationResult = await maybeSendExitAlert(
+closedPosition,
+discordOutcome
+);
 await deleteOpenPosition(closedPosition.symbol ||
 closedPosition.contractSymbol);
 return {
 type: 'EXIT',
-position: closedPosition,
+position: {
+...closedPosition,
+exitPublicationResult
+},
 outcome: {
 ...discordOutcome,
 analyzeOutcomeAccepted: true,
 analyzeOutcomeDuplicate: Boolean(analyzeResult?.duplicate),
 analyzeOutcomeId: analyzeResult?.outcomeId || null,
-discordExitAlertResult: discordResult,
-discordExitAlertSent: Boolean(discordResult.sent)
+exitPublicationResult,
+discordExitAlertResult: exitPublicationResult,
+discordExitAlertSent: Boolean(exitPublicationResult.sent),
+temporalPolicyAppliedToExit: false
 }
 };
 }
@@ -2198,6 +2284,7 @@ if (!positions.length) return [];
 const cfg = tradeConfig();
 const timestamp = now();
 const results = await mapConcurrent(
+
 positions,
 cfg.dataConcurrency,
 async (position) => monitorOnePosition({
@@ -2210,3 +2297,4 @@ return results
 .filter((row) => row?.type === 'EXIT' && row.outcome)
 .map((row) => row.outcome);
 }
+
