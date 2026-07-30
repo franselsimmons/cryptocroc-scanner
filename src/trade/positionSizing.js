@@ -20,10 +20,12 @@ const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
-const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
-const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
-const WEEKEND_MODE = 'OBSERVE';
-const SESSION_MODE = 'OBSERVE';
+const TEMPORAL_POLICY_VERSION = 'LONG_TEMPORAL_FAMILY_PROFILE_V1';
+const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_PER_FAMILY_DAY_APPROVAL_V1';
+const SESSION_POLICY_VERSION = 'LONG_DAY_SESSION_VETO_RECOVERY_V1';
+const TEMPORAL_GENERATION_SCHEMA_VERSION = 'LONG_TEMPORAL_ROOT_GENERATION_V1';
+const WEEKEND_MODE = 'RUNTIME_CONTROLLED';
+const SESSION_MODE = 'RUNTIME_CONTROLLED';
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
 const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
@@ -42,6 +44,7 @@ const OUTCOME_MEASUREMENT_GATE_MODE = 'STRICT_EXACT_VERSION';
 const SETUP_ORDER = Object.freeze([
 'BREAKOUT',
 'RETEST',
+
 'SWEEP_REVERSAL',
 'CONTINUATION',
 'COMPRESSION'
@@ -89,6 +92,7 @@ const text = String(value ?? '').trim();
 return text ? text.toUpperCase() : fallback;
 }
 function sizingConfig() {
+
 return {
 enabled: CONFIG.sizing?.enabled !== false,
 baseRiskPct: Math.max(
@@ -136,6 +140,7 @@ side: TARGET_DASHBOARD_SIDE,
 tradeSide: TARGET_TRADE_SIDE,
 positionSide: TARGET_TRADE_SIDE,
 direction: TARGET_TRADE_SIDE,
+
 longOnly: true,
 shortDisabled: true,
 shortOnly: false,
@@ -183,6 +188,7 @@ childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
 learningGranularity: LEARNING_GRANULARITY,
 parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
 parentLearningEnabled: true,
+
 childLearningEnabled: true,
 selectionGranularity: 'EXACT_75_CHILD',
 fallbackRankingGranularity: 'PARENT_15_UNTIL_CHILD_MIN_COMPLETED',
@@ -230,10 +236,17 @@ weekendLearningAllowed: true,
 weekendVirtualEntryAllowed: true,
 weekendExitMonitoringAllowed: true,
 weekendOutcomeRecordingAllowed: true,
+
 sessionLearningAllowed: true,
 sessionVirtualEntryAllowed: true,
 sessionDiscordEntryAllowed: true,
 sessionPolicyObservedOnly: true,
+temporalPolicyVersion: TEMPORAL_POLICY_VERSION,
+temporalGenerationSchemaVersion: TEMPORAL_GENERATION_SCHEMA_VERSION,
+temporalPolicyOwner: 'TRADE_SYSTEM_AND_ROTATION_ENGINE',
+temporalPolicyAppliedHere: false,
+temporalStatsAggregatedHere: false,
+temporalFamilyIdentityIncludesBucket: false,
 redisKeysSeparatedFromShortRoot: true,
 shortRootTouched: false
 };
@@ -277,6 +290,7 @@ value.startsWith('SHORT_SCANNER_') ||
 value.includes('SHORT_SCANNER_') ||
 value.includes('__SCANNER__') ||
 value.includes('SCANNER_GATE_PASS') ||
+
 value.includes('SCANNER_GATE_FAIL')
 );
 }
@@ -324,6 +338,7 @@ for (const candidateRegime of REGIME_ORDER) {
 const suffix = `_${candidateRegime}`;
 if (body.endsWith(suffix)) {
 regime = candidateRegime;
+
 setup = body.slice(0, -suffix.length);
 break;
 }
@@ -371,6 +386,7 @@ if (direct === OPPOSITE_TRADE_SIDE) return OPPOSITE_TRADE_SIDE;
 if (LONG_DIRECT.has(raw)) return TARGET_TRADE_SIDE;
 if (SHORT_DIRECT.has(raw)) return OPPOSITE_TRADE_SIDE;
 const normalized = raw
+
 .replace(/[^A-Z0-9]+/g, '_')
 .replace(/^_+|_+$/g, '');
 const longHit =
@@ -418,6 +434,7 @@ normalized.endsWith('_SHORT') ||
 normalized.startsWith('BEAR_') ||
 normalized.includes('_BEAR_') ||
 normalized.endsWith('_BEAR') ||
+
 normalized.startsWith('SELL_') ||
 normalized.includes('_SELL_') ||
 normalized.endsWith('_SELL');
@@ -465,6 +482,7 @@ row.learningMicroFamilyId,
 row.fixedTaxonomyMicroFamilyId,
 row.id,
 row.key,
+
 row.parentTrueMicroFamilyId,
 row.coarseMicroFamilyId,
 row.macroFamilyId,
@@ -512,6 +530,7 @@ raw.includes('SIDE=SHORT') ||
 raw.includes('SIDE=BEAR') ||
 raw.includes('DIRECTION=SHORT') ||
 raw.includes('DIRECTION=BEAR') ||
+
 raw.includes('POSITION_SIDE=SHORT') ||
 raw.includes('POSITIONSIDE=SHORT')
 );
@@ -559,6 +578,7 @@ if (longHit && shortHit) {
 if (haystack.includes('TRADE_SIDE=LONG') ||
 haystack.includes('TRADESIDE=LONG')) return TARGET_TRADE_SIDE;
 if (haystack.includes('TRADE_SIDE=SHORT') ||
+
 haystack.includes('TRADESIDE=SHORT')) return OPPOSITE_TRADE_SIDE;
 if (haystack.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
 if (haystack.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
@@ -606,6 +626,7 @@ if (fromIds === TARGET_TRADE_SIDE || fromIds === OPPOSITE_TRADE_SIDE) return
 fromIds;
 const fromDefinitions = inferTradeSideFromDefinitions(row);
 if (fromDefinitions === TARGET_TRADE_SIDE || fromDefinitions ===
+
 OPPOSITE_TRADE_SIDE) {
 return fromDefinitions;
 }
@@ -653,6 +674,7 @@ setupType: parsed.setup,
 regimeBucket: parsed.regime,
 confirmationProfile: parsed.confirmationProfile
 };
+
 }
 function exactChildRequiredButMissing(row = {}) {
 const id = extractTrueMicroFamilyId(row);
@@ -700,6 +722,7 @@ text.startsWith('BTC_RELATION=') ||
 text.startsWith('BTC=') ||
 text.startsWith('BTC_STATE=')
 );
+
 });
 if (!directMatch) return 'BTC_UNKNOWN';
 return normalizeBtcRelation(String(directMatch).split('=').at(1));
@@ -747,6 +770,7 @@ cfg.baseRiskPct,
 )
 );
 }
+
 function buildStatsSideProbe({
 weeklyStats,
 side,
@@ -794,6 +818,7 @@ weeklyStats?.side ||
 weeklyStats?.positionSide ||
 weeklyStats?.direction;
 const statsSide = inferTradeSide(
+
 buildStatsSideProbe({
 weeklyStats,
 side,
@@ -841,6 +866,7 @@ balanced / 100,
 const winrateConf = fairWinrate > 0
 ? clamp((fairWinrate - 0.45) / 0.25, 0, 1)
 : 0;
+
 const avgRConf = clamp(
 (avgR + 0.25) / 1.25,
 0,
@@ -888,6 +914,7 @@ const tradeSide = inferTradeSide(position);
 const identity = taxonomyIdentity(position);
 const risk = positionRiskFraction(position);
 total += risk;
+
 if (tradeSide === TARGET_TRADE_SIDE) {
 longRisk += risk;
 } else if (tradeSide === 'UNKNOWN') {
@@ -935,6 +962,7 @@ export function checkRiskCaps({
 openPositions = [],
 side,
 tradeSide = side,
+
 btcRelation,
 riskFraction,
 weeklyStats,
@@ -982,6 +1010,7 @@ side,
 tradeSide,
 positionSide: tradeSide,
 direction: tradeSide,
+
 longOnly: true,
 shortDisabled: true
 };
@@ -1029,6 +1058,7 @@ riskState: open,
 if (want <= 0) {
 return {
 ok: false,
+
 reason: 'ZERO_RISK_FRACTION',
 side: TARGET_DASHBOARD_SIDE,
 tradeSide: TARGET_TRADE_SIDE,
@@ -1076,6 +1106,7 @@ riskState: open,
 if (
 relation === 'BTC_AGAINST' &&
 open.counterBtcRisk + want > cfg.maxCounterBtcRiskPct
+
 ) {
 return {
 ok: false,
@@ -1100,3 +1131,4 @@ riskState: open,
 ...longModeFlags(requestRow)
 };
 }
+
