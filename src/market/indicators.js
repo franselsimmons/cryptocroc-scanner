@@ -1,721 +1,606 @@
 // ================= FILE: src/market/indicators.js =================
-
 import {
-  safeNumber,
-  sideToTradeSide
+safeNumber,
+sideToTradeSide
 } from '../utils.js';
-
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_SCANNER_SIDE = 'bull';
 const TARGET_DASHBOARD_SIDE = 'bull';
 const OPPOSITE_TRADE_SIDE = 'SHORT';
-
 const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
-
 const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
-const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
-const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
-const WEEKEND_MODE = 'OBSERVE';
-const SESSION_MODE = 'OBSERVE';
-
+const TEMPORAL_POLICY_VERSION = 'LONG_TEMPORAL_FAMILY_PROFILE_V1';
+const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_PER_FAMILY_DAY_APPROVAL_V1';
+const SESSION_POLICY_VERSION = 'LONG_DAY_SESSION_VETO_RECOVERY_V1';
+const TEMPORAL_GENERATION_SCHEMA_VERSION = 'LONG_TEMPORAL_ROOT_GENERATION_V1';
+const WEEKEND_MODE = 'DEFER_TO_ACTIVE_GENERATION';
+const SESSION_MODE = 'DEFER_TO_ACTIVE_GENERATION';
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
 const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
-const LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
+const LEARNING_GRANULARITY =
+'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_X_CONFIRMATION_V1';
 const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
-
 const SHORT_TOKENS = new Set([
-  'SHORT',
-  'BEAR',
-  'BEARISH',
-  'SELL',
-  'ASK',
-  'DOWN',
-  'DOWNSIDE',
-  'RED'
+'SHORT',
+'BEAR',
+'BEARISH',
+'SELL',
+'ASK',
+'DOWN',
+'DOWNSIDE',
+'RED'
 ]);
-
 const LONG_TOKENS = new Set([
-  'LONG',
-  'BULL',
-  'BULLISH',
-  'BUY',
-  'BID',
-  'UP',
-  'UPSIDE',
-  'GREEN'
+'LONG',
+'BULL',
+'BULLISH',
+
+'BUY',
+'BID',
+'UP',
+'UPSIDE',
+'GREEN'
 ]);
-
 function upper(value) {
-  return String(value || '').trim().toUpperCase();
+return String(value || '').trim().toUpperCase();
 }
-
 function longIndicatorFlags() {
-  return {
-    targetTradeSide: TARGET_TRADE_SIDE,
-    targetScannerSide: TARGET_SCANNER_SIDE,
-    dashboardSide: TARGET_DASHBOARD_SIDE,
-    oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+return {
+targetTradeSide: TARGET_TRADE_SIDE,
+targetScannerSide: TARGET_SCANNER_SIDE,
+dashboardSide: TARGET_DASHBOARD_SIDE,
+oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+side: TARGET_DASHBOARD_SIDE,
+tradeSide: TARGET_TRADE_SIDE,
+positionSide: TARGET_TRADE_SIDE,
+direction: TARGET_TRADE_SIDE,
+longOnly: true,
+shortDisabled: true,
+shortOnly: false,
+longDisabled: false,
+virtualLearning: true,
+virtualOnly: true,
+virtualTracked: true,
+shadowOnly: true,
+realTrade: false,
+realOrder: false,
+exchangeOrder: false,
+bitgetOrderPlaced: false,
+noRealOrders: true,
+realOrdersDisabled: true,
+bitgetOrdersDisabled: true,
+exchangeOrdersDisabled: true,
+exchangeCallsDisabled: true,
+scannerBullishOnly: true,
+temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+temporalPolicyVersion: TEMPORAL_POLICY_VERSION,
+weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+sessionPolicyVersion: SESSION_POLICY_VERSION,
+temporalGenerationSchemaVersion: TEMPORAL_GENERATION_SCHEMA_VERSION,
+weekendMode: WEEKEND_MODE,
+sessionMode: SESSION_MODE,
+sessionPolicyObservedOnly: false,
+temporalPolicyModeOwner: 'TRADE_SYSTEM_ACTIVE_GENERATION',
+temporalContextCalculatedHere: false,
+temporalStatsOwnedHere: false,
+temporalPolicyEvaluatedHere: false,
+weekendLearningAllowed: true,
+weekendVirtualEntryAllowed: true,
+weekendDiscordEntryAllowed: true,
+weekendDiscordEntryDecisionDeferred: true,
+weekendExitMonitoringAllowed: true,
+weekendOutcomeRecordingAllowed: true,
+sessionLearningAllowed: true,
+sessionVirtualEntryAllowed: true,
+sessionDiscordEntryAllowed: true,
+sessionDiscordEntryDecisionDeferred: true,
+familyIdentityIncludesTemporalBucket: false,
+scannerFingerprintRole: 'METADATA_ONLY',
+scannerFingerprintsMetadataOnly: true,
+scannerFingerprintsUsedAsLearningFamily: false,
+executionFingerprintRole: 'METADATA_ONLY',
+executionFingerprintsMetadataOnly: true,
+executionFingerprintsUsedAsLearningFamily: false,
+analyzeMicroFamiliesOnly: true,
+learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
+symbolExcludedFromFamilyId: true,
+coinNameExcludedFromFamilyId: true,
+hashesExcludedFromFamilyId: true,
+trueMicroOnly: true,
+exactTrueMicroOnly: true,
+exactTrueMicroFamilyRequired: true,
+trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
+parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
+learningGranularity: LEARNING_GRANULARITY,
+parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
+selectionGranularity: 'EXACT_75_CHILD',
+completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
+scoringRSource: 'netR',
+winsLossesFlatsSource: 'netR',
+winrateDefinition: 'netR > 0',
+avgRSource: 'netR',
+totalRSource: 'netR',
+avgCostRShown: true,
+manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
+discordOnlyForExactTrueMicroMatch: true,
 
-    side: TARGET_DASHBOARD_SIDE,
-    tradeSide: TARGET_TRADE_SIDE,
-    positionSide: TARGET_TRADE_SIDE,
-    direction: TARGET_TRADE_SIDE,
-
-    longOnly: true,
-    shortDisabled: true,
-    shortOnly: false,
-    longDisabled: false,
-
-    virtualLearning: true,
-    virtualOnly: true,
-    virtualTracked: true,
-    shadowOnly: true,
-
-    realTrade: false,
-    realOrder: false,
-    exchangeOrder: false,
-    bitgetOrderPlaced: false,
-
-    noRealOrders: true,
-    realOrdersDisabled: true,
-    bitgetOrdersDisabled: true,
-    exchangeOrdersDisabled: true,
-    exchangeCallsDisabled: true,
-
-    scannerBullishOnly: true,
-
-    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
-    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
-    sessionPolicyVersion: SESSION_POLICY_VERSION,
-    weekendMode: WEEKEND_MODE,
-    sessionMode: SESSION_MODE,
-    weekendLearningAllowed: true,
-    weekendVirtualEntryAllowed: true,
-    weekendExitMonitoringAllowed: true,
-    weekendOutcomeRecordingAllowed: true,
-    sessionLearningAllowed: true,
-    sessionVirtualEntryAllowed: true,
-    sessionDiscordEntryAllowed: true,
-    sessionPolicyObservedOnly: true,
-    scannerFingerprintRole: 'METADATA_ONLY',
-    scannerFingerprintsMetadataOnly: true,
-    scannerFingerprintsUsedAsLearningFamily: false,
-
-    executionFingerprintRole: 'METADATA_ONLY',
-    executionFingerprintsMetadataOnly: true,
-    executionFingerprintsUsedAsLearningFamily: false,
-
-    analyzeMicroFamiliesOnly: true,
-    learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
-    symbolExcludedFromFamilyId: true,
-    coinNameExcludedFromFamilyId: true,
-    hashesExcludedFromFamilyId: true,
-
-    trueMicroOnly: true,
-    exactTrueMicroOnly: true,
-    exactTrueMicroFamilyRequired: true,
-    trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
-    childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
-    parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
-    learningGranularity: LEARNING_GRANULARITY,
-    parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
-    selectionGranularity: 'EXACT_75_CHILD',
-
-    completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
-    scoringRSource: 'netR',
-    winsLossesFlatsSource: 'netR',
-    winrateDefinition: 'netR > 0',
-    avgRSource: 'netR',
-    totalRSource: 'netR',
-    avgCostRShown: true,
-
-    manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
-    discordOnlyForExactTrueMicroMatch: true,
-
-    riskTradeSide: TARGET_TRADE_SIDE,
-    longRiskShape: 'sl < entry < tp',
-    validLongRiskShape: 'entry > 0 && sl < entry && entry < tp',
-    validLongGeometry: 'sl < entry < tp',
-    riskGeometryRule: 'LONG: sl < entry < tp',
-    tpHitRule: 'LONG: price >= tp',
-    slHitRule: 'LONG: price <= initialSl',
-    grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
-    currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
-    longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
-    longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
-    longExitRules: {
-      tp: 'price >= tp',
-      sl: 'price <= initialSl',
-      timeStop: 'TIME_STOP'
-    },
-
-    currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
-    currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
-    currentFitSoftOnly: true,
-    currentFitBlocksLearning: false,
-    learningRemainsBroad: true,
-
-    redisNamespace: LONG_NAMESPACE,
-    redisKeyPrefix: LONG_KEY_PREFIX,
-    persistentLearningKey: PERSISTENT_LEARNING_KEY,
-    redisKeysSeparatedFromShortRoot: true,
-    shortRootTouched: false
-  };
+riskTradeSide: TARGET_TRADE_SIDE,
+longRiskShape: 'sl < entry < tp',
+validLongRiskShape: 'entry > 0 && sl < entry && entry < tp',
+validLongGeometry: 'sl < entry < tp',
+riskGeometryRule: 'LONG: sl < entry < tp',
+tpHitRule: 'LONG: price >= tp',
+slHitRule: 'LONG: price <= initialSl',
+grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+longExitRules: {
+tp: 'price >= tp',
+sl: 'price <= initialSl',
+timeStop: 'TIME_STOP'
+},
+currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
+currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
+currentFitSoftOnly: true,
+currentFitBlocksLearning: false,
+learningRemainsBroad: true,
+redisNamespace: LONG_NAMESPACE,
+redisKeyPrefix: LONG_KEY_PREFIX,
+persistentLearningKey: PERSISTENT_LEARNING_KEY,
+redisKeysSeparatedFromShortRoot: true,
+shortRootTouched: false
+};
 }
-
 function cleanSideText(value = '') {
-  return upper(value)
-    .replaceAll('SHORT_DISABLED_FALSE', '')
-    .replaceAll('SHORTDISABLED_FALSE', '')
-    .replaceAll('BLOCK_SHORT_FALSE', '')
-    .replaceAll('SHORT_ENABLED_FALSE', '')
-    .replaceAll('SHORT_ONLY_FALSE', '')
-    .replaceAll('LONG_DISABLED_FALSE', '')
-    .replaceAll('LONGDISABLED_FALSE', '')
-    .replaceAll('BLOCK_LONG_FALSE', '')
-    .replaceAll('LONG_ENABLED_FALSE', '')
-    .replaceAll('LONG_ONLY_FALSE', '')
-    .replaceAll('SHORT_DISABLED_LONG_ONLY', 'LONG')
-    .replaceAll('SHORTDISABLED_LONG_ONLY', 'LONG')
-    .replaceAll('SHORT_DISABLED_TRUE', 'LONG')
-    .replaceAll('SHORTDISABLED_TRUE', 'LONG')
-    .replaceAll('BLOCK_SHORT_TRUE', 'LONG')
-    .replaceAll('BLOCK_SHORT', 'LONG')
-    .replaceAll('SHORT_DISABLED', 'LONG')
-    .replaceAll('SHORTDISABLED', 'LONG')
-    .replaceAll('LONG_DISABLED_SHORT_ONLY', 'SHORT')
-    .replaceAll('LONGDISABLED_SHORT_ONLY', 'SHORT')
-    .replaceAll('LONG_DISABLED_TRUE', 'SHORT')
-    .replaceAll('LONGDISABLED_TRUE', 'SHORT')
-    .replaceAll('BLOCK_LONG_TRUE', 'SHORT')
-    .replaceAll('BLOCK_LONG', 'SHORT')
-    .replaceAll('LONG_DISABLED', 'SHORT')
-    .replaceAll('LONGDISABLED', 'SHORT')
-    .replaceAll('LONG_ONLY_MODE', 'LONG')
-    .replaceAll('LONG_ONLY', 'LONG')
-    .replaceAll('LONG-ONLY', 'LONG')
-    .replaceAll('SHORT_ONLY_MODE', 'SHORT')
-    .replaceAll('SHORT_ONLY', 'SHORT')
-    .replaceAll('SHORT-ONLY', 'SHORT');
-}
+return upper(value)
+.replaceAll('SHORT_DISABLED_FALSE', '')
+.replaceAll('SHORTDISABLED_FALSE', '')
+.replaceAll('BLOCK_SHORT_FALSE', '')
+.replaceAll('SHORT_ENABLED_FALSE', '')
+.replaceAll('SHORT_ONLY_FALSE', '')
+.replaceAll('LONG_DISABLED_FALSE', '')
+.replaceAll('LONGDISABLED_FALSE', '')
+.replaceAll('BLOCK_LONG_FALSE', '')
+.replaceAll('LONG_ENABLED_FALSE', '')
+.replaceAll('LONG_ONLY_FALSE', '')
+.replaceAll('SHORT_DISABLED_LONG_ONLY', 'LONG')
+.replaceAll('SHORTDISABLED_LONG_ONLY', 'LONG')
+.replaceAll('SHORT_DISABLED_TRUE', 'LONG')
+.replaceAll('SHORTDISABLED_TRUE', 'LONG')
 
+.replaceAll('BLOCK_SHORT_TRUE', 'LONG')
+.replaceAll('BLOCK_SHORT', 'LONG')
+.replaceAll('SHORT_DISABLED', 'LONG')
+.replaceAll('SHORTDISABLED', 'LONG')
+.replaceAll('LONG_DISABLED_SHORT_ONLY', 'SHORT')
+.replaceAll('LONGDISABLED_SHORT_ONLY', 'SHORT')
+.replaceAll('LONG_DISABLED_TRUE', 'SHORT')
+.replaceAll('LONGDISABLED_TRUE', 'SHORT')
+.replaceAll('BLOCK_LONG_TRUE', 'SHORT')
+.replaceAll('BLOCK_LONG', 'SHORT')
+.replaceAll('LONG_DISABLED', 'SHORT')
+.replaceAll('LONGDISABLED', 'SHORT')
+.replaceAll('LONG_ONLY_MODE', 'LONG')
+.replaceAll('LONG_ONLY', 'LONG')
+.replaceAll('LONG-ONLY', 'LONG')
+.replaceAll('SHORT_ONLY_MODE', 'SHORT')
+.replaceAll('SHORT_ONLY', 'SHORT')
+.replaceAll('SHORT-ONLY', 'SHORT');
+}
 function normalizedSignalText(value = '') {
-  return cleanSideText(value)
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
+return cleanSideText(value)
+.replace(/[^A-Z0-9]+/g, '_')
+.replace(/^_+|_+$/g, '');
 }
-
 function hasSignalPattern(value = '', patterns = []) {
-  const text = normalizedSignalText(value);
-
-  if (!text) return false;
-
-  return patterns.some((pattern) => (
-    text === pattern ||
-    text.startsWith(`${pattern}_`) ||
-    text.endsWith(`_${pattern}`) ||
-    text.includes(`_${pattern}_`)
-  ));
+const text = normalizedSignalText(value);
+if (!text) return false;
+return patterns.some((pattern) => (
+text === pattern ||
+text.startsWith(`${pattern}_`) ||
+text.endsWith(`_${pattern}`) ||
+text.includes(`_${pattern}_`)
+));
 }
-
 function hasShortSignal(value = '') {
-  const raw = cleanSideText(value);
+const raw = cleanSideText(value);
+if (!raw) return false;
+if (SHORT_TOKENS.has(raw)) return true;
+return hasSignalPattern(raw, [
+'SHORT',
 
-  if (!raw) return false;
-  if (SHORT_TOKENS.has(raw)) return true;
-
-  return hasSignalPattern(raw, [
-    'SHORT',
-    'BEAR',
-    'BEARISH',
-    'SELL',
-    'SIDE_SHORT',
-    'TRADE_SIDE_SHORT',
-    'TRADESIDE_SHORT',
-    'POSITION_SIDE_SHORT',
-    'POSITIONSIDE_SHORT',
-    'DIRECTION_SHORT',
-    'SIDE_BEAR',
-    'TRADE_SIDE_BEAR',
-    'DIRECTION_BEAR',
-    'SIDE_SELL',
-    'DIRECTION_SELL',
-    'MICRO_SHORT',
-    'FAMILY_SHORT'
-  ]);
+'BEAR',
+'BEARISH',
+'SELL',
+'SIDE_SHORT',
+'TRADE_SIDE_SHORT',
+'TRADESIDE_SHORT',
+'POSITION_SIDE_SHORT',
+'POSITIONSIDE_SHORT',
+'DIRECTION_SHORT',
+'SIDE_BEAR',
+'TRADE_SIDE_BEAR',
+'DIRECTION_BEAR',
+'SIDE_SELL',
+'DIRECTION_SELL',
+'MICRO_SHORT',
+'FAMILY_SHORT'
+]);
 }
-
 function hasLongSignal(value = '') {
-  const raw = cleanSideText(value);
-
-  if (!raw) return false;
-  if (LONG_TOKENS.has(raw)) return true;
-
-  return hasSignalPattern(raw, [
-    'LONG',
-    'BULL',
-    'BULLISH',
-    'BUY',
-    'SIDE_LONG',
-    'TRADE_SIDE_LONG',
-    'TRADESIDE_LONG',
-    'POSITION_SIDE_LONG',
-    'POSITIONSIDE_LONG',
-    'DIRECTION_LONG',
-    'SIDE_BULL',
-    'TRADE_SIDE_BULL',
-    'DIRECTION_BULL',
-    'SIDE_BUY',
-    'DIRECTION_BUY',
-    'MICRO_LONG',
-    'FAMILY_LONG'
-  ]);
+const raw = cleanSideText(value);
+if (!raw) return false;
+if (LONG_TOKENS.has(raw)) return true;
+return hasSignalPattern(raw, [
+'LONG',
+'BULL',
+'BULLISH',
+'BUY',
+'SIDE_LONG',
+'TRADE_SIDE_LONG',
+'TRADESIDE_LONG',
+'POSITION_SIDE_LONG',
+'POSITIONSIDE_LONG',
+'DIRECTION_LONG',
+'SIDE_BULL',
+'TRADE_SIDE_BULL',
+'DIRECTION_BULL',
+'SIDE_BUY',
+'DIRECTION_BUY',
+'MICRO_LONG',
+'FAMILY_LONG'
+]);
 }
-
 function normalizeTradeSide(value) {
-  const raw = cleanSideText(value);
 
-  if (!raw) return 'UNKNOWN';
-
-  const direct = sideToTradeSide(raw);
-
-  if (direct === TARGET_TRADE_SIDE) return TARGET_TRADE_SIDE;
-  if (direct === OPPOSITE_TRADE_SIDE) return OPPOSITE_TRADE_SIDE;
-
-  const shortHit = hasShortSignal(raw);
-  const longHit = hasLongSignal(raw);
-
-  if (longHit && !shortHit) return TARGET_TRADE_SIDE;
-  if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
-
-  if (shortHit && longHit) {
-    if (raw.includes('TRADE_SIDE=LONG') || raw.includes('TRADESIDE=LONG')) return TARGET_TRADE_SIDE;
-    if (raw.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
-    if (raw.includes('TRADE_SIDE=SHORT') || raw.includes('TRADESIDE=SHORT')) return OPPOSITE_TRADE_SIDE;
-    if (raw.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
-  }
-
-  if (raw === TARGET_DASHBOARD_SIDE.toUpperCase()) return TARGET_TRADE_SIDE;
-
-  return 'UNKNOWN';
+const raw = cleanSideText(value);
+if (!raw) return 'UNKNOWN';
+const direct = sideToTradeSide(raw);
+if (direct === TARGET_TRADE_SIDE) return TARGET_TRADE_SIDE;
+if (direct === OPPOSITE_TRADE_SIDE) return OPPOSITE_TRADE_SIDE;
+const shortHit = hasShortSignal(raw);
+const longHit = hasLongSignal(raw);
+if (longHit && !shortHit) return TARGET_TRADE_SIDE;
+if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
+if (shortHit && longHit) {
+if (raw.includes('TRADE_SIDE=LONG') || raw.includes('TRADESIDE=LONG')) return
+TARGET_TRADE_SIDE;
+if (raw.includes('MICRO_LONG_')) return TARGET_TRADE_SIDE;
+if (raw.includes('TRADE_SIDE=SHORT') || raw.includes('TRADESIDE=SHORT'))
+return OPPOSITE_TRADE_SIDE;
+if (raw.includes('MICRO_SHORT_')) return OPPOSITE_TRADE_SIDE;
 }
-
+if (raw === TARGET_DASHBOARD_SIDE.toUpperCase()) return TARGET_TRADE_SIDE;
+return 'UNKNOWN';
+}
 function clamp01(value) {
-  const n = safeNumber(value, 0);
-
-  if (n <= 0) return 0;
-  if (n >= 1) return 1;
-
-  return n;
+const n = safeNumber(value, 0);
+if (n <= 0) return 0;
+if (n >= 1) return 1;
+return n;
 }
-
 function normalizeCandleTs(value) {
-  const ts = safeNumber(value, 0);
-
-  if (ts <= 0) return 0;
-
-  return ts < 10_000_000_000 ? ts * 1000 : ts;
+const ts = safeNumber(value, 0);
+if (ts <= 0) return 0;
+return ts < 10_000_000_000 ? ts * 1000 : ts;
 }
-
 function normalizeCandle(row = {}) {
-  if (!row || typeof row !== 'object') return null;
 
-  const ts = normalizeCandleTs(row.ts ?? row.time ?? row.timestamp ?? row[0]);
-  const open = safeNumber(row.open ?? row[1], NaN);
-  const high = safeNumber(row.high ?? row[2], NaN);
-  const low = safeNumber(row.low ?? row[3], NaN);
-  const close = safeNumber(row.close ?? row[4], NaN);
-  const volume = safeNumber(row.volume ?? row.baseVolume ?? row.vol ?? row[5], 0);
-  const quoteVolume = safeNumber(row.quoteVolume ?? row.quoteVol ?? row.turnover ?? row[6] ?? row[7], 0);
-
-  if (![open, high, low, close].every(Number.isFinite)) return null;
-  if (open <= 0 || high <= 0 || low <= 0 || close <= 0) return null;
-  if (high < low) return null;
-
-  return {
-    ...row,
-    ts,
-    open,
-    high,
-    low,
-    close,
-    volume,
-    quoteVolume,
-
-    candleSide: close > open
-      ? 'BULL'
-      : close < open
-        ? 'BEAR'
-        : 'DOJI',
-
-    marketDataOnly: true
-  };
+if (!row || typeof row !== 'object') return null;
+const ts = normalizeCandleTs(row.ts ?? row.time ?? row.timestamp ?? row[0]);
+const open = safeNumber(row.open ?? row[1], NaN);
+const high = safeNumber(row.high ?? row[2], NaN);
+const low = safeNumber(row.low ?? row[3], NaN);
+const close = safeNumber(row.close ?? row[4], NaN);
+const volume = safeNumber(row.volume ?? row.baseVolume ?? row.vol ?? row[5], 0);
+const quoteVolume = safeNumber(row.quoteVolume ?? row.quoteVol ?? row.turnover
+?? row[6] ?? row[7], 0);
+if (![open, high, low, close].every(Number.isFinite)) return null;
+if (open <= 0 || high <= 0 || low <= 0 || close <= 0) return null;
+if (high < low) return null;
+return {
+...row,
+ts,
+open,
+high,
+low,
+close,
+volume,
+quoteVolume,
+candleSide: close > open
+? 'BULL'
+: close < open
+? 'BEAR'
+: 'DOJI',
+marketDataOnly: true
+};
 }
-
 function normalizeCandles(candles) {
-  return (Array.isArray(candles) ? candles : [])
-    .map(normalizeCandle)
-    .filter(Boolean)
-    .sort((a, b) => safeNumber(a.ts, 0) - safeNumber(b.ts, 0));
+return (Array.isArray(candles) ? candles : [])
+.map(normalizeCandle)
+.filter(Boolean)
+.sort((a, b) => safeNumber(a.ts, 0) - safeNumber(b.ts, 0));
 }
-
 export function parseBitgetCandle(row) {
-  if (!Array.isArray(row) || row.length < 6) return null;
+if (!Array.isArray(row) || row.length < 6) return null;
+const ts = normalizeCandleTs(row[0]);
+const open = safeNumber(row[1], NaN);
 
-  const ts = normalizeCandleTs(row[0]);
-  const open = safeNumber(row[1], NaN);
-  const high = safeNumber(row[2], NaN);
-  const low = safeNumber(row[3], NaN);
-  const close = safeNumber(row[4], NaN);
-  const volume = safeNumber(row[5], 0);
-  const quoteVolume = safeNumber(row[6] ?? row[7], 0);
-
-  if (![ts, open, high, low, close].every(Number.isFinite)) return null;
-  if (ts <= 0 || open <= 0 || high <= 0 || low <= 0 || close <= 0) return null;
-  if (high < low) return null;
-
-  return {
-    ts,
-    open,
-    high,
-    low,
-    close,
-    volume,
-    quoteVolume,
-    marketDataOnly: true
-  };
+const high = safeNumber(row[2], NaN);
+const low = safeNumber(row[3], NaN);
+const close = safeNumber(row[4], NaN);
+const volume = safeNumber(row[5], 0);
+const quoteVolume = safeNumber(row[6] ?? row[7], 0);
+if (![ts, open, high, low, close].every(Number.isFinite)) return null;
+if (ts <= 0 || open <= 0 || high <= 0 || low <= 0 || close <= 0) return null;
+if (high < low) return null;
+return {
+ts,
+open,
+high,
+low,
+close,
+volume,
+quoteVolume,
+marketDataOnly: true
+};
 }
-
 export function candleBodyPct(candle) {
-  const row = normalizeCandle(candle);
-
-  if (!row) return 0;
-
-  const range = row.high - row.low;
-
-  if (range <= 0) return 0;
-
-  return clamp01(Math.abs(row.close - row.open) / range);
+const row = normalizeCandle(candle);
+if (!row) return 0;
+const range = row.high - row.low;
+if (range <= 0) return 0;
+return clamp01(Math.abs(row.close - row.open) / range);
 }
-
 export function upperWickPct(candle) {
-  const row = normalizeCandle(candle);
-
-  if (!row) return 0;
-
-  const range = row.high - row.low;
-
-  if (range <= 0) return 0;
-
-  return clamp01((row.high - Math.max(row.open, row.close)) / range);
+const row = normalizeCandle(candle);
+if (!row) return 0;
+const range = row.high - row.low;
+if (range <= 0) return 0;
+return clamp01((row.high - Math.max(row.open, row.close)) / range);
 }
-
 export function lowerWickPct(candle) {
-  const row = normalizeCandle(candle);
 
-  if (!row) return 0;
-
-  const range = row.high - row.low;
-
-  if (range <= 0) return 0;
-
-  return clamp01((Math.min(row.open, row.close) - row.low) / range);
+const row = normalizeCandle(candle);
+if (!row) return 0;
+const range = row.high - row.low;
+if (range <= 0) return 0;
+return clamp01((Math.min(row.open, row.close) - row.low) / range);
 }
-
 export function candleDirection(candle) {
-  const row = normalizeCandle(candle);
-
-  if (!row) return 'NA';
-
-  if (row.close > row.open) return 'BULL';
-  if (row.close < row.open) return 'BEAR';
-
-  return 'DOJI';
+const row = normalizeCandle(candle);
+if (!row) return 'NA';
+if (row.close > row.open) return 'BULL';
+if (row.close < row.open) return 'BEAR';
+return 'DOJI';
 }
-
 export function calculateRsi(candles, period = 14) {
-  const rows = normalizeCandles(candles);
-
-  const closes = rows
-    .map((candle) => safeNumber(candle?.close, NaN))
-    .filter(Number.isFinite);
-
-  const p = Math.max(2, Math.floor(Number(period) || 14));
-
-  if (closes.length < p + 1) return null;
-
-  let avgGain = 0;
-  let avgLoss = 0;
-
-  for (let i = 1; i <= p; i += 1) {
-    const diff = closes[i] - closes[i - 1];
-
-    if (diff >= 0) {
-      avgGain += diff;
-    } else {
-      avgLoss += Math.abs(diff);
-    }
-  }
-
-  avgGain /= p;
-  avgLoss /= p;
-
-  for (let i = p + 1; i < closes.length; i += 1) {
-    const diff = closes[i] - closes[i - 1];
-    const gain = diff > 0 ? diff : 0;
-    const loss = diff < 0 ? Math.abs(diff) : 0;
-
-    avgGain = ((avgGain * (p - 1)) + gain) / p;
-    avgLoss = ((avgLoss * (p - 1)) + loss) / p;
-  }
-
-  if (avgLoss === 0) return 100;
-  if (avgGain === 0) return 0;
-
-  const rs = avgGain / avgLoss;
-
-  return Number((100 - (100 / (1 + rs))).toFixed(3));
+const rows = normalizeCandles(candles);
+const closes = rows
+.map((candle) => safeNumber(candle?.close, NaN))
+.filter(Number.isFinite);
+const p = Math.max(2, Math.floor(Number(period) || 14));
+if (closes.length < p + 1) return null;
+let avgGain = 0;
+let avgLoss = 0;
+for (let i = 1; i <= p; i += 1) {
+const diff = closes[i] - closes[i - 1];
+if (diff >= 0) {
+avgGain += diff;
+} else {
+avgLoss += Math.abs(diff);
 }
+}
+avgGain /= p;
 
+avgLoss /= p;
+for (let i = p + 1; i < closes.length; i += 1) {
+const diff = closes[i] - closes[i - 1];
+const gain = diff > 0 ? diff : 0;
+const loss = diff < 0 ? Math.abs(diff) : 0;
+avgGain = ((avgGain * (p - 1)) + gain) / p;
+avgLoss = ((avgLoss * (p - 1)) + loss) / p;
+}
+if (avgLoss === 0) return 100;
+if (avgGain === 0) return 0;
+const rs = avgGain / avgLoss;
+return Number((100 - (100 / (1 + rs))).toFixed(3));
+}
 export function calculateAtrPct(candles, period = 14) {
-  const p = Math.max(2, Math.floor(Number(period) || 14));
-  const rows = normalizeCandles(candles).slice(-(p + 1));
-
-  if (rows.length < p + 1) return 0;
-
-  const trueRanges = [];
-
-  for (let i = 1; i < rows.length; i += 1) {
-    const high = safeNumber(rows[i]?.high, 0);
-    const low = safeNumber(rows[i]?.low, 0);
-    const prevClose = safeNumber(rows[i - 1]?.close, 0);
-
-    if (high <= 0 || low <= 0 || prevClose <= 0) continue;
-
-    trueRanges.push(
-      Math.max(
-        high - low,
-        Math.abs(high - prevClose),
-        Math.abs(low - prevClose)
-      )
-    );
-  }
-
-  if (trueRanges.length === 0) return 0;
-
-  const atr = trueRanges.reduce((sum, value) => sum + value, 0) / trueRanges.length;
-  const price = safeNumber(rows.at(-1)?.close, 0);
-
-  return price > 0 ? atr / price : 0;
+const p = Math.max(2, Math.floor(Number(period) || 14));
+const rows = normalizeCandles(candles).slice(-(p + 1));
+if (rows.length < p + 1) return 0;
+const trueRanges = [];
+for (let i = 1; i < rows.length; i += 1) {
+const high = safeNumber(rows[i]?.high, 0);
+const low = safeNumber(rows[i]?.low, 0);
+const prevClose = safeNumber(rows[i - 1]?.close, 0);
+if (high <= 0 || low <= 0 || prevClose <= 0) continue;
+trueRanges.push(
+Math.max(
+high - low,
+Math.abs(high - prevClose),
+Math.abs(low - prevClose)
+)
+);
 }
+if (trueRanges.length === 0) return 0;
+const atr = trueRanges.reduce((sum, value) => sum + value, 0) /
+trueRanges.length;
 
+const price = safeNumber(rows.at(-1)?.close, 0);
+return price > 0 ? atr / price : 0;
+}
 export function getRsiZone(rsi) {
-  const n = safeNumber(rsi, 50);
-
-  if (n <= 26) return 'LOWER_3';
-  if (n <= 33) return 'LOWER_2';
-  if (n <= 40) return 'LOWER_1';
-
-  if (n >= 74) return 'UPPER_3';
-  if (n >= 67) return 'UPPER_2';
-  if (n >= 60) return 'UPPER_1';
-
-  return 'MID';
+const n = safeNumber(rsi, 50);
+if (n <= 26) return 'LOWER_3';
+if (n <= 33) return 'LOWER_2';
+if (n <= 40) return 'LOWER_1';
+if (n >= 74) return 'UPPER_3';
+if (n >= 67) return 'UPPER_2';
+if (n >= 60) return 'UPPER_1';
+return 'MID';
 }
-
 export function getRsiSlope(candles, lookbackCandles = 3) {
-  const rows = normalizeCandles(candles);
-  const lookback = Math.max(1, Math.floor(Number(lookbackCandles) || 3));
-
-  const rsiNow = calculateRsi(rows, 14);
-  const rsiPrev = calculateRsi(rows.slice(0, -lookback), 14);
-
-  if (!Number.isFinite(rsiNow) || !Number.isFinite(rsiPrev)) return 0;
-
-  return Number((rsiNow - rsiPrev).toFixed(3));
+const rows = normalizeCandles(candles);
+const lookback = Math.max(1, Math.floor(Number(lookbackCandles) || 3));
+const rsiNow = calculateRsi(rows, 14);
+const rsiPrev = calculateRsi(rows.slice(0, -lookback), 14);
+if (!Number.isFinite(rsiNow) || !Number.isFinite(rsiPrev)) return 0;
+return Number((rsiNow - rsiPrev).toFixed(3));
 }
-
 export function getRecentRange(candles, lookback = 24) {
-  const lb = Math.max(1, Math.floor(Number(lookback) || 24));
-  const rows = normalizeCandles(candles).slice(-lb);
-
-  if (!rows.length) {
-    return {
-      recentHigh: 0,
-      recentLow: 0,
-      rangePct: 0,
-      mid: 0,
-      marketDataOnly: true
-    };
-  }
-
-  const highs = rows
-    .map((row) => safeNumber(row?.high, 0))
-    .filter((n) => n > 0);
-
-  const lows = rows
-    .map((row) => safeNumber(row?.low, 0))
-    .filter((n) => n > 0);
-
-  if (!highs.length || !lows.length) {
-    return {
-      recentHigh: 0,
-      recentLow: 0,
-      rangePct: 0,
-      mid: 0,
-      marketDataOnly: true
-    };
-  }
-
-  const recentHigh = Math.max(...highs);
-  const recentLow = Math.min(...lows);
-  const mid = (recentHigh + recentLow) / 2;
-
-  return {
-    recentHigh,
-    recentLow,
-    rangePct: recentHigh > 0 ? (recentHigh - recentLow) / recentHigh : 0,
-    mid,
-    marketDataOnly: true
-  };
+const lb = Math.max(1, Math.floor(Number(lookback) || 24));
+const rows = normalizeCandles(candles).slice(-lb);
+if (!rows.length) {
+return {
+recentHigh: 0,
+recentLow: 0,
+rangePct: 0,
+mid: 0,
+marketDataOnly: true
+};
 }
+const highs = rows
+.map((row) => safeNumber(row?.high, 0))
 
+.filter((n) => n > 0);
+const lows = rows
+.map((row) => safeNumber(row?.low, 0))
+.filter((n) => n > 0);
+if (!highs.length || !lows.length) {
+return {
+recentHigh: 0,
+recentLow: 0,
+rangePct: 0,
+mid: 0,
+marketDataOnly: true
+};
+}
+const recentHigh = Math.max(...highs);
+const recentLow = Math.min(...lows);
+const mid = (recentHigh + recentLow) / 2;
+return {
+recentHigh,
+recentLow,
+rangePct: recentHigh > 0 ? (recentHigh - recentLow) / recentHigh : 0,
+mid,
+marketDataOnly: true
+};
+}
 export function calcMovePct(candles, lookback = 8) {
-  const lb = Math.max(2, Math.floor(Number(lookback) || 8));
-  const rows = normalizeCandles(candles).slice(-lb);
-
-  if (rows.length < 2) return 0;
-
-  const first = safeNumber(rows[0]?.close, 0);
-  const last = safeNumber(rows.at(-1)?.close, 0);
-
-  if (first <= 0 || last <= 0) return 0;
-
-  return ((last - first) / first) * 100;
+const lb = Math.max(2, Math.floor(Number(lookback) || 8));
+const rows = normalizeCandles(candles).slice(-lb);
+if (rows.length < 2) return 0;
+const first = safeNumber(rows[0]?.close, 0);
+const last = safeNumber(rows.at(-1)?.close, 0);
+if (first <= 0 || last <= 0) return 0;
+return ((last - first) / first) * 100;
 }
-
 export function calcVolumeExpansion(candles, lookback = 20) {
-  const lb = Math.max(5, Math.floor(Number(lookback) || 20));
-  const rows = normalizeCandles(candles).slice(-(lb + 1));
+const lb = Math.max(5, Math.floor(Number(lookback) || 20));
+const rows = normalizeCandles(candles).slice(-(lb + 1));
 
-  if (rows.length < 6) return 1;
-
-  const last = safeNumber(
-    rows.at(-1)?.quoteVolume || rows.at(-1)?.volume,
-    0
-  );
-
-  const previous = rows
-    .slice(0, -1)
-    .map((row) => safeNumber(row?.quoteVolume || row?.volume, 0))
-    .filter((n) => n > 0);
-
-  if (last <= 0 || previous.length === 0) return 1;
-
-  const avg = previous.reduce((sum, value) => sum + value, 0) / previous.length;
-
-  return avg > 0 ? Number((last / avg).toFixed(3)) : 1;
+if (rows.length < 6) return 1;
+const last = safeNumber(
+rows.at(-1)?.quoteVolume || rows.at(-1)?.volume,
+0
+);
+const previous = rows
+.slice(0, -1)
+.map((row) => safeNumber(row?.quoteVolume || row?.volume, 0))
+.filter((n) => n > 0);
+if (last <= 0 || previous.length === 0) return 1;
+const avg = previous.reduce((sum, value) => sum + value, 0) / previous.length;
+return avg > 0 ? Number((last / avg).toFixed(3)) : 1;
 }
-
 function inferLongSideFromMomentum({
-  change1h,
-  change24h,
-  candles15m
+change1h,
+change24h,
+candles15m
 } = {}) {
-  const ch1 = safeNumber(change1h, 0);
-  const ch24 = safeNumber(change24h, 0);
-  const longMovePct = calcMovePct(candles15m, 8);
-
-  if (ch1 > 0 || longMovePct > 0 || ch24 > 0) {
-    return TARGET_TRADE_SIDE;
-  }
-
-  return 'UNKNOWN';
+const ch1 = safeNumber(change1h, 0);
+const ch24 = safeNumber(change24h, 0);
+const longMovePct = calcMovePct(candles15m, 8);
+if (ch1 > 0 || longMovePct > 0 || ch24 > 0) {
+return TARGET_TRADE_SIDE;
 }
-
+return 'UNKNOWN';
+}
 export function classifyFlow({
-  side,
-  change1h,
-  change24h,
-  candles15m
+side,
+change1h,
+change24h,
+candles15m
 } = {}) {
-  const explicitSide = normalizeTradeSide(side);
-
-  if (explicitSide === OPPOSITE_TRADE_SIDE) {
-    return 'SHORT_DISABLED_LONG_ONLY';
-  }
-
-  const inferredSide = explicitSide === TARGET_TRADE_SIDE
-    ? TARGET_TRADE_SIDE
-    : inferLongSideFromMomentum({
-      change1h,
-      change24h,
-      candles15m
-    });
-
-  if (inferredSide !== TARGET_TRADE_SIDE) {
-    return 'NEUTRAL';
-  }
-
-  const ch1 = safeNumber(change1h, 0);
-  const ch24 = safeNumber(change24h, 0);
-  const longMovePct = calcMovePct(candles15m, 8);
-  const volumeExpansion = calcVolumeExpansion(candles15m, 20);
-
-  const directional = ch1 > 0 && longMovePct > 0;
-  const strong = ch1 > 0.8 || ch24 > 3 || longMovePct > 1.2;
-  const volumeBacked = volumeExpansion >= 1.25;
-
-  if (directional && strong && volumeBacked) return 'TREND';
-  if (directional && strong) return 'IMPULSE';
-  if (directional) return 'BUILDING';
-
-  return 'NEUTRAL';
+const explicitSide = normalizeTradeSide(side);
+if (explicitSide === OPPOSITE_TRADE_SIDE) {
+return 'SHORT_DISABLED_LONG_ONLY';
 }
 
+const inferredSide = explicitSide === TARGET_TRADE_SIDE
+? TARGET_TRADE_SIDE
+: inferLongSideFromMomentum({
+change1h,
+change24h,
+candles15m
+});
+if (inferredSide !== TARGET_TRADE_SIDE) {
+return 'NEUTRAL';
+}
+const ch1 = safeNumber(change1h, 0);
+const ch24 = safeNumber(change24h, 0);
+const longMovePct = calcMovePct(candles15m, 8);
+const volumeExpansion = calcVolumeExpansion(candles15m, 20);
+const directional = ch1 > 0 && longMovePct > 0;
+const strong = ch1 > 0.8 || ch24 > 3 || longMovePct > 1.2;
+const volumeBacked = volumeExpansion >= 1.25;
+if (directional && strong && volumeBacked) return 'TREND';
+if (directional && strong) return 'IMPULSE';
+if (directional) return 'BUILDING';
+return 'NEUTRAL';
+}
 export function classifyVolatilityRegime(candles, atrPct = null) {
-  const atr = Number.isFinite(Number(atrPct))
-    ? safeNumber(atrPct, 0)
-    : calculateAtrPct(candles, 14);
-
-  if (atr >= 0.025) return 'EXTREME_VOL';
-  if (atr >= 0.014) return 'HIGH_VOL';
-  if (atr <= 0.004) return 'LOW_VOL';
-
-  return 'NORMAL_VOL';
+const atr = Number.isFinite(Number(atrPct))
+? safeNumber(atrPct, 0)
+: calculateAtrPct(candles, 14);
+if (atr >= 0.025) return 'EXTREME_VOL';
+if (atr >= 0.014) return 'HIGH_VOL';
+if (atr <= 0.004) return 'LOW_VOL';
+return 'NORMAL_VOL';
 }
-
 export function calcCandleStructure(candles) {
-  const rows = normalizeCandles(candles);
-  const last = rows.at(-1);
+const rows = normalizeCandles(candles);
+const last = rows.at(-1);
+if (!last) {
+return {
+direction: 'NA',
 
-  if (!last) {
-    return {
-      direction: 'NA',
-      bodyPct: 0,
-      upperWickPct: 0,
-      lowerWickPct: 0,
-      marketDataOnly: true,
-      ...longIndicatorFlags()
-    };
-  }
-
-  return {
-    direction: candleDirection(last),
-    bodyPct: candleBodyPct(last),
-    upperWickPct: upperWickPct(last),
-    lowerWickPct: lowerWickPct(last),
-    marketDataOnly: true,
-    ...longIndicatorFlags()
-  };
+bodyPct: 0,
+upperWickPct: 0,
+lowerWickPct: 0,
+marketDataOnly: true,
+...longIndicatorFlags()
+};
 }
-
+return {
+direction: candleDirection(last),
+bodyPct: candleBodyPct(last),
+upperWickPct: upperWickPct(last),
+lowerWickPct: lowerWickPct(last),
+marketDataOnly: true,
+...longIndicatorFlags()
+};
+}
 export function buildLongIndicatorMeta(extra = {}) {
-  return {
-    ...longIndicatorFlags(),
-    ...extra
-  };
+return {
+...longIndicatorFlags(),
+...extra
+};
 }
+
