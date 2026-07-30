@@ -25,10 +25,12 @@ const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
-const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
-const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
-const WEEKEND_MODE = 'OBSERVE';
-const SESSION_MODE = 'OBSERVE';
+const TEMPORAL_POLICY_VERSION = 'LONG_TEMPORAL_FAMILY_PROFILE_V1';
+const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_PER_FAMILY_DAY_APPROVAL_V1';
+const SESSION_POLICY_VERSION = 'LONG_DAY_SESSION_VETO_RECOVERY_V1';
+const TEMPORAL_GENERATION_SCHEMA_VERSION = 'LONG_TEMPORAL_ROOT_GENERATION_V1';
+const WEEKEND_MODE = 'RUNTIME_CONTROLLED';
+const SESSION_MODE = 'RUNTIME_CONTROLLED';
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
 const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
@@ -42,6 +44,7 @@ const EXIT_FILL_MODEL_VERSION =
 'LONG_TRIGGER_BOUNDARY_FILL_PLUS_COST_MODEL_V1';
 const DEFAULT_SOURCE = 'VIRTUAL';
 const LONG_TOKENS = new Set([
+
 'LONG',
 'BULL',
 'BULLISH',
@@ -89,6 +92,7 @@ CONFIG.cost?.marketImpactPct,
 ),
 fallbackSpreadPct: Math.max(
 0,
+
 safeNumber(
 CONFIG.long?.cost?.fallbackSpreadPct ??
 CONFIG.cost?.fallbackSpreadPct,
@@ -136,6 +140,7 @@ return upper(value)
 }
 function hasPattern(value = '', patterns = []) {
 const text = cleanSideText(value)
+
 .replace(/[^A-Z0-9]+/g, '_')
 .replace(/^_+|_+$/g, '');
 if (!text) return false;
@@ -183,6 +188,7 @@ return hasPattern(raw, [
 'TRADE_SIDE_SHORT',
 'TRADESIDE_SHORT',
 'POSITION_SIDE_SHORT',
+
 'POSITIONSIDE_SHORT',
 'DIRECTION_SHORT',
 'SIDE_BEAR',
@@ -230,6 +236,7 @@ function normalizeLeg(leg) {
 const l = String(leg || '').toLowerCase();
 if (l === 'entry') return 'entry';
 if (l === 'exit') return 'exit';
+
 return 'unknown';
 }
 function clampSpread(spreadPct) {
@@ -277,6 +284,7 @@ function calcLongCurrentR({ entry, initialSl, currentPrice } = {}) {
 const e = safeNumber(entry, 0);
 const s = safeNumber(initialSl, 0);
 const p = safeNumber(currentPrice, 0);
+
 if (e <= 0 || s <= 0 || p <= 0 || s >= e) return 0;
 const riskDistance = e - s;
 if (riskDistance <= 0) return 0;
@@ -324,6 +332,7 @@ manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
 discordOnlyForExactTrueMicroMatch: true,
 completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
 completedOnlyClosedVirtualOrShadow: true,
+
 scoringRSource: 'netR',
 winsLossesFlatsSource: 'netR',
 winrateDefinition: 'netR > 0',
@@ -371,6 +380,7 @@ redisNamespace: LONG_NAMESPACE,
 redisKeyPrefix: LONG_KEY_PREFIX,
 persistentLearningKey: PERSISTENT_LEARNING_KEY,
 temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+
 weekendPolicyVersion: WEEKEND_POLICY_VERSION,
 sessionPolicyVersion: SESSION_POLICY_VERSION,
 weekendMode: WEEKEND_MODE,
@@ -383,6 +393,12 @@ sessionLearningAllowed: true,
 sessionVirtualEntryAllowed: true,
 sessionDiscordEntryAllowed: true,
 sessionPolicyObservedOnly: true,
+temporalPolicyVersion: TEMPORAL_POLICY_VERSION,
+temporalGenerationSchemaVersion: TEMPORAL_GENERATION_SCHEMA_VERSION,
+temporalPolicyOwner: 'TRADE_SYSTEM_AND_ROTATION_ENGINE',
+temporalPolicyAppliedHere: false,
+temporalStatsAggregatedHere: false,
+temporalFamilyIdentityIncludesBucket: false,
 redisKeysSeparatedFromShortRoot: true,
 shortRootTouched: false
 };
@@ -418,6 +434,7 @@ realTrade: false,
 realOrder: false,
 exchangeOrder: false,
 bitgetOrderPlaced: false,
+
 realOrdersDisabled: true,
 bitgetOrdersDisabled: true,
 exchangeOrdersDisabled: true,
@@ -465,6 +482,7 @@ realizedGrossR: 0,
 costR: 0,
 avgCostR: 0,
 totalCostR: 0,
+
 netR: 0,
 exitR: 0,
 realizedNetR: 0,
@@ -512,6 +530,7 @@ reason: valid ? null : 'INVALID_LONG_RISK_SHAPE_REQUIRES_SL_LT_ENTRY_LT_TP'
 };
 }
 export function modelFillPrice({
+
 midPrice,
 side = TARGET_TRADE_SIDE,
 leg,
@@ -559,6 +578,7 @@ source = DEFAULT_SOURCE
 } = {}) {
 const normalizedSide = normalizeTradeSide(tradeSide || side);
 if (normalizedSide === OPPOSITE_TRADE_SIDE) {
+
 return emptyCostResult('SHORT_DISABLED_LONG_ONLY_COST_MODEL', source);
 }
 if (normalizedSide !== TARGET_TRADE_SIDE) {
@@ -606,6 +626,7 @@ breakEvenMovePct: round6(costRatio),
 feePct: round6(feeRatio * 100),
 slippagePct: round6(slippageRatio * 100),
 costPct: round6(costRatio * 100),
+
 grossPnlPct: round6(grossPnlPct),
 netPnlPct: round6(netPnlPct),
 grossR: round6(calculatedGrossR),
@@ -653,6 +674,7 @@ return emptyCostResult('UNKNOWN_OR_NON_LONG_COST_MODEL_SKIPPED', source);
 }
 const e = safeNumber(entry, 0);
 const s = safeNumber(initialSl, 0);
+
 const t = safeNumber(tp, 0);
 const x = safeNumber(exitPrice, 0);
 const p = safeNumber(currentPrice, x);
@@ -700,6 +722,7 @@ const tpHit = x >= t;
 const slHit = x <= s;
 return {
 ...result,
+
 entry: e,
 exit: x,
 exitPrice: x,
@@ -747,6 +770,7 @@ winrateDefinition: 'netR > 0',
 avgRSource: 'netR',
 totalRSource: 'netR',
 avgCostRShown: true,
+
 avgCostRSource: 'costR'
 };
 }
@@ -757,3 +781,4 @@ calcGrossMovePct,
 calcRiskPct,
 validLongRiskShape
 };
+
