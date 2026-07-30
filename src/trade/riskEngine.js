@@ -21,10 +21,12 @@ const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
 const TEMPORAL_CONTEXT_VERSION = 'LONG_TEMPORAL_CONTEXT_UTC_V1';
-const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
-const SESSION_POLICY_VERSION = 'LONG_SESSION_OBSERVE_V1';
-const WEEKEND_MODE = 'OBSERVE';
-const SESSION_MODE = 'OBSERVE';
+const TEMPORAL_POLICY_VERSION = 'LONG_TEMPORAL_FAMILY_PROFILE_V1';
+const WEEKEND_POLICY_VERSION = 'LONG_WEEKEND_PER_FAMILY_DAY_APPROVAL_V1';
+const SESSION_POLICY_VERSION = 'LONG_DAY_SESSION_VETO_RECOVERY_V1';
+const TEMPORAL_GENERATION_SCHEMA_VERSION = 'LONG_TEMPORAL_ROOT_GENERATION_V1';
+const WEEKEND_MODE = 'RUNTIME_CONTROLLED';
+const SESSION_MODE = 'RUNTIME_CONTROLLED';
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
 const PARENT_TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_15';
 const CHILD_TRUE_MICRO_SCHEMA = TRUE_MICRO_SCHEMA;
@@ -42,6 +44,7 @@ const EMPIRICAL_VETO_POLICY_VERSION =
 const OUTCOME_MEASUREMENT_GATE_MODE = 'STRICT_EXACT_VERSION';
 const DEFAULT_POSITION_TIME_STOP_MIN = 720;
 const SETUP_ORDER = Object.freeze([
+
 'BREAKOUT',
 'RETEST',
 'SWEEP_REVERSAL',
@@ -89,6 +92,7 @@ return Date.now();
 function tradeConfig() {
 return {
 minRR: safeNumber(CONFIG.long?.trade?.minRR ?? CONFIG.trade?.longMinRR ??
+
 CONFIG.trade?.minRR, 0.5),
 defaultRR: safeNumber(CONFIG.long?.trade?.defaultRR ??
 CONFIG.trade?.longDefaultRR ?? CONFIG.trade?.defaultRR, 1.5),
@@ -136,6 +140,7 @@ function round2(value) {
 return Number(safeNumber(value, 0).toFixed(2));
 }
 function round4(value) {
+
 return Number(safeNumber(value, 0).toFixed(4));
 }
 function round6(value) {
@@ -183,6 +188,7 @@ return upper(value, '')
 function normalizedSignalText(value = '') {
 return cleanSideText(value)
 .replace(/[^A-Z0-9]+/g, '_')
+
 .replace(/^_+|_+$/g, '');
 }
 function hasSignalPattern(value = '', patterns = []) {
@@ -230,6 +236,7 @@ return hasSignalPattern(raw, [
 'SELL',
 'SIDE_SHORT',
 'TRADE_SIDE_SHORT',
+
 'TRADESIDE_SHORT',
 'POSITION_SIDE_SHORT',
 'POSITIONSIDE_SHORT',
@@ -277,6 +284,7 @@ value.includes('MICRO_SHORT_SCANNER__') ||
 value.startsWith('SHORT_SCANNER_') ||
 value.includes('SHORT_SCANNER_') ||
 value.includes('__SCANNER__') ||
+
 value.includes('SCANNER_GATE_PASS') ||
 value.includes('SCANNER_GATE_FAIL')
 );
@@ -324,6 +332,7 @@ let regime = null;
 for (const candidateRegime of REGIME_ORDER) {
 const suffix = `_${candidateRegime}`;
 if (body.endsWith(suffix)) {
+
 regime = candidateRegime;
 setup = body.slice(0, -suffix.length);
 break;
@@ -371,6 +380,7 @@ row.learningMicroFamilyId ||
 if (!rawId || !validLearningId(rawId)) {
 return {
 trueMicroFamilyId: null,
+
 childTrueMicroFamilyId: null,
 parentTrueMicroFamilyId: null,
 setupType: null,
@@ -418,6 +428,7 @@ row.liveMicroFamilyId,
 row.realMicroFamilyId,
 row.executionMicroFamilyId,
 row.parentTrueMicroFamilyId,
+
 row.coarseMicroFamilyId,
 row.macroFamilyId,
 row.parentMacroFamilyId,
@@ -465,6 +476,7 @@ row.executionFingerprintParts : [])
 if (!haystack) return 'UNKNOWN';
 const longHit = hasLongSignal(haystack);
 const shortHit = hasShortSignal(haystack);
+
 if (longHit && !shortHit) return TARGET_TRADE_SIDE;
 if (shortHit && !longHit) return OPPOSITE_TRADE_SIDE;
 if (longHit && shortHit) {
@@ -512,6 +524,7 @@ row.biasSide,
 row.side
 ];
 for (const value of candidates) {
+
 const side = normalizeTradeSideValue(value);
 if (side !== 'UNKNOWN') return side;
 }
@@ -559,6 +572,7 @@ inferTradeSideFromReason(row) === OPPOSITE_TRADE_SIDE
 function sideLabel(sideOrRow) {
 return typeof sideOrRow === 'object' && sideOrRow !== null
 ? inferTradeSide(sideOrRow)
+
 : normalizeTradeSideValue(sideOrRow);
 }
 function isLong(side) {
@@ -606,6 +620,7 @@ executionFingerprintsMetadataOnly: true,
 executionFingerprintsUsedAsLearningFamily: false,
 scannerBucketsMetadataOnly: true,
 legacy25BucketsMetadataOnly: true,
+
 scannerBucketsUsedAsLearningFamily: false,
 analyzeMicroFamiliesOnly: true,
 analyzeAssignsTrueMicroFamily: true,
@@ -653,6 +668,7 @@ minCompletedForFamilyGate: MIN_COMPLETED_FAMILY_GATE,
 observingStatusRule: 'completed == 0',
 earlyOutcomesStatusRule: 'completed > 0 && completed < 20',
 activeLearningStatusRule: 'completed >= 20 && completed < 35',
+
 passedStatusRule: 'completed >= 35 && avgR > 0',
 empiricalVetoStatusRule: 'completed >= 35 && avgR <= 0',
 statusRules: {
@@ -700,8 +716,15 @@ weekendExitMonitoringAllowed: true,
 weekendOutcomeRecordingAllowed: true,
 sessionLearningAllowed: true,
 sessionVirtualEntryAllowed: true,
+
 sessionDiscordEntryAllowed: true,
 sessionPolicyObservedOnly: true,
+temporalPolicyVersion: TEMPORAL_POLICY_VERSION,
+temporalGenerationSchemaVersion: TEMPORAL_GENERATION_SCHEMA_VERSION,
+temporalPolicyOwner: 'TRADE_SYSTEM_AND_ROTATION_ENGINE',
+temporalPolicyAppliedHere: false,
+temporalStatsAggregatedHere: false,
+temporalFamilyIdentityIncludesBucket: false,
 redisKeysSeparatedFromShortRoot: true,
 shortRootTouched: false
 };
@@ -747,6 +770,7 @@ change
 const value = safeNumber(change, 0);
 if (!isLong(side)) return 0;
 return value;
+
 }
 function rsiBucket(value) {
 const rsi = safeNumber(value, 50);
@@ -794,6 +818,7 @@ change24h
 } = {}) {
 const d1h = directionalChange({ side, change: change1h });
 const d24h = directionalChange({ side, change: change24h });
+
 if (d1h >= 3 || d24h >= 10) return 'MOM_STRONG_WITH';
 if (d1h >= 1 || d24h >= 4) return 'MOM_WITH';
 if (d1h <= -3 || d24h <= -10) return 'MOM_STRONG_AGAINST';
@@ -841,6 +866,7 @@ if (depth >= 100_000) return 'DEPTH_100K_250K';
 if (depth >= 50_000) return 'DEPTH_50K_100K';
 if (depth > 0) return 'DEPTH_LT_50K';
 return 'DEPTH_UNKNOWN';
+
 }
 function fundingBucket(rate) {
 const funding = safeNumber(rate, 0);
@@ -888,6 +914,7 @@ ob.askDepthUsd ??
 0,
 0
 );
+
 const total = bidDepth + askDepth;
 if (total <= 0) return 0;
 return clamp((bidDepth - askDepth) / total, -1, 1);
@@ -935,6 +962,7 @@ else if (pullbackConfirmed) entryQuality = 'PULLBACK';
 else if (sweepConfirmed) entryQuality = 'SWEEP';
 else if (reason.includes('BREAKOUT')) entryQuality = 'BREAKOUT';
 else if (reason.includes('MOMENTUM')) entryQuality = 'MOMENTUM';
+
 return {
 pullbackConfirmed,
 retestConfirmed,
@@ -982,6 +1010,7 @@ if (depth >= 500_000) return 8;
 if (depth >= 250_000) return 6;
 if (depth >= 100_000) return 4;
 if (depth >= 50_000) return 1;
+
 if (depth > 0) return -4;
 return -8;
 }
@@ -1029,6 +1058,7 @@ if (flags.pullbackConfirmed) return 7;
 if (flags.sweepConfirmed) return 5;
 if (flags.entryQuality === 'MOMENTUM') return 3;
 return 0;
+
 }
 function fundingScore(alignment) {
 const value = upper(alignment, 'FUNDING_UNKNOWN');
@@ -1076,6 +1106,7 @@ return [
 `rsiHTFBucket=${rsiHtfBucket}`,
 `rsiSlopeBucket=${rsiSlopeGroup}`,
 `rsiAlignment=${rsiAlign}`,
+
 `flow=${flow}`,
 `momentum=${momentum}`,
 `obRelation=${obRelation}`,
@@ -1123,6 +1154,7 @@ return reward > 0
 ? reward / risk
 : 0;
 }
+
 export function isValidRiskGeometry(risk, side = TARGET_TRADE_SIDE) {
 if (!risk) return false;
 const cfg = tradeConfig();
@@ -1170,6 +1202,7 @@ atrPct * cfg.atrRiskMult,
 spreadPct * cfg.spreadRiskMult
 );
 const riskPct = clamp(
+
 rawRiskPct,
 cfg.minRiskPct,
 cfg.maxRiskPct
@@ -1217,6 +1250,7 @@ validLongRiskShape: roundedSl < roundedEntry && roundedEntry < roundedTp,
 longRiskRule: 'sl < entry < tp',
 longTpExitRule: 'price >= tp',
 longSlExitRule: 'price <= sl',
+
 longTimeStopExitRule: 'TIME_STOP',
 longGrossRFormula: '(exitPrice - entry) / (entry - initialSl)',
 longCurrentRFormula: '(currentPrice - entry) / (entry - initialSl)',
@@ -1264,6 +1298,7 @@ if (!candidate || !risk) return null;
 if (hasExplicitShortSide(candidate)) return null;
 const overrideSide = normalizeTradeSideValue(sideOverride);
 const inferredSide = inferTradeSide(candidate);
+
 if (inferredSide === OPPOSITE_TRADE_SIDE) return null;
 const tradeSide = overrideSide !== 'UNKNOWN'
 ? overrideSide
@@ -1311,6 +1346,7 @@ const depthGroup = depthBucket(depthMinUsd1p);
 const fundingGroup = fundingBucket(fundingRate);
 const fundingAlign = fundingAlignment({
 side: TARGET_TRADE_SIDE,
+
 fundingRate
 });
 const riskGroup = riskPctBucket(risk?.riskPct);
@@ -1358,6 +1394,7 @@ rsiHtfBucket,
 rsiSlopeGroup,
 rsiAlign,
 flow,
+
 momentum,
 obRelation,
 obImbalanceGroup,
@@ -1405,6 +1442,7 @@ btcState,
 btcRelation: relationToBtc,
 regime,
 scannerReason: scannerReason(sideCandidate),
+
 pullbackConfirmed: flags.pullbackConfirmed,
 retestConfirmed: flags.retestConfirmed,
 sweepConfirmed: flags.sweepConfirmed,
@@ -1452,6 +1490,7 @@ export function buildLiveMetricsForSide(params = {}, side) {
 const tradeSide = normalizeTradeSideValue(side);
 if (tradeSide !== TARGET_TRADE_SIDE) return null;
 return buildLiveMetrics({
+
 ...params,
 sideOverride: TARGET_TRADE_SIDE
 });
@@ -1499,6 +1538,7 @@ const out = {
 ...modeFlags(metrics),
 validLongRiskShape: true,
 longRiskRule: 'sl < entry < tp',
+
 riskValidForAnalyzeTrueMicroAssignment: true
 };
 return [out];
@@ -1506,3 +1546,4 @@ return [out];
 export {
 dashboardSideFromTradeSide
 };
+
