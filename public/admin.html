@@ -642,6 +642,252 @@ pre {
 }
 
 
+    .winner-hero {
+        background: linear-gradient(135deg, #052e16 0%, #14532d 55%, #166534 100%);
+        color: white;
+        border: 0;
+    }
+
+    .winner-hero h2,
+    .winner-hero h3 {
+        color: white;
+    }
+
+    .winner-hero .metric-extra {
+        color: #dcfce7;
+    }
+
+    .winner-filter-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(170px, 1fr));
+        gap: 10px;
+        align-items: end;
+    }
+
+    .winner-filter-field label {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 900;
+        margin-bottom: 5px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+
+    .winner-filter-field select,
+    .winner-filter-field input {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .winner-check {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+        min-height: 42px;
+        padding: 8px 10px;
+        border: 1px solid var(--border-strong);
+        border-radius: 12px;
+        background: white;
+        font-size: 13px;
+        font-weight: 800;
+    }
+
+    .winner-check input {
+        min-height: auto;
+        width: 18px;
+        height: 18px;
+    }
+
+    .winner-selection-bar {
+        position: sticky;
+        bottom: 10px;
+        z-index: 4;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        padding: 12px;
+        margin: 14px 0;
+        border: 1px solid #86efac;
+        border-radius: 16px;
+        background: rgba(240, 253, 244, 0.96);
+        box-shadow: 0 12px 34px rgba(20, 83, 45, 0.18);
+        backdrop-filter: blur(12px);
+    }
+
+    .winner-selection-count {
+        font-size: 15px;
+        font-weight: 900;
+        color: #166534;
+    }
+
+    .temporal-chip-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        max-width: 520px;
+    }
+
+    .temporal-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 36px;
+        padding: 5px 7px;
+        border-radius: 9px;
+        font-size: 10px;
+        font-weight: 900;
+        border: 1px solid transparent;
+        cursor: default;
+    }
+
+    .temporal-chip.proven {
+        color: #14532d;
+        background: #bbf7d0;
+        border-color: #86efac;
+    }
+
+    .temporal-chip.positive {
+        color: #166534;
+        background: #dcfce7;
+        border-color: #bbf7d0;
+    }
+
+    .temporal-chip.learning {
+        color: #854d0e;
+        background: #fef9c3;
+        border-color: #fde68a;
+    }
+
+    .temporal-chip.blocked,
+    .temporal-chip.negative {
+        color: #991b1b;
+        background: #fee2e2;
+        border-color: #fecaca;
+    }
+
+    .temporal-chip.confounded {
+        color: #6b21a8;
+        background: #f3e8ff;
+        border-color: #e9d5ff;
+    }
+
+    .temporal-chip.unknown,
+    .temporal-chip.neutral {
+        color: #475569;
+        background: #f1f5f9;
+        border-color: #e2e8f0;
+    }
+
+    .temporal-profile-box {
+        min-width: 170px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 9px;
+        background: #f8fafc;
+    }
+
+    .temporal-profile-box strong {
+        display: block;
+        margin-bottom: 5px;
+    }
+
+    .temporal-profile-meta {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.45;
+    }
+
+    .winner-verdict {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        padding: 7px 10px;
+        font-size: 11px;
+        font-weight: 950;
+        white-space: nowrap;
+    }
+
+    .winner-verdict.proven {
+        color: white;
+        background: #15803d;
+    }
+
+    .winner-verdict.positive {
+        color: #14532d;
+        background: #bbf7d0;
+    }
+
+    .winner-verdict.selectable {
+        color: #075985;
+        background: #e0f2fe;
+    }
+
+    .winner-verdict.blocked {
+        color: white;
+        background: #991b1b;
+    }
+
+    .winner-verdict.learning,
+    .winner-verdict.unknown {
+        color: #854d0e;
+        background: #fef3c7;
+    }
+
+    .winner-table table {
+        min-width: 1920px;
+    }
+
+    .winner-family-cell {
+        max-width: 420px;
+        white-space: normal;
+    }
+
+    .winner-family-cell code {
+        white-space: normal;
+        word-break: break-all;
+    }
+
+    .winner-mobile-cards {
+        display: none;
+    }
+
+    .winner-card {
+        border-left: 5px solid #cbd5e1;
+    }
+
+    .winner-card.proven { border-left-color: #16a34a; }
+    .winner-card.positive { border-left-color: #86efac; }
+    .winner-card.blocked { border-left-color: #dc2626; }
+    .winner-card.learning { border-left-color: #f59e0b; }
+
+    .winner-context-title {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 7px;
+        margin-bottom: 8px;
+    }
+
+    .winner-explain {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(180px, 1fr));
+        gap: 10px;
+    }
+
+    .winner-explain > div {
+        padding: 10px;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: #f8fafc;
+        font-size: 12px;
+        line-height: 1.5;
+    }
+
+
 @media (max-width: 720px) {
     .micro-desktop-table {
         display: none;
@@ -652,6 +898,23 @@ pre {
         display: block;
     }
 
+
+    .winner-filter-grid,
+    .winner-explain {
+        grid-template-columns: 1fr;
+    }
+
+    .winner-selection-bar {
+        position: static;
+    }
+
+    .winner-table {
+        display: none;
+    }
+
+    .winner-mobile-cards {
+        display: block;
+    }
 
     .api-output-textarea {
         min-height: 420px;
@@ -845,7 +1108,7 @@ pre {
              <strong>LONG 75 Micro-Family Learning Admin</strong>
              <div class="brand-subtitle">
                Scanner → Analyze 75-child trueMicroFamilyId → virtual/shadow outcomes
-→ netR scoring → adaptive selection → strict Discord
+→ netR scoring → werkende dagen/sessies → winnende selectie → strict Discord
              </div>
            </div>
       </div>
@@ -870,6 +1133,7 @@ tab="market">marketWeather.js</button>
       <button type="button" class="tab" data-tab="trade">TradeSystem</button>
       <button type="button" class="tab" data-tab="micros">75
 MicroFamilies</button>
+      <button type="button" class="tab" data-tab="winners">Winnende signalen</button>
       <button type="button" class="tab" data-tab="rotation">Manual Discord
 Selection</button>
       <button type="button" class="tab" data-tab="discord">Discord Logs</button>
@@ -885,6 +1149,7 @@ Selection</button>
     <section id="scanner" class="panel hidden"></section>
     <section id="trade" class="panel hidden"></section>
     <section id="micros" class="panel hidden"></section>
+    <section id="winners" class="panel hidden"></section>
     <section id="rotation" class="panel hidden"></section>
     <section id="discord" class="panel hidden"></section>
     <section id="reset" class="panel hidden"></section>
@@ -947,10 +1212,45 @@ Selection</button>
       "FRIDAY",
       "SATURDAY"
     ]);
+    const WINNER_DAY_OPTIONS = Object.freeze([
+      "MONDAY",
+      "TUESDAY",
+      "WEDNESDAY",
+      "THURSDAY",
+      "FRIDAY",
+      "SATURDAY",
+      "SUNDAY"
+    ]);
+    const WINNER_SESSION_OPTIONS = Object.freeze([
+      "ASIA",
+      "ASIA_EU_OVERLAP",
+      "EUROPE",
+      "EU_US_OVERLAP",
+      "US",
+      "OFF_HOURS"
+    ]);
+    const WINNER_PRESETS = Object.freeze([
+      {
+        value: "STRICT_PROVEN",
+        label: "Bewezen winnaars",
+        help: "Global PASSED, dag én sessie minimaal 35 resultaten, gemiddeld minimaal +0,05R en LCB95 boven nul."
+      },
+      {
+        value: "BALANCED_POSITIVE",
+        label: "Positief en bruikbaar",
+        help: "Global PASSED, dag en sessie niet geblokkeerd, minimaal 20 resultaten en positief gemiddelde."
+      },
+      {
+        value: "GLOBAL_PASSED",
+        label: "Alle global PASSED",
+        help: "Bestaande globale gate is geslaagd; actieve temporal veto's en niet-goedgekeurde weekenden blijven uitgesloten."
+      }
+    ]);
     const CURRENT_FIT_VERSION = "LONG_CURRENTFIT_MARKETWEATHER_SOFT_V2";
     const ADAPTIVE_UI_VERSION = "LONG_ADAPTIVE_UI_MARKETWEATHER_CURRENTFIT_V1";
     const FRONTEND_FIX_VERSION =
 "LONG_ADMIN_FRONTEND_MEASUREMENT_V2_EMPIRICAL_VETO_V1";
+    const WINNER_SELECTOR_VERSION = "LONG_TEMPORAL_WINNER_SELECTOR_UI_V1";
 
 
     const LONG_FIXED_SETUP_TYPES = new Set([
@@ -989,6 +1289,13 @@ Selection</button>
          discord: null,
          microMode: "adaptive",
          microSearch: "",
+         winnerPreset: "STRICT_PROVEN",
+         winnerDay: "CURRENT",
+         winnerSession: "CURRENT",
+         winnerSearch: "",
+         winnerOnlyCurrentFit: true,
+         winnerShowAll: false,
+         winnerSelectedIds: [],
          apiTimeoutMs: 22000,
          microLimit: 75,
          bestLimit: 75
@@ -1012,7 +1319,7 @@ Selection</button>
     };
 
 
-    const tabs = ["overview", "market", "scanner", "trade", "micros", "rotation",
+    const tabs = ["overview", "market", "scanner", "trade", "micros", "winners", "rotation",
 "discord", "reset"];
     const validMicroModes = ["adaptive", "balanced", "winrate", "totalR", "avgR",
 "directSL", "observed", "cost", "currentFit"];
@@ -1159,6 +1466,12 @@ Math.floor(numeric);
           payload.temporalGeneration ||
           payload.temporal?.activeGeneration ||
           payload.temporal?.generation ||
+          payload.active?.activeTemporalGeneration ||
+          payload.active?.temporalGeneration ||
+          payload.activeRotation?.activeTemporalGeneration ||
+          payload.activeRotation?.temporalGeneration ||
+          payload.pointerDocument?.activeTemporalGeneration ||
+          payload.activeGenerationPointer?.activeTemporalGeneration ||
           null;
     }
 
@@ -3046,6 +3359,9 @@ b.apiRank;
     params.set("includeMarketWeather", "1");
     params.set("includeCurrentFit", "1");
     params.set("includeAdaptive", "1");
+    params.set("includeTemporal", "1");
+    params.set("includeTemporalProfiles", "1");
+    params.set("includeActiveTemporalGeneration", "1");
     params.set("compact", "1");
 
 
@@ -3071,6 +3387,10 @@ function rotationApiUrl() {
     params.set("includeAvailable", "1");
     params.set("includeAdaptive", "1");
     params.set("includeCurrentFit", "1");
+    params.set("includeTemporal", "1");
+    params.set("includeTemporalProfiles", "1");
+    params.set("includeTemporalGeneration", "1");
+    params.set("includeActiveTemporalGeneration", "1");
     params.set("activeRowsLimit", "160");
     params.set("availableLimit", "240");
 
@@ -4511,6 +4831,702 @@ ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Copy</button>
     }
 
 
+
+    function winnerDayLabel(day) {
+        return ({
+             MONDAY: "Maandag",
+             TUESDAY: "Dinsdag",
+             WEDNESDAY: "Woensdag",
+             THURSDAY: "Donderdag",
+             FRIDAY: "Vrijdag",
+             SATURDAY: "Zaterdag",
+             SUNDAY: "Zondag"
+        })[upper(day)] || String(day || "Onbekend");
+    }
+
+
+    function winnerDayShort(day) {
+        return ({
+             MONDAY: "MA",
+             TUESDAY: "DI",
+             WEDNESDAY: "WO",
+             THURSDAY: "DO",
+             FRIDAY: "VR",
+             SATURDAY: "ZA",
+             SUNDAY: "ZO"
+        })[upper(day)] || "?";
+    }
+
+
+    function winnerSessionLabel(session) {
+        return ({
+             ASIA: "Asia",
+             ASIA_EU_OVERLAP: "Asia + Europa",
+             EUROPE: "Europa",
+             EU_US_OVERLAP: "Europa + US",
+             US: "US",
+             OFF_HOURS: "Buiten sessies"
+        })[upper(session)] || String(session || "Onbekend");
+    }
+
+
+    function winnerSessionShort(session) {
+        return ({
+             ASIA: "ASIA",
+             ASIA_EU_OVERLAP: "AS/EU",
+             EUROPE: "EU",
+             EU_US_OVERLAP: "EU/US",
+             US: "US",
+             OFF_HOURS: "OFF"
+        })[upper(session)] || "?";
+    }
+
+
+    function activeTemporalGenerationFromState() {
+        return temporalGenerationFromPayload(state.rotation || {}) ||
+             temporalGenerationFromPayload(state.micros || {}) ||
+             null;
+    }
+
+
+    function temporalProjectionMap(generation = activeTemporalGenerationFromState()) {
+        const projections = Array.isArray(generation?.familyProjections)
+             ? generation.familyProjections
+             : [];
+        return new Map(
+             projections
+               .map((projection) => [
+                    String(
+                         projection.familyId ||
+                         projection.trueMicroFamilyId ||
+                         projection.childTrueMicroFamilyId ||
+                         ""
+                    ).trim(),
+                    projection
+               ])
+               .filter(([id]) => idAllowedInLongOnly(id))
+        );
+    }
+
+
+    function temporalGateStats(profile = {}) {
+        const source = profile?.gateWindow || profile?.windowStats || profile?.stats || {};
+        return {
+             completed: Math.max(0, num(source.completed, 0)),
+             observations: Math.max(0, num(source.observations, source.completed || 0)),
+             wins: Math.max(0, num(source.wins, 0)),
+             losses: Math.max(0, num(source.losses, 0)),
+             flats: Math.max(0, num(source.flats, 0)),
+             avgNetR: firstFinite(source.avgNetR, source.avgR, source.averageNetR, 0) ?? 0,
+             sumNetR: firstFinite(source.sumNetR, source.totalR, 0) ?? 0,
+             lcb95: firstFinite(source.lcb95, source.oneSidedLcb95, source.lowerConfidenceBound),
+             ucb95: firstFinite(source.ucb95, source.oneSidedUcb95, source.upperConfidenceBound),
+             winrate: firstFinite(source.winrate, source.winRate, source.fairWinrate),
+             qValue: firstFinite(
+                  profile?.negativeTest?.qValue,
+                  profile?.positiveTest?.qValue,
+                  profile?.recoveryTest?.qValue,
+                  source.qValue
+             )
+        };
+    }
+
+
+    function temporalProfileDecision(profile = {}) {
+        return upper(
+             profile?.activeDecision ||
+             profile?.decision ||
+             profile?.evaluationStatus ||
+             "INHERIT_GLOBAL"
+        );
+    }
+
+
+    function temporalProfileVisualState(profile = {}) {
+        if (!profile || typeof profile !== "object") return "unknown";
+        const decision = temporalProfileDecision(profile);
+        const stats = temporalGateStats(profile);
+
+        if (decision === "VETO_ACTIVE") return "blocked";
+        if (decision.includes("CONFOUNDED")) return "confounded";
+        if (stats.completed <= 0) return "unknown";
+        if (stats.completed < EMPIRICAL_VETO_MIN_COMPLETED) return "learning";
+        if (stats.avgNetR >= 0.05 && stats.lcb95 !== null && stats.lcb95 > 0) {
+             return "proven";
+        }
+        if (stats.avgNetR > 0) return "positive";
+        if (stats.avgNetR <= -0.10 && stats.ucb95 !== null && stats.ucb95 < 0) {
+             return "negative";
+        }
+        return "neutral";
+    }
+
+
+    function temporalStateLabel(stateName) {
+        return ({
+             proven: "BEWEZEN",
+             positive: "POSITIEF",
+             learning: "LEREN",
+             blocked: "VETO",
+             negative: "NEGATIEF",
+             confounded: "ONZEKER",
+             neutral: "NEUTRAAL",
+             unknown: "GEEN DATA"
+        })[stateName] || "ONBEKEND";
+    }
+
+
+    function temporalProfileTitle(profile = {}, label = "") {
+        const stats = temporalGateStats(profile);
+        const decision = temporalProfileDecision(profile);
+        return [
+             label,
+             `status=${decision}`,
+             `n=${fmtInt(stats.completed)}`,
+             `avg=${fmt(stats.avgNetR, 3)}R`,
+             `LCB95=${stats.lcb95 === null ? "-" : `${fmt(stats.lcb95, 3)}R`}`,
+             `UCB95=${stats.ucb95 === null ? "-" : `${fmt(stats.ucb95, 3)}R`}`,
+             `q=${stats.qValue === null ? "-" : fmt(stats.qValue, 4)}`
+        ].join(" · ");
+    }
+
+
+    function temporalChip(profile, label, fullLabel = label) {
+        const visual = temporalProfileVisualState(profile);
+        return `<span class="temporal-chip ${escapeAttr(visual)}" title="${escapeAttr(
+             temporalProfileTitle(profile, fullLabel)
+        )}">${escapeHtml(label)}</span>`;
+    }
+
+
+    function temporalProfileBox(profile, title) {
+        const stats = temporalGateStats(profile);
+        const visual = temporalProfileVisualState(profile);
+        return `
+             <div class="temporal-profile-box">
+               <strong>${temporalChip(profile, temporalStateLabel(visual), title)}</strong>
+               <div class="temporal-profile-meta">
+                 ${escapeHtml(title)}<br />
+                 n=${escapeHtml(fmtInt(stats.completed))} · avg=${escapeHtml(fmt(stats.avgNetR, 3))}R<br />
+                 LCB95=${escapeHtml(stats.lcb95 === null ? "-" : fmt(stats.lcb95, 3))}R
+               </div>
+             </div>
+        `;
+    }
+
+
+    function weekendApproval(projection = {}, day = "") {
+        return projection?.weekendApprovals?.[upper(day)] || null;
+    }
+
+
+    function weekendApproved(projection = {}, day = "") {
+        if (!["SATURDAY", "SUNDAY"].includes(upper(day))) return true;
+        return upper(weekendApproval(projection, day)?.approvalStatus) === "WEEKEND_APPROVED";
+    }
+
+
+    function weekendApprovalPill(projection = {}, day = "") {
+        const normalizedDay = upper(day);
+        if (!["SATURDAY", "SUNDAY"].includes(normalizedDay)) {
+             return '<span class="pill neutral">Niet van toepassing</span>';
+        }
+        const profile = weekendApproval(projection, normalizedDay);
+        const status = upper(profile?.approvalStatus || "NO_APPROVAL");
+        const approved = status === "WEEKEND_APPROVED";
+        const stats = temporalGateStats(profile);
+        return `<span class="pill ${approved ? "passed" : "blocked"}" title="${escapeAttr(
+             `${winnerDayLabel(normalizedDay)} · n=${fmtInt(stats.completed)} · avg=${fmt(stats.avgNetR, 3)}R`
+        )}">${approved ? "WEEKEND APPROVED" : "GEEN APPROVAL"}</span>`;
+    }
+
+
+    function selectedWinnerContext() {
+        const current = buildTemporalContext(Date.now());
+        return {
+             current,
+             day: state.winnerDay === "CURRENT" ? current.dayOfWeekUtc : upper(state.winnerDay),
+             session: state.winnerSession === "CURRENT"
+               ? current.primarySessionBucket
+               : upper(state.winnerSession)
+        };
+    }
+
+
+    function profilePassesPositive(profile, { strict = false } = {}) {
+        const stats = temporalGateStats(profile);
+        if (temporalProfileDecision(profile) === "VETO_ACTIVE") return false;
+        if (strict) {
+             return stats.completed >= EMPIRICAL_VETO_MIN_COMPLETED &&
+                  stats.avgNetR >= 0.05 &&
+                  stats.lcb95 !== null &&
+                  stats.lcb95 > 0;
+        }
+        return stats.completed >= MIN_COMPLETED_ACTIVE_LEARNING && stats.avgNetR > 0;
+    }
+
+
+    function winnerEligibility(row = {}, projection = null, context = selectedWinnerContext()) {
+        const reasons = [];
+        const globallyAllowed = discordSelectionAllowed(row);
+        const fit = currentFit(row);
+        const dayProfile = projection?.dayProfiles?.[context.day] || null;
+        const sessionProfile = projection?.sessionProfiles?.[context.session] || null;
+        const dayDecision = temporalProfileDecision(dayProfile);
+        const sessionDecision = temporalProfileDecision(sessionProfile);
+
+        if (!globallyAllowed) reasons.push(discordSelectionBlockReason(row));
+        if (!projection) reasons.push("GEEN_TEMPORAL_PROJECTION");
+        if (dayDecision === "VETO_ACTIVE") reasons.push(`DAG_VETO:${context.day}`);
+        if (sessionDecision === "VETO_ACTIVE") reasons.push(`SESSIE_VETO:${context.session}`);
+        if (!weekendApproved(projection || {}, context.day)) {
+             reasons.push(`WEEKEND_NIET_GOEDGEKEURD:${context.day}`);
+        }
+        if (state.winnerOnlyCurrentFit && fit === "MISFIT") reasons.push("CURRENTFIT_MISFIT");
+
+        let presetPassed = false;
+        if (state.winnerPreset === "STRICT_PROVEN") {
+             presetPassed = globallyAllowed &&
+                  Boolean(projection) &&
+                  profilePassesPositive(dayProfile, { strict: true }) &&
+                  profilePassesPositive(sessionProfile, { strict: true }) &&
+                  weekendApproved(projection, context.day) &&
+                  (!state.winnerOnlyCurrentFit || fit !== "MISFIT");
+             if (!profilePassesPositive(dayProfile, { strict: true })) reasons.push("DAG_NIET_BEWEZEN_POSITIEF");
+             if (!profilePassesPositive(sessionProfile, { strict: true })) reasons.push("SESSIE_NIET_BEWEZEN_POSITIEF");
+        } else if (state.winnerPreset === "BALANCED_POSITIVE") {
+             presetPassed = globallyAllowed &&
+                  Boolean(projection) &&
+                  profilePassesPositive(dayProfile) &&
+                  profilePassesPositive(sessionProfile) &&
+                  weekendApproved(projection, context.day) &&
+                  (!state.winnerOnlyCurrentFit || fit !== "MISFIT");
+             if (!profilePassesPositive(dayProfile)) reasons.push("DAG_NOG_NIET_POSITIEF");
+             if (!profilePassesPositive(sessionProfile)) reasons.push("SESSIE_NOG_NIET_POSITIEF");
+        } else {
+             presetPassed = globallyAllowed &&
+                  Boolean(projection) &&
+                  dayDecision !== "VETO_ACTIVE" &&
+                  sessionDecision !== "VETO_ACTIVE" &&
+                  weekendApproved(projection, context.day) &&
+                  (!state.winnerOnlyCurrentFit || fit !== "MISFIT");
+        }
+
+        return {
+             passed: presetPassed,
+             globallyAllowed,
+             projectionFound: Boolean(projection),
+             fit,
+             dayProfile,
+             sessionProfile,
+             reasons: uniqueStrings(reasons),
+             context
+        };
+    }
+
+
+    function winnerVerdict(eligibility = {}) {
+        if (eligibility.passed && state.winnerPreset === "STRICT_PROVEN") {
+             return { key: "proven", label: "BEWEZEN WINNAAR" };
+        }
+        if (eligibility.passed && state.winnerPreset === "BALANCED_POSITIVE") {
+             return { key: "positive", label: "POSITIEF" };
+        }
+        if (eligibility.passed) {
+             return { key: "selectable", label: "SELECTEERBAAR" };
+        }
+        if (eligibility.reasons.some((reason) => reason.includes("VETO") || reason.includes("NIET_GOEDGEKEURD"))) {
+             return { key: "blocked", label: "GEBLOKKEERD" };
+        }
+        if (eligibility.reasons.some((reason) => reason.includes("NIET_BEWEZEN") || reason.includes("NOG_NIET"))) {
+             return { key: "learning", label: "NOG LEREN" };
+        }
+        return { key: "unknown", label: "NIET SELECTEERBAAR" };
+    }
+
+
+    function winnerScore(row = {}, eligibility = {}) {
+        const dayStats = temporalGateStats(eligibility.dayProfile);
+        const sessionStats = temporalGateStats(eligibility.sessionProfile);
+        return (
+             (eligibility.passed ? 1_000_000 : 0) +
+             adaptiveScore(row) * 100 +
+             netAvgR(row) * 1_000 +
+             Math.min(completed(row), 100) * 10 +
+             dayStats.avgNetR * 2_000 +
+             sessionStats.avgNetR * 2_000 +
+             Math.min(dayStats.completed, 50) * 5 +
+             Math.min(sessionStats.completed, 50) * 5 +
+             currentFitScore(row)
+        );
+    }
+
+
+    function workingDayChips(projection = {}) {
+        return `<div class="temporal-chip-grid">${WINNER_DAY_OPTIONS.map((day) =>
+             temporalChip(projection?.dayProfiles?.[day], winnerDayShort(day), winnerDayLabel(day))
+        ).join("")}</div>`;
+    }
+
+
+    function workingSessionChips(projection = {}) {
+        return `<div class="temporal-chip-grid">${WINNER_SESSION_OPTIONS.map((session) =>
+             temporalChip(
+                  projection?.sessionProfiles?.[session],
+                  winnerSessionShort(session),
+                  winnerSessionLabel(session)
+             )
+        ).join("")}</div>`;
+    }
+
+
+    function winnerSelectedSet() {
+        return new Set(uniqueStrings(state.winnerSelectedIds).filter(idAllowedInLongOnly));
+    }
+
+
+    function setWinnerSelectedIds(ids = []) {
+        state.winnerSelectedIds = uniqueStrings(ids).filter(idAllowedInLongOnly);
+    }
+
+
+    function winnerRowsForDisplay(rows = [], projectionMap = new Map(), context = selectedWinnerContext()) {
+        const search = state.winnerSearch.trim().toLowerCase();
+        return rows
+             .map((row) => {
+                  const projection = projectionMap.get(microId(row)) || null;
+                  const eligibility = winnerEligibility(row, projection, context);
+                  return {
+                       row,
+                       projection,
+                       eligibility,
+                       score: winnerScore(row, eligibility)
+                  };
+             })
+             .filter((item) => {
+                  if (!search) return true;
+                  return JSON.stringify({ row: item.row, projection: item.projection })
+                       .toLowerCase()
+                       .includes(search);
+             })
+             .filter((item) => state.winnerShowAll || item.eligibility.passed)
+             .sort((a, b) => b.score - a.score);
+    }
+
+
+    function winnerTable(items = [], context = selectedWinnerContext()) {
+        if (!items.length) {
+             return `<div class="empty">Geen families voldoen aan deze combinatie. Kies eventueel “Positief en bruikbaar” of zet “toon ook afgevallen families” aan.</div>`;
+        }
+        const selected = winnerSelectedSet();
+        const activeSet = new Set(activeMicroIds());
+        const desktopRows = items.map((item, index) => {
+             const { row, projection, eligibility } = item;
+             const id = microId(row);
+             const verdict = winnerVerdict(eligibility);
+             const checked = selected.has(id);
+             return `
+               <tr>
+                 <td><input type="checkbox" data-winner-select="${escapeAttr(id)}" ${checked ? "checked" : ""} ${eligibility.passed ? "" : "disabled"} /></td>
+                 <td><strong>${escapeHtml(index + 1)}</strong></td>
+                 <td><span class="winner-verdict ${escapeAttr(verdict.key)}">${escapeHtml(verdict.label)}</span></td>
+                 <td><span class="pill ${activeSet.has(id) ? "active" : "neutral"}">${activeSet.has(id) ? "ACTIVE" : "OFF"}</span></td>
+                 <td class="winner-family-cell">
+                   <button class="small" type="button" data-open-micro="${escapeAttr(id)}"><code>${escapeHtml(id)}</code></button>
+                 </td>
+                 <td>${activationGatePill(row)}</td>
+                 <td>${currentFitPill(row)}</td>
+                 <td>n=${escapeHtml(fmtInt(completed(row)))}<br />avg=${escapeHtml(fmt(netAvgR(row), 3))}R<br />WR=${escapeHtml(fmtPct(row.fairWinrate ?? row.sampleAdjustedWinrate))}</td>
+                 <td>${temporalProfileBox(eligibility.dayProfile, winnerDayLabel(context.day))}</td>
+                 <td>${temporalProfileBox(eligibility.sessionProfile, winnerSessionLabel(context.session))}</td>
+                 <td>${weekendApprovalPill(projection, context.day)}</td>
+                 <td>${workingDayChips(projection)}</td>
+                 <td>${workingSessionChips(projection)}</td>
+                 <td>${escapeHtml(eligibility.reasons.join(" · ") || "OK")}</td>
+               </tr>
+             `;
+        }).join("");
+
+        const mobileCards = items.map((item, index) => {
+             const { row, projection, eligibility } = item;
+             const id = microId(row);
+             const verdict = winnerVerdict(eligibility);
+             const checked = selected.has(id);
+             return `
+               <article class="micro-card winner-card ${escapeAttr(verdict.key)}">
+                 <div class="micro-card-top">
+                   <div>
+                     <div class="micro-card-title">#${escapeHtml(index + 1)}</div>
+                     <span class="winner-verdict ${escapeAttr(verdict.key)}">${escapeHtml(verdict.label)}</span>
+                   </div>
+                   <label class="winner-check">
+                     <input type="checkbox" data-winner-select="${escapeAttr(id)}" ${checked ? "checked" : ""} ${eligibility.passed ? "" : "disabled"} /> Selecteer
+                   </label>
+                 </div>
+                 <button class="micro-id-button" type="button" data-open-micro="${escapeAttr(id)}"><code>${escapeHtml(id)}</code></button>
+                 <div class="toolbar">${activationGatePill(row)} ${currentFitPill(row)} ${weekendApprovalPill(projection, context.day)}</div>
+                 <div class="winner-context-title"><strong>Gekozen dag:</strong> ${temporalProfileBox(eligibility.dayProfile, winnerDayLabel(context.day))}</div>
+                 <div class="winner-context-title"><strong>Gekozen sessie:</strong> ${temporalProfileBox(eligibility.sessionProfile, winnerSessionLabel(context.session))}</div>
+                 <div class="metric-extra">Werkende dagen</div>
+                 ${workingDayChips(projection)}
+                 <div class="metric-extra" style="margin-top:10px">Werkende sessies</div>
+                 ${workingSessionChips(projection)}
+                 <div class="metric-extra" style="margin-top:10px">${escapeHtml(eligibility.reasons.join(" · ") || "Alles is groen voor deze keuze.")}</div>
+               </article>
+             `;
+        }).join("");
+
+        return `
+          <div class="table-wrap winner-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Select</th>
+                  <th>Rank</th>
+                  <th>Uitkomst</th>
+                  <th>Discord</th>
+                  <th>Exacte 75-child family</th>
+                  <th>Global gate</th>
+                  <th>CurrentFit</th>
+                  <th>Globaal</th>
+                  <th>${escapeHtml(winnerDayLabel(context.day))}</th>
+                  <th>${escapeHtml(winnerSessionLabel(context.session))}</th>
+                  <th>Weekend</th>
+                  <th>Alle dagen</th>
+                  <th>Alle sessies</th>
+                  <th>Waarom</th>
+                </tr>
+              </thead>
+              <tbody>${desktopRows}</tbody>
+            </table>
+          </div>
+          <div class="winner-mobile-cards">${mobileCards}</div>
+        `;
+    }
+
+
+    async function ensureRotationLoaded() {
+        if (state.rotation) return state.rotation;
+        state.rotation = await api(rotationApiUrl(), { timeoutMs: 22000 });
+        return state.rotation;
+    }
+
+
+    async function renderWinners() {
+        showLoading("winners");
+        const results = await Promise.allSettled([
+             ensureMicrosLoaded(),
+             ensureRotationLoaded()
+        ]);
+        const microsError = results[0].status === "rejected" ? results[0].reason : null;
+        const rotationError = results[1].status === "rejected" ? results[1].reason : null;
+        if (microsError && !(state.micros?.rows || []).length) throw microsError;
+
+        const generation = activeTemporalGenerationFromState();
+        const projectionMap = temporalProjectionMap(generation);
+        const context = selectedWinnerContext();
+        const allRows = rankMicroRows(state.micros?.rows || [], "adaptive");
+        const allItems = allRows.map((row) => {
+             const projection = projectionMap.get(microId(row)) || null;
+             const eligibility = winnerEligibility(row, projection, context);
+             return { row, projection, eligibility, score: winnerScore(row, eligibility) };
+        });
+        const passingItems = allItems.filter((item) => item.eligibility.passed);
+        const visibleItems = winnerRowsForDisplay(allRows, projectionMap, context);
+        const visiblePassingIds = visibleItems
+             .filter((item) => item.eligibility.passed)
+             .map((item) => microId(item.row));
+        const validFamilyIds = new Set(allRows.map(microId));
+        setWinnerSelectedIds([...winnerSelectedSet()].filter((id) => validFamilyIds.has(id)));
+        const selectedCount = winnerSelectedSet().size;
+        const currentPolicy = temporalPolicyForContext(context.current, {
+             ...(state.rotation || {}),
+             ...(generation || {})
+        });
+        const preset = WINNER_PRESETS.find((item) => item.value === state.winnerPreset) || WINNER_PRESETS[0];
+
+        $("winners").innerHTML = `
+          <div class="card winner-hero">
+            <h2>Winnende signalen kiezen</h2>
+            <div class="metric-extra">
+              Kies een dag en sessie. Groen betekent dat de exacte family daar positief of bewezen werkt. Rood betekent een actieve blokkade. Geel betekent dat er nog te weinig bewijs is.
+            </div>
+          </div>
+
+          <div class="grid">
+            ${metricCard("Gekozen dag", winnerDayLabel(context.day), state.winnerDay === "CURRENT" ? "huidige UTC-dag" : "handmatig gekozen")}
+            ${metricCard("Gekozen sessie", winnerSessionLabel(context.session), state.winnerSession === "CURRENT" ? "huidige UTC-sessie" : "handmatig gekozen")}
+            ${metricCard("Passende families", fmtInt(passingItems.length), preset.label)}
+            ${metricCard("Geselecteerd", fmtInt(selectedCount), "klaar om actief te zetten")}
+            ${metricCard("Generation", generation?.generationId || "GEEN", generation?.status || "geen actieve generation")}
+            ${metricCard("Policy mode", currentPolicy.temporalPolicyMode, currentPolicy.temporalStatsEnabled ? "stats actief" : "stats uit")}
+            ${metricCard("Projections", fmtInt(projectionMap.size), `verwacht ${TEMPORAL_EXPECTED_CHILD_FAMILY_COUNT}`)}
+            ${metricCard("Actief op Discord", fmtInt(activeMicroIds().length), "exacte 75-child IDs")}
+          </div>
+
+          ${rotationError ? `<div class="message warn">Temporal generation kon niet volledig worden geladen: ${escapeHtml(friendlyApiMessage(rotationError))}</div>` : ""}
+          ${!generation ? `<div class="message warn">Er is geen actieve temporal generation gevonden. De pagina kan dan geen werkende dagen en sessies bewijzen en selecteert in de strenge stand niets.</div>` : ""}
+
+          <div class="card">
+            <h3>1. Kies hoe streng je wilt selecteren</h3>
+            <div class="winner-filter-grid">
+              <div class="winner-filter-field">
+                <label for="winnerPreset">Selectieregel</label>
+                <select id="winnerPreset">
+                  ${WINNER_PRESETS.map((option) => `<option value="${escapeAttr(option.value)}" ${option.value === state.winnerPreset ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+                </select>
+              </div>
+              <div class="winner-filter-field">
+                <label for="winnerDay">Werkdag</label>
+                <select id="winnerDay">
+                  <option value="CURRENT" ${state.winnerDay === "CURRENT" ? "selected" : ""}>Nu: ${escapeHtml(winnerDayLabel(context.current.dayOfWeekUtc))}</option>
+                  ${WINNER_DAY_OPTIONS.map((day) => `<option value="${escapeAttr(day)}" ${day === state.winnerDay ? "selected" : ""}>${escapeHtml(winnerDayLabel(day))}</option>`).join("")}
+                </select>
+              </div>
+              <div class="winner-filter-field">
+                <label for="winnerSession">Sessie</label>
+                <select id="winnerSession">
+                  <option value="CURRENT" ${state.winnerSession === "CURRENT" ? "selected" : ""}>Nu: ${escapeHtml(winnerSessionLabel(context.current.primarySessionBucket))}</option>
+                  ${WINNER_SESSION_OPTIONS.map((session) => `<option value="${escapeAttr(session)}" ${session === state.winnerSession ? "selected" : ""}>${escapeHtml(winnerSessionLabel(session))}</option>`).join("")}
+                </select>
+              </div>
+              <div class="winner-filter-field">
+                <label for="winnerSearch">Zoeken</label>
+                <input id="winnerSearch" type="search" placeholder="setup, regime of family..." value="${escapeAttr(state.winnerSearch)}" />
+              </div>
+              <div class="winner-filter-field">
+                <label>Extra filters</label>
+                <label class="winner-check"><input id="winnerOnlyCurrentFit" type="checkbox" ${state.winnerOnlyCurrentFit ? "checked" : ""} /> Geen MISFIT</label>
+              </div>
+            </div>
+            <div class="toolbar">
+              <label class="winner-check"><input id="winnerShowAll" type="checkbox" ${state.winnerShowAll ? "checked" : ""} /> Toon ook afgevallen families</label>
+              <button type="button" id="winnerUseNowBtn">Gebruik huidige dag en sessie</button>
+            </div>
+            <div class="metric-extra"><strong>${escapeHtml(preset.label)}:</strong> ${escapeHtml(preset.help)}</div>
+          </div>
+
+          <div class="card">
+            <h3>Zo lees je de kleuren</h3>
+            <div class="winner-explain">
+              <div>${temporalChip({ gateWindow: { completed: 40, avgNetR: 0.12, lcb95: 0.02 } }, "GROEN", "Bewezen positief")} <strong>Bewezen:</strong> voldoende resultaten, positief gemiddelde en LCB95 boven nul.</div>
+              <div>${temporalChip({ gateWindow: { completed: 40, avgNetR: 0.06, lcb95: -0.01 } }, "LICHTGROEN", "Positief")} <strong>Positief:</strong> gemiddelde is positief, maar nog niet volledig statistisch bewezen.</div>
+              <div>${temporalChip({ gateWindow: { completed: 12, avgNetR: 0.10 } }, "GEEL", "Leren")} <strong>Leren:</strong> nog te weinig geldige resultaten.</div>
+              <div>${temporalChip({ activeDecision: "VETO_ACTIVE", gateWindow: { completed: 40, avgNetR: -0.15, ucb95: -0.02 } }, "ROOD", "Veto actief")} <strong>Geblokkeerd:</strong> deze dag of sessie mag geen nieuwe Discord-entry publiceren.</div>
+            </div>
+          </div>
+
+          <div class="section-title">
+            <div>
+              <h2>2. Selecteer de winnaars</h2>
+              <p>Je activeert de exacte family. De temporal generation blijft daarna automatisch slechte dagen, sessies en niet-goedgekeurde weekenden blokkeren.</p>
+            </div>
+          </div>
+
+          ${winnerTable(visibleItems, context)}
+
+          <div class="winner-selection-bar">
+            <div>
+              <div class="winner-selection-count">${escapeHtml(fmtInt(selectedCount))} families geselecteerd</div>
+              <div class="metric-extra">Alleen zichtbare families die aan de gekozen regel voldoen kunnen worden aangevinkt.</div>
+            </div>
+            <div class="toolbar" style="margin:0">
+              <button type="button" id="winnerSelectVisibleBtn">Selecteer alle zichtbare winnaars</button>
+              <button type="button" id="winnerClearBtn">Wis selectie</button>
+              <button type="button" class="success" id="winnerCopyBtn" ${selectedCount ? "" : "disabled"}>Copy geselecteerde IDs</button>
+              <button type="button" class="long-action" id="winnerActivateBtn" ${selectedCount ? "" : "disabled"}>Activeer geselecteerde winnaars</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Technische status</h3>
+            ${jsonBlock({
+              selectedDay: context.day,
+              selectedSession: context.session,
+              preset: state.winnerPreset,
+              allFamilies: allRows.length,
+              matchingFamilies: passingItems.length,
+              visibleFamilies: visibleItems.length,
+              selectedIds: [...winnerSelectedSet()],
+              activeGenerationId: generation?.generationId || null,
+              generationStatus: generation?.status || null,
+              generationCutoffTs: generation?.generationCutoffTs || null,
+              familyProjectionCount: projectionMap.size,
+              temporalPolicyMode: currentPolicy.temporalPolicyMode,
+              temporalStatsEnabled: currentPolicy.temporalStatsEnabled,
+              winnerSelectorVersion: WINNER_SELECTOR_VERSION
+            })}
+          </div>
+        `;
+
+        const rerender = () => renderWinners();
+        $("winnerPreset")?.addEventListener("change", (event) => {
+             state.winnerPreset = event.target.value;
+             rerender();
+        });
+        $("winnerDay")?.addEventListener("change", (event) => {
+             state.winnerDay = event.target.value;
+             rerender();
+        });
+        $("winnerSession")?.addEventListener("change", (event) => {
+             state.winnerSession = event.target.value;
+             rerender();
+        });
+        $("winnerSearch")?.addEventListener("change", (event) => {
+             state.winnerSearch = event.target.value;
+             rerender();
+        });
+        $("winnerSearch")?.addEventListener("keydown", (event) => {
+             if (event.key === "Enter") {
+                  state.winnerSearch = event.target.value;
+                  rerender();
+             }
+        });
+        $("winnerOnlyCurrentFit")?.addEventListener("change", (event) => {
+             state.winnerOnlyCurrentFit = event.target.checked;
+             rerender();
+        });
+        $("winnerShowAll")?.addEventListener("change", (event) => {
+             state.winnerShowAll = event.target.checked;
+             rerender();
+        });
+        $("winnerUseNowBtn")?.addEventListener("click", () => {
+             state.winnerDay = "CURRENT";
+             state.winnerSession = "CURRENT";
+             rerender();
+        });
+        document.querySelectorAll("[data-winner-select]").forEach((input) => {
+             input.addEventListener("change", () => {
+                  const selected = winnerSelectedSet();
+                  const id = input.dataset.winnerSelect;
+                  if (input.checked) selected.add(id);
+                  else selected.delete(id);
+                  setWinnerSelectedIds([...selected]);
+                  rerender();
+             });
+        });
+        $("winnerSelectVisibleBtn")?.addEventListener("click", () => {
+             setWinnerSelectedIds(uniqueStrings([
+                  ...winnerSelectedSet(),
+                  ...visiblePassingIds
+             ]));
+             rerender();
+        });
+        $("winnerClearBtn")?.addEventListener("click", () => {
+             setWinnerSelectedIds([]);
+             rerender();
+        });
+        $("winnerCopyBtn")?.addEventListener("click", () => {
+             const ids = [...winnerSelectedSet()];
+             copyText(JSON.stringify(ids, null, 2), `${ids.length} winnende family IDs gekopieerd.`);
+        });
+        $("winnerActivateBtn")?.addEventListener("click", () => {
+             activateSelectedMicroFamilies([...winnerSelectedSet()]);
+        });
+        bindMicroEvents();
+    }
+
+
     async function renderMicros() {
         showLoading("micros");
 
@@ -4560,6 +5576,7 @@ ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Copy</button>
 15, setup, regime, confirmation..." value="${escapeAttr(state.microSearch)}" />
 
 
+             <button type="button" class="primary" id="openWinnersBtn">Open winnende signalen</button>
              <button type="button" class="success" id="copyVisibleIdsBtn">Copy
 visible 75-child IDs</button>
              <button type="button" class="success"
@@ -4684,6 +5701,8 @@ CURRENT_FIT_VERSION,
                renderMicros();
            }
       });
+           $("openWinnersBtn")?.addEventListener("click", () => showTab("winners"));
+
            $("copyVisibleIdsBtn")?.addEventListener("click", () => {
              const ids = uniqueStrings(rows.map(microId)).filter(idAllowedInLongOnly);
              copyText(JSON.stringify(ids, null, 2), `Visible ${ids.length} LONG 75-
@@ -4893,7 +5912,8 @@ child ID(s)?\n\n` +
               `${microFamilyIds.length > 8 ? "\n..." : ""}\n\n` +
               `Voorwaarde: completed ≥ ${EMPIRICAL_VETO_MIN_COMPLETED}, avgR > 0 en geen
 empirical veto. ` +
-              "CurrentFit wordt bij iedere Discord-trigger opnieuw streng gecontroleerd."
+              "CurrentFit wordt bij iedere Discord-trigger opnieuw streng gecontroleerd. " +
+              "De actieve temporal generation blijft slechte dagen, sessies en niet-goedgekeurde weekenden blokkeren."
          )) return;
 
 
@@ -5004,6 +6024,7 @@ geactiveerd:\n${rejectionLines.join("\n")}` : ""),
 
       if (state.activeTab === "rotation") await renderRotation();
       if (state.activeTab === "micros") await renderMicros();
+      if (state.activeTab === "winners") await renderWinners();
     }
 
 
@@ -5429,6 +6450,7 @@ selection · ${new Date().toLocaleTimeString()}`;
             if (tab === "scanner") return await renderScanner();
             if (tab === "trade") return await renderTrade();
             if (tab === "micros") return await renderMicros();
+            if (tab === "winners") return await renderWinners();
             if (tab === "rotation") return await renderRotation();
             if (tab === "discord") return await renderDiscord();
             if (tab === "reset") return renderReset();
