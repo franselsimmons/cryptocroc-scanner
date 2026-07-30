@@ -2164,10 +2164,22 @@ reason: 'DISCORD_EXIT_ALERT_FAILED'
 }, error?.message || String(error));
 }
 }
+function shouldStopPositionMonitoring({
+signal = null,
+deadlineAt = 0,
+stopBeforeDeadlineMs = 7000
+} = {}) {
+if (signal?.aborted) return true;
+const cutoff = safeNumber(deadlineAt, 0);
+if (cutoff <= 0) return false;
+return cutoff - now() <= Math.max(1000, safeNumber(stopBeforeDeadlineMs, 7000));
+}
 async function monitorOnePosition({
 position,
 priceFetcher,
-timestamp
+timestamp,
+signal = null,
+deadlineAt = 0
 }) {
 if (!isLongPosition(position)) {
 return {
@@ -2190,9 +2202,12 @@ position,
 outcome: null
 };
 }
+if (shouldStopPositionMonitoring({ signal, deadlineAt, stopBeforeDeadlineMs: 3000 })) {
+return { type: 'DEFERRED_RUNTIME_DEADLINE', position, outcome: null };
+}
 position = await ensureCanonicalPositionIdentity(position);
 const fetchSymbol = position.contractSymbol || position.symbol;
-const price = await priceFetcher(fetchSymbol).catch(() => 0);
+const price = await priceFetcher(fetchSymbol, { signal, deadlineAt }).catch(() => 0);
 if (!price) {
 await markPriceFetchFailed(position);
 return {
@@ -2352,7 +2367,12 @@ temporalPolicyAppliedToExit: false
 }
 };
 }
-export async function monitorOpenPositions({ priceFetcher } = {}) {
+export async function monitorOpenPositions({
+priceFetcher,
+signal = null,
+deadlineAt = 0,
+stopBeforeDeadlineMs = 7000
+} = {}) {
 if (typeof priceFetcher !== 'function') {
 throw new Error('PRICE_FETCHER_REQUIRED');
 }
@@ -2360,16 +2380,25 @@ const positions = await getOpenPositions();
 if (!positions.length) return [];
 const cfg = tradeConfig();
 const timestamp = now();
-const results = await mapConcurrent(
-
-positions,
+const results = [];
+for (let index = 0; index < positions.length; index += cfg.dataConcurrency) {
+if (shouldStopPositionMonitoring({ signal, deadlineAt, stopBeforeDeadlineMs })) {
+break;
+}
+const batch = positions.slice(index, index + cfg.dataConcurrency);
+const batchRows = await mapConcurrent(
+batch,
 cfg.dataConcurrency,
 async (position) => monitorOnePosition({
 position,
 priceFetcher,
-timestamp
+timestamp,
+signal,
+deadlineAt
 })
 );
+results.push(...batchRows);
+}
 return results
 .filter((row) => row?.type === 'EXIT' && row.outcome)
 .map((row) => row.outcome);
