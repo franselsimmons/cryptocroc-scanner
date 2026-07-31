@@ -8,6 +8,8 @@ import {
 import { getWeekMicros } from '../../src/analyze/analyzeEngine.js';
 import {
   activateSelectedMicroFamilies,
+  activateWeekComposition,
+  getActiveWeekComposition,
   getActiveRotation,
   getRotationDashboard
 } from '../../src/analyze/rotationEngine.js';
@@ -40,6 +42,14 @@ const EXIT_FILL_MODEL_VERSION =
 
 const EMPIRICAL_VETO_POLICY_VERSION =
   'LONG_EXACT_75_CHILD_NET_EDGE_VETO_V1';
+const BTC_DIRECTION_ROUTER_PROFILE_VERSION =
+  'LONG_BTC_DIRECTION_ROUTER_PROFILE_V1';
+const BTC_DIRECTION_ROUTER_POLICY_VERSION =
+  'LONG_BTC_DIRECTION_ROUTER_COUNTER_SIDE_PROOF_V1';
+const BTC_ROUTER_STATES = Object.freeze([
+  'STRONG_BULLISH', 'BULLISH', 'NEUTRAL',
+  'BEARISH', 'STRONG_BEARISH', 'UNKNOWN'
+]);
 
 
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
@@ -101,7 +111,8 @@ const CONFIRMATION_PROFILE_ORDER = [
 const ALLOWED_ACTIONS = [
      'activateSelected',
      'activateSelectedMicroFamilies',
-     'activateSelectedMacroFamilies'
+     'activateSelectedMacroFamilies',
+     'activateWeekComposition'
 ];
 const BLOCKED_AUTO_ACTIONS = new Set([
     'activateBestBalanced',
@@ -2492,7 +2503,7 @@ const includePrevious = isTrue(
 );
 
 
-const [dashboard, activeRotation, availableResult] = await Promise.all([
+const [dashboard, activeRotation, activeWeekCompositionResult, availableResult] = await Promise.all([
      getRotationDashboard({
        tradeSide: TARGET_TRADE_SIDE,
        side: TARGET_DASHBOARD_SIDE,
@@ -2517,6 +2528,9 @@ const [dashboard, activeRotation, availableResult] = await Promise.all([
        trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
        learningGranularity: LEARNING_GRANULARITY
      }).catch(() => null),
+
+     getActiveWeekComposition().catch(() => null),
+
   includeAvailable
       ? loadAvailableRows({
            weekKey: requestedWeekKey,
@@ -2588,6 +2602,39 @@ activeMacroFamilyIds: active?.activeMacroFamilyIds || [],
 
 activeRows: (active?.microFamilies || []).slice(0, activeRowsLimit),
 activeCount: active?.activeMicroFamilyIds?.length || 0,
+
+weekCompositionProposals: dashboard?.weekCompositionProposals ||
+  dashboard?.activeTemporalGeneration?.weekCompositionProposals || [],
+weekCompositionVersion: dashboard?.weekCompositionVersion || null,
+weekCompositionOptimizerVersion: dashboard?.weekCompositionOptimizerVersion || null,
+temporalHourlyProfileVersion: dashboard?.temporalHourlyProfileVersion || null,
+temporalMarketWeatherProfileVersion: dashboard?.temporalMarketWeatherProfileVersion || null,
+btcDirectionRouterProfileVersion:
+  dashboard?.btcDirectionRouterProfileVersion || BTC_DIRECTION_ROUTER_PROFILE_VERSION,
+btcDirectionRouterPolicyVersion:
+  dashboard?.btcDirectionRouterPolicyVersion || BTC_DIRECTION_ROUTER_POLICY_VERSION,
+btcRouterStates: dashboard?.btcRouterStates || BTC_ROUTER_STATES,
+activeWeekCompositionId:
+  activeWeekCompositionResult?.compositionId || dashboard?.activeWeekCompositionId || null,
+activeWeekComposition:
+  activeWeekCompositionResult?.composition || dashboard?.activeWeekComposition || null,
+activeWeekCompositionValidation:
+  activeWeekCompositionResult?.validation || dashboard?.activeWeekCompositionValidation || null,
+weekCompositionGenerationId:
+  activeWeekCompositionResult?.generationId || dashboard?.activeTemporalGenerationId || null,
+weekCompositionDimensions: {
+  days: ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'],
+  hoursUtc: Array.from({ length: 24 }, (_, hour) => `H${String(hour).padStart(2, '0')}`),
+  marketWeatherKeys: [
+    'TREND|LONG', 'TREND|NEUTRAL', 'TREND|SHORT',
+    'CHOP|LONG', 'CHOP|NEUTRAL', 'CHOP|SHORT',
+    'SQUEEZE|LONG', 'SQUEEZE|NEUTRAL', 'SQUEEZE|SHORT',
+    'UNKNOWN'
+  ],
+  btcRouterStates: BTC_ROUTER_STATES,
+  totalPossibleSlots: 7 * 24 * 10 * BTC_ROUTER_STATES.length,
+  slotKeyFormat: 'DAY:HOUR|MARKET_WEATHER|BTC:STATE'
+},
 
 
 dashboard: dashboard || null,
@@ -2681,6 +2728,93 @@ async function handlePost(req, res) {
          blockedAutoActions: [...BLOCKED_AUTO_ACTIONS],
          ...modeFlags()
        });
+  }
+
+  if (action === 'activateWeekComposition') {
+       const compositionId = String(
+            firstValue(body.compositionId, body.mode || '')
+       ).trim();
+       if (!compositionId) {
+            return res.status(400).json({
+                 ok: false,
+                 reason: 'WEEK_COMPOSITION_ID_REQUIRED',
+                 acceptedModes: ['CONSERVATIVE', 'BALANCED', 'PERFORMANCE'],
+                 allowedActions: ALLOWED_ACTIONS,
+                 ...modeFlags()
+            });
+       }
+       const disabledDays = uniqueStrings(body.disabledDays || body.daysDisabled || [])
+            .map(upper);
+       const disabledHours = uniqueStrings(body.disabledHours || body.hoursDisabledGlobally || [])
+            .map(upper);
+       const disabledWeatherKeys = uniqueStrings(
+            body.disabledWeatherKeys || body.marketWeatherDisabled || []
+       ).map(upper);
+       const disabledBtcStates = uniqueStrings(
+            body.disabledBtcStates || body.btcStatesDisabled || body.btcRouterDisabled || []
+       ).map(upper);
+       const disabledWeatherBtcKeys = uniqueStrings(
+            body.disabledWeatherBtcKeys || body.marketWeatherBtcDisabled || []
+       ).map(upper);
+       const disabledDayHours = uniqueStrings(
+            body.disabledDayHours || body.disabledSlots || body.hoursDisabled || []
+       ).map((value) => upper(value).replace('|', ':'));
+       const disabledSlotWeatherKeys = uniqueStrings(
+            body.disabledSlotWeatherKeys ||
+            body.disabledDayHourWeatherSlots ||
+            body.exactWeatherSlotsDisabled ||
+            []
+       ).map(upper);
+       const disabledDayHourWeatherBtcKeys = uniqueStrings(
+            body.disabledDayHourWeatherBtcKeys ||
+            body.disabledExactBtcSlots ||
+            body.exactDayHourWeatherBtcSlotsDisabled ||
+            disabledSlotWeatherKeys ||
+            []
+       ).map(upper);
+       try {
+            const activation = await activateWeekComposition({
+                 compositionId,
+                 disabledDays,
+                 disabledHours,
+                 disabledWeatherKeys,
+                 disabledBtcStates,
+                 disabledWeatherBtcKeys,
+                 disabledDayHours,
+                 disabledSlots: disabledDayHours,
+                 disabledSlotWeatherKeys,
+                 disabledDayHourWeatherBtcKeys,
+                 activatedBy: 'ADMIN_PAGE_WEEK_COMPOSITION',
+                 nowTs: now()
+            });
+            return res.status(200).json({
+                 ok: true,
+                 action,
+                 compositionId,
+                 disabledDays,
+                 disabledHours,
+                 disabledWeatherKeys,
+                 disabledBtcStates,
+                 disabledWeatherBtcKeys,
+                 disabledDayHours,
+                 disabledSlotWeatherKeys,
+                 disabledDayHourWeatherBtcKeys,
+                 activation,
+                 activeWeekComposition: activation.activeWeekComposition || null,
+                 activeWeekCompositionId: activation.activeWeekCompositionId || null,
+                 ...modeFlags(),
+                 perf: { durationMs: now() - startedAt }
+            });
+       } catch (error) {
+            return res.status(409).json({
+                 ok: false,
+                 action,
+                 reason: error?.message || String(error),
+                 details: error?.details || null,
+                 ...modeFlags(),
+                 perf: { durationMs: now() - startedAt }
+            });
+       }
   }
 
 
