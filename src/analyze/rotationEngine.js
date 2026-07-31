@@ -28,6 +28,8 @@ import {
   temporalStatsEnabled,
   temporalPolicyMode,
   buildTemporalGateWindow,
+  prepareTemporalOutcomePool,
+  buildTemporalGateWindowFromPrepared,
   computeTemporalWindowStats,
   temporalGateMaturity,
   evaluateTemporalDiversity,
@@ -41,10 +43,42 @@ import {
   TEMPORAL_GENERATION_SCHEMA_VERSION,
   TEMPORAL_TAXONOMY_VERSION,
   TEMPORAL_COST_MODEL_VERSION,
+  TEMPORAL_HOURLY_PROFILE_VERSION,
+  TEMPORAL_MARKET_WEATHER_PROFILE_VERSION,
+  BTC_DIRECTION_ROUTER_PROFILE_VERSION,
+  BTC_DIRECTION_ROUTER_POLICY_VERSION,
+  BTC_ROUTER_STATES,
+  BTC_ROUTER_SELECTABLE_STATES,
   TEMPORAL_DAY_BUCKETS,
   TEMPORAL_DAY_TYPE_BUCKETS,
-  TEMPORAL_PRIMARY_SESSION_BUCKETS
+  TEMPORAL_PRIMARY_SESSION_BUCKETS,
+  TEMPORAL_HOUR_BUCKETS,
+  TEMPORAL_MARKET_WEATHER_KEYS,
+  temporalHourKey,
+  temporalDayHourKey,
+  temporalMarketWeatherKey,
+  temporalDayWeatherKey,
+  temporalHourWeatherKey,
+  temporalDayHourWeatherKey,
+  temporalBtcRouterKey,
+  temporalMarketWeatherBtcKey,
+  temporalDayBtcKey,
+  temporalHourBtcKey,
+  temporalDayHourBtcKey,
+  temporalDayWeatherBtcKey,
+  temporalHourWeatherBtcKey,
+  temporalDayHourWeatherBtcKey,
+  resolveEntryMarketWeatherContext,
+  resolveEntryBtcRouterContext
 } from './scoring.js';
+import {
+  WEEK_COMPOSITION_VERSION,
+  WEEK_COMPOSITION_OPTIMIZER_VERSION,
+  buildWeekCompositionProposals,
+  applyWeekCompositionOverrides,
+  validateWeekComposition,
+  evaluateWeekCompositionSlot
+} from './weekCompositionEngine.js';
 import { sendWeeklyRotationReport } from '../discord/discord.js';
 
 
@@ -317,7 +351,18 @@ function temporalLifetimeIntegrity(row = {}) {
     const axes = {
         dayType: Object.values(stats.dayTypeStats || {}),
         dayOfWeek: Object.values(stats.dayOfWeekStats || {}),
-        session: Object.values(stats.sessionStats || {})
+        session: Object.values(stats.sessionStats || {}),
+        hourOfDay: Object.values(stats.hourOfDayStats || {}),
+        dayHour: Object.values(stats.dayHourStats || {})
+            .flatMap((day) => Object.values(day || {})),
+        marketWeather: Object.values(stats.marketWeatherStats || {}),
+        dayWeather: Object.values(stats.dayWeatherStats || {})
+            .flatMap((day) => Object.values(day || {})),
+        hourWeather: Object.values(stats.hourWeatherStats || {})
+            .flatMap((hour) => Object.values(hour || {})),
+        dayHourWeather: Object.values(stats.dayHourWeatherStats || {})
+            .flatMap((day) => Object.values(day || {}))
+            .flatMap((hour) => Object.values(hour || {}))
     };
     const summarize = (buckets) => ({
         completed: buckets.reduce((sum, bucket) => sum + safeNumber(bucket?.completed, 0), 0),
@@ -328,11 +373,29 @@ function temporalLifetimeIntegrity(row = {}) {
         Object.entries(axes).map(([axis, buckets]) => [axis, summarize(buckets)])
     );
     const completedEqual = totals.dayType.completed === totals.dayOfWeek.completed &&
-        totals.dayType.completed === totals.session.completed;
+        totals.dayType.completed === totals.session.completed &&
+        totals.dayType.completed === totals.hourOfDay.completed &&
+        totals.dayType.completed === totals.dayHour.completed &&
+        totals.dayType.completed === totals.marketWeather.completed &&
+        totals.dayType.completed === totals.dayWeather.completed &&
+        totals.dayType.completed === totals.hourWeather.completed &&
+        totals.dayType.completed === totals.dayHourWeather.completed;
     const observationsEqual = totals.dayType.observations === totals.dayOfWeek.observations &&
-        totals.dayType.observations === totals.session.observations;
+        totals.dayType.observations === totals.session.observations &&
+        totals.dayType.observations === totals.hourOfDay.observations &&
+        totals.dayType.observations === totals.dayHour.observations &&
+        totals.dayType.observations === totals.marketWeather.observations &&
+        totals.dayType.observations === totals.dayWeather.observations &&
+        totals.dayType.observations === totals.hourWeather.observations &&
+        totals.dayType.observations === totals.dayHourWeather.observations;
     const rEqual = Math.abs(totals.dayType.sumNetR - totals.dayOfWeek.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
-        Math.abs(totals.dayType.sumNetR - totals.session.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE;
+        Math.abs(totals.dayType.sumNetR - totals.session.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
+        Math.abs(totals.dayType.sumNetR - totals.hourOfDay.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
+        Math.abs(totals.dayType.sumNetR - totals.dayHour.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
+        Math.abs(totals.dayType.sumNetR - totals.marketWeather.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
+        Math.abs(totals.dayType.sumNetR - totals.dayWeather.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
+        Math.abs(totals.dayType.sumNetR - totals.hourWeather.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
+        Math.abs(totals.dayType.sumNetR - totals.dayHourWeather.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE;
     const sequenceCompatible = safeNumber(stats.acceptedTemporalOutcomeSeq, 0) === totals.dayType.completed;
     return {
         passed: completedEqual && observationsEqual && rEqual && sequenceCompatible,
@@ -594,6 +657,365 @@ function temporalTestRecord({
     };
 }
 
+function groupPreparedTemporalRows(preparedRows = [], keyFactory) {
+    const groups = new Map();
+    for (const row of Array.isArray(preparedRows) ? preparedRows : []) {
+        const key = String(keyFactory(row) || '').trim().toUpperCase();
+        if (!key) continue;
+        const members = groups.get(key) || [];
+        if (members.length < TEMPORAL_MAX_WINDOW_OUTCOMES) members.push(row);
+        groups.set(key, members);
+    }
+    return groups;
+}
+
+function descriptiveTemporalRecord({ bucketType, bucketValue, members = [] } = {}) {
+    return {
+        bucketType,
+        bucketValue,
+        members,
+        stats: computeTemporalWindowStats(members),
+        diversity: evaluateTemporalDiversity(members, { hourly: true })
+    };
+}
+
+function buildSparseWeatherTests(preparedRows = []) {
+    const weatherGroups = groupPreparedTemporalRows(
+        preparedRows,
+        (row) => temporalMarketWeatherKey(row.entryMarketWeatherKey)
+    );
+    const dayWeatherGroups = groupPreparedTemporalRows(
+        preparedRows,
+        (row) => temporalDayWeatherKey(row.entryDayOfWeekUtc, row.entryMarketWeatherKey)
+    );
+    const hourWeatherGroups = groupPreparedTemporalRows(
+        preparedRows,
+        (row) => temporalHourWeatherKey(row.entryHourUtc, row.entryMarketWeatherKey)
+    );
+    const dayHourWeatherGroups = groupPreparedTemporalRows(
+        preparedRows,
+        (row) => temporalDayHourWeatherKey(
+            row.entryDayOfWeekUtc,
+            row.entryHourUtc,
+            row.entryMarketWeatherKey
+        )
+    );
+    const btcGroups = groupPreparedTemporalRows(
+        preparedRows,
+        (row) => temporalBtcRouterKey(row.entryBtcRouterState)
+    );
+    const marketWeatherBtcGroups = groupPreparedTemporalRows(
+        preparedRows,
+        (row) => temporalMarketWeatherBtcKey(
+            row.entryMarketWeatherKey,
+            row.entryBtcRouterState
+        )
+    );
+    const dayBtcGroups = groupPreparedTemporalRows(
+        preparedRows,
+        (row) => temporalDayBtcKey(row.entryDayOfWeekUtc, row.entryBtcRouterState)
+    );
+    const hourBtcGroups = groupPreparedTemporalRows(
+        preparedRows,
+        (row) => temporalHourBtcKey(row.entryHourUtc, row.entryBtcRouterState)
+    );
+    const dayHourBtcGroups = groupPreparedTemporalRows(
+        preparedRows,
+        (row) => temporalDayHourBtcKey(
+            row.entryDayOfWeekUtc,
+            row.entryHourUtc,
+            row.entryBtcRouterState
+        )
+    );
+    const dayWeatherBtcGroups = groupPreparedTemporalRows(
+        preparedRows,
+        (row) => temporalDayWeatherBtcKey(
+            row.entryDayOfWeekUtc,
+            row.entryMarketWeatherKey,
+            row.entryBtcRouterState
+        )
+    );
+    const hourWeatherBtcGroups = groupPreparedTemporalRows(
+        preparedRows,
+        (row) => temporalHourWeatherBtcKey(
+            row.entryHourUtc,
+            row.entryMarketWeatherKey,
+            row.entryBtcRouterState
+        )
+    );
+    const dayHourWeatherBtcGroups = groupPreparedTemporalRows(
+        preparedRows,
+        (row) => temporalDayHourWeatherBtcKey(
+            row.entryDayOfWeekUtc,
+            row.entryHourUtc,
+            row.entryMarketWeatherKey,
+            row.entryBtcRouterState
+        )
+    );
+
+    const weatherBtcObject = (groups, keyFactory) => Object.fromEntries(
+        TEMPORAL_MARKET_WEATHER_KEYS.map((weatherKey) => [
+            weatherKey,
+            Object.fromEntries(
+                BTC_ROUTER_STATES
+                    .map((btcState) => {
+                        const key = keyFactory(weatherKey, btcState);
+                        const members = groups.get(key);
+                        return members
+                            ? [btcState, descriptiveTemporalRecord({
+                                bucketType: 'marketWeatherBtc',
+                                bucketValue: key,
+                                members
+                            })]
+                            : null;
+                    })
+                    .filter(Boolean)
+            )
+        ])
+    );
+
+    return {
+        marketWeatherTests: Object.fromEntries(
+            [...weatherGroups.entries()].map(([key, members]) => [
+                key,
+                descriptiveTemporalRecord({
+                    bucketType: 'marketWeather',
+                    bucketValue: key,
+                    members
+                })
+            ])
+        ),
+        dayWeatherTests: Object.fromEntries(
+            TEMPORAL_DAY_BUCKETS.map((day) => [
+                day,
+                Object.fromEntries(
+                    TEMPORAL_MARKET_WEATHER_KEYS
+                        .map((weatherKey) => {
+                            const key = temporalDayWeatherKey(day, weatherKey);
+                            const members = dayWeatherGroups.get(key);
+                            return members
+                                ? [weatherKey, descriptiveTemporalRecord({
+                                    bucketType: 'dayWeather',
+                                    bucketValue: key,
+                                    members
+                                })]
+                                : null;
+                        })
+                        .filter(Boolean)
+                )
+            ])
+        ),
+        hourWeatherTests: Object.fromEntries(
+            TEMPORAL_HOUR_BUCKETS.map((hourBucket) => [
+                hourBucket,
+                Object.fromEntries(
+                    TEMPORAL_MARKET_WEATHER_KEYS
+                        .map((weatherKey) => {
+                            const key = `${hourBucket}|${weatherKey}`;
+                            const members = hourWeatherGroups.get(key);
+                            return members
+                                ? [weatherKey, descriptiveTemporalRecord({
+                                    bucketType: 'hourWeather',
+                                    bucketValue: key,
+                                    members
+                                })]
+                                : null;
+                        })
+                        .filter(Boolean)
+                )
+            ])
+        ),
+        dayHourWeatherTests: Object.fromEntries(
+            TEMPORAL_DAY_BUCKETS.map((day) => [
+                day,
+                Object.fromEntries(
+                    TEMPORAL_HOUR_BUCKETS.map((hourBucket) => [
+                        hourBucket,
+                        Object.fromEntries(
+                            TEMPORAL_MARKET_WEATHER_KEYS
+                                .map((weatherKey) => {
+                                    const key = `${day}:${hourBucket}|${weatherKey}`;
+                                    const members = dayHourWeatherGroups.get(key);
+                                    return members
+                                        ? [weatherKey, descriptiveTemporalRecord({
+                                            bucketType: 'dayHourWeather',
+                                            bucketValue: key,
+                                            members
+                                        })]
+                                        : null;
+                                })
+                                .filter(Boolean)
+                        )
+                    ])
+                )
+            ])
+        ),
+        btcRouterTests: Object.fromEntries(
+            BTC_ROUTER_STATES
+                .map((btcState) => {
+                    const members = btcGroups.get(btcState);
+                    return members
+                        ? [btcState, descriptiveTemporalRecord({
+                            bucketType: 'btcRouter',
+                            bucketValue: btcState,
+                            members
+                        })]
+                        : null;
+                })
+                .filter(Boolean)
+        ),
+        marketWeatherBtcTests: weatherBtcObject(
+            marketWeatherBtcGroups,
+            (weatherKey, btcState) => temporalMarketWeatherBtcKey(weatherKey, btcState)
+        ),
+        dayBtcTests: Object.fromEntries(
+            TEMPORAL_DAY_BUCKETS.map((day) => [
+                day,
+                Object.fromEntries(
+                    BTC_ROUTER_STATES
+                        .map((btcState) => {
+                            const key = temporalDayBtcKey(day, btcState);
+                            const members = dayBtcGroups.get(key);
+                            return members
+                                ? [btcState, descriptiveTemporalRecord({
+                                    bucketType: 'dayBtc',
+                                    bucketValue: key,
+                                    members
+                                })]
+                                : null;
+                        })
+                        .filter(Boolean)
+                )
+            ])
+        ),
+        hourBtcTests: Object.fromEntries(
+            TEMPORAL_HOUR_BUCKETS.map((hourBucket) => [
+                hourBucket,
+                Object.fromEntries(
+                    BTC_ROUTER_STATES
+                        .map((btcState) => {
+                            const key = `${hourBucket}|BTC:${btcState}`;
+                            const members = hourBtcGroups.get(key);
+                            return members
+                                ? [btcState, descriptiveTemporalRecord({
+                                    bucketType: 'hourBtc',
+                                    bucketValue: key,
+                                    members
+                                })]
+                                : null;
+                        })
+                        .filter(Boolean)
+                )
+            ])
+        ),
+        dayHourBtcTests: Object.fromEntries(
+            TEMPORAL_DAY_BUCKETS.map((day) => [
+                day,
+                Object.fromEntries(
+                    TEMPORAL_HOUR_BUCKETS.map((hourBucket) => [
+                        hourBucket,
+                        Object.fromEntries(
+                            BTC_ROUTER_STATES
+                                .map((btcState) => {
+                                    const key = `${day}:${hourBucket}|BTC:${btcState}`;
+                                    const members = dayHourBtcGroups.get(key);
+                                    return members
+                                        ? [btcState, descriptiveTemporalRecord({
+                                            bucketType: 'dayHourBtc',
+                                            bucketValue: key,
+                                            members
+                                        })]
+                                        : null;
+                                })
+                                .filter(Boolean)
+                        )
+                    ])
+                )
+            ])
+        ),
+        dayWeatherBtcTests: Object.fromEntries(
+            TEMPORAL_DAY_BUCKETS.map((day) => [
+                day,
+                Object.fromEntries(
+                    TEMPORAL_MARKET_WEATHER_KEYS.map((weatherKey) => [
+                        weatherKey,
+                        Object.fromEntries(
+                            BTC_ROUTER_STATES
+                                .map((btcState) => {
+                                    const key = temporalDayWeatherBtcKey(day, weatherKey, btcState);
+                                    const members = dayWeatherBtcGroups.get(key);
+                                    return members
+                                        ? [btcState, descriptiveTemporalRecord({
+                                            bucketType: 'dayWeatherBtc',
+                                            bucketValue: key,
+                                            members
+                                        })]
+                                        : null;
+                                })
+                                .filter(Boolean)
+                        )
+                    ])
+                )
+            ])
+        ),
+        hourWeatherBtcTests: Object.fromEntries(
+            TEMPORAL_HOUR_BUCKETS.map((hourBucket) => [
+                hourBucket,
+                Object.fromEntries(
+                    TEMPORAL_MARKET_WEATHER_KEYS.map((weatherKey) => [
+                        weatherKey,
+                        Object.fromEntries(
+                            BTC_ROUTER_STATES
+                                .map((btcState) => {
+                                    const key = `${hourBucket}|${weatherKey}|BTC:${btcState}`;
+                                    const members = hourWeatherBtcGroups.get(key);
+                                    return members
+                                        ? [btcState, descriptiveTemporalRecord({
+                                            bucketType: 'hourWeatherBtc',
+                                            bucketValue: key,
+                                            members
+                                        })]
+                                        : null;
+                                })
+                                .filter(Boolean)
+                        )
+                    ])
+                )
+            ])
+        ),
+        dayHourWeatherBtcTests: Object.fromEntries(
+            TEMPORAL_DAY_BUCKETS.map((day) => [
+                day,
+                Object.fromEntries(
+                    TEMPORAL_HOUR_BUCKETS.map((hourBucket) => [
+                        hourBucket,
+                        Object.fromEntries(
+                            TEMPORAL_MARKET_WEATHER_KEYS.map((weatherKey) => [
+                                weatherKey,
+                                Object.fromEntries(
+                                    BTC_ROUTER_STATES
+                                        .map((btcState) => {
+                                            const key = `${day}:${hourBucket}|${weatherKey}|BTC:${btcState}`;
+                                            const members = dayHourWeatherBtcGroups.get(key);
+                                            return members
+                                                ? [btcState, descriptiveTemporalRecord({
+                                                    bucketType: 'dayHourWeatherBtc',
+                                                    bucketValue: key,
+                                                    members
+                                                })]
+                                                : null;
+                                        })
+                                        .filter(Boolean)
+                                )
+                            ])
+                        )
+                    ])
+                )
+            ])
+        )
+    };
+}
+
 function applyBhResults(records, direction) {
     const adjusted = benjaminiHochberg(records.map((record) => ({
         id: record.id,
@@ -633,6 +1055,15 @@ function temporalGenerationManifestBase({ cutoffTs, freezeSequence, familyCount 
         costModelVersion: TEMPORAL_COST_MODEL_VERSION,
         taxonomyVersion: TEMPORAL_TAXONOMY_VERSION,
         generationSchemaVersion: TEMPORAL_GENERATION_SCHEMA_VERSION,
+        temporalHourlyProfileVersion: TEMPORAL_HOURLY_PROFILE_VERSION,
+        temporalMarketWeatherProfileVersion: TEMPORAL_MARKET_WEATHER_PROFILE_VERSION,
+        temporalMarketWeatherKeys: TEMPORAL_MARKET_WEATHER_KEYS,
+        btcDirectionRouterProfileVersion: BTC_DIRECTION_ROUTER_PROFILE_VERSION,
+        btcDirectionRouterPolicyVersion: BTC_DIRECTION_ROUTER_POLICY_VERSION,
+        btcRouterStates: BTC_ROUTER_STATES,
+        btcRouterSelectableStates: BTC_ROUTER_SELECTABLE_STATES,
+        weekCompositionVersion: WEEK_COMPOSITION_VERSION,
+        weekCompositionOptimizerVersion: WEEK_COMPOSITION_OPTIMIZER_VERSION,
         familyCount,
         freezeSequence,
         activationScheduledAt: activationWindow.startsAt,
@@ -670,14 +1101,16 @@ async function buildTemporalGeneration({
     }
 
     const familyWork = histories.map(({ familyId, rows }) => {
+        const preparedRows = prepareTemporalOutcomePool(rows, {
+            familyId,
+            cutoffTs: normalizedCutoffTs,
+            maxAgeDays: TEMPORAL_MAX_WINDOW_AGE_DAYS
+        });
         const dayTests = Object.fromEntries(TEMPORAL_DAY_BUCKETS.map((bucket) => {
-            const members = buildTemporalGateWindow(rows, {
-                familyId,
+            const members = buildTemporalGateWindowFromPrepared(preparedRows, {
                 bucketType: 'dayOfWeek',
                 bucketValue: bucket,
-                cutoffTs: normalizedCutoffTs,
-                maxOutcomes: TEMPORAL_MAX_WINDOW_OUTCOMES,
-                maxAgeDays: TEMPORAL_MAX_WINDOW_AGE_DAYS
+                maxOutcomes: TEMPORAL_MAX_WINDOW_OUTCOMES
             });
             return [bucket, temporalTestRecord({
                 familyId,
@@ -688,13 +1121,10 @@ async function buildTemporalGeneration({
             })];
         }));
         const sessionTests = Object.fromEntries(TEMPORAL_PRIMARY_SESSION_BUCKETS.map((bucket) => {
-            const members = buildTemporalGateWindow(rows, {
-                familyId,
+            const members = buildTemporalGateWindowFromPrepared(preparedRows, {
                 bucketType: 'session',
                 bucketValue: bucket,
-                cutoffTs: normalizedCutoffTs,
-                maxOutcomes: TEMPORAL_MAX_WINDOW_OUTCOMES,
-                maxAgeDays: TEMPORAL_MAX_WINDOW_AGE_DAYS
+                maxOutcomes: TEMPORAL_MAX_WINDOW_OUTCOMES
             });
             return [bucket, temporalTestRecord({
                 familyId,
@@ -705,11 +1135,10 @@ async function buildTemporalGeneration({
             })];
         }));
         const dayTypeProfiles = Object.fromEntries(TEMPORAL_DAY_TYPE_BUCKETS.map((bucket) => {
-            const members = buildTemporalGateWindow(rows, {
-                familyId,
+            const members = buildTemporalGateWindowFromPrepared(preparedRows, {
                 bucketType: 'dayType',
                 bucketValue: bucket,
-                cutoffTs: normalizedCutoffTs
+                maxOutcomes: TEMPORAL_MAX_WINDOW_OUTCOMES
             });
             return [bucket, {
                 bucketType: 'dayType',
@@ -720,11 +1149,51 @@ async function buildTemporalGeneration({
                 normalVetoTestDisabled: true
             }];
         }));
+        const hourTests = Object.fromEntries(TEMPORAL_HOUR_BUCKETS.map((bucket) => {
+            const members = buildTemporalGateWindowFromPrepared(preparedRows, {
+                bucketType: 'hourOfDay',
+                bucketValue: bucket,
+                maxOutcomes: TEMPORAL_MAX_WINDOW_OUTCOMES
+            });
+            return [bucket, {
+                bucketType: 'hourOfDay',
+                bucketValue: bucket,
+                members,
+                stats: computeTemporalWindowStats(members),
+                diversity: evaluateTemporalDiversity(members, { hourly: true })
+            }];
+        }));
+        const dayHourTests = Object.fromEntries(TEMPORAL_DAY_BUCKETS.map((day) => [
+            day,
+            Object.fromEntries(TEMPORAL_HOUR_BUCKETS.map((hourBucket) => {
+                const bucketValue = `${day}:${hourBucket}`;
+                const members = buildTemporalGateWindowFromPrepared(preparedRows, {
+                    bucketType: 'dayHour',
+                    bucketValue,
+                    maxOutcomes: TEMPORAL_MAX_WINDOW_OUTCOMES
+                });
+                return [hourBucket, {
+                    bucketType: 'dayHour',
+                    bucketValue,
+                    dayOfWeekUtc: day,
+                    hourBucket,
+                    hourUtc: Number(hourBucket.slice(1)),
+                    members,
+                    stats: computeTemporalWindowStats(members),
+                    diversity: evaluateTemporalDiversity(members, { hourly: true })
+                }];
+            }))
+        ]));
+        const weatherTests = buildSparseWeatherTests(preparedRows);
         return {
             familyId,
             rows,
+            preparedRows,
             dayTests,
             sessionTests,
+            hourTests,
+            dayHourTests,
+            ...weatherTests,
             dayTypeProfiles,
             previousProjection: previousProjectionMap.get(familyId) || null,
             lifetimeIntegrity: temporalLifetimeIntegrity(temporalFamilyStatsRow(micros, familyId))
@@ -874,6 +1343,313 @@ async function buildTemporalGeneration({
             };
         }
 
+        const hourProfiles = Object.fromEntries(
+            TEMPORAL_HOUR_BUCKETS.map((bucket) => {
+                const test = work.hourTests[bucket];
+                return [bucket, {
+                    bucketType: 'hourOfDay',
+                    bucketValue: bucket,
+                    hourUtc: Number(bucket.slice(1)),
+                    gateWindow: test.stats,
+                    maturity: temporalGateMaturity(test.stats.completed),
+                    diversity: test.diversity,
+                    descriptiveOnly: true,
+                    optimizerEvidence: true
+                }];
+            })
+        );
+        const dayHourProfiles = Object.fromEntries(
+            TEMPORAL_DAY_BUCKETS.map((day) => [
+                day,
+                Object.fromEntries(TEMPORAL_HOUR_BUCKETS.map((hourBucket) => {
+                    const test = work.dayHourTests[day][hourBucket];
+                    return [hourBucket, {
+                        bucketType: 'dayHour',
+                        bucketValue: `${day}:${hourBucket}`,
+                        dayOfWeekUtc: day,
+                        hourUtc: Number(hourBucket.slice(1)),
+                        hourBucket,
+                        gateWindow: test.stats,
+                        maturity: temporalGateMaturity(test.stats.completed),
+                        diversity: test.diversity,
+                        descriptiveOnly: true,
+                        optimizerEvidence: true
+                    }];
+                }))
+            ])
+        );
+        const marketWeatherProfiles = Object.fromEntries(
+            Object.entries(work.marketWeatherTests || {}).map(([weatherKey, test]) => [
+                weatherKey,
+                {
+                    bucketType: 'marketWeather',
+                    bucketValue: weatherKey,
+                    marketWeatherKey: weatherKey,
+                    gateWindow: test.stats,
+                    maturity: temporalGateMaturity(test.stats.completed),
+                    diversity: test.diversity,
+                    descriptiveOnly: true,
+                    optimizerEvidence: true
+                }
+            ])
+        );
+        const dayWeatherProfiles = Object.fromEntries(
+            TEMPORAL_DAY_BUCKETS.map((day) => [
+                day,
+                Object.fromEntries(
+                    Object.entries(work.dayWeatherTests?.[day] || {}).map(([weatherKey, test]) => [
+                        weatherKey,
+                        {
+                            bucketType: 'dayWeather',
+                            bucketValue: `${day}|${weatherKey}`,
+                            dayOfWeekUtc: day,
+                            marketWeatherKey: weatherKey,
+                            gateWindow: test.stats,
+                            maturity: temporalGateMaturity(test.stats.completed),
+                            diversity: test.diversity,
+                            descriptiveOnly: true,
+                            optimizerEvidence: true
+                        }
+                    ])
+                )
+            ])
+        );
+        const hourWeatherProfiles = Object.fromEntries(
+            TEMPORAL_HOUR_BUCKETS.map((hourBucket) => [
+                hourBucket,
+                Object.fromEntries(
+                    Object.entries(work.hourWeatherTests?.[hourBucket] || {}).map(([weatherKey, test]) => [
+                        weatherKey,
+                        {
+                            bucketType: 'hourWeather',
+                            bucketValue: `${hourBucket}|${weatherKey}`,
+                            hourUtc: Number(hourBucket.slice(1)),
+                            hourBucket,
+                            marketWeatherKey: weatherKey,
+                            gateWindow: test.stats,
+                            maturity: temporalGateMaturity(test.stats.completed),
+                            diversity: test.diversity,
+                            descriptiveOnly: true,
+                            optimizerEvidence: true
+                        }
+                    ])
+                )
+            ])
+        );
+        const dayHourWeatherProfiles = Object.fromEntries(
+            TEMPORAL_DAY_BUCKETS.map((day) => [
+                day,
+                Object.fromEntries(
+                    TEMPORAL_HOUR_BUCKETS.map((hourBucket) => [
+                        hourBucket,
+                        Object.fromEntries(
+                            Object.entries(work.dayHourWeatherTests?.[day]?.[hourBucket] || {})
+                                .map(([weatherKey, test]) => [
+                                    weatherKey,
+                                    {
+                                        bucketType: 'dayHourWeather',
+                                        bucketValue: `${day}:${hourBucket}|${weatherKey}`,
+                                        dayOfWeekUtc: day,
+                                        hourUtc: Number(hourBucket.slice(1)),
+                                        hourBucket,
+                                        marketWeatherKey: weatherKey,
+                                        gateWindow: test.stats,
+                                        maturity: temporalGateMaturity(test.stats.completed),
+                                        diversity: test.diversity,
+                                        descriptiveOnly: true,
+                                        optimizerEvidence: true
+                                    }
+                                ])
+                        )
+                    ])
+                )
+            ])
+        );
+
+        const btcRouterProfiles = Object.fromEntries(
+            Object.entries(work.btcRouterTests || {}).map(([btcState, test]) => [
+                btcState,
+                {
+                    bucketType: 'btcRouter',
+                    bucketValue: btcState,
+                    btcRouterState: btcState,
+                    gateWindow: test.stats,
+                    maturity: temporalGateMaturity(test.stats.completed),
+                    diversity: test.diversity,
+                    descriptiveOnly: true,
+                    optimizerEvidence: true
+                }
+            ])
+        );
+        const marketWeatherBtcProfiles = Object.fromEntries(
+            TEMPORAL_MARKET_WEATHER_KEYS.map((weatherKey) => [
+                weatherKey,
+                Object.fromEntries(
+                    Object.entries(work.marketWeatherBtcTests?.[weatherKey] || {})
+                        .map(([btcState, test]) => [btcState, {
+                            bucketType: 'marketWeatherBtc',
+                            bucketValue: `${weatherKey}|BTC:${btcState}`,
+                            marketWeatherKey: weatherKey,
+                            btcRouterState: btcState,
+                            gateWindow: test.stats,
+                            maturity: temporalGateMaturity(test.stats.completed),
+                            diversity: test.diversity,
+                            descriptiveOnly: true,
+                            optimizerEvidence: true
+                        }])
+                )
+            ])
+        );
+        const dayBtcProfiles = Object.fromEntries(
+            TEMPORAL_DAY_BUCKETS.map((day) => [
+                day,
+                Object.fromEntries(
+                    Object.entries(work.dayBtcTests?.[day] || {})
+                        .map(([btcState, test]) => [btcState, {
+                            bucketType: 'dayBtc',
+                            bucketValue: `${day}|BTC:${btcState}`,
+                            dayOfWeekUtc: day,
+                            btcRouterState: btcState,
+                            gateWindow: test.stats,
+                            maturity: temporalGateMaturity(test.stats.completed),
+                            diversity: test.diversity,
+                            descriptiveOnly: true,
+                            optimizerEvidence: true
+                        }])
+                )
+            ])
+        );
+        const hourBtcProfiles = Object.fromEntries(
+            TEMPORAL_HOUR_BUCKETS.map((hourBucket) => [
+                hourBucket,
+                Object.fromEntries(
+                    Object.entries(work.hourBtcTests?.[hourBucket] || {})
+                        .map(([btcState, test]) => [btcState, {
+                            bucketType: 'hourBtc',
+                            bucketValue: `${hourBucket}|BTC:${btcState}`,
+                            hourUtc: Number(hourBucket.slice(1)),
+                            hourBucket,
+                            btcRouterState: btcState,
+                            gateWindow: test.stats,
+                            maturity: temporalGateMaturity(test.stats.completed),
+                            diversity: test.diversity,
+                            descriptiveOnly: true,
+                            optimizerEvidence: true
+                        }])
+                )
+            ])
+        );
+        const dayHourBtcProfiles = Object.fromEntries(
+            TEMPORAL_DAY_BUCKETS.map((day) => [
+                day,
+                Object.fromEntries(
+                    TEMPORAL_HOUR_BUCKETS.map((hourBucket) => [
+                        hourBucket,
+                        Object.fromEntries(
+                            Object.entries(work.dayHourBtcTests?.[day]?.[hourBucket] || {})
+                                .map(([btcState, test]) => [btcState, {
+                                    bucketType: 'dayHourBtc',
+                                    bucketValue: `${day}:${hourBucket}|BTC:${btcState}`,
+                                    dayOfWeekUtc: day,
+                                    hourUtc: Number(hourBucket.slice(1)),
+                                    hourBucket,
+                                    btcRouterState: btcState,
+                                    gateWindow: test.stats,
+                                    maturity: temporalGateMaturity(test.stats.completed),
+                                    diversity: test.diversity,
+                                    descriptiveOnly: true,
+                                    optimizerEvidence: true
+                                }])
+                        )
+                    ])
+                )
+            ])
+        );
+        const dayWeatherBtcProfiles = Object.fromEntries(
+            TEMPORAL_DAY_BUCKETS.map((day) => [
+                day,
+                Object.fromEntries(
+                    TEMPORAL_MARKET_WEATHER_KEYS.map((weatherKey) => [
+                        weatherKey,
+                        Object.fromEntries(
+                            Object.entries(work.dayWeatherBtcTests?.[day]?.[weatherKey] || {})
+                                .map(([btcState, test]) => [btcState, {
+                                    bucketType: 'dayWeatherBtc',
+                                    bucketValue: `${day}|${weatherKey}|BTC:${btcState}`,
+                                    dayOfWeekUtc: day,
+                                    marketWeatherKey: weatherKey,
+                                    btcRouterState: btcState,
+                                    gateWindow: test.stats,
+                                    maturity: temporalGateMaturity(test.stats.completed),
+                                    diversity: test.diversity,
+                                    descriptiveOnly: true,
+                                    optimizerEvidence: true
+                                }])
+                        )
+                    ])
+                )
+            ])
+        );
+        const hourWeatherBtcProfiles = Object.fromEntries(
+            TEMPORAL_HOUR_BUCKETS.map((hourBucket) => [
+                hourBucket,
+                Object.fromEntries(
+                    TEMPORAL_MARKET_WEATHER_KEYS.map((weatherKey) => [
+                        weatherKey,
+                        Object.fromEntries(
+                            Object.entries(work.hourWeatherBtcTests?.[hourBucket]?.[weatherKey] || {})
+                                .map(([btcState, test]) => [btcState, {
+                                    bucketType: 'hourWeatherBtc',
+                                    bucketValue: `${hourBucket}|${weatherKey}|BTC:${btcState}`,
+                                    hourUtc: Number(hourBucket.slice(1)),
+                                    hourBucket,
+                                    marketWeatherKey: weatherKey,
+                                    btcRouterState: btcState,
+                                    gateWindow: test.stats,
+                                    maturity: temporalGateMaturity(test.stats.completed),
+                                    diversity: test.diversity,
+                                    descriptiveOnly: true,
+                                    optimizerEvidence: true
+                                }])
+                        )
+                    ])
+                )
+            ])
+        );
+        const dayHourWeatherBtcProfiles = Object.fromEntries(
+            TEMPORAL_DAY_BUCKETS.map((day) => [
+                day,
+                Object.fromEntries(
+                    TEMPORAL_HOUR_BUCKETS.map((hourBucket) => [
+                        hourBucket,
+                        Object.fromEntries(
+                            TEMPORAL_MARKET_WEATHER_KEYS.map((weatherKey) => [
+                                weatherKey,
+                                Object.fromEntries(
+                                    Object.entries(
+                                        work.dayHourWeatherBtcTests?.[day]?.[hourBucket]?.[weatherKey] || {}
+                                    ).map(([btcState, test]) => [btcState, {
+                                        bucketType: 'dayHourWeatherBtc',
+                                        bucketValue: `${day}:${hourBucket}|${weatherKey}|BTC:${btcState}`,
+                                        dayOfWeekUtc: day,
+                                        hourUtc: Number(hourBucket.slice(1)),
+                                        hourBucket,
+                                        marketWeatherKey: weatherKey,
+                                        btcRouterState: btcState,
+                                        gateWindow: test.stats,
+                                        maturity: temporalGateMaturity(test.stats.completed),
+                                        diversity: test.diversity,
+                                        descriptiveOnly: true,
+                                        optimizerEvidence: true
+                                    }])
+                                )
+                            ])
+                        )
+                    ])
+                )
+            ])
+        );
+
         const parsed = parseLongTaxonomyMicroId(work.familyId);
         return {
             familyId: work.familyId,
@@ -889,9 +1665,29 @@ async function buildTemporalGeneration({
             measurementVersion: MEASUREMENT_FIX_VERSION,
             costModelVersion: TEMPORAL_COST_MODEL_VERSION,
             taxonomyVersion: TEMPORAL_TAXONOMY_VERSION,
+            temporalHourlyProfileVersion: TEMPORAL_HOURLY_PROFILE_VERSION,
+            temporalMarketWeatherProfileVersion: TEMPORAL_MARKET_WEATHER_PROFILE_VERSION,
+            btcDirectionRouterProfileVersion: BTC_DIRECTION_ROUTER_PROFILE_VERSION,
+            btcDirectionRouterPolicyVersion: BTC_DIRECTION_ROUTER_POLICY_VERSION,
+            marketWeatherKeys: TEMPORAL_MARKET_WEATHER_KEYS,
+            btcRouterStates: BTC_ROUTER_STATES,
             dayTypeProfiles: work.dayTypeProfiles,
             dayProfiles,
             sessionProfiles,
+            hourProfiles,
+            dayHourProfiles,
+            marketWeatherProfiles,
+            dayWeatherProfiles,
+            hourWeatherProfiles,
+            dayHourWeatherProfiles,
+            btcRouterProfiles,
+            marketWeatherBtcProfiles,
+            dayBtcProfiles,
+            hourBtcProfiles,
+            dayHourBtcProfiles,
+            dayWeatherBtcProfiles,
+            hourWeatherBtcProfiles,
+            dayHourWeatherBtcProfiles,
             weekendApprovals,
             lifetimeIntegrity: work.lifetimeIntegrity,
             familyIdentityIncludesTemporalBucket: false,
@@ -938,6 +1734,18 @@ async function buildTemporalGeneration({
         checksum: null
     };
 
+    const preliminarySeed = `${TARGET_TRADE_SIDE}|${normalizedCutoffTs}|${freezeSequence}|${temporalChecksum({
+        projections,
+        manifest
+    })}`;
+    generation.generationId = `LONG_TEMPORAL_${normalizedCutoffTs}_${freezeSequence}_${
+        createHash('sha256').update(preliminarySeed).digest('hex').slice(0, 12)
+    }`;
+    generation.weekCompositionProposals = buildWeekCompositionProposals({
+        generation,
+        micros
+    });
+
     const uniqueFamilies = new Set(projections.map((projection) => projection.familyId));
     const nonFinitePaths = temporalNonFinitePaths(generation);
     const lifetimeFailures = projections
@@ -951,6 +1759,23 @@ async function buildTemporalGeneration({
             .filter((profile) => profile.confounding?.integrity === false)
             .map((profile) => `${projection.familyId}|session|${profile.bucketValue}`)
     ]);
+    const compositionFailures = [];
+    if (!Array.isArray(generation.weekCompositionProposals) ||
+        generation.weekCompositionProposals.length !== 3) {
+        compositionFailures.push('EXACTLY_THREE_WEEK_COMPOSITIONS_REQUIRED');
+    } else {
+        for (const composition of generation.weekCompositionProposals) {
+            const validation = validateWeekComposition(composition, {
+                generationId: generation.generationId,
+                requireActive: false
+            });
+            if (!validation.valid) {
+                compositionFailures.push(
+                    `${composition?.mode || 'UNKNOWN'}:${validation.errors.join('|')}`
+                );
+            }
+        }
+    }
     const errors = [];
     if (projections.length !== 75 || uniqueFamilies.size !== 75) {
         errors.push('GENERATION_MUST_CONTAIN_EXACTLY_75_UNIQUE_CHILD_FAMILIES');
@@ -961,23 +1786,22 @@ async function buildTemporalGeneration({
     if (nonFinitePaths.length > 0) errors.push('NON_FINITE_VALUE_PRESENT');
     if (lifetimeFailures.length > 0) errors.push('TEMPORAL_LIFETIME_AXIS_SUM_MISMATCH');
     if (interactionFailures.length > 0) errors.push('INTERACTION_SUM_MISMATCH');
+    if (compositionFailures.length > 0) errors.push('WEEK_COMPOSITION_INTEGRITY_FAILED');
     generation.integrity = {
         passed: errors.length === 0,
         checkedAt: now(),
         errors,
         familyCount: projections.length,
         uniqueFamilyCount: uniqueFamilies.size,
+        weekCompositionCount: generation.weekCompositionProposals?.length || 0,
         duplicateCanonicalOutcomeIds: [...duplicateCanonicalOutcomeIds].sort(),
         nonFinitePaths,
         lifetimeFailures,
-        interactionFailures
+        interactionFailures,
+        compositionFailures
     };
     generation.status = errors.length === 0 ? 'READY' : 'INVALID';
     generation.lifecycle.push({ status: generation.status, ts: now() });
-    const identitySeed = `${TARGET_TRADE_SIDE}|${normalizedCutoffTs}|${freezeSequence}|${temporalChecksum(generation)}`;
-    generation.generationId = `LONG_TEMPORAL_${normalizedCutoffTs}_${freezeSequence}_${
-        createHash('sha256').update(identitySeed).digest('hex').slice(0, 12)
-    }`;
     generation.checksum = temporalChecksum(generation);
     generation.integrity.checksumVerified = generation.checksum === temporalChecksum(generation);
     if (!generation.integrity.checksumVerified) {
@@ -1007,6 +1831,29 @@ function validateTemporalGeneration(generation, { nowTs = now(), requireActive =
     if (errors.length === 0 && generation.temporalContextVersion !== TEMPORAL_CONTEXT_VERSION) {
         errors.push('TEMPORAL_CONTEXT_VERSION_MISMATCH');
     }
+    if (errors.length === 0 &&
+        generation.temporalHourlyProfileVersion !== TEMPORAL_HOURLY_PROFILE_VERSION) {
+        errors.push('TEMPORAL_HOURLY_PROFILE_VERSION_MISMATCH');
+    }
+    if (errors.length === 0 &&
+        generation.temporalMarketWeatherProfileVersion !== TEMPORAL_MARKET_WEATHER_PROFILE_VERSION) {
+        errors.push('TEMPORAL_MARKET_WEATHER_PROFILE_VERSION_MISMATCH');
+    }
+    if (errors.length === 0 &&
+        generation.btcDirectionRouterProfileVersion !== BTC_DIRECTION_ROUTER_PROFILE_VERSION) {
+        errors.push('BTC_DIRECTION_ROUTER_PROFILE_VERSION_MISMATCH');
+    }
+    if (errors.length === 0 &&
+        generation.btcDirectionRouterPolicyVersion !== BTC_DIRECTION_ROUTER_POLICY_VERSION) {
+        errors.push('BTC_DIRECTION_ROUTER_POLICY_VERSION_MISMATCH');
+    }
+    if (errors.length === 0 && generation.weekCompositionVersion !== WEEK_COMPOSITION_VERSION) {
+        errors.push('WEEK_COMPOSITION_VERSION_MISMATCH');
+    }
+    if (errors.length === 0 &&
+        generation.weekCompositionOptimizerVersion !== WEEK_COMPOSITION_OPTIMIZER_VERSION) {
+        errors.push('WEEK_COMPOSITION_OPTIMIZER_VERSION_MISMATCH');
+    }
     if (errors.length === 0 && !['READY', 'ACTIVE'].includes(generation.status)) {
         errors.push('GENERATION_NOT_READY_OR_ACTIVE');
     }
@@ -1017,6 +1864,12 @@ function validateTemporalGeneration(generation, { nowTs = now(), requireActive =
         ? generation.familyProjections.length
         : 0;
     if (errors.length === 0 && familyCount !== 75) errors.push('GENERATION_FAMILY_COUNT_INVALID');
+    const compositionCount = Array.isArray(generation?.weekCompositionProposals)
+        ? generation.weekCompositionProposals.length
+        : 0;
+    if (errors.length === 0 && compositionCount !== 3) {
+        errors.push('GENERATION_WEEK_COMPOSITION_COUNT_INVALID');
+    }
     if (errors.length === 0 && generation.checksum !== temporalChecksum(generation)) {
         errors.push('GENERATION_CHECKSUM_INVALID');
     }
@@ -1097,6 +1950,7 @@ export function evaluateTemporalEntryPolicySnapshot({
     row = {},
     generation = null,
     generationValidation = null,
+    pointerDocument = null,
     wouldPublishWithoutTemporal = true,
     nowTs = now()
 } = {}) {
@@ -1106,7 +1960,46 @@ export function evaluateTemporalEntryPolicySnapshot({
         row.trueMicroFamilyId || row.childTrueMicroFamilyId || row.microFamilyId
     );
     const mode = runtime.temporalPolicyMode;
+    const weatherContext = resolveEntryMarketWeatherContext(row);
+    const btcContext = resolveEntryBtcRouterContext({
+        ...row,
+        entryMarketWeatherKey: weatherContext.marketWeatherKey,
+        entryMarketWeatherRegime: weatherContext.regime,
+        entryMarketWeatherTrendSide: weatherContext.trendSide
+    });
     const reasons = [];
+    const activeWeekComposition = pointerDocument?.activeWeekComposition || null;
+    const weekCompositionValidation = activeWeekComposition
+        ? validateWeekComposition(activeWeekComposition, {
+            generationId: generation?.generationId || null,
+            requireActive: true
+        })
+        : { valid: true, errors: [], missing: true };
+    const weekCompositionDecision = activeWeekComposition && weekCompositionValidation.valid
+        ? evaluateWeekCompositionSlot(activeWeekComposition, {
+            dayOfWeekUtc: context.dayOfWeekUtc,
+            hourUtc: context.hourUtc,
+            marketWeatherKey: weatherContext.marketWeatherKey,
+            currentMarketWeather: row.entryMarketWeather || row.currentMarketWeather || null,
+            currentRegime: weatherContext.regime,
+            currentTrendSide: weatherContext.trendSide,
+            btcRouterState: btcContext.btcRouterState,
+            entryBtcRouterState: btcContext.btcRouterState,
+            btcContext,
+            row,
+            familyId
+        })
+        : activeWeekComposition
+          ? {
+              compositionApplied: true,
+              allowed: false,
+              reasons: weekCompositionValidation.errors,
+              slot: null
+            }
+          : { compositionApplied: false, allowed: true, reasons: [], slot: null };
+    const weekCompositionWouldBlock = weekCompositionDecision.allowed === false;
+    const wouldPublishWithoutTemporalAndComposition =
+        Boolean(wouldPublishWithoutTemporal) && !weekCompositionWouldBlock;
     let temporalWouldBlock = false;
     let projection = null;
     let generationId = generation?.generationId || null;
@@ -1142,7 +2035,7 @@ export function evaluateTemporalEntryPolicySnapshot({
         }
     }
 
-    const finalDiscordEntryAllowed = Boolean(wouldPublishWithoutTemporal) && (
+    const finalDiscordEntryAllowed = wouldPublishWithoutTemporalAndComposition && (
         mode !== 'ENFORCE' || temporalWouldBlock === false
     );
     return temporalDeepFreeze({
@@ -1159,15 +2052,51 @@ export function evaluateTemporalEntryPolicySnapshot({
         entrySessionBucket: context.primarySessionBucket,
         entrySessionOverlap: context.sessionOverlap,
         entryOffHours: context.offHours,
+        entryMarketWeatherKey: weatherContext.marketWeatherKey,
+        entryMarketWeatherRegime: weatherContext.regime,
+        entryMarketWeatherTrendSide: weatherContext.trendSide,
+        entryMarketWeatherAvailable: weatherContext.available,
+        entryBtcRouterState: btcContext.btcRouterState,
+        entryBtcDirection: btcContext.direction,
+        entryBtcConfidence: btcContext.confidence,
+        entryBtcTrendStrength: btcContext.trendStrength,
+        entryBtcBullishPct: btcContext.bullishPct,
+        entryBtcBearishPct: btcContext.bearishPct,
+        entryBtcAlignedBreadthPct: btcContext.alignedBreadthPct,
+        entryBtcBreadthConfirmed: btcContext.breadthConfirmed,
+        entryBtcAgainstLong: btcContext.againstLong,
+        entryBtcRouterSource: btcContext.source,
+        btcDirectionRouterProfileVersion: BTC_DIRECTION_ROUTER_PROFILE_VERSION,
+        btcDirectionRouterPolicyVersion: BTC_DIRECTION_ROUTER_POLICY_VERSION,
         temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
         temporalPolicyVersion: TEMPORAL_POLICY_VERSION,
+        temporalHourlyProfileVersion: TEMPORAL_HOURLY_PROFILE_VERSION,
+        temporalMarketWeatherProfileVersion: TEMPORAL_MARKET_WEATHER_PROFILE_VERSION,
+        weekCompositionVersion: WEEK_COMPOSITION_VERSION,
+        weekCompositionOptimizerVersion: WEEK_COMPOSITION_OPTIMIZER_VERSION,
         temporalStatsEnabled: runtime.temporalStatsEnabled,
         temporalPolicyMode: mode,
         activeTemporalGenerationId: generationId,
         generationCutoffTs: generation?.generationCutoffTs || null,
         generationValidation: validation,
         familyProjectionFound: Boolean(projection),
+        activeWeekCompositionId: activeWeekComposition?.compositionId || null,
+        activeWeekCompositionMode: activeWeekComposition?.mode || null,
+        weekCompositionApplied: weekCompositionDecision.compositionApplied === true,
+        weekCompositionValidation,
+        weekCompositionWouldBlock,
+        weekCompositionBlockReasons: weekCompositionDecision.reasons || [],
+        weekCompositionSlot: weekCompositionDecision.slot || null,
+        btcDirectionRouterApplied: weekCompositionDecision.compositionApplied === true,
+        btcDirectionRouterWouldBlock: (weekCompositionDecision.reasons || []).some(
+            (reason) => String(reason || '').includes('BTC') || String(reason || '').includes('AGAINST_BTC')
+        ),
+        btcDirectionRouterBlockReasons: (weekCompositionDecision.reasons || []).filter(
+            (reason) => String(reason || '').includes('BTC') || String(reason || '').includes('AGAINST_BTC')
+        ),
+        counterBtcExceptionUsed: weekCompositionDecision.counterBtcExceptionUsed === true,
         wouldPublishWithoutTemporal: Boolean(wouldPublishWithoutTemporal),
+        wouldPublishWithoutTemporalAndComposition,
         temporalWouldBlock,
         temporalBlockReasons: reasons,
         finalDiscordEntryAllowed
@@ -1184,9 +2113,134 @@ export async function evaluateTemporalEntryPolicy({
         row,
         generation: active.generation,
         generationValidation: active.validation,
+        pointerDocument: active.pointerDocument,
         wouldPublishWithoutTemporal,
         nowTs
     });
+}
+
+export async function getActiveWeekComposition({ nowTs = now() } = {}) {
+    const active = await getActiveTemporalGeneration({ nowTs });
+    const composition = active.pointerDocument?.activeWeekComposition || null;
+    const validation = composition
+        ? validateWeekComposition(composition, {
+            generationId: active.generationId,
+            requireActive: true
+        })
+        : { valid: false, errors: ['ACTIVE_WEEK_COMPOSITION_MISSING'] };
+    return {
+        compositionId: composition?.compositionId || null,
+        composition,
+        validation,
+        generationId: active.generationId,
+        generationValidation: active.validation,
+        pointerDocument: active.pointerDocument
+    };
+}
+
+export async function activateWeekComposition({
+    compositionId,
+    disabledDays = [],
+    disabledHours = [],
+    disabledWeatherKeys = [],
+    disabledBtcStates = [],
+    disabledWeatherBtcKeys = [],
+    disabledDayHours = [],
+    disabledSlots = [],
+    disabledSlotWeatherKeys = [],
+    disabledDayHourWeatherBtcKeys = [],
+    activatedBy = 'ADMIN_WEEK_COMPOSITION',
+    nowTs = now()
+} = {}) {
+    const redis = getDurableRedis();
+    const active = await getActiveTemporalGeneration({ nowTs });
+    if (!active.validation?.valid || !active.generation) {
+        const error = new Error('ACTIVE_TEMPORAL_GENERATION_REQUIRED_FOR_WEEK_COMPOSITION');
+        error.details = active.validation;
+        throw error;
+    }
+    const requestedId = String(compositionId || '').trim();
+    const proposal = (active.generation.weekCompositionProposals || [])
+        .find((candidate) =>
+            candidate.compositionId === requestedId ||
+            candidate.mode === requestedId.toUpperCase()
+        );
+    if (!proposal) {
+        const error = new Error('WEEK_COMPOSITION_PROPOSAL_NOT_FOUND');
+        error.details = {
+            requestedId,
+            available: (active.generation.weekCompositionProposals || [])
+                .map((candidate) => candidate.compositionId)
+        };
+        throw error;
+    }
+    const activated = applyWeekCompositionOverrides(proposal, {
+        disabledDays,
+        disabledHours,
+        disabledWeatherKeys,
+        disabledBtcStates,
+        disabledWeatherBtcKeys,
+        disabledDayHours,
+        disabledSlots,
+        disabledSlotWeatherKeys,
+        disabledDayHourWeatherBtcKeys,
+        activatedBy
+    });
+    const validation = validateWeekComposition(activated, {
+        generationId: active.generationId,
+        requireActive: true
+    });
+    if (!validation.valid) {
+        const error = new Error('WEEK_COMPOSITION_ACTIVATION_VALIDATION_FAILED');
+        error.details = validation;
+        throw error;
+    }
+    const nextPointer = {
+        ...(active.pointerDocument || {}),
+        activeWeekCompositionId: activated.compositionId,
+        activeWeekCompositionBaseId: activated.baseCompositionId,
+        activeWeekCompositionMode: activated.mode,
+        activeWeekComposition: activated,
+        weekCompositionActivatedAt: normalizeTemporalCutoffTs(nowTs),
+        weekCompositionActivatedBy: activatedBy,
+        weekCompositionVersion: WEEK_COMPOSITION_VERSION,
+        weekCompositionOptimizerVersion: WEEK_COMPOSITION_OPTIMIZER_VERSION
+    };
+    const swapped = await compareAndSwapTemporalPointer(
+        redis,
+        rotationValidFromKey(),
+        active.generationId,
+        nextPointer
+    );
+    if (!swapped) {
+        throw new Error('WEEK_COMPOSITION_POINTER_CAS_CONFLICT');
+    }
+    let rotationActivation = null;
+    let rotationActivationError = null;
+    try {
+        rotationActivation = await activateSelectedMicroFamilies({
+            microFamilyIds: activated.summary.familyUnion,
+            trueMicroFamilyIds: activated.summary.familyUnion,
+            activeMicroFamilyIds: activated.summary.familyUnion,
+            ids: activated.summary.familyUnion,
+            weekKey: PERSISTENT_LEARNING_KEY,
+            mode: `week-composition-${String(activated.mode || '').toLowerCase()}`,
+            manualOnly: true,
+            exactTrueMicroOnly: true
+        });
+    } catch (error) {
+        rotationActivationError = error?.message || String(error);
+    }
+    return {
+        ok: true,
+        changed: true,
+        generationId: active.generationId,
+        activeWeekComposition: activated,
+        activeWeekCompositionId: activated.compositionId,
+        rotationActivation,
+        rotationActivationError,
+        failClosedIfRotationActivationFailed: true
+    };
 }
 
 
@@ -4882,7 +5936,12 @@ export async function activateNextRotation({
         pendingTemporalGenerationCutoffTs: null,
         pendingTemporalFreezeSequence: null,
         temporalGenerationActivatedAt: normalizedNowTs,
-        temporalGenerationPointerUpdatedAt: normalizedNowTs
+        temporalGenerationPointerUpdatedAt: normalizedNowTs,
+        activeWeekCompositionId: null,
+        activeWeekCompositionBaseId: null,
+        activeWeekCompositionMode: null,
+        activeWeekComposition: null,
+        weekCompositionClearedAtGenerationActivation: normalizedNowTs
     };
     const swapped = await compareAndSwapTemporalPointer(
         redis,
@@ -5869,6 +6928,25 @@ export async function getRotationDashboard() {
     temporalGenerationValidation: validFrom?.activeTemporalGeneration
       ? validateTemporalGeneration(validFrom.activeTemporalGeneration, { requireActive: true })
       : { valid: false, errors: ['ACTIVE_GENERATION_MISSING'] },
+    weekCompositionProposals:
+      validFrom?.activeTemporalGeneration?.weekCompositionProposals || [],
+    activeWeekCompositionId: validFrom?.activeWeekCompositionId || null,
+    activeWeekComposition: validFrom?.activeWeekComposition || null,
+    activeWeekCompositionValidation: validFrom?.activeWeekComposition
+      ? validateWeekComposition(validFrom.activeWeekComposition, {
+          generationId: validFrom?.activeTemporalGenerationId || null,
+          requireActive: true
+        })
+      : { valid: false, errors: ['ACTIVE_WEEK_COMPOSITION_MISSING'] },
+    weekCompositionVersion: WEEK_COMPOSITION_VERSION,
+    weekCompositionOptimizerVersion: WEEK_COMPOSITION_OPTIMIZER_VERSION,
+    temporalHourlyProfileVersion: TEMPORAL_HOURLY_PROFILE_VERSION,
+    temporalMarketWeatherProfileVersion: TEMPORAL_MARKET_WEATHER_PROFILE_VERSION,
+    temporalMarketWeatherKeys: TEMPORAL_MARKET_WEATHER_KEYS,
+    btcDirectionRouterProfileVersion: BTC_DIRECTION_ROUTER_PROFILE_VERSION,
+    btcDirectionRouterPolicyVersion: BTC_DIRECTION_ROUTER_POLICY_VERSION,
+    btcRouterStates: BTC_ROUTER_STATES,
+    btcRouterSelectableStates: BTC_ROUTER_SELECTABLE_STATES,
 
     activeRows,
     nextRows,
