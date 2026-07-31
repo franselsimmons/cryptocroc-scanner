@@ -887,6 +887,259 @@ pre {
         line-height: 1.5;
     }
 
+    .composition-plan-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(260px, 1fr));
+        gap: 14px;
+        margin: 14px 0;
+    }
+
+    .composition-plan-card {
+        position: relative;
+        border: 2px solid var(--border);
+        border-radius: 18px;
+        padding: 16px;
+        background: white;
+        cursor: pointer;
+        transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+    }
+
+    .composition-plan-card:hover {
+        transform: translateY(-2px);
+        border-color: #86efac;
+        box-shadow: 0 12px 30px rgba(15, 118, 110, .10);
+    }
+
+    .composition-plan-card.selected {
+        border-color: #15803d;
+        box-shadow: 0 0 0 3px rgba(22, 163, 74, .13);
+    }
+
+    .composition-plan-card.active::after {
+        content: "ACTIEF";
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        padding: 5px 8px;
+        border-radius: 999px;
+        background: #15803d;
+        color: white;
+        font-size: 10px;
+        font-weight: 950;
+    }
+
+    .composition-plan-rank {
+        display: inline-flex;
+        min-width: 28px;
+        height: 28px;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        background: #ecfdf5;
+        color: #166534;
+        font-weight: 950;
+        margin-right: 7px;
+    }
+
+    .composition-plan-metrics {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 12px;
+    }
+
+    .composition-plan-metrics > div,
+    .composition-mini-stat {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 9px;
+        background: #f8fafc;
+    }
+
+    .composition-plan-metrics span,
+    .composition-mini-stat span {
+        display: block;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 900;
+        text-transform: uppercase;
+        margin-bottom: 3px;
+    }
+
+    .composition-plan-metrics strong,
+    .composition-mini-stat strong {
+        font-size: 14px;
+    }
+
+    .composition-weather-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin: 12px 0;
+    }
+
+    .composition-weather-tab {
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        background: white;
+        padding: 8px 11px;
+        font-size: 12px;
+        font-weight: 900;
+    }
+
+    .composition-weather-tab.selected {
+        color: white;
+        background: #166534;
+        border-color: #166534;
+    }
+
+    .composition-weather-tab.disabled-weather {
+        color: #991b1b;
+        background: #fee2e2;
+        border-color: #fecaca;
+        text-decoration: line-through;
+    }
+
+    .composition-grid-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: white;
+    }
+
+    .composition-grid {
+        width: 100%;
+        min-width: 2460px;
+        border-collapse: separate;
+        border-spacing: 3px;
+        padding: 5px;
+    }
+
+    .composition-grid th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        min-width: 92px;
+        padding: 6px;
+        background: #f8fafc;
+        font-size: 10px;
+        text-align: center;
+    }
+
+    .composition-grid th:first-child,
+    .composition-grid td:first-child {
+        position: sticky;
+        left: 0;
+        z-index: 3;
+        min-width: 130px;
+        background: #f8fafc;
+    }
+
+    .composition-hour-head,
+    .composition-day-head {
+        width: 100%;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        padding: 5px;
+        min-height: auto;
+        font-size: 10px;
+    }
+
+    .composition-grid td {
+        min-width: 92px;
+        padding: 0;
+        vertical-align: stretch;
+    }
+
+    .composition-slot {
+        width: 100%;
+        min-height: 76px;
+        border: 1px solid #dbe3ed;
+        border-radius: 10px;
+        padding: 7px;
+        background: #f8fafc;
+        color: #475569;
+        text-align: left;
+        font-size: 10px;
+        line-height: 1.3;
+    }
+
+    .composition-slot.on {
+        border-color: #86efac;
+        background: #dcfce7;
+        color: #14532d;
+    }
+
+    .composition-slot.override-off {
+        border-color: #fecaca;
+        background: #fee2e2;
+        color: #991b1b;
+    }
+
+    .composition-slot.auto-off {
+        background: #f1f5f9;
+        color: #64748b;
+    }
+
+    .composition-slot.selected {
+        outline: 3px solid rgba(2, 132, 199, .32);
+        border-color: #0284c7;
+    }
+
+    .composition-slot strong,
+    .composition-slot span {
+        display: block;
+    }
+
+    .composition-slot strong {
+        font-size: 11px;
+        margin-bottom: 3px;
+    }
+
+    .composition-coverage .composition-slot {
+        min-height: 54px;
+        text-align: center;
+    }
+
+    .composition-detail-grid {
+        display: grid;
+        grid-template-columns: minmax(300px, 1fr) minmax(420px, 2fr);
+        gap: 14px;
+        align-items: start;
+    }
+
+    .composition-family-detail {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 11px;
+        margin-top: 8px;
+        background: #f8fafc;
+    }
+
+    .composition-override-list {
+        max-height: 220px;
+        overflow: auto;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #f8fafc;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        white-space: pre-wrap;
+    }
+
+    .composition-summary-table table {
+        min-width: 1150px;
+    }
+
+
+@media (max-width: 920px) {
+    .composition-plan-grid,
+    .composition-detail-grid {
+        grid-template-columns: 1fr;
+    }
+}
 
 @media (max-width: 720px) {
     .micro-desktop-table {
@@ -1251,6 +1504,25 @@ Selection</button>
     const FRONTEND_FIX_VERSION =
 "LONG_ADMIN_FRONTEND_MEASUREMENT_V2_EMPIRICAL_VETO_V1";
     const WINNER_SELECTOR_VERSION = "LONG_TEMPORAL_WINNER_SELECTOR_UI_V1";
+    const WEEK_COMPOSITION_UI_VERSION = "LONG_DAY_HOUR_MARKET_WEATHER_BTC_ROUTER_UI_V3";
+    const COMPOSITION_DAYS = Object.freeze([
+      "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"
+    ]);
+    const COMPOSITION_HOURS = Object.freeze(
+      Array.from({ length: 24 }, (_, hour) => `H${String(hour).padStart(2, "0")}`)
+    );
+    const COMPOSITION_WEATHER_KEYS = Object.freeze([
+      "TREND|LONG", "TREND|NEUTRAL", "TREND|SHORT",
+      "CHOP|LONG", "CHOP|NEUTRAL", "CHOP|SHORT",
+      "SQUEEZE|LONG", "SQUEEZE|NEUTRAL", "SQUEEZE|SHORT", "UNKNOWN"
+    ]);
+    const COMPOSITION_BTC_STATES = Object.freeze([
+      "STRONG_BULLISH", "BULLISH", "NEUTRAL",
+      "BEARISH", "STRONG_BEARISH", "UNKNOWN"
+    ]);
+    const COMPOSITION_SELECTABLE_BTC_STATES = Object.freeze(
+      COMPOSITION_BTC_STATES.filter((state) => state !== "UNKNOWN")
+    );
 
 
     const LONG_FIXED_SETUP_TYPES = new Set([
@@ -1296,6 +1568,19 @@ Selection</button>
          winnerOnlyCurrentFit: true,
          winnerShowAll: false,
          winnerSelectedIds: [],
+         compositionSelectedMode: "BALANCED",
+         compositionSelectedWeather: "TREND|LONG",
+         compositionSelectedBtc: "BULLISH",
+         compositionSelectedSlotKey: null,
+         compositionDisabledDays: [],
+         compositionDisabledHours: [],
+         compositionDisabledWeatherKeys: [],
+         compositionDisabledBtcStates: [],
+         compositionDisabledWeatherBtcKeys: [],
+         compositionDisabledDayHours: [],
+         compositionDisabledSlotWeatherKeys: [],
+         compositionDisabledDayHourWeatherBtcKeys: [],
+         compositionOverridesSourceId: null,
          apiTimeoutMs: 22000,
          microLimit: 75,
          bestLimit: 75
@@ -5312,218 +5597,655 @@ ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Copy</button>
     }
 
 
+    function compositionWeatherLabel(value = "UNKNOWN") {
+        const labels = {
+          "TREND|LONG": "Trend omhoog",
+          "TREND|NEUTRAL": "Trend neutraal",
+          "TREND|SHORT": "Trend omlaag",
+          "CHOP|LONG": "Chop bullish",
+          "CHOP|NEUTRAL": "Chop neutraal",
+          "CHOP|SHORT": "Chop bearish",
+          "SQUEEZE|LONG": "Squeeze bullish",
+          "SQUEEZE|NEUTRAL": "Squeeze neutraal",
+          "SQUEEZE|SHORT": "Squeeze bearish",
+          UNKNOWN: "Onbekend"
+        };
+        return labels[upper(value)] || String(value || "UNKNOWN");
+    }
+
+    function compositionDayLabel(day) {
+        return winnerDayLabel(day);
+    }
+
+    function compositionHourLabel(hourBucket = "H00") {
+        const hour = Number(String(hourBucket).replace(/^H/i, ""));
+        if (!Number.isFinite(hour)) return String(hourBucket || "-");
+        return `${String(hour).padStart(2, "0")}:00–${String((hour + 1) % 24).padStart(2, "0")}:00`;
+    }
+
+    function compositionBtcLabel(stateValue = "UNKNOWN") {
+        const labels = {
+          STRONG_BULLISH: "BTC sterk bullish",
+          BULLISH: "BTC bullish",
+          NEUTRAL: "BTC neutraal",
+          BEARISH: "BTC bearish",
+          STRONG_BEARISH: "BTC sterk bearish",
+          UNKNOWN: "BTC onbekend"
+        };
+        return labels[upper(stateValue)] || String(stateValue || "UNKNOWN");
+    }
+
+    function compositionSlotKey(day, hourBucket, weatherKey, btcState = state.compositionSelectedBtc) {
+        return `${upper(day)}:${upper(hourBucket)}|${upper(weatherKey)}|BTC:${upper(btcState)}`;
+    }
+
+    function parseCompositionSlotKey(value = "") {
+        const raw = upper(value);
+        const btcMarker = raw.lastIndexOf("|BTC:");
+        const withoutBtc = btcMarker >= 0 ? raw.slice(0, btcMarker) : raw;
+        const btcState = btcMarker >= 0 ? raw.slice(btcMarker + 5) : "UNKNOWN";
+        const firstPipe = withoutBtc.indexOf("|");
+        const dayHour = firstPipe >= 0 ? withoutBtc.slice(0, firstPipe) : withoutBtc;
+        const weatherKey = firstPipe >= 0 ? withoutBtc.slice(firstPipe + 1) : "UNKNOWN";
+        const [day, hourBucket] = dayHour.split(":");
+        return { day, hourBucket, weatherKey, btcState };
+    }
+
+    function compositionWeatherBtcKey(weatherKey, btcState) {
+        return `${upper(weatherKey)}|BTC:${upper(btcState)}`;
+    }
+
+    function compositionUnique(values = []) {
+        return [...new Set((Array.isArray(values) ? values : [values])
+          .map((value) => upper(value))
+          .filter(Boolean))];
+    }
+
+    function compositionOverrides() {
+        return {
+          disabledDays: compositionUnique(state.compositionDisabledDays),
+          disabledHours: compositionUnique(state.compositionDisabledHours),
+          disabledWeatherKeys: compositionUnique(state.compositionDisabledWeatherKeys),
+          disabledBtcStates: compositionUnique(state.compositionDisabledBtcStates),
+          disabledWeatherBtcKeys: compositionUnique(state.compositionDisabledWeatherBtcKeys),
+          disabledDayHours: compositionUnique(state.compositionDisabledDayHours),
+          disabledSlotWeatherKeys: compositionUnique(state.compositionDisabledSlotWeatherKeys),
+          disabledDayHourWeatherBtcKeys: compositionUnique(
+            state.compositionDisabledDayHourWeatherBtcKeys
+          )
+        };
+    }
+
+    function setCompositionOverride(field, value, disabled) {
+        const current = new Set(compositionUnique(state[field] || []));
+        const normalized = upper(value);
+        if (disabled) current.add(normalized);
+        else current.delete(normalized);
+        state[field] = [...current];
+    }
+
+    function compositionProposalList(rotation = state.rotation || {}) {
+        const candidates = [
+          rotation.weekCompositionProposals,
+          rotation.dashboard?.weekCompositionProposals,
+          rotation.dashboard?.activeTemporalGeneration?.weekCompositionProposals,
+          rotation.activeTemporalGeneration?.weekCompositionProposals
+        ];
+        return candidates.find(Array.isArray) || [];
+    }
+
+    function activeWeekComposition(rotation = state.rotation || {}) {
+        return rotation.activeWeekComposition ||
+          rotation.dashboard?.activeWeekComposition ||
+          rotation.active?.activeWeekComposition ||
+          null;
+    }
+
+    function compositionProposalByMode(proposals = [], mode = state.compositionSelectedMode) {
+        return proposals.find((proposal) => upper(proposal?.mode) === upper(mode)) || proposals[0] || null;
+    }
+
+    function hydrateCompositionOverrides(proposal, active) {
+        if (!proposal) return;
+        const sameBase = active && (
+          active.baseCompositionId === proposal.baseCompositionId ||
+          active.baseCompositionId === proposal.compositionId ||
+          (active.generationId === proposal.generationId && upper(active.mode) === upper(proposal.mode))
+        );
+        const sourceId = sameBase ? active.compositionId : proposal.compositionId;
+        if (state.compositionOverridesSourceId === sourceId) return;
+        const source = sameBase ? (active.overrides || {}) : {};
+        state.compositionDisabledDays = compositionUnique(source.disabledDays || []);
+        state.compositionDisabledHours = compositionUnique(source.disabledHours || []);
+        state.compositionDisabledWeatherKeys = compositionUnique(source.disabledWeatherKeys || []);
+        state.compositionDisabledBtcStates = compositionUnique(source.disabledBtcStates || []);
+        state.compositionDisabledWeatherBtcKeys = compositionUnique(source.disabledWeatherBtcKeys || []);
+        state.compositionDisabledDayHours = compositionUnique(source.disabledDayHours || []);
+        state.compositionDisabledSlotWeatherKeys = compositionUnique(source.disabledSlotWeatherKeys || []);
+        state.compositionDisabledDayHourWeatherBtcKeys = compositionUnique(
+          source.disabledDayHourWeatherBtcKeys || source.disabledSlotWeatherKeys || []
+        );
+        state.compositionOverridesSourceId = sourceId;
+    }
+
+    function compositionDisabled(slot, overrides = compositionOverrides()) {
+        if (!slot) return false;
+        const weatherBtc = compositionWeatherBtcKey(slot.marketWeatherKey, slot.btcRouterState);
+        return overrides.disabledDays.includes(slot.day) ||
+          overrides.disabledHours.includes(slot.hourBucket) ||
+          overrides.disabledWeatherKeys.includes(slot.marketWeatherKey) ||
+          overrides.disabledBtcStates.includes(slot.btcRouterState) ||
+          overrides.disabledWeatherBtcKeys.includes(weatherBtc) ||
+          overrides.disabledDayHours.includes(`${slot.day}:${slot.hourBucket}`) ||
+          overrides.disabledSlotWeatherKeys.includes(slot.key) ||
+          overrides.disabledDayHourWeatherBtcKeys.includes(slot.key);
+    }
+
+    function compositionPreviewSlots(proposal, overrides = compositionOverrides()) {
+        return Object.fromEntries(Object.entries(proposal?.slots || {})
+          .filter(([, slot]) => slot?.enabled === true && !compositionDisabled(slot, overrides)));
+    }
+
+    function compositionSummaryFromSlots(slots = {}) {
+        const rows = Object.values(slots || {});
+        const completed = rows.reduce((sum, slot) => sum + Number(slot?.stats?.historicalCompleted || 0), 0);
+        const wins = rows.reduce((sum, slot) => sum + Number(slot?.stats?.historicalWins || 0), 0);
+        const totalR = rows.reduce((sum, slot) => sum + Number(slot?.stats?.historicalTotalNetR || 0), 0);
+        const totalPnl = rows.reduce((sum, slot) => sum + Number(slot?.stats?.historicalTotalNetPnlPct || 0), 0);
+        const expectedSignals = rows.reduce((sum, slot) => sum + Number(slot?.stats?.expectedSignalsPerWeek || 0), 0);
+        const expectedR = rows.reduce((sum, slot) => sum + Number(slot?.stats?.expectedNetRPerWeek || 0), 0);
+        const expectedPnl = rows.reduce((sum, slot) => sum + Number(slot?.stats?.expectedNetPnlPctPerWeek || 0), 0);
+        const families = uniqueStrings(rows.flatMap((slot) => slot.selectedFamilyIds || []));
+        const dayHours = new Set(rows.map((slot) => `${slot.day}:${slot.hourBucket}`));
+        return {
+          activeSlots: rows.length,
+          activeDayHours: dayHours.size,
+          familyCount: families.length,
+          familyIds: families,
+          historicalCompleted: completed,
+          historicalWinrate: completed > 0 ? wins / completed : 0,
+          historicalAvgNetR: completed > 0 ? totalR / completed : 0,
+          historicalTotalNetR: totalR,
+          historicalAvgNetPnlPct: completed > 0 ? totalPnl / completed : 0,
+          historicalTotalNetPnlPct: totalPnl,
+          expectedSignalsPerWeek: expectedSignals,
+          expectedNetRPerWeek: expectedR,
+          expectedNetPnlPctPerWeek: expectedPnl
+        };
+    }
+
+    function normalizeCompositionRegime(value = "") {
+        const raw = upper(value);
+        if (raw.includes("SQUEEZE") || raw.includes("COMPRESSION")) return "SQUEEZE";
+        if (raw.includes("CHOP") || raw.includes("RANGE") || raw.includes("SIDEWAYS")) return "CHOP";
+        if (raw.includes("TREND") || raw.includes("MOMENTUM") || raw.includes("FLOW")) return "TREND";
+        return "UNKNOWN";
+    }
+
+    function normalizeCompositionTrendSide(value = "") {
+        const raw = upper(value);
+        if (["LONG", "BULL", "BULLISH", "BUY", "UP"].some((token) => raw.includes(token))) return "LONG";
+        if (["SHORT", "BEAR", "BEARISH", "SELL", "DOWN"].some((token) => raw.includes(token))) return "SHORT";
+        if (["NEUTRAL", "MIXED", "FLAT", "SIDEWAYS"].some((token) => raw.includes(token))) return "NEUTRAL";
+        return "UNKNOWN";
+    }
+
+    function normalizeCompositionBtcState(value = "") {
+        const raw = upper(value);
+        if (COMPOSITION_BTC_STATES.includes(raw)) return raw;
+        if (raw.includes("STRONG_BULL") || raw.includes("VERY_BULL") || raw.includes("HARD_BULL")) return "STRONG_BULLISH";
+        if (raw.includes("STRONG_BEAR") || raw.includes("VERY_BEAR") || raw.includes("HARD_BEAR")) return "STRONG_BEARISH";
+        if (["BULLISH", "BULL", "LONG", "BUY", "UP"].some((token) => raw.includes(token))) return "BULLISH";
+        if (["BEARISH", "BEAR", "SHORT", "SELL", "DOWN"].some((token) => raw.includes(token))) return "BEARISH";
+        if (["NEUTRAL", "MIXED", "FLAT", "SIDEWAYS", "CHOP"].some((token) => raw.includes(token))) return "NEUTRAL";
+        return "UNKNOWN";
+    }
+
+    function currentCompositionWeatherKey() {
+        const market = state.market || {};
+        const source = market.currentMarketWeather || market.marketWeather || market.weather || market.raw || market;
+        const regime = normalizeCompositionRegime(
+          market.regime || market.currentRegime || market.marketRegime || source?.regime || source?.currentRegime
+        );
+        const side = normalizeCompositionTrendSide(
+          market.trendSide || market.currentTrendSide || market.marketSide || source?.trendSide || source?.currentTrendSide
+        );
+        return regime === "UNKNOWN" || side === "UNKNOWN" ? "UNKNOWN" : `${regime}|${side}`;
+    }
+
+    function currentCompositionBtcState() {
+        const market = state.market || {};
+        const source = market.currentMarketWeather || market.marketWeather || market.weather || market.raw || market;
+        const candidates = [
+          market.btcRouterState,
+          market.btcState,
+          market.btcRelation,
+          market.btcDirection,
+          market.btcTrendSide,
+          source?.btcRouterState,
+          source?.btcState,
+          source?.btcRelation,
+          source?.btcDirection,
+          source?.btcTrendSide,
+          source?.btc?.state,
+          source?.btc?.direction
+        ];
+        for (const value of candidates) {
+          const normalized = normalizeCompositionBtcState(value);
+          if (normalized !== "UNKNOWN") return normalized;
+        }
+        return "UNKNOWN";
+    }
+
+    function compositionPlanCard(proposal, active, selected) {
+        const summary = proposal?.summary || {};
+        const impact = proposal?.btcRouterImpact || summary?.btcRouterImpact || {};
+        const isActive = active && (
+          active.baseCompositionId === proposal?.baseCompositionId ||
+          active.baseCompositionId === proposal?.compositionId ||
+          (active.generationId === proposal?.generationId && upper(active.mode) === upper(proposal?.mode))
+        );
+        return `
+          <article class="composition-plan-card ${selected ? "selected" : ""} ${isActive ? "active" : ""}" data-composition-mode="${escapeAttr(proposal?.mode || "")}">
+            <h3><span class="composition-plan-rank">${escapeHtml(proposal?.rank || "-")}</span>${escapeHtml(proposal?.title || proposal?.mode || "Plan")}</h3>
+            <div class="metric-extra">${escapeHtml(proposal?.description || "")}</div>
+            <div class="composition-plan-metrics">
+              <div><span>Actieve vakken</span><strong>${fmtInt(summary.activeSlots || 0)}</strong></div>
+              <div><span>Families</span><strong>${fmtInt(summary.familyCount || 0)}</strong></div>
+              <div><span>Historische WR</span><strong>${fmtPct(summary.historicalWinrate || 0)}</strong></div>
+              <div><span>Gem. netto-R</span><strong>${fmt(summary.historicalAvgNetR || 0, 3)}R</strong></div>
+              <div><span>BTC geblokkeerd</span><strong>${fmtInt(impact.slotsBlockedByBtcRouter || 0)}</strong></div>
+              <div><span>WR-winst BTC-filter</span><strong>${fmtPct(impact.winrateDelta || 0)}</strong></div>
+              <div><span>Verwacht R/week</span><strong>${fmt(summary.expectedNetRPerWeek || 0, 2)}R</strong></div>
+              <div><span>Verwacht PnL/week</span><strong>${fmtRawPct(summary.expectedNetPnlPctPerWeek || 0)}</strong></div>
+            </div>
+          </article>`;
+    }
+
+    function compositionSlotCell({ proposal, day, hourBucket, weatherKey, btcState, selectedKey, coverage = false }) {
+        const overrides = compositionOverrides();
+        if (coverage) {
+          const candidateSlots = COMPOSITION_WEATHER_KEYS.filter((key) => key !== "UNKNOWN")
+            .flatMap((key) => COMPOSITION_SELECTABLE_BTC_STATES.map((btc) =>
+              proposal?.slots?.[compositionSlotKey(day, hourBucket, key, btc)] || null
+            ));
+          const active = candidateSlots.filter((slot) => slot?.enabled && !compositionDisabled(slot, overrides)).length;
+          const available = candidateSlots.filter((slot) => slot?.enabled).length;
+          const anyOverride = candidateSlots.some((slot) => slot?.enabled && compositionDisabled(slot, overrides));
+          const key = compositionSlotKey(day, hourBucket, state.compositionSelectedWeather, state.compositionSelectedBtc);
+          return `<td><button type="button" class="composition-slot ${active ? "on" : (anyOverride ? "override-off" : "auto-off")} ${selectedKey === key ? "selected" : ""}" data-composition-slot="${escapeAttr(key)}">
+            <strong>${active}/45 aan</strong><span>${available ? `${available} bewezen` : "geen bewijs"}</span>
+          </button></td>`;
+        }
+        const key = compositionSlotKey(day, hourBucket, weatherKey, btcState);
+        const slot = proposal?.slots?.[key] || null;
+        const disabled = slot && compositionDisabled(slot, overrides);
+        const className = slot ? (disabled ? "override-off" : "on") : "auto-off";
+        const stats = slot?.stats || {};
+        const exception = (slot?.counterBtcExceptionFamilyIds || []).length > 0;
+        return `<td><button type="button" class="composition-slot ${className} ${selectedKey === key ? "selected" : ""}" data-composition-slot="${escapeAttr(key)}">
+          <strong>${slot ? (disabled ? "HANDMATIG UIT" : `AAN · ${(slot.selectedFamilyIds || []).length}F`) : "AUTOMATISCH UIT"}</strong>
+          <span>${slot ? `WR ${fmtPct(stats.historicalWinrate || 0)}` : "geen sterke combinatie"}</span>
+          <span>${slot ? `${fmt(stats.historicalAvgNetR || 0, 2)}R · ${fmtRawPct(stats.historicalAvgNetPnlPct || 0)}` : ""}</span>
+          ${exception ? `<span>BEWEZEN TEGEN-BTC UITZONDERING</span>` : ""}
+        </button></td>`;
+    }
+
+    function compositionGrid(proposal, weatherKey, btcState, { coverage = false } = {}) {
+        const selectedKey = state.compositionSelectedSlotKey;
+        return `<div class="composition-grid-wrap ${coverage ? "composition-coverage" : ""}">
+          <table class="composition-grid">
+            <thead><tr><th>Dag / UTC</th>${COMPOSITION_HOURS.map((hour) => `<th><button type="button" class="composition-hour-head" data-toggle-global-hour="${escapeAttr(hour)}">${escapeHtml(hour.replace("H", ""))}:00<br><small>${compositionOverrides().disabledHours.includes(hour) ? "UIT" : "alle dagen"}</small></button></th>`).join("")}</tr></thead>
+            <tbody>${COMPOSITION_DAYS.map((day) => `<tr>
+              <td><button type="button" class="composition-day-head" data-toggle-composition-day="${escapeAttr(day)}"><strong>${escapeHtml(compositionDayLabel(day))}</strong><br><small>${compositionOverrides().disabledDays.includes(day) ? "HELE DAG UIT" : "klik om uit te zetten"}</small></button></td>
+              ${COMPOSITION_HOURS.map((hour) => compositionSlotCell({ proposal, day, hourBucket: hour, weatherKey, btcState, selectedKey, coverage })).join("")}
+            </tr>`).join("")}</tbody>
+          </table>
+        </div>`;
+    }
+
+    function compositionFamilyDetails(slot) {
+        if (!slot) return `<div class="empty">Dit vak staat automatisch uit omdat geen family genoeg exact bewijs heeft voor deze dag, dit uur, dit marketWeather en deze BTC-richting.</div>`;
+        const rows = Array.isArray(slot.selectedFamilies) ? slot.selectedFamilies : [];
+        return rows.map((row, index) => `
+          <div class="composition-family-detail">
+            <strong>#${index + 1} ${escapeHtml(row.familyId || "-")}</strong>
+            <div class="metric-extra">${escapeHtml([row.setupType, row.regimeBucket, row.confirmationProfile].filter(Boolean).join(" · "))}</div>
+            ${row.counterBtcException?.proven ? `<div class="winner-verdict proven">BEWEZEN TEGEN-BTC UITZONDERING</div>` : ""}
+            <div class="composition-plan-metrics">
+              <div><span>Exact BTC n</span><strong>${fmtInt(row.exactBtc?.completed || row.exact?.completed || 0)}</strong></div>
+              <div><span>Exact BTC WR</span><strong>${fmtPct(row.exactBtc?.winrate || row.exact?.winrate || 0)}</strong></div>
+              <div><span>Exact BTC avg R</span><strong>${fmt(row.exactBtc?.avgNetR || row.exact?.avgNetR || 0, 3)}R</strong></div>
+              <div><span>Exact BTC PnL</span><strong>${fmtRawPct(row.exactBtc?.avgNetPnlPct || row.exact?.avgNetPnlPct || 0)}</strong></div>
+              <div><span>LCB95</span><strong>${fmt(row.exactBtc?.lcb95 || row.exact?.lcb95 || 0, 3)}</strong></div>
+              <div><span>Profit factor</span><strong>${fmt(row.exactBtc?.profitFactor || row.exact?.profitFactor || 0, 2)}</strong></div>
+              <div><span>Direct SL</span><strong>${fmtPct(row.exactBtc?.directSLPct || row.exact?.directSLPct || 0)}</strong></div>
+              <div><span>Confidence</span><strong>${fmt(row.confidenceScore || 0, 0)}/100</strong></div>
+              <div><span>Verwacht signalen/week</span><strong>${fmt(row.expectedSignalsPerWeek || 0, 2)}</strong></div>
+              <div><span>Verwacht R/week</span><strong>${fmt(row.expectedNetRPerWeek || 0, 3)}R</strong></div>
+            </div>
+          </div>`).join("") || `<div class="empty">Familydetails ontbreken in deze proposal.</div>`;
+    }
+
+    function compositionDetail(proposal) {
+        let key = state.compositionSelectedSlotKey;
+        const expectedSuffix = `|BTC:${state.compositionSelectedBtc}`;
+        if (!key || !key.includes(`|${state.compositionSelectedWeather}|`) || !key.endsWith(expectedSuffix)) {
+          key = compositionSlotKey("MONDAY", "H00", state.compositionSelectedWeather, state.compositionSelectedBtc);
+        }
+        const slot = proposal?.slots?.[key] || null;
+        const parsed = parseCompositionSlotKey(key);
+        const disabled = slot ? compositionDisabled(slot) : false;
+        const dayHourKey = `${parsed.day}:${parsed.hourBucket}`;
+        const exactDisabled = compositionOverrides().disabledDayHourWeatherBtcKeys.includes(key) ||
+          compositionOverrides().disabledSlotWeatherKeys.includes(key);
+        return `<div class="card">
+          <div class="section-title"><div><h3>Vakdetails: ${escapeHtml(compositionDayLabel(parsed.day))} ${escapeHtml(compositionHourLabel(parsed.hourBucket))} UTC</h3><p>${escapeHtml(compositionWeatherLabel(parsed.weatherKey))} · ${escapeHtml(compositionBtcLabel(parsed.btcState))}</p></div></div>
+          <div class="composition-detail-grid">
+            <div>
+              ${slot ? `<div class="winner-verdict ${disabled ? "blocked" : "proven"}">${disabled ? "HANDMATIG UIT" : "ACTIEF IN PLAN"}</div>` : `<div class="winner-verdict learning">AUTOMATISCH UIT</div>`}
+              <div class="composition-plan-metrics">
+                <div><span>Families</span><strong>${fmtInt(slot?.selectedFamilyIds?.length || 0)}</strong></div>
+                <div><span>Historische n</span><strong>${fmtInt(slot?.stats?.historicalCompleted || 0)}</strong></div>
+                <div><span>Winrate</span><strong>${fmtPct(slot?.stats?.historicalWinrate || 0)}</strong></div>
+                <div><span>Avg netto-R</span><strong>${fmt(slot?.stats?.historicalAvgNetR || 0, 3)}R</strong></div>
+                <div><span>Avg PnL</span><strong>${fmtRawPct(slot?.stats?.historicalAvgNetPnlPct || 0)}</strong></div>
+                <div><span>BTC-router</span><strong>${escapeHtml(slot?.btcRouterDecision?.againstLong ? (slot?.btcRouterDecision?.provenCounterExceptionUsed ? "UITZONDERING" : "TEGEN LONG") : "MEE/NEUTRAAL")}</strong></div>
+              </div>
+              <div class="toolbar" style="margin-top:12px">
+                <button type="button" id="toggleExactCompositionSlot" ${slot ? "" : "disabled"}>${exactDisabled ? "Zet exact vak weer aan" : "Zet exact dag/uur/weather/BTC-vak uit"}</button>
+                <button type="button" id="toggleDayHourCompositionSlot">${compositionOverrides().disabledDayHours.includes(dayHourKey) ? "Zet dit uur op deze dag weer aan" : "Zet dit uur op deze dag bij elk weertype en iedere BTC-richting uit"}</button>
+              </div>
+            </div>
+            <div>${compositionFamilyDetails(slot)}</div>
+          </div>
+        </div>`;
+    }
+
+    function compositionBtcImpactTable(proposal) {
+        const impact = proposal?.btcRouterImpact || proposal?.summary?.btcRouterImpact || {};
+        return `<div class="table-wrap"><table><thead><tr><th>Meetpunt</th><th>Zonder BTC-router</th><th>Met BTC-router</th><th>Verschil</th></tr></thead><tbody>
+          <tr><td>Actieve bewijs-vakken</td><td>${fmtInt(impact.preFilterActiveSlots || 0)}</td><td>${fmtInt(impact.postFilterActiveSlots || 0)}</td><td>-${fmtInt(impact.slotsBlockedByBtcRouter || 0)}</td></tr>
+          <tr><td>Historische outcomes</td><td>${fmtInt(impact.preFilterHistoricalCompleted || 0)}</td><td>${fmtInt(impact.postFilterHistoricalCompleted || 0)}</td><td>${fmtInt((impact.postFilterHistoricalCompleted || 0) - (impact.preFilterHistoricalCompleted || 0))}</td></tr>
+          <tr><td>Winrate</td><td>${fmtPct(impact.preFilterHistoricalWinrate || 0)}</td><td>${fmtPct(impact.postFilterHistoricalWinrate || 0)}</td><td>${fmtPct(impact.winrateDelta || 0)}</td></tr>
+          <tr><td>Gemiddelde netto-R</td><td>${fmt(impact.preFilterHistoricalAvgNetR || 0, 3)}R</td><td>${fmt(impact.postFilterHistoricalAvgNetR || 0, 3)}R</td><td>${fmt(impact.avgNetRDelta || 0, 3)}R</td></tr>
+          <tr><td>Gemiddelde PnL</td><td>${fmtRawPct(impact.preFilterHistoricalAvgNetPnlPct || 0)}</td><td>${fmtRawPct(impact.postFilterHistoricalAvgNetPnlPct || 0)}</td><td>${fmtRawPct(impact.avgNetPnlPctDelta || 0)}</td></tr>
+          <tr><td>Verwacht R/week</td><td>${fmt(impact.preFilterExpectedNetRPerWeek || 0, 2)}R</td><td>${fmt(impact.postFilterExpectedNetRPerWeek || 0, 2)}R</td><td>${fmt((impact.postFilterExpectedNetRPerWeek || 0) - (impact.preFilterExpectedNetRPerWeek || 0), 2)}R</td></tr>
+        </tbody></table></div>`;
+    }
+
+    function compositionBtcSummaryTable(previewSlots = {}) {
+        const rows = COMPOSITION_BTC_STATES.map((btcState) => {
+          const slots = Object.values(previewSlots).filter((slot) => slot.btcRouterState === btcState);
+          const summary = compositionSummaryFromSlots(Object.fromEntries(slots.map((slot) => [slot.key, slot])));
+          const exceptions = slots.filter((slot) => (slot.counterBtcExceptionFamilyIds || []).length > 0).length;
+          return `<tr><td>${escapeHtml(compositionBtcLabel(btcState))}</td><td>${fmtInt(summary.activeSlots)}</td><td>${fmtInt(summary.historicalCompleted)}</td><td>${fmtPct(summary.historicalWinrate)}</td><td>${fmt(summary.historicalAvgNetR, 3)}R</td><td>${fmtRawPct(summary.historicalAvgNetPnlPct)}</td><td>${fmt(summary.expectedNetRPerWeek, 2)}R</td><td>${fmtInt(exceptions)}</td></tr>`;
+        }).join("");
+        return `<div class="table-wrap"><table><thead><tr><th>BTC-toestand</th><th>Vakken</th><th>n</th><th>WR</th><th>Avg R</th><th>Avg PnL</th><th>R/week</th><th>Tegen-BTC uitzonderingen</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+
+    async function activateSelectedWeekComposition(proposal) {
+        if (!proposal?.compositionId) return;
+        const overrides = compositionOverrides();
+        const preview = compositionSummaryFromSlots(compositionPreviewSlots(proposal, overrides));
+        if (!confirm(
+          `${proposal.title || proposal.mode} activeren?\n\n` +
+          `${preview.activeSlots} actieve dag/uur/weather/BTC-vakken\n` +
+          `${preview.familyCount} exacte families\n` +
+          `Historische winrate ${fmtPct(preview.historicalWinrate)}\n` +
+          `Verwacht ${fmt(preview.expectedNetRPerWeek, 2)}R per week\n\n` +
+          `Automatisch afgekeurde vakken en BTC-tegenrichting zonder bewijs blijven uit.`
+        )) return;
+        const result = await api(endpoints.rotation, {
+          method: "POST",
+          timeoutMs: 30000,
+          body: JSON.stringify({
+            action: "activateWeekComposition",
+            compositionId: proposal.compositionId,
+            mode: proposal.mode,
+            ...overrides,
+            side: DASHBOARD_SIDE,
+            tradeSide: ONLY_SIDE,
+            targetTradeSide: ONLY_SIDE,
+            dashboardSide: DASHBOARD_SIDE,
+            longOnly: true,
+            shortDisabled: true
+          })
+        });
+        setMessage(`${proposal.title || proposal.mode} is actief. Discord gebruikt nu exact dag × UTC-uur × marketWeather × BTC-richting.`, "success");
+        state.rotation = null;
+        state.compositionOverridesSourceId = null;
+        await renderWinners();
+        return result;
+    }
+
     async function renderWinners() {
         showLoading("winners");
         const results = await Promise.allSettled([
-             ensureMicrosLoaded(),
-             ensureRotationLoaded()
+          ensureRotationLoaded(),
+          state.market ? Promise.resolve(state.market) : fetchMarket()
         ]);
-        const microsError = results[0].status === "rejected" ? results[0].reason : null;
-        const rotationError = results[1].status === "rejected" ? results[1].reason : null;
-        if (microsError && !(state.micros?.rows || []).length) throw microsError;
+        const rotationError = results[0].status === "rejected" ? results[0].reason : null;
+        if (rotationError && !state.rotation) throw rotationError;
 
-        const generation = activeTemporalGenerationFromState();
-        const projectionMap = temporalProjectionMap(generation);
-        const context = selectedWinnerContext();
-        const allRows = rankMicroRows(state.micros?.rows || [], "adaptive");
-        const allItems = allRows.map((row) => {
-             const projection = projectionMap.get(microId(row)) || null;
-             const eligibility = winnerEligibility(row, projection, context);
-             return { row, projection, eligibility, score: winnerScore(row, eligibility) };
-        });
-        const passingItems = allItems.filter((item) => item.eligibility.passed);
-        const visibleItems = winnerRowsForDisplay(allRows, projectionMap, context);
-        const visiblePassingIds = visibleItems
-             .filter((item) => item.eligibility.passed)
-             .map((item) => microId(item.row));
-        const validFamilyIds = new Set(allRows.map(microId));
-        setWinnerSelectedIds([...winnerSelectedSet()].filter((id) => validFamilyIds.has(id)));
-        const selectedCount = winnerSelectedSet().size;
-        const currentPolicy = temporalPolicyForContext(context.current, {
-             ...(state.rotation || {}),
-             ...(generation || {})
-        });
-        const preset = WINNER_PRESETS.find((item) => item.value === state.winnerPreset) || WINNER_PRESETS[0];
+        const proposals = compositionProposalList();
+        const active = activeWeekComposition();
+        if (active && !state.compositionSelectedMode) state.compositionSelectedMode = upper(active.mode);
+        if (!proposals.some((proposal) => upper(proposal.mode) === upper(state.compositionSelectedMode))) {
+          state.compositionSelectedMode = proposals.some((proposal) => upper(proposal.mode) === "BALANCED")
+            ? "BALANCED"
+            : upper(proposals[0]?.mode || "BALANCED");
+        }
+        const proposal = compositionProposalByMode(proposals);
+        hydrateCompositionOverrides(proposal, active);
+
+        const currentWeather = currentCompositionWeatherKey();
+        const currentBtc = currentCompositionBtcState();
+        if (!state.compositionSelectedSlotKey) {
+          if (currentWeather !== "UNKNOWN") state.compositionSelectedWeather = currentWeather;
+          if (currentBtc !== "UNKNOWN") state.compositionSelectedBtc = currentBtc;
+        }
+        const previewSlots = compositionPreviewSlots(proposal);
+        const preview = compositionSummaryFromSlots(previewSlots);
+        const overrides = compositionOverrides();
+        const manualDisabledCount = Object.values(proposal?.slots || {})
+          .filter((slot) => slot?.enabled && compositionDisabled(slot, overrides)).length;
+        const totalPossible = Number(proposal?.dimensions?.totalPossibleSlots || proposal?.summary?.totalPossibleSlots || 10080);
+        const automaticOff = Math.max(0, totalPossible - Object.keys(proposal?.slots || {}).length);
+        const selectedWeatherDisabled = overrides.disabledWeatherKeys.includes(state.compositionSelectedWeather);
+        const selectedBtcDisabled = overrides.disabledBtcStates.includes(state.compositionSelectedBtc);
+        const selectedWeatherBtcKey = compositionWeatherBtcKey(
+          state.compositionSelectedWeather,
+          state.compositionSelectedBtc
+        );
+        const selectedWeatherBtcDisabled = overrides.disabledWeatherBtcKeys.includes(selectedWeatherBtcKey);
+
+        if (!state.compositionSelectedSlotKey) {
+          state.compositionSelectedSlotKey = compositionSlotKey(
+            "MONDAY", "H00", state.compositionSelectedWeather, state.compositionSelectedBtc
+          );
+        }
 
         $("winners").innerHTML = `
           <div class="card winner-hero">
-            <h2>Winnende signalen kiezen</h2>
-            <div class="metric-extra">
-              Kies een dag en sessie. Groen betekent dat de exacte family daar positief of bewezen werkt. Rood betekent een actieve blokkade. Geel betekent dat er nog te weinig bewijs is.
-            </div>
+            <h2>Top 3 automatische BTC-gestuurde weekcomposities</h2>
+            <div class="metric-extra">Het systeem kiest per <strong>weekdag × UTC-uur × marketWeather × BTC-richting</strong> alleen de beste bewezen exacte 75-child families. Bij bearish BTC staat LONG standaard uit, behalve wanneer juist die exacte combinatie een statistisch bewezen tegen-BTC uitzondering is.</div>
+          </div>
+
+          ${rotationError ? `<div class="message warn">Samenstellingen konden niet volledig worden geladen: ${escapeHtml(friendlyApiMessage(rotationError))}</div>` : ""}
+          ${!proposals.length ? `<div class="message warn">Er zijn nog geen drie BTC-proposals. Draai eerst een nieuwe weekly freeze nadat outcomes met entry-BTC-context zijn verzameld.</div>` : ""}
+
+          <div class="composition-plan-grid">
+            ${proposals.map((item) => compositionPlanCard(item, active, upper(item.mode) === upper(state.compositionSelectedMode))).join("") || `<div class="empty">Nog geen proposals beschikbaar.</div>`}
           </div>
 
           <div class="grid">
-            ${metricCard("Gekozen dag", winnerDayLabel(context.day), state.winnerDay === "CURRENT" ? "huidige UTC-dag" : "handmatig gekozen")}
-            ${metricCard("Gekozen sessie", winnerSessionLabel(context.session), state.winnerSession === "CURRENT" ? "huidige UTC-sessie" : "handmatig gekozen")}
-            ${metricCard("Passende families", fmtInt(passingItems.length), preset.label)}
-            ${metricCard("Geselecteerd", fmtInt(selectedCount), "klaar om actief te zetten")}
-            ${metricCard("Generation", generation?.generationId || "GEEN", generation?.status || "geen actieve generation")}
-            ${metricCard("Policy mode", currentPolicy.temporalPolicyMode, currentPolicy.temporalStatsEnabled ? "stats actief" : "stats uit")}
-            ${metricCard("Projections", fmtInt(projectionMap.size), `verwacht ${TEMPORAL_EXPECTED_CHILD_FAMILY_COUNT}`)}
-            ${metricCard("Actief op Discord", fmtInt(activeMicroIds().length), "exacte 75-child IDs")}
-          </div>
-
-          ${rotationError ? `<div class="message warn">Temporal generation kon niet volledig worden geladen: ${escapeHtml(friendlyApiMessage(rotationError))}</div>` : ""}
-          ${!generation ? `<div class="message warn">Er is geen actieve temporal generation gevonden. De pagina kan dan geen werkende dagen en sessies bewijzen en selecteert in de strenge stand niets.</div>` : ""}
-
-          <div class="card">
-            <h3>1. Kies hoe streng je wilt selecteren</h3>
-            <div class="winner-filter-grid">
-              <div class="winner-filter-field">
-                <label for="winnerPreset">Selectieregel</label>
-                <select id="winnerPreset">
-                  ${WINNER_PRESETS.map((option) => `<option value="${escapeAttr(option.value)}" ${option.value === state.winnerPreset ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-                </select>
-              </div>
-              <div class="winner-filter-field">
-                <label for="winnerDay">Werkdag</label>
-                <select id="winnerDay">
-                  <option value="CURRENT" ${state.winnerDay === "CURRENT" ? "selected" : ""}>Nu: ${escapeHtml(winnerDayLabel(context.current.dayOfWeekUtc))}</option>
-                  ${WINNER_DAY_OPTIONS.map((day) => `<option value="${escapeAttr(day)}" ${day === state.winnerDay ? "selected" : ""}>${escapeHtml(winnerDayLabel(day))}</option>`).join("")}
-                </select>
-              </div>
-              <div class="winner-filter-field">
-                <label for="winnerSession">Sessie</label>
-                <select id="winnerSession">
-                  <option value="CURRENT" ${state.winnerSession === "CURRENT" ? "selected" : ""}>Nu: ${escapeHtml(winnerSessionLabel(context.current.primarySessionBucket))}</option>
-                  ${WINNER_SESSION_OPTIONS.map((session) => `<option value="${escapeAttr(session)}" ${session === state.winnerSession ? "selected" : ""}>${escapeHtml(winnerSessionLabel(session))}</option>`).join("")}
-                </select>
-              </div>
-              <div class="winner-filter-field">
-                <label for="winnerSearch">Zoeken</label>
-                <input id="winnerSearch" type="search" placeholder="setup, regime of family..." value="${escapeAttr(state.winnerSearch)}" />
-              </div>
-              <div class="winner-filter-field">
-                <label>Extra filters</label>
-                <label class="winner-check"><input id="winnerOnlyCurrentFit" type="checkbox" ${state.winnerOnlyCurrentFit ? "checked" : ""} /> Geen MISFIT</label>
-              </div>
-            </div>
-            <div class="toolbar">
-              <label class="winner-check"><input id="winnerShowAll" type="checkbox" ${state.winnerShowAll ? "checked" : ""} /> Toon ook afgevallen families</label>
-              <button type="button" id="winnerUseNowBtn">Gebruik huidige dag en sessie</button>
-            </div>
-            <div class="metric-extra"><strong>${escapeHtml(preset.label)}:</strong> ${escapeHtml(preset.help)}</div>
+            ${metricCard("Gekozen plan", proposal?.title || "GEEN", proposal?.mode || "-")}
+            ${metricCard("Huidig marketWeather", compositionWeatherLabel(currentWeather), currentWeather)}
+            ${metricCard("Huidige BTC-richting", compositionBtcLabel(currentBtc), currentBtc)}
+            ${metricCard("Actieve vakken", fmtInt(preview.activeSlots), `van ${fmtInt(totalPossible)} mogelijke vakken`)}
+            ${metricCard("Automatisch uit", fmtInt(automaticOff), "geen exact bewijs of routerblokkade")}
+            ${metricCard("Handmatig uit", fmtInt(manualDisabledCount), "jouw extra beperkingen")}
+            ${metricCard("Families in plan", fmtInt(preview.familyCount), "exacte child-75 IDs")}
+            ${metricCard("Historische winrate", fmtPct(preview.historicalWinrate), `${fmtInt(preview.historicalCompleted)} exacte outcomes`)}
+            ${metricCard("Historische avg R", `${fmt(preview.historicalAvgNetR, 3)}R`, `totaal ${fmt(preview.historicalTotalNetR, 1)}R`)}
+            ${metricCard("Historische avg PnL", fmtRawPct(preview.historicalAvgNetPnlPct), `totaal ${fmtRawPct(preview.historicalTotalNetPnlPct)}`)}
+            ${metricCard("Verwacht signalen/week", fmt(preview.expectedSignalsPerWeek, 1), "historische frequentie")}
+            ${metricCard("Verwacht R/week", `${fmt(preview.expectedNetRPerWeek, 2)}R`, "modelinschatting")}
           </div>
 
           <div class="card">
-            <h3>Zo lees je de kleuren</h3>
-            <div class="winner-explain">
-              <div>${temporalChip({ gateWindow: { completed: 40, avgNetR: 0.12, lcb95: 0.02 } }, "GROEN", "Bewezen positief")} <strong>Bewezen:</strong> voldoende resultaten, positief gemiddelde en LCB95 boven nul.</div>
-              <div>${temporalChip({ gateWindow: { completed: 40, avgNetR: 0.06, lcb95: -0.01 } }, "LICHTGROEN", "Positief")} <strong>Positief:</strong> gemiddelde is positief, maar nog niet volledig statistisch bewezen.</div>
-              <div>${temporalChip({ gateWindow: { completed: 12, avgNetR: 0.10 } }, "GEEL", "Leren")} <strong>Leren:</strong> nog te weinig geldige resultaten.</div>
-              <div>${temporalChip({ activeDecision: "VETO_ACTIVE", gateWindow: { completed: 40, avgNetR: -0.15, ucb95: -0.02 } }, "ROOD", "Veto actief")} <strong>Geblokkeerd:</strong> deze dag of sessie mag geen nieuwe Discord-entry publiceren.</div>
-            </div>
+            <div class="section-title"><div><h2>1. Hele week in één oogopslag</h2><p>Elk uur toont hoeveel van 45 bekende marketWeather/BTC-combinaties actief zijn. Ontbrekend bewijs blijft automatisch uit.</p></div></div>
+            ${proposal ? compositionGrid(proposal, state.compositionSelectedWeather, state.compositionSelectedBtc, { coverage: true }) : `<div class="empty">Geen plan beschikbaar.</div>`}
           </div>
 
-          <div class="section-title">
-            <div>
-              <h2>2. Selecteer de winnaars</h2>
-              <p>Je activeert de exacte family. De temporal generation blijft daarna automatisch slechte dagen, sessies en niet-goedgekeurde weekenden blokkeren.</p>
+          <div class="card">
+            <div class="section-title"><div><h2>2. Kies marketWeather en BTC-richting</h2><p>Hetzelfde uur kan bij bullish BTC AAN zijn en bij bearish BTC UIT. UNKNOWN staat fail-closed.</p></div></div>
+            <h3>MarketWeather</h3>
+            <div class="composition-weather-tabs">
+              ${COMPOSITION_WEATHER_KEYS.map((weatherKey) => `<button type="button" class="composition-weather-tab ${weatherKey === state.compositionSelectedWeather ? "selected" : ""} ${overrides.disabledWeatherKeys.includes(weatherKey) ? "disabled-weather" : ""}" data-composition-weather="${escapeAttr(weatherKey)}">${escapeHtml(compositionWeatherLabel(weatherKey))}</button>`).join("")}
             </div>
+            <label class="winner-check"><input type="checkbox" id="compositionWeatherEnabled" ${selectedWeatherDisabled ? "" : "checked"} ${state.compositionSelectedWeather === "UNKNOWN" ? "disabled" : ""}/> ${escapeHtml(compositionWeatherLabel(state.compositionSelectedWeather))} voor de hele week toegestaan</label>
+            <h3 style="margin-top:16px">BTC-richting</h3>
+            <div class="composition-weather-tabs">
+              ${COMPOSITION_BTC_STATES.map((btcState) => `<button type="button" class="composition-weather-tab ${btcState === state.compositionSelectedBtc ? "selected" : ""} ${overrides.disabledBtcStates.includes(btcState) ? "disabled-weather" : ""}" data-composition-btc="${escapeAttr(btcState)}">${escapeHtml(compositionBtcLabel(btcState))}</button>`).join("")}
+            </div>
+            <label class="winner-check"><input type="checkbox" id="compositionBtcEnabled" ${selectedBtcDisabled ? "" : "checked"} ${state.compositionSelectedBtc === "UNKNOWN" ? "disabled" : ""}/> ${escapeHtml(compositionBtcLabel(state.compositionSelectedBtc))} voor de hele week toegestaan</label>
+            <label class="winner-check"><input type="checkbox" id="compositionWeatherBtcEnabled" ${selectedWeatherBtcDisabled ? "" : "checked"} ${state.compositionSelectedWeather === "UNKNOWN" || state.compositionSelectedBtc === "UNKNOWN" ? "disabled" : ""}/> Exact ${escapeHtml(compositionWeatherLabel(state.compositionSelectedWeather))} + ${escapeHtml(compositionBtcLabel(state.compositionSelectedBtc))} toegestaan</label>
+            <div class="metric-extra">Alle tijden zijn UTC. Rood is handmatig uit. Grijs is automatisch afgekeurd en kan niet worden geforceerd.</div>
+            ${proposal ? compositionGrid(proposal, state.compositionSelectedWeather, state.compositionSelectedBtc) : `<div class="empty">Geen plan beschikbaar.</div>`}
           </div>
 
-          ${winnerTable(visibleItems, context)}
+          ${proposal ? compositionDetail(proposal) : ""}
 
-          <div class="winner-selection-bar">
-            <div>
-              <div class="winner-selection-count">${escapeHtml(fmtInt(selectedCount))} families geselecteerd</div>
-              <div class="metric-extra">Alleen zichtbare families die aan de gekozen regel voldoen kunnen worden aangevinkt.</div>
-            </div>
-            <div class="toolbar" style="margin:0">
-              <button type="button" id="winnerSelectVisibleBtn">Selecteer alle zichtbare winnaars</button>
-              <button type="button" id="winnerClearBtn">Wis selectie</button>
-              <button type="button" class="success" id="winnerCopyBtn" ${selectedCount ? "" : "disabled"}>Copy geselecteerde IDs</button>
-              <button type="button" class="long-action" id="winnerActivateBtn" ${selectedCount ? "" : "disabled"}>Activeer geselecteerde winnaars</button>
+          <div class="card">
+            <div class="section-title"><div><h2>3. Effect van de BTC-router</h2><p>Vergelijking van dezelfde bewijsvensters vóór en na het uitschakelen van LONG tegen BTC zonder bewezen uitzondering.</p></div></div>
+            ${compositionBtcImpactTable(proposal)}
+          </div>
+
+          <div class="card">
+            <div class="section-title"><div><h2>4. Resultaten per BTC-toestand</h2><p>Winrate, netto-R, PnL en uitzonderingen van de gekozen samenstelling na jouw handmatige uitschakelingen.</p></div></div>
+            ${compositionBtcSummaryTable(previewSlots)}
+          </div>
+
+          <div class="card">
+            <h3>Jouw extra uitschakelingen</h3>
+            <div class="composition-override-list">${escapeHtml(JSON.stringify(overrides, null, 2))}</div>
+            <div class="toolbar" style="margin-top:12px">
+              <button type="button" id="resetCompositionOverrides">Wis alleen handmatige uitschakelingen</button>
+              <button type="button" id="openManualRotation">Open handmatige familyselectie</button>
+              <button type="button" class="long-action" id="activateCompositionBtn" ${proposal && preview.activeSlots ? "" : "disabled"}>Activeer deze complete BTC-samenstelling</button>
             </div>
           </div>
 
           <div class="card">
             <h3>Technische status</h3>
             ${jsonBlock({
-              selectedDay: context.day,
-              selectedSession: context.session,
-              preset: state.winnerPreset,
-              allFamilies: allRows.length,
-              matchingFamilies: passingItems.length,
-              visibleFamilies: visibleItems.length,
-              selectedIds: [...winnerSelectedSet()],
-              activeGenerationId: generation?.generationId || null,
-              generationStatus: generation?.status || null,
-              generationCutoffTs: generation?.generationCutoffTs || null,
-              familyProjectionCount: projectionMap.size,
-              temporalPolicyMode: currentPolicy.temporalPolicyMode,
-              temporalStatsEnabled: currentPolicy.temporalStatsEnabled,
-              winnerSelectorVersion: WINNER_SELECTOR_VERSION
+              uiVersion: WEEK_COMPOSITION_UI_VERSION,
+              selectedProposalId: proposal?.compositionId || null,
+              selectedMode: proposal?.mode || null,
+              activeCompositionId: active?.compositionId || null,
+              activeBaseCompositionId: active?.baseCompositionId || null,
+              generationId: proposal?.generationId || null,
+              currentMarketWeatherKey: currentWeather,
+              currentBtcRouterState: currentBtc,
+              selectedMarketWeatherKey: state.compositionSelectedWeather,
+              selectedBtcRouterState: state.compositionSelectedBtc,
+              previewSummary: preview,
+              btcRouterImpact: proposal?.btcRouterImpact || proposal?.summary?.btcRouterImpact || null,
+              overrides,
+              automaticOff,
+              manualDisabledCount
             })}
-          </div>
-        `;
+          </div>`;
 
-        const rerender = () => renderWinners();
-        $("winnerPreset")?.addEventListener("change", (event) => {
-             state.winnerPreset = event.target.value;
-             rerender();
+        document.querySelectorAll("[data-composition-mode]").forEach((card) => {
+          card.addEventListener("click", () => {
+            state.compositionSelectedMode = upper(card.dataset.compositionMode);
+            state.compositionOverridesSourceId = null;
+            state.compositionSelectedSlotKey = null;
+            renderWinners();
+          });
         });
-        $("winnerDay")?.addEventListener("change", (event) => {
-             state.winnerDay = event.target.value;
-             rerender();
+        document.querySelectorAll("[data-composition-weather]").forEach((button) => {
+          button.addEventListener("click", () => {
+            state.compositionSelectedWeather = upper(button.dataset.compositionWeather);
+            state.compositionSelectedSlotKey = compositionSlotKey("MONDAY", "H00", state.compositionSelectedWeather, state.compositionSelectedBtc);
+            renderWinners();
+          });
         });
-        $("winnerSession")?.addEventListener("change", (event) => {
-             state.winnerSession = event.target.value;
-             rerender();
+        document.querySelectorAll("[data-composition-btc]").forEach((button) => {
+          button.addEventListener("click", () => {
+            state.compositionSelectedBtc = upper(button.dataset.compositionBtc);
+            state.compositionSelectedSlotKey = compositionSlotKey("MONDAY", "H00", state.compositionSelectedWeather, state.compositionSelectedBtc);
+            renderWinners();
+          });
         });
-        $("winnerSearch")?.addEventListener("change", (event) => {
-             state.winnerSearch = event.target.value;
-             rerender();
+        document.querySelectorAll("[data-composition-slot]").forEach((button) => {
+          button.addEventListener("click", () => {
+            state.compositionSelectedSlotKey = button.dataset.compositionSlot;
+            const parsed = parseCompositionSlotKey(state.compositionSelectedSlotKey);
+            state.compositionSelectedWeather = parsed.weatherKey;
+            state.compositionSelectedBtc = parsed.btcState;
+            renderWinners();
+          });
         });
-        $("winnerSearch")?.addEventListener("keydown", (event) => {
-             if (event.key === "Enter") {
-                  state.winnerSearch = event.target.value;
-                  rerender();
-             }
+        document.querySelectorAll("[data-toggle-composition-day]").forEach((button) => {
+          button.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const day = upper(button.dataset.toggleCompositionDay);
+            setCompositionOverride("compositionDisabledDays", day, !overrides.disabledDays.includes(day));
+            renderWinners();
+          });
         });
-        $("winnerOnlyCurrentFit")?.addEventListener("change", (event) => {
-             state.winnerOnlyCurrentFit = event.target.checked;
-             rerender();
+        document.querySelectorAll("[data-toggle-global-hour]").forEach((button) => {
+          button.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const hour = upper(button.dataset.toggleGlobalHour);
+            setCompositionOverride("compositionDisabledHours", hour, !overrides.disabledHours.includes(hour));
+            renderWinners();
+          });
         });
-        $("winnerShowAll")?.addEventListener("change", (event) => {
-             state.winnerShowAll = event.target.checked;
-             rerender();
+        $("compositionWeatherEnabled")?.addEventListener("change", (event) => {
+          setCompositionOverride("compositionDisabledWeatherKeys", state.compositionSelectedWeather, !event.target.checked);
+          renderWinners();
         });
-        $("winnerUseNowBtn")?.addEventListener("click", () => {
-             state.winnerDay = "CURRENT";
-             state.winnerSession = "CURRENT";
-             rerender();
+        $("compositionBtcEnabled")?.addEventListener("change", (event) => {
+          setCompositionOverride("compositionDisabledBtcStates", state.compositionSelectedBtc, !event.target.checked);
+          renderWinners();
         });
-        document.querySelectorAll("[data-winner-select]").forEach((input) => {
-             input.addEventListener("change", () => {
-                  const selected = winnerSelectedSet();
-                  const id = input.dataset.winnerSelect;
-                  if (input.checked) selected.add(id);
-                  else selected.delete(id);
-                  setWinnerSelectedIds([...selected]);
-                  rerender();
-             });
+        $("compositionWeatherBtcEnabled")?.addEventListener("change", (event) => {
+          const key = compositionWeatherBtcKey(state.compositionSelectedWeather, state.compositionSelectedBtc);
+          setCompositionOverride("compositionDisabledWeatherBtcKeys", key, !event.target.checked);
+          renderWinners();
         });
-        $("winnerSelectVisibleBtn")?.addEventListener("click", () => {
-             setWinnerSelectedIds(uniqueStrings([
-                  ...winnerSelectedSet(),
-                  ...visiblePassingIds
-             ]));
-             rerender();
+        $("toggleExactCompositionSlot")?.addEventListener("click", () => {
+          const key = state.compositionSelectedSlotKey;
+          const disabled = overrides.disabledDayHourWeatherBtcKeys.includes(key) ||
+            overrides.disabledSlotWeatherKeys.includes(key);
+          setCompositionOverride("compositionDisabledDayHourWeatherBtcKeys", key, !disabled);
+          renderWinners();
         });
-        $("winnerClearBtn")?.addEventListener("click", () => {
-             setWinnerSelectedIds([]);
-             rerender();
+        $("toggleDayHourCompositionSlot")?.addEventListener("click", () => {
+          const parsed = parseCompositionSlotKey(state.compositionSelectedSlotKey || "");
+          const dayHour = `${parsed.day}:${parsed.hourBucket}`;
+          setCompositionOverride("compositionDisabledDayHours", dayHour, !overrides.disabledDayHours.includes(dayHour));
+          renderWinners();
         });
-        $("winnerCopyBtn")?.addEventListener("click", () => {
-             const ids = [...winnerSelectedSet()];
-             copyText(JSON.stringify(ids, null, 2), `${ids.length} winnende family IDs gekopieerd.`);
+        $("resetCompositionOverrides")?.addEventListener("click", () => {
+          state.compositionDisabledDays = [];
+          state.compositionDisabledHours = [];
+          state.compositionDisabledWeatherKeys = [];
+          state.compositionDisabledBtcStates = [];
+          state.compositionDisabledWeatherBtcKeys = [];
+          state.compositionDisabledDayHours = [];
+          state.compositionDisabledSlotWeatherKeys = [];
+          state.compositionDisabledDayHourWeatherBtcKeys = [];
+          state.compositionOverridesSourceId = `RESET:${proposal?.compositionId || Date.now()}`;
+          renderWinners();
         });
-        $("winnerActivateBtn")?.addEventListener("click", () => {
-             activateSelectedMicroFamilies([...winnerSelectedSet()]);
-        });
-        bindMicroEvents();
+        $("openManualRotation")?.addEventListener("click", () => showTab("rotation"));
+        $("activateCompositionBtn")?.addEventListener("click", () => activateSelectedWeekComposition(proposal));
     }
 
 
