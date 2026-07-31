@@ -44,7 +44,12 @@ WEEKEND_POLICY_VERSION,
 SESSION_POLICY_VERSION,
 TEMPORAL_GENERATION_SCHEMA_VERSION,
 TEMPORAL_TAXONOMY_VERSION,
-TEMPORAL_COST_MODEL_VERSION
+TEMPORAL_COST_MODEL_VERSION,
+TEMPORAL_MARKET_WEATHER_PROFILE_VERSION,
+BTC_DIRECTION_ROUTER_PROFILE_VERSION,
+BTC_DIRECTION_ROUTER_POLICY_VERSION,
+resolveEntryMarketWeatherContext,
+resolveEntryBtcRouterContext
 } from '../analyze/scoring.js';
 import {
 buildRiskAndLiveMetricsForBothSides
@@ -172,6 +177,7 @@ function entryTemporalFields(source = {}, fallbackTs = Date.now()) {
 const entryTs = source.entryTs ?? source.entryCreatedAt ?? source.openedAt ??
 source.createdAt ?? source.contextTs ?? fallbackTs;
 return buildCentralEntryTemporalFields({
+...source,
 entryTs,
 marketEventClusterId: source.marketEventClusterId,
 scannerRunId: source.scannerRunId,
@@ -1868,6 +1874,30 @@ null,
 confidence:
 result.marketContext.confidence ??
 null,
+btcRouterState:
+result.marketContext.btcRouterState ||
+'UNKNOWN',
+btcDirection:
+result.marketContext.btcDirection ||
+'UNKNOWN',
+btcDirectionConfidence:
+result.marketContext.btcDirectionConfidence ??
+null,
+btcTrendStrength:
+result.marketContext.btcTrendStrength ??
+null,
+btcAlignedBreadthPct:
+result.marketContext.btcAlignedBreadthPct ??
+null,
+btcBreadthConfirmed:
+Boolean(result.marketContext.btcBreadthConfirmed),
+btcAgainstLong:
+Boolean(result.marketContext.btcAgainstLong),
+btcRouterAvailable:
+Boolean(result.marketContext.btcRouterAvailable),
+btcRouterSource:
+result.marketContext.btcRouterSource ||
+null,
 source:
 compactMarketWeatherForStorage(
 result.marketContext.source
@@ -3177,6 +3207,15 @@ universeSource.confidence
 const stale = createdAt > 0
 ? (now() - createdAt) / 1000 > currentFitMaxWeatherAgeSec()
 : true;
+const btcRouterContext = resolveEntryBtcRouterContext({
+...universeSource,
+...source,
+entryMarketWeather: source,
+currentMarketWeather: source,
+currentBullishPct: bullishPct,
+currentBearishPct: bearishPct,
+allowMarketWeatherBtcFallback: false
+});
 return {
 ok: Boolean(source && Object.keys(source).length),
 source,
@@ -3190,6 +3229,18 @@ bearishPct,
 bullishPct,
 squeezePct,
 confidence,
+btcRouterContext,
+btcRouterState: btcRouterContext.btcRouterState,
+btcDirection: btcRouterContext.direction,
+btcDirectionConfidence: btcRouterContext.confidence,
+btcTrendStrength: btcRouterContext.trendStrength,
+btcAlignedBreadthPct: btcRouterContext.alignedBreadthPct,
+btcBreadthConfirmed: btcRouterContext.breadthConfirmed,
+btcAgainstLong: btcRouterContext.againstLong,
+btcRouterAvailable: btcRouterContext.available,
+btcRouterSource: btcRouterContext.source,
+btcDirectionRouterProfileVersion: BTC_DIRECTION_ROUTER_PROFILE_VERSION,
+btcDirectionRouterPolicyVersion: BTC_DIRECTION_ROUTER_POLICY_VERSION,
 key: MARKET_WEATHER_KEY,
 universeKey: MARKET_UNIVERSE_KEY
 };
@@ -3324,6 +3375,12 @@ currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT'
 }
 function attachCurrentFitContext(row = {}, marketContext = {}) {
 const fit = scoreMarketFit(row, marketContext);
+const entryWeatherContext = resolveEntryMarketWeatherContext({
+...row,
+entryMarketWeather: marketContext?.source || null,
+entryCurrentRegime: marketContext?.regime || 'UNKNOWN',
+entryCurrentTrendSide: marketContext?.trendSide || 'UNKNOWN'
+});
 return {
 ...row,
 currentMarketWeather: marketContext?.source || null,
@@ -3338,6 +3395,28 @@ currentBearishPct: marketContext?.bearishPct ?? null,
 currentBullishPct: marketContext?.bullishPct ?? null,
 currentSqueezePct: marketContext?.squeezePct ?? null,
 entryMarketWeather: marketContext?.source || null,
+entryMarketWeatherKey: entryWeatherContext.marketWeatherKey,
+entryMarketWeatherRegime: entryWeatherContext.regime,
+entryMarketWeatherTrendSide: entryWeatherContext.trendSide,
+entryMarketWeatherAvailable: entryWeatherContext.available,
+temporalMarketWeatherProfileVersion: TEMPORAL_MARKET_WEATHER_PROFILE_VERSION,
+btcDirectionRouterProfileVersion: BTC_DIRECTION_ROUTER_PROFILE_VERSION,
+btcDirectionRouterPolicyVersion: BTC_DIRECTION_ROUTER_POLICY_VERSION,
+entryBtcRouterContext: marketContext?.btcRouterContext || null,
+entryBtcRouterState: marketContext?.btcRouterState || 'UNKNOWN',
+entryBtcState: marketContext?.btcRouterState || 'UNKNOWN',
+entryBtcDirection: marketContext?.btcDirection || 'UNKNOWN',
+entryBtcTrendSide: marketContext?.btcDirection || 'UNKNOWN',
+entryBtcConfidence: marketContext?.btcDirectionConfidence ?? 0,
+entryBtcDirectionConfidence: marketContext?.btcDirectionConfidence ?? 0,
+entryBtcTrendStrength: marketContext?.btcTrendStrength ?? 0,
+entryBtcAlignedBreadthPct: marketContext?.btcAlignedBreadthPct ?? null,
+entryBtcBreadthConfirmed: Boolean(marketContext?.btcBreadthConfirmed),
+entryBtcAgainstLong: Boolean(marketContext?.btcAgainstLong),
+entryBtcRouterAvailable: Boolean(marketContext?.btcRouterAvailable),
+entryBtcRouterSource: marketContext?.btcRouterSource || 'BTC_CONTEXT_UNAVAILABLE',
+btcDirectionRouterProfileVersion: BTC_DIRECTION_ROUTER_PROFILE_VERSION,
+btcDirectionRouterPolicyVersion: BTC_DIRECTION_ROUTER_POLICY_VERSION,
 entryCurrentRegime: marketContext?.regime || 'UNKNOWN',
 entryCurrentTrendSide: marketContext?.trendSide || 'UNKNOWN',
 
@@ -4953,7 +5032,18 @@ trendSide: marketContext?.trendSide || 'UNKNOWN',
 bearishPct: marketContext?.bearishPct ?? null,
 bullishPct: marketContext?.bullishPct ?? null,
 squeezePct: marketContext?.squeezePct ?? null,
-confidence: marketContext?.confidence ?? null
+confidence: marketContext?.confidence ?? null,
+btcRouterState: marketContext?.btcRouterState || 'UNKNOWN',
+btcDirection: marketContext?.btcDirection || 'UNKNOWN',
+btcDirectionConfidence: marketContext?.btcDirectionConfidence ?? null,
+btcTrendStrength: marketContext?.btcTrendStrength ?? null,
+btcAlignedBreadthPct: marketContext?.btcAlignedBreadthPct ?? null,
+btcBreadthConfirmed: Boolean(marketContext?.btcBreadthConfirmed),
+btcAgainstLong: Boolean(marketContext?.btcAgainstLong),
+btcRouterAvailable: Boolean(marketContext?.btcRouterAvailable),
+btcRouterSource: marketContext?.btcRouterSource || null,
+btcDirectionRouterProfileVersion: BTC_DIRECTION_ROUTER_PROFILE_VERSION,
+btcDirectionRouterPolicyVersion: BTC_DIRECTION_ROUTER_POLICY_VERSION
 },
 snapshot: {
 snapshotId: snapshot?.snapshotId || null,
@@ -5096,6 +5186,30 @@ result.marketContext.squeezePct ??
 null,
 confidence:
 result.marketContext.confidence ??
+null,
+btcRouterState:
+result.marketContext.btcRouterState ||
+'UNKNOWN',
+btcDirection:
+result.marketContext.btcDirection ||
+'UNKNOWN',
+btcDirectionConfidence:
+result.marketContext.btcDirectionConfidence ??
+null,
+btcTrendStrength:
+result.marketContext.btcTrendStrength ??
+null,
+btcAlignedBreadthPct:
+result.marketContext.btcAlignedBreadthPct ??
+null,
+btcBreadthConfirmed:
+Boolean(result.marketContext.btcBreadthConfirmed),
+btcAgainstLong:
+Boolean(result.marketContext.btcAgainstLong),
+btcRouterAvailable:
+Boolean(result.marketContext.btcRouterAvailable),
+btcRouterSource:
+result.marketContext.btcRouterSource ||
 null,
 key:
 result.marketContext.key ||
@@ -6382,6 +6496,8 @@ row: entry,
 wouldPublishWithoutTemporal: entry.wouldPublishWithoutTemporal === true,
 nowTs: actualEntryTs
 });
+const finalSelectionEligible =
+entryDecisionSnapshot.wouldPublishWithoutTemporalAndComposition === true;
 const finalEntry = {
 ...entry,
 entryDecisionSnapshot,
@@ -6389,22 +6505,54 @@ temporalEntryDecisionSnapshot: entryDecisionSnapshot,
 temporalDecisionPending: false,
 temporalWouldBlock: entryDecisionSnapshot.temporalWouldBlock === true,
 temporalBlockReasons: entryDecisionSnapshot.temporalBlockReasons || [],
+weekCompositionApplied: entryDecisionSnapshot.weekCompositionApplied === true,
+weekCompositionWouldBlock:
+entryDecisionSnapshot.weekCompositionWouldBlock === true,
+weekCompositionBlockReasons:
+entryDecisionSnapshot.weekCompositionBlockReasons || [],
+activeWeekCompositionId:
+entryDecisionSnapshot.activeWeekCompositionId || null,
+activeWeekCompositionMode:
+entryDecisionSnapshot.activeWeekCompositionMode || null,
+weekCompositionSlot:
+entryDecisionSnapshot.weekCompositionSlot || null,
+btcDirectionRouterApplied:
+entryDecisionSnapshot.btcDirectionRouterApplied === true,
+btcDirectionRouterWouldBlock:
+entryDecisionSnapshot.btcDirectionRouterWouldBlock === true,
+btcDirectionRouterBlockReasons:
+entryDecisionSnapshot.btcDirectionRouterBlockReasons || [],
+counterBtcExceptionUsed:
+entryDecisionSnapshot.counterBtcExceptionUsed === true,
+entryBtcRouterState:
+entryDecisionSnapshot.entryBtcRouterState || entry.entryBtcRouterState || 'UNKNOWN',
+entryBtcDirection:
+entryDecisionSnapshot.entryBtcDirection || entry.entryBtcDirection || 'UNKNOWN',
+entryBtcConfidence:
+entryDecisionSnapshot.entryBtcConfidence ?? entry.entryBtcConfidence ?? 0,
+entryBtcTrendStrength:
+entryDecisionSnapshot.entryBtcTrendStrength ?? entry.entryBtcTrendStrength ?? 0,
+entryBtcAlignedBreadthPct:
+entryDecisionSnapshot.entryBtcAlignedBreadthPct ?? entry.entryBtcAlignedBreadthPct ?? null,
+entryBtcBreadthConfirmed:
+entryDecisionSnapshot.entryBtcBreadthConfirmed === true,
+entryBtcAgainstLong:
+entryDecisionSnapshot.entryBtcAgainstLong === true,
 activeTemporalGenerationId:
 entryDecisionSnapshot.activeTemporalGenerationId || null,
 finalDiscordEntryAllowed:
 entryDecisionSnapshot.finalDiscordEntryAllowed === true,
 discordAlertEligible:
 entryDecisionSnapshot.finalDiscordEntryAllowed === true,
-selectedMicroFamilyAlert:
-entryDecisionSnapshot.wouldPublishWithoutTemporal === true,
-selectedForDiscord:
-entryDecisionSnapshot.wouldPublishWithoutTemporal === true,
+selectedMicroFamilyAlert: finalSelectionEligible,
+selectedForDiscord: finalSelectionEligible,
 liveEligible:
 entryDecisionSnapshot.finalDiscordEntryAllowed === true,
 discordAlertReason:
 entryDecisionSnapshot.finalDiscordEntryAllowed === true
-? 'SELECTED_LONG_TRUE_MICRO_FAMILY_EXACT_75_CHILD_MATCH_AND_TEMPORAL_POLICY_ALLOWED'
-: entryDecisionSnapshot.temporalBlockReasons?.[0] ||
+? 'SELECTED_LONG_75_CHILD_MATCH_DAY_HOUR_WEATHER_BTC_AND_TEMPORAL_POLICY_ALLOWED'
+: entryDecisionSnapshot.weekCompositionBlockReasons?.[0] ||
+entryDecisionSnapshot.temporalBlockReasons?.[0] ||
 entry.discordAlertReason ||
 'DISCORD_ENTRY_GATE_BLOCKED'
 };
