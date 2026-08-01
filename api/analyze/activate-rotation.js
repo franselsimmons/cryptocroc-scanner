@@ -207,6 +207,32 @@ function responseBase() {
   };
 }
 
+
+function compactActivationResult(activation = {}) {
+  return {
+    ok: activation?.ok !== false,
+    skipped: Boolean(activation?.skipped),
+    changed: Boolean(activation?.changed),
+    reason: activation?.reason || null,
+    generationId: activation?.generationId || null,
+    previousGenerationId: activation?.previousGenerationId || null,
+    activationWindow: activation?.activationWindow || null
+  };
+}
+
+function compactCompositionActivation(result = {}) {
+  const composition = result?.activeWeekComposition || null;
+  return {
+    ok: result?.ok !== false,
+    changed: Boolean(result?.changed),
+    generationId: result?.generationId || null,
+    activeWeekCompositionId: result?.activeWeekCompositionId || composition?.compositionId || null,
+    activeWeekCompositionMode: composition?.mode || null,
+    activeWeekCompositionSummary: composition?.summary || null,
+    rotationActivationError: result?.rotationActivationError || null
+  };
+}
+
 function dashboardSummary(dashboard = {}) {
   const proposals = Array.isArray(dashboard.weekCompositionProposals)
     ? dashboard.weekCompositionProposals
@@ -374,8 +400,8 @@ export default async function handler(req, res) {
         ? 'LONG_TEMPORAL_GENERATION_AND_WEEK_PLAN_ACTIVE'
         : 'ACTIVATION_COMPLETED_BUT_DASHBOARD_CONTRACT_INCOMPLETE',
       ...responseBase(),
-      activation: result?.activation || null,
-      compositionActivation: result?.compositionActivation || null,
+      activation: compactActivationResult(result?.activation),
+      compositionActivation: compactCompositionActivation(result?.compositionActivation),
       requestedPlan: result?.requestedPlan || DEFAULT_PLAN,
       ...summary,
       durationMs: now() - startedAt,
