@@ -230,6 +230,57 @@ function responseBase() {
   };
 }
 
+
+function compactFreezeResult(freezeResult = {}) {
+  const generation = freezeResult?.rotation?.temporalGeneration || null;
+  const proposals = Array.isArray(generation?.weekCompositionProposals)
+    ? generation.weekCompositionProposals
+    : [];
+  return {
+    ok: freezeResult?.ok !== false,
+    type: freezeResult?.type || null,
+    weekKey: freezeResult?.weekKey || null,
+    activeWeekKey: freezeResult?.activeWeekKey || null,
+    mode: freezeResult?.mode || null,
+    rotationId: freezeResult?.rotationId || null,
+    temporalGenerationId: freezeResult?.temporalGenerationId || generation?.generationId || null,
+    temporalGenerationStatus: freezeResult?.temporalGenerationStatus || generation?.status || null,
+    temporalGenerationIntegrity: freezeResult?.temporalGenerationIntegrity || generation?.integrity || null,
+    generatedProposalCount: proposals.length,
+    generatedProposalModes: proposals.map((proposal) => proposal?.mode).filter(Boolean),
+    candidateMicroFamilies: freezeResult?.candidateMicroFamilies ?? null,
+    candidateTrueMicroFamilies: freezeResult?.candidateTrueMicroFamilies ?? null,
+    empiricalVetoCount: freezeResult?.empiricalVetoCount ?? null,
+    nextRotationStorage: freezeResult?.nextRotationStorage || null,
+    validFromStorage: freezeResult?.validFromStorage || null
+  };
+}
+
+function compactActivationResult(activation = {}) {
+  return {
+    ok: activation?.ok !== false,
+    skipped: Boolean(activation?.skipped),
+    changed: Boolean(activation?.changed),
+    reason: activation?.reason || null,
+    generationId: activation?.generationId || null,
+    previousGenerationId: activation?.previousGenerationId || null,
+    activationWindow: activation?.activationWindow || null
+  };
+}
+
+function compactCompositionActivation(result = {}) {
+  const composition = result?.activeWeekComposition || null;
+  return {
+    ok: result?.ok !== false,
+    changed: Boolean(result?.changed),
+    generationId: result?.generationId || null,
+    activeWeekCompositionId: result?.activeWeekCompositionId || composition?.compositionId || null,
+    activeWeekCompositionMode: composition?.mode || null,
+    activeWeekCompositionSummary: composition?.summary || null,
+    rotationActivationError: result?.rotationActivationError || null
+  };
+}
+
 function dashboardSummary(dashboard = {}) {
   const proposals = Array.isArray(dashboard.weekCompositionProposals)
     ? dashboard.weekCompositionProposals
@@ -430,9 +481,9 @@ export default async function handler(req, res) {
       skipped: false,
       reason: 'LONG_WEEKLY_FREEZE_COMPLETED',
       ...responseBase(),
-      freeze: result.freezeResult,
-      activation: result.activationResult,
-      compositionActivation: result.compositionResult,
+      freeze: compactFreezeResult(result.freezeResult),
+      activation: compactActivationResult(result.activationResult),
+      compositionActivation: compactCompositionActivation(result.compositionResult),
       generatedProposalCount: result.generatedProposalCount,
       generatedProposalModes: result.generatedProposalModes,
       activeProposalCount: proposalCount,
