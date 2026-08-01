@@ -668,6 +668,55 @@ function candidateForSlot({
   };
 }
 
+
+function compactSelectedFamilyEvidence(candidate = {}) {
+  const exact = metric(candidate.exact || candidate.exactBtc || {});
+  const blended = metric(candidate.blended || {});
+  return {
+    familyId: candidate.familyId || null,
+    setupType: candidate.setupType || null,
+    regimeBucket: candidate.regimeBucket || null,
+    confirmationProfile: candidate.confirmationProfile || null,
+    score: finite(candidate.score, 0),
+    expectedSignalsPerWeek: finite(candidate.expectedSignalsPerWeek, 0),
+    expectedNetRPerWeek: finite(candidate.expectedNetRPerWeek, 0),
+    expectedNetPnlPctPerWeek: finite(candidate.expectedNetPnlPctPerWeek, 0),
+    confidenceScore: finite(candidate.confidenceScore, 0),
+    counterBtcException: candidate.counterBtcException
+      ? {
+          required: candidate.counterBtcException.required === true,
+          proven: candidate.counterBtcException.proven === true,
+          reasons: Array.isArray(candidate.counterBtcException.reasons)
+            ? candidate.counterBtcException.reasons.slice(0, 12)
+            : []
+        }
+      : { required: false, proven: false, reasons: [] },
+    exact: {
+      completed: exact.completed,
+      wins: exact.wins,
+      losses: exact.losses,
+      flats: exact.flats,
+      avgNetR: exact.avgNetR,
+      totalR: exact.totalR,
+      avgNetPnlPct: exact.avgNetPnlPct,
+      totalNetPnlPct: exact.totalNetPnlPct,
+      lcb95: exact.lcb95,
+      ucb95: exact.ucb95,
+      winrate: exact.winrate,
+      profitFactor: exact.profitFactor,
+      directSLPct: exact.directSLPct,
+      avgCostR: exact.avgCostR
+    },
+    blended: {
+      avgNetR: blended.avgNetR,
+      avgNetPnlPct: blended.avgNetPnlPct,
+      winrate: blended.winrate,
+      directSLPct: blended.directSLPct,
+      avgCostR: blended.avgCostR
+    }
+  };
+}
+
 function diversifiedSelection(candidates = [], config, eligibilityField = 'eligible') {
   const remaining = candidates
     .filter((candidate) => candidate?.[eligibilityField] === true)
@@ -844,7 +893,7 @@ function buildSlot({
       ? 'QUALIFIED_WITH_PROVEN_COUNTER_BTC_EXCEPTION'
       : 'QUALIFIED_FAMILIES_SELECTED',
     selectedFamilyIds: selected.map((row) => row.familyId),
-    selectedFamilies: selected,
+    selectedFamilies: selected.map(compactSelectedFamilyEvidence),
     counterBtcExceptionFamilyIds,
     btcRouterDecision: {
       state: btcState,
