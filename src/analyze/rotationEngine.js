@@ -235,6 +235,8 @@ const TEMPORAL_RECOVERY_MIN_NEW_SINCE_VETO = 10;
 const TEMPORAL_RECOVERY_CONFIRMATION_NEW_OUTCOMES = 5;
 const TEMPORAL_WEEKEND_CONFIRMATION_NEW_OUTCOMES = 10;
 const TEMPORAL_FLOAT_TOLERANCE = 1e-9;
+const TEMPORAL_LIFETIME_INTEGRITY_POLICY_VERSION =
+  'LONG_TEMPORAL_LIFETIME_AXIS_MIGRATION_TOLERANT_V2';
 const TEMPORAL_MS_PER_DAY = 86_400_000;
 const TEMPORAL_ACTIVATION_RETRY_MS = TEMPORAL_MS_PER_DAY;
 
@@ -352,7 +354,16 @@ function temporalFamilyStatsRow(micros = {}, familyId) {
 
 function temporalLifetimeIntegrity(row = {}) {
     if (!row || typeof row !== 'object') {
-        return { passed: true, skipped: true, reason: 'NO_LIFETIME_STATS' };
+        return {
+            passed: true,
+            strictPassed: true,
+            blocking: false,
+            warning: false,
+            skipped: true,
+            status: 'NO_LIFETIME_STATS',
+            reason: 'NO_LIFETIME_STATS',
+            policyVersion: TEMPORAL_LIFETIME_INTEGRITY_POLICY_VERSION
+        };
     }
     const stats = ensureTemporalStats({ ...row });
     const axes = {
@@ -379,37 +390,104 @@ function temporalLifetimeIntegrity(row = {}) {
     const totals = Object.fromEntries(
         Object.entries(axes).map(([axis, buckets]) => [axis, summarize(buckets)])
     );
-    const completedEqual = totals.dayType.completed === totals.dayOfWeek.completed &&
-        totals.dayType.completed === totals.session.completed &&
-        totals.dayType.completed === totals.hourOfDay.completed &&
-        totals.dayType.completed === totals.dayHour.completed &&
-        totals.dayType.completed === totals.marketWeather.completed &&
-        totals.dayType.completed === totals.dayWeather.completed &&
-        totals.dayType.completed === totals.hourWeather.completed &&
-        totals.dayType.completed === totals.dayHourWeather.completed;
-    const observationsEqual = totals.dayType.observations === totals.dayOfWeek.observations &&
-        totals.dayType.observations === totals.session.observations &&
-        totals.dayType.observations === totals.hourOfDay.observations &&
-        totals.dayType.observations === totals.dayHour.observations &&
-        totals.dayType.observations === totals.marketWeather.observations &&
-        totals.dayType.observations === totals.dayWeather.observations &&
-        totals.dayType.observations === totals.hourWeather.observations &&
-        totals.dayType.observations === totals.dayHourWeather.observations;
-    const rEqual = Math.abs(totals.dayType.sumNetR - totals.dayOfWeek.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
-        Math.abs(totals.dayType.sumNetR - totals.session.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
-        Math.abs(totals.dayType.sumNetR - totals.hourOfDay.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
-        Math.abs(totals.dayType.sumNetR - totals.dayHour.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
-        Math.abs(totals.dayType.sumNetR - totals.marketWeather.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
-        Math.abs(totals.dayType.sumNetR - totals.dayWeather.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
-        Math.abs(totals.dayType.sumNetR - totals.hourWeather.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE &&
-        Math.abs(totals.dayType.sumNetR - totals.dayHourWeather.sumNetR) <= TEMPORAL_FLOAT_TOLERANCE;
-    const sequenceCompatible = safeNumber(stats.acceptedTemporalOutcomeSeq, 0) === totals.dayType.completed;
+    const baseline = totals.dayType;
+    const coreAxisNames = ['dayOfWeek', 'session'];
+    const extendedAxisNames = [
+        'hourOfDay',
+        'dayHour',
+        'marketWeather',
+        'dayWeather',
+        'hourWeather',
+        'dayHourWeather'
+    ];
+    const sameInteger = (left, right) => safeNumber(left, 0) === safeNumber(right, 0);
+    const sameR = (left, right) =>
+        Math.abs(safeNumber(left, 0) - safeNumber(right, 0)) <= TEMPORAL_FLOAT_TOLERANCE;
+    const coreAxisChecks = Object.fromEntries(coreAxisNames.map((axis) => [axis, {
+        completedEqual: sameInteger(totals[axis].completed, baseline.completed),
+        observationsEqual: sameInteger(totals[axis].observations, baseline.observations),
+        sumNetREqual: sameR(totals[axis].sumNetR, baseline.sumNetR)
+    }]));
+    const coreAxesEqual = Object.values(coreAxisChecks).every((check) =>
+        check.completedEqual && check.observationsEqual && check.sumNetREqual
+    );
+    const extendedAxisChecks = Object.fromEntries(extendedAxisNames.map((axis) => {
+        const current = totals[axis];
+        const completedDoesNotExceedBaseline = current.completed <= baseline.completed;
+        const observationsDoNotExceedBaseline = current.observations <= baseline.observations;
+        const completedCoverageComplete = sameInteger(current.completed, baseline.completed);
+        const observationCoverageComplete = sameInteger(current.observations, baseline.observations);
+        const sumNetRMatchesWhenComplete = !completedCoverageComplete ||
+            sameR(current.sumNetR, baseline.sumNetR);
+        return [axis, {
+            completedDoesNotExceedBaseline,
+            observationsDoNotExceedBaseline,
+            completedCoverageComplete,
+            observationCoverageComplete,
+            sumNetRMatchesWhenComplete,
+            completedCoverageRatio: baseline.completed > 0
+                ? current.completed / baseline.completed
+                : current.completed === 0 ? 1 : 0,
+            observationCoverageRatio: baseline.observations > 0
+                ? current.observations / baseline.observations
+                : current.observations === 0 ? 1 : 0
+        }];
+    }));
+    const extendedAxesSafeSubset = Object.values(extendedAxisChecks).every((check) =>
+        check.completedDoesNotExceedBaseline &&
+        check.observationsDoNotExceedBaseline &&
+        check.sumNetRMatchesWhenComplete
+    );
+    const extendedAxesComplete = Object.values(extendedAxisChecks).every((check) =>
+        check.completedCoverageComplete &&
+        check.observationCoverageComplete &&
+        check.sumNetRMatchesWhenComplete
+    );
+    const sequenceCompatible = safeNumber(stats.acceptedTemporalOutcomeSeq, 0) ===
+        baseline.completed;
+    const strictPassed = coreAxesEqual && extendedAxesComplete && sequenceCompatible;
+    const partialAxisCoverage = !strictPassed &&
+        coreAxesEqual &&
+        extendedAxesSafeSubset &&
+        sequenceCompatible;
+    const passed = strictPassed || partialAxisCoverage;
+    const status = strictPassed
+        ? 'STRICT_AXIS_PARITY'
+        : partialAxisCoverage
+          ? 'PARTIAL_EXTENDED_AXIS_COVERAGE_NON_BLOCKING'
+          : 'AXIS_INTEGRITY_FAILURE';
     return {
-        passed: completedEqual && observationsEqual && rEqual && sequenceCompatible,
+        passed,
+        strictPassed,
+        blocking: !passed,
+        warning: partialAxisCoverage,
         skipped: false,
+        status,
+        reason: partialAxisCoverage
+            ? 'HISTORICAL_OUTCOMES_PREDATE_HOUR_WEATHER_AXES'
+            : passed
+              ? null
+              : 'TEMPORAL_LIFETIME_AXIS_INCONSISTENT',
+        policyVersion: TEMPORAL_LIFETIME_INTEGRITY_POLICY_VERSION,
         totals,
+        baselineAxis: 'dayType',
+        baseline,
         acceptedTemporalOutcomeSeq: safeNumber(stats.acceptedTemporalOutcomeSeq, 0),
-        checks: { completedEqual, observationsEqual, rEqual, sequenceCompatible }
+        temporalOutcomeMigrationRequired: stats.temporalOutcomeMigrationRequired === true,
+        checks: {
+            coreAxesEqual,
+            extendedAxesComplete,
+            extendedAxesSafeSubset,
+            sequenceCompatible,
+            coreAxisChecks,
+            extendedAxisChecks
+        },
+        enforcement: {
+            lifetimeStatsEligibleForStrictIntegrity: strictPassed,
+            incompleteLifetimeAxesCannotCreateVetoOrApproval: partialAxisCoverage,
+            generationMayUseCanonicalOutcomeHistory: passed,
+            redisLearningResetRequired: false
+        }
     };
 }
 
@@ -1064,6 +1142,7 @@ function temporalGenerationManifestBase({ cutoffTs, freezeSequence, familyCount 
         generationSchemaVersion: TEMPORAL_GENERATION_SCHEMA_VERSION,
         temporalHourlyProfileVersion: TEMPORAL_HOURLY_PROFILE_VERSION,
         temporalMarketWeatherProfileVersion: TEMPORAL_MARKET_WEATHER_PROFILE_VERSION,
+        temporalLifetimeIntegrityPolicyVersion: TEMPORAL_LIFETIME_INTEGRITY_POLICY_VERSION,
         temporalMarketWeatherKeys: TEMPORAL_MARKET_WEATHER_KEYS,
         btcDirectionRouterProfileVersion: BTC_DIRECTION_ROUTER_PROFILE_VERSION,
         btcDirectionRouterPolicyVersion: BTC_DIRECTION_ROUTER_POLICY_VERSION,
@@ -1755,8 +1834,15 @@ async function buildTemporalGeneration({
 
     const uniqueFamilies = new Set(projections.map((projection) => projection.familyId));
     const nonFinitePaths = temporalNonFinitePaths(generation);
-    const lifetimeFailures = projections
-        .filter((projection) => projection.lifetimeIntegrity?.passed === false)
+    const lifetimePolicyMode = temporalPolicyMode();
+    const lifetimeStrictFailures = projections
+        .filter((projection) => projection.lifetimeIntegrity?.blocking === true)
+        .map((projection) => projection.familyId);
+    const lifetimeFailures = lifetimePolicyMode === 'ENFORCE'
+        ? lifetimeStrictFailures
+        : [];
+    const lifetimeWarnings = projections
+        .filter((projection) => projection.lifetimeIntegrity?.strictPassed !== true)
         .map((projection) => projection.familyId);
     const interactionFailures = projections.flatMap((projection) => [
         ...Object.values(projection.dayProfiles)
@@ -1784,6 +1870,7 @@ async function buildTemporalGeneration({
         }
     }
     const errors = [];
+    const warnings = [];
     if (projections.length !== 75 || uniqueFamilies.size !== 75) {
         errors.push('GENERATION_MUST_CONTAIN_EXACTLY_75_UNIQUE_CHILD_FAMILIES');
     }
@@ -1792,18 +1879,32 @@ async function buildTemporalGeneration({
     }
     if (nonFinitePaths.length > 0) errors.push('NON_FINITE_VALUE_PRESENT');
     if (lifetimeFailures.length > 0) errors.push('TEMPORAL_LIFETIME_AXIS_SUM_MISMATCH');
+    if (lifetimeWarnings.length > 0) {
+        warnings.push('TEMPORAL_LIFETIME_EXTENDED_AXIS_COVERAGE_INCOMPLETE');
+    }
+    if (lifetimeStrictFailures.length > 0 && lifetimePolicyMode !== 'ENFORCE') {
+        warnings.push('TEMPORAL_LIFETIME_AXIS_INTEGRITY_DEFERRED_IN_OBSERVE');
+    }
     if (interactionFailures.length > 0) errors.push('INTERACTION_SUM_MISMATCH');
     if (compositionFailures.length > 0) errors.push('WEEK_COMPOSITION_INTEGRITY_FAILED');
     generation.integrity = {
         passed: errors.length === 0,
         checkedAt: now(),
         errors,
+        warnings,
+        temporalLifetimeIntegrityPolicyVersion: TEMPORAL_LIFETIME_INTEGRITY_POLICY_VERSION,
+        lifetimeIntegrityPolicyMode: lifetimePolicyMode,
         familyCount: projections.length,
         uniqueFamilyCount: uniqueFamilies.size,
         weekCompositionCount: generation.weekCompositionProposals?.length || 0,
         duplicateCanonicalOutcomeIds: [...duplicateCanonicalOutcomeIds].sort(),
         nonFinitePaths,
         lifetimeFailures,
+        lifetimeStrictFailures,
+        lifetimeWarnings,
+        lifetimeWarningCount: lifetimeWarnings.length,
+        lifetimeWarningsAreNonBlocking: true,
+        lifetimeWarningsRequireRedisReset: false,
         interactionFailures,
         compositionFailures
     };
@@ -2393,6 +2494,8 @@ function compactTemporalGenerationSummary(generation) {
         checksum: generation.checksum || null,
         temporalContextVersion: generation.temporalContextVersion || null,
         temporalPolicyVersion: generation.temporalPolicyVersion || null,
+        temporalLifetimeIntegrityPolicyVersion:
+            generation.temporalLifetimeIntegrityPolicyVersion || null,
         measurementVersion: generation.measurementVersion || null,
         costModelVersion: generation.costModelVersion || null,
         taxonomyVersion: generation.taxonomyVersion || null,
@@ -2759,6 +2862,7 @@ exitFillPolicy: 'TP_SL_USE_TRIGGER_BOUNDARY_TIME_STOP_USES_OBSERVED_PRICE',
     ...temporalRuntimeConfig(),
     temporalPolicyVersion: TEMPORAL_POLICY_VERSION,
     temporalGenerationSchemaVersion: TEMPORAL_GENERATION_SCHEMA_VERSION,
+temporalLifetimeIntegrityPolicyVersion: TEMPORAL_LIFETIME_INTEGRITY_POLICY_VERSION,
     temporalTaxonomyVersion: TEMPORAL_TAXONOMY_VERSION,
     temporalCostModelVersion: TEMPORAL_COST_MODEL_VERSION,
     temporalFamilyIdentityIncludesBucket: false,
@@ -7098,6 +7202,7 @@ export async function getRotationDashboard() {
     weekCompositionVersion: WEEK_COMPOSITION_VERSION,
     weekCompositionOptimizerVersion: WEEK_COMPOSITION_OPTIMIZER_VERSION,
     temporalHourlyProfileVersion: TEMPORAL_HOURLY_PROFILE_VERSION,
+    temporalLifetimeIntegrityPolicyVersion: TEMPORAL_LIFETIME_INTEGRITY_POLICY_VERSION,
     temporalMarketWeatherProfileVersion: TEMPORAL_MARKET_WEATHER_PROFILE_VERSION,
     temporalMarketWeatherKeys: TEMPORAL_MARKET_WEATHER_KEYS,
     btcDirectionRouterProfileVersion: BTC_DIRECTION_ROUTER_PROFILE_VERSION,
