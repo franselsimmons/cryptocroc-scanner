@@ -1,6 +1,7 @@
 // ================= FILE: src/analyze/rotationEngine.js =================
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { CONFIG } from '../config.js';
 import { KEYS } from '../keys.js';
 import { getDurableRedis, getJson, setJson } from '../redis.js';
@@ -91,6 +92,12 @@ const OPPOSITE_TRADE_SIDE = 'SHORT';
 const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
+
+const LARGE_DOCUMENT_STORAGE_SCHEMA = 'LONG_GZIP_CHUNKED_JSON_V1';
+const LARGE_DOCUMENT_STORAGE_THRESHOLD_BYTES = 6_000_000;
+const LARGE_DOCUMENT_CHUNK_CHAR_LIMIT = 2_500_000;
+const LARGE_DOCUMENT_MAX_CHUNKS = 64;
+
 
 
 const MEASUREMENT_FIX_VERSION =
@@ -1889,49 +1896,29 @@ function validateTemporalGeneration(generation, { nowTs = now(), requireActive =
 
 async function compareAndSwapTemporalPointer(redis, key, expectedGenerationId, nextDocument) {
     const expected = String(expectedGenerationId || '');
-    const nextJson = JSON.stringify(nextDocument);
-    if (typeof redis?.compareAndSwapJson === 'function') {
-        const result = await redis.compareAndSwapJson(
-            key,
-            'activeTemporalGenerationId',
-            expected,
-            nextDocument
-        );
-        return result === true || result === 'OK' || result?.ok === true;
-    }
-    if (typeof redis?.eval === 'function') {
-        const script = `
-local raw = redis.call('GET', KEYS[1])
-local currentId = ''
-if raw then
-  local ok, decoded = pcall(cjson.decode, raw)
-  if ok and decoded and decoded['activeTemporalGenerationId'] then
-    currentId = tostring(decoded['activeTemporalGenerationId'])
-  end
-end
-if currentId ~= ARGV[1] then
-  return {0, currentId}
-end
-redis.call('SET', KEYS[1], ARGV[2])
-return {1, ARGV[3]}
-`;
-        const result = await redis.eval(
-            script,
-            [key],
-            [expected, nextJson, String(nextDocument.activeTemporalGenerationId || '')]
-        );
-        return Array.isArray(result)
-            ? Number(result[0]) === 1
-            : result === 1 || result === '1' || result?.ok === true;
-    }
-    const error = new Error('TEMPORAL_ACTIVE_GENERATION_CAS_UNAVAILABLE');
-    error.code = 'TEMPORAL_ACTIVE_GENERATION_CAS_UNAVAILABLE';
-    throw error;
+    const currentDocument = await getRotationDocument(redis, key, null).catch(() => null);
+    const currentId = String(currentDocument?.activeTemporalGenerationId || '');
+    if (currentId !== expected) return false;
+    const nextVersion = Math.max(0, safeNumber(currentDocument?.temporalPointerVersion, 0)) + 1;
+    const documentToPersist = {
+        ...nextDocument,
+        temporalPointerVersion: nextVersion,
+        temporalPointerPreviousGenerationId: currentId || null,
+        temporalPointerWriteTs: now()
+    };
+    await setRotationDocument(redis, key, documentToPersist);
+    const verified = await getRotationDocument(redis, key, null).catch(() => null);
+    return Boolean(
+        verified &&
+        String(verified.activeTemporalGenerationId || '') ===
+            String(documentToPersist.activeTemporalGenerationId || '') &&
+        safeNumber(verified.temporalPointerVersion, -1) === nextVersion
+    );
 }
 
 export async function getActiveTemporalGeneration({ nowTs = now() } = {}) {
     const redis = getDurableRedis();
-    const pointerDocument = await getJson(redis, rotationValidFromKey(), null).catch(() => null);
+    const pointerDocument = await getRotationDocument(redis, rotationValidFromKey(), null).catch(() => null);
     const generationId = String(pointerDocument?.activeTemporalGenerationId || '').trim();
     const generation = pointerDocument?.activeTemporalGeneration || null;
     if (!generationId || !generation || generation.generationId !== generationId) {
@@ -2286,6 +2273,167 @@ function rotationValidFromKey() {
     );
 }
 
+
+
+function isLargeDocumentManifest(value) {
+    return Boolean(
+        value &&
+        typeof value === 'object' &&
+        value.largeDocumentStorageSchema === LARGE_DOCUMENT_STORAGE_SCHEMA &&
+        value.encoding === 'gzip-base64-chunks' &&
+        Array.isArray(value.chunkKeys)
+    );
+}
+
+function largeDocumentChunkKey(key, documentId, index) {
+    return `${key}:PAYLOAD:${documentId}:CHUNK:${String(index).padStart(3, '0')}`;
+}
+
+async function deleteLargeDocumentChunks(redis, manifest) {
+    if (!isLargeDocumentManifest(manifest)) return;
+    for (const chunkKey of manifest.chunkKeys) {
+        try {
+            await redis.del(chunkKey);
+        } catch {
+            // Orphan cleanup is best effort. The authoritative manifest is already safe.
+        }
+    }
+}
+
+async function getRotationDocument(redis, key, fallback = null) {
+    const stored = await getJson(redis, key, fallback);
+    if (!isLargeDocumentManifest(stored)) return stored;
+    if (stored.chunkKeys.length !== stored.chunkCount) {
+        throw new Error('LARGE_DOCUMENT_CHUNK_MANIFEST_INVALID');
+    }
+    if (stored.chunkCount < 1 || stored.chunkCount > LARGE_DOCUMENT_MAX_CHUNKS) {
+        throw new Error('LARGE_DOCUMENT_CHUNK_COUNT_INVALID');
+    }
+    const chunks = [];
+    for (const chunkKey of stored.chunkKeys) {
+        const chunk = await redis.get(chunkKey);
+        if (typeof chunk !== 'string' || chunk.length === 0) {
+            throw new Error(`LARGE_DOCUMENT_CHUNK_MISSING:${chunkKey}`);
+        }
+        chunks.push(chunk);
+    }
+    const compressed = Buffer.from(chunks.join(''), 'base64');
+    if (Number.isFinite(Number(stored.compressedBytes)) &&
+        compressed.length !== Number(stored.compressedBytes)) {
+        throw new Error('LARGE_DOCUMENT_COMPRESSED_SIZE_MISMATCH');
+    }
+    const json = gunzipSync(compressed).toString('utf8');
+    const checksum = createHash('sha256').update(json).digest('hex');
+    if (stored.jsonSha256 && checksum !== stored.jsonSha256) {
+        throw new Error('LARGE_DOCUMENT_CHECKSUM_MISMATCH');
+    }
+    return JSON.parse(json);
+}
+
+async function setRotationDocument(redis, key, value) {
+    const json = JSON.stringify(value);
+    const uncompressedBytes = Buffer.byteLength(json);
+    const previous = await getJson(redis, key, null).catch(() => null);
+    if (uncompressedBytes <= LARGE_DOCUMENT_STORAGE_THRESHOLD_BYTES) {
+        await setJson(redis, key, value);
+        await deleteLargeDocumentChunks(redis, previous);
+        return {
+            storageMode: 'JSON',
+            uncompressedBytes,
+            compressedBytes: null,
+            chunkCount: 0
+        };
+    }
+    const compressed = gzipSync(Buffer.from(json, 'utf8'), { level: 6 });
+    const base64 = compressed.toString('base64');
+    const chunks = [];
+    for (let offset = 0; offset < base64.length; offset += LARGE_DOCUMENT_CHUNK_CHAR_LIMIT) {
+        chunks.push(base64.slice(offset, offset + LARGE_DOCUMENT_CHUNK_CHAR_LIMIT));
+    }
+    if (chunks.length < 1 || chunks.length > LARGE_DOCUMENT_MAX_CHUNKS) {
+        throw new Error('LARGE_DOCUMENT_CHUNK_COUNT_EXCEEDED');
+    }
+    const documentId = `${Date.now()}_${randomUUID()}`;
+    const chunkKeys = chunks.map((_, index) => largeDocumentChunkKey(key, documentId, index));
+    for (let index = 0; index < chunks.length; index += 1) {
+        await redis.set(chunkKeys[index], chunks[index]);
+    }
+    const manifest = {
+        largeDocumentStorageSchema: LARGE_DOCUMENT_STORAGE_SCHEMA,
+        encoding: 'gzip-base64-chunks',
+        documentId,
+        chunkCount: chunks.length,
+        chunkKeys,
+        uncompressedBytes,
+        compressedBytes: compressed.length,
+        base64Chars: base64.length,
+        jsonSha256: createHash('sha256').update(json).digest('hex'),
+        writtenAt: Date.now()
+    };
+    await setJson(redis, key, manifest);
+    await deleteLargeDocumentChunks(redis, previous);
+    return {
+        storageMode: manifest.encoding,
+        uncompressedBytes,
+        compressedBytes: compressed.length,
+        chunkCount: chunks.length
+    };
+}
+
+function compactTemporalGenerationSummary(generation) {
+    if (!generation || typeof generation !== 'object') return null;
+    return {
+        generationId: generation.generationId || null,
+        side: generation.side || TARGET_TRADE_SIDE,
+        status: generation.status || null,
+        generationCutoffTs: generation.generationCutoffTs || null,
+        freezeSequence: generation.freezeSequence || null,
+        createdAt: generation.createdAt || null,
+        activatedAt: generation.activatedAt || null,
+        checksum: generation.checksum || null,
+        temporalContextVersion: generation.temporalContextVersion || null,
+        temporalPolicyVersion: generation.temporalPolicyVersion || null,
+        measurementVersion: generation.measurementVersion || null,
+        costModelVersion: generation.costModelVersion || null,
+        taxonomyVersion: generation.taxonomyVersion || null,
+        familyCount: Array.isArray(generation.familyProjections)
+            ? generation.familyProjections.length
+            : safeNumber(generation.familyCount, 0),
+        weekCompositionCount: Array.isArray(generation.weekCompositionProposals)
+            ? generation.weekCompositionProposals.length
+            : 0,
+        integrity: generation.integrity || null,
+        lifecycle: Array.isArray(generation.lifecycle)
+            ? generation.lifecycle.slice(-8)
+            : []
+    };
+}
+
+function compactPointerDocumentForDashboard(pointerDocument) {
+    if (!pointerDocument || typeof pointerDocument !== 'object') return pointerDocument || null;
+    const {
+        activeTemporalGeneration,
+        previousTemporalGeneration,
+        activeWeekComposition,
+        ...rest
+    } = pointerDocument;
+    return {
+        ...rest,
+        activeTemporalGenerationSummary: compactTemporalGenerationSummary(activeTemporalGeneration),
+        previousTemporalGenerationSummary: compactTemporalGenerationSummary(previousTemporalGeneration),
+        activeWeekCompositionSummary: activeWeekComposition
+            ? {
+                compositionId: activeWeekComposition.compositionId || null,
+                baseCompositionId: activeWeekComposition.baseCompositionId || null,
+                generationId: activeWeekComposition.generationId || null,
+                mode: activeWeekComposition.mode || null,
+                status: activeWeekComposition.status || null,
+                checksum: activeWeekComposition.checksum || null,
+                summary: activeWeekComposition.summary || null
+            }
+            : null
+    };
+}
 
 function flattenValues(values = []) {
     const stack = Array.isArray(values) ? [...values] : [values];
@@ -5431,8 +5579,8 @@ export async function freezeWeeklyRotation({
     const normalizedCutoffTs = normalizeTemporalCutoffTs(cutoffTs);
     const [micros, activeDocument, existingNext] = await Promise.all([
         getWeekMicros(dataWeekKey),
-        getJson(redis, rotationValidFromKey(), null).catch(() => null),
-        getJson(redis, nextRotationKey(), null).catch(() => null)
+        getRotationDocument(redis, rotationValidFromKey(), null).catch(() => null),
+        getRotationDocument(redis, nextRotationKey(), null).catch(() => null)
     ]);
     await saveWeekMicros(dataWeekKey, micros);
     const rotation = await buildRotationFromWeek({
@@ -5460,7 +5608,7 @@ export async function freezeWeeklyRotation({
         temporalStatsEnabled: temporalStatsEnabled(),
         temporalPolicyMode: temporalPolicyMode()
     };
-    await setJson(redis, nextRotationKey(), nextRotation);
+    const nextRotationStorage = await setRotationDocument(redis, nextRotationKey(), nextRotation);
     const activationWindow = generation
         ? temporalActivationWindow(generation.generationCutoffTs)
         : null;
@@ -5510,7 +5658,7 @@ export async function freezeWeeklyRotation({
         bestLong: rotation.bestLong?.microFamilyId || null,
         bestShort: null
     };
-    await setJson(redis, rotationValidFromKey(), validFromDocument);
+    const validFromStorage = await setRotationDocument(redis, rotationValidFromKey(), validFromDocument);
     await sendWeeklyRotationReport(
         nextRotation,
         generation?.status === 'READY'
@@ -5529,6 +5677,8 @@ export async function freezeWeeklyRotation({
         temporalGenerationId: generation?.generationId || null,
         temporalGenerationStatus: generation?.status || 'DISABLED',
         temporalGenerationIntegrity: generation?.integrity || null,
+        nextRotationStorage,
+        validFromStorage,
         ...modeFlags(),
         trueMicroOnly: true,
         exactTrueMicroOnly: true,
@@ -5834,8 +5984,8 @@ export async function activateNextRotation({
     }
     const redis = getDurableRedis();
     const [nextRotation, pointerDocument] = await Promise.all([
-        getJson(redis, nextRotationKey(), null),
-        getJson(redis, rotationValidFromKey(), null)
+        getRotationDocument(redis, nextRotationKey(), null),
+        getRotationDocument(redis, rotationValidFromKey(), null)
     ]);
     const generation = nextRotation?.temporalGeneration || null;
     const validation = validateTemporalGeneration(generation, {
@@ -5876,7 +6026,7 @@ export async function activateNextRotation({
             ]
         };
         expiredGeneration.checksum = temporalChecksum(expiredGeneration);
-        await setJson(redis, nextRotationKey(), {
+        await setRotationDocument(redis, nextRotationKey(), {
             ...nextRotation,
             temporalGeneration: expiredGeneration,
             temporalGenerationStatus: expiredGeneration.status
@@ -5960,11 +6110,11 @@ export async function activateNextRotation({
             ...modeFlags()
         };
     }
-    const persisted = await getJson(redis, rotationValidFromKey(), null);
+    const persisted = await getRotationDocument(redis, rotationValidFromKey(), null);
     if (persisted?.activeTemporalGenerationId !== activeGeneration.generationId) {
         throw new Error('TEMPORAL_ACTIVE_GENERATION_POINTER_POST_WRITE_VERIFICATION_FAILED');
     }
-    await setJson(redis, nextRotationKey(), {
+    await setRotationDocument(redis, nextRotationKey(), {
         ...nextRotation,
         temporalGeneration: null,
         temporalGenerationStatus: 'ACTIVE',
@@ -6866,8 +7016,15 @@ function sanitizeDashboardRotation(rotation) {
     if (!sanitized) return null;
 
 
+    const {
+         temporalGeneration,
+         ...rotationWithoutEmbeddedGeneration
+    } = sanitized;
+
+
     return {
-         ...sanitized,
+         ...rotationWithoutEmbeddedGeneration,
+         temporalGenerationSummary: compactTemporalGenerationSummary(temporalGeneration),
 
 
          manualOnly: false,
@@ -6894,8 +7051,8 @@ export async function getRotationDashboard() {
 
     const [activeRaw, nextRaw, validFrom] = await Promise.all([
          getActiveRotation(),
-         getJson(redis, nextRotationKey(), null),
-         getJson(redis, rotationValidFromKey(), null)
+         getRotationDocument(redis, nextRotationKey(), null),
+         getRotationDocument(redis, rotationValidFromKey(), null)
   ]);
 
 
@@ -6920,9 +7077,9 @@ export async function getRotationDashboard() {
   return {
     active,
     next,
-    validFrom,
+    validFrom: compactPointerDocumentForDashboard(validFrom),
     activeTemporalGenerationId: validFrom?.activeTemporalGenerationId || null,
-    activeTemporalGeneration: validFrom?.activeTemporalGeneration || null,
+    activeTemporalGeneration: compactTemporalGenerationSummary(validFrom?.activeTemporalGeneration),
     pendingTemporalGenerationId: validFrom?.pendingTemporalGenerationId || null,
     pendingTemporalGenerationStatus: validFrom?.pendingTemporalGenerationStatus || null,
     temporalGenerationValidation: validFrom?.activeTemporalGeneration
