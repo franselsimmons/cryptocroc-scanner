@@ -2086,8 +2086,11 @@ export function evaluateTemporalEntryPolicySnapshot({
             }
           : { compositionApplied: false, allowed: true, reasons: [], slot: null };
     const weekCompositionWouldBlock = weekCompositionDecision.allowed === false;
+    const weekCompositionEnforced = mode === 'ENFORCE';
+    const weekCompositionBlocksRuntime =
+        weekCompositionEnforced && weekCompositionWouldBlock;
     const wouldPublishWithoutTemporalAndComposition =
-        Boolean(wouldPublishWithoutTemporal) && !weekCompositionWouldBlock;
+        Boolean(wouldPublishWithoutTemporal) && !weekCompositionBlocksRuntime;
     let temporalWouldBlock = false;
     let projection = null;
     let generationId = generation?.generationId || null;
@@ -2173,6 +2176,9 @@ export function evaluateTemporalEntryPolicySnapshot({
         weekCompositionApplied: weekCompositionDecision.compositionApplied === true,
         weekCompositionValidation,
         weekCompositionWouldBlock,
+        weekCompositionEnforced,
+        weekCompositionBlocksRuntime,
+        weekCompositionObservedOnly: !weekCompositionEnforced,
         weekCompositionBlockReasons: weekCompositionDecision.reasons || [],
         weekCompositionSlot: weekCompositionDecision.slot || null,
         btcDirectionRouterApplied: weekCompositionDecision.compositionApplied === true,
