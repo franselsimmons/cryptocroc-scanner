@@ -5691,7 +5691,12 @@ ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Copy</button>
           rotation.dashboard?.activeTemporalGeneration?.weekCompositionProposals,
           rotation.activeTemporalGeneration?.weekCompositionProposals
         ];
-        return candidates.find(Array.isArray) || [];
+        const proposals = candidates.find(Array.isArray) || [];
+        return proposals.filter((proposal) => {
+          const slotCount = Object.keys(proposal?.slots || {}).length;
+          const activeSlots = Number(proposal?.summary?.activeSlots ?? slotCount);
+          return slotCount > 0 || activeSlots > 0;
+        });
     }
 
     function activeWeekComposition(rotation = state.rotation || {}) {
