@@ -126,18 +126,10 @@ function shouldActivate(req, url, body = {}) {
 }
 
 function freezeLockKey() {
-  const candidate =
-    KEYS?.long?.analyze?.freezeLock ||
-    KEYS?.analyze?.longFreezeLock ||
-    KEYS?.analyze?.freezeLock ||
-    `${REDIS_PREFIX}ANALYZE:WEEKLY_FREEZE_LOCK`;
-
-  const value = typeof candidate === 'function' ? candidate() : candidate;
-  const text = String(value || '').trim();
-  if (!text) return `${REDIS_PREFIX}ANALYZE:WEEKLY_FREEZE_LOCK`;
-  if (text.startsWith(REDIS_PREFIX)) return text;
-  if (text.startsWith('SHORT:')) return `${REDIS_PREFIX}${text.slice('SHORT:'.length)}`;
-  return `${REDIS_PREFIX}${text.replace(/^:+/, '')}`;
+  // Route-level lock must be different from the authoritative engine lock.
+  // This prevents PREVIOUS_LONG_RUN_STILL_ACTIVE when an older engine also
+  // protects freezeWeeklyRotation() with ANALYZE:WEEKLY_FREEZE_LOCK.
+  return `${REDIS_PREFIX}API:ANALYZE:WEEKLY_FREEZE_ROUTE_LOCK`;
 }
 
 async function readBody(req) {
@@ -429,6 +421,7 @@ export default async function handler(req, res) {
   res.setHeader('X-Redis-Namespace', REDIS_NAMESPACE);
   res.setHeader('X-Real-Orders-Disabled', 'true');
   res.setHeader('X-Weekly-Freeze-Core', 'rotationEngine.freezeWeeklyRotation');
+  res.setHeader('X-Weekly-Freeze-Route-Lock', `${REDIS_PREFIX}API:ANALYZE:WEEKLY_FREEZE_ROUTE_LOCK`);
 
   if (!['GET', 'POST'].includes(method)) {
     res.setHeader('Allow', 'GET, POST');
