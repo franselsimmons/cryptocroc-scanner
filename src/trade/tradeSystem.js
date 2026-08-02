@@ -3118,8 +3118,8 @@ const text = upper(value);
 if (!text) return 'UNKNOWN';
 if (text.includes('NEUTRAL') || text.includes('MIXED') || text.includes('FLAT'))
 return 'NEUTRAL';
-if (text.includes('RISK_OFF')) return TARGET_TRADE_SIDE;
-if (text.includes('RISK_ON')) return OPPOSITE_TRADE_SIDE;
+if (text.includes('RISK_OFF')) return OPPOSITE_TRADE_SIDE;
+if (text.includes('RISK_ON')) return TARGET_TRADE_SIDE;
 return 'UNKNOWN';
 }
 function firstFinite(...values) {
@@ -3165,25 +3165,24 @@ universeSource.currentTrendSide ??
 universeSource.trendSide ??
 universeSource.marketSide
 );
-const bearishPct = firstFinite(
-source.bearishPct,
-source.shortPct,
-source.upPct,
-source.breadthBearishPct,
-source.universeBearishPct,
-universeSource.bearishPct,
-universeSource.shortPct,
-universeSource.upPct
-);
 const bullishPct = firstFinite(
 source.bullishPct,
 source.longPct,
-
-source.downPct,
+source.upPct,
 source.breadthBullishPct,
 source.universeBullishPct,
 universeSource.bullishPct,
 universeSource.longPct,
+universeSource.upPct
+);
+const bearishPct = firstFinite(
+source.bearishPct,
+source.shortPct,
+source.downPct,
+source.breadthBearishPct,
+source.universeBearishPct,
+universeSource.bearishPct,
+universeSource.shortPct,
 universeSource.downPct
 );
 const squeezePct = firstFinite(
