@@ -13,13 +13,14 @@ import {
   temporalHourKey,
   temporalMarketWeatherKey,
   temporalBtcRouterKey,
-  resolveEntryBtcRouterContext
+  resolveEntryBtcRouterContext,
+  temporalPolicyMode
 } from './scoring.js';
 
 export const WEEK_COMPOSITION_VERSION =
-  'LONG_WEEK_COMPOSITION_DAY_HOUR_WEATHER_BTC_V3';
+  'LONG_WEEK_COMPOSITION_DAY_HOUR_WEATHER_BTC_V4_OBSERVE_PREVIEW';
 export const WEEK_COMPOSITION_OPTIMIZER_VERSION =
-  'LONG_TOP3_DAY_HOUR_WEATHER_BTC_OPTIMIZER_V3';
+  'LONG_TOP3_DAY_HOUR_WEATHER_BTC_OPTIMIZER_V4_OBSERVE_PREVIEW';
 export const WEEK_COMPOSITION_MODES = Object.freeze([
   'CONSERVATIVE',
   'BALANCED',
@@ -229,17 +230,52 @@ function parseSlotKey(value = '') {
   };
 }
 
-function globalGatePassed(row = {}) {
+const STRICT_GLOBAL_GATE_MIN_COMPLETED = 35;
+const OBSERVE_PREVIEW_MIN_COMPLETED = 20;
+const OBSERVE_PREVIEW_MIN_AVG_R = 0.01;
+const OBSERVE_PREVIEW_MIN_BLENDED_AVG_R = 0.01;
+const OBSERVE_PREVIEW_MIN_EXACT_COMPLETED = 1;
+
+function compositionPolicyMode() {
+  const mode = upper(temporalPolicyMode());
+  return ['OFF', 'OBSERVE', 'ENFORCE'].includes(mode) ? mode : 'OBSERVE';
+}
+
+function globalGateEvaluation(row = {}) {
   const status = upper(
     row.activationGateStatus || row.familyGate || row.learningStatus || row.status
   );
-  if (status === 'PASSED') return true;
-  const completed = finite(
+  const completed = Math.max(0, Math.floor(finite(
     row.completedCurrentMeasurement ?? row.completed ?? row.outcomeSample,
     0
-  );
+  )));
   const avgR = finite(row.avgR ?? row.avgNetR, 0);
-  return completed >= 35 && avgR > 0 && row.empiricalVeto !== true;
+  const empiricalVeto =
+    row.empiricalVeto === true ||
+    row.empiricalVetoed === true ||
+    status === 'EMPIRICAL_VETO';
+  const strictPassed =
+    status === 'PASSED' ||
+    (completed >= STRICT_GLOBAL_GATE_MIN_COMPLETED && avgR > 0 && !empiricalVeto);
+  const observePreviewPassed =
+    !strictPassed &&
+    compositionPolicyMode() === 'OBSERVE' &&
+    completed >= OBSERVE_PREVIEW_MIN_COMPLETED &&
+    avgR >= OBSERVE_PREVIEW_MIN_AVG_R &&
+    !empiricalVeto;
+  return {
+    status,
+    completed,
+    avgR,
+    empiricalVeto,
+    strictPassed,
+    observePreviewPassed,
+    acceptedForComposition: strictPassed || observePreviewPassed
+  };
+}
+
+function globalGatePassed(row = {}) {
+  return globalGateEvaluation(row).acceptedForComposition;
 }
 
 function metric(profile = {}) {
@@ -365,7 +401,7 @@ function globalMetric(row = {}) {
   });
 }
 
-function baseWeatherReasons({
+function strictBaseWeatherReasons({
   row,
   projection,
   day,
@@ -378,7 +414,7 @@ function baseWeatherReasons({
   sessionProfile
 }) {
   const reasons = [];
-  if (!globalGatePassed(row)) reasons.push('GLOBAL_GATE_NOT_PASSED');
+  if (!globalGateEvaluation(row).strictPassed) reasons.push('GLOBAL_GATE_NOT_PASSED');
   if (projectionDecision(dayProfile) === 'VETO_ACTIVE') reasons.push('DAY_VETO_ACTIVE');
   if (projectionDecision(sessionProfile) === 'VETO_ACTIVE') reasons.push('SESSION_VETO_ACTIVE');
   if (!weekendApproved(projection, day)) reasons.push('WEEKEND_NOT_APPROVED');
@@ -404,6 +440,36 @@ function baseWeatherReasons({
   }
   if (config.requireDiversityPassed && diversity.passed !== true) {
     reasons.push('EXACT_DAY_HOUR_WEATHER_DIVERSITY_NOT_PASSED');
+  }
+  return reasons;
+}
+
+function observePreviewBaseWeatherReasons({
+  row,
+  projection,
+  day,
+  weatherKey,
+  weatherExact,
+  weatherBlended,
+  dayProfile,
+  sessionProfile
+}) {
+  const reasons = [];
+  const gate = globalGateEvaluation(row);
+  const global = globalMetric(row);
+  if (!gate.acceptedForComposition) reasons.push('GLOBAL_GATE_NOT_PASSED_OR_OBSERVE_PREVIEW_NOT_MATURE');
+  if (projectionDecision(dayProfile) === 'VETO_ACTIVE') reasons.push('DAY_VETO_ACTIVE');
+  if (projectionDecision(sessionProfile) === 'VETO_ACTIVE') reasons.push('SESSION_VETO_ACTIVE');
+  if (!weekendApproved(projection, day)) reasons.push('WEEKEND_NOT_APPROVED');
+  if (weatherKey === 'UNKNOWN') reasons.push('UNKNOWN_MARKET_WEATHER_NOT_SELECTABLE');
+  if (weatherExact.completed < OBSERVE_PREVIEW_MIN_EXACT_COMPLETED) {
+    reasons.push('OBSERVE_EXACT_DAY_HOUR_WEATHER_EVIDENCE_MISSING');
+  }
+  if (weatherBlended.avgNetR < OBSERVE_PREVIEW_MIN_BLENDED_AVG_R) {
+    reasons.push('OBSERVE_WEATHER_BLENDED_AVG_R_NOT_POSITIVE');
+  }
+  if (global.avgNetR < OBSERVE_PREVIEW_MIN_AVG_R) {
+    reasons.push('OBSERVE_GLOBAL_AVG_R_NOT_POSITIVE');
   }
   return reasons;
 }
@@ -521,7 +587,7 @@ function candidateForSlot({
 
   const diversity = diversityOf(exactBtcProfile);
   const weatherDiversity = diversityOf(dayHourWeatherProfile);
-  const beforeReasons = baseWeatherReasons({
+  const strictBeforeReasons = strictBaseWeatherReasons({
     row,
     projection,
     day,
@@ -533,39 +599,78 @@ function candidateForSlot({
     dayProfile,
     sessionProfile
   });
-  const btcReasons = [];
-  if (!BTC_SELECTABLE_SET.has(btcState)) btcReasons.push('BTC_DIRECTION_UNKNOWN_OR_NOT_SELECTABLE');
-  if (exactBtc.completed < config.minBtcCompleted) btcReasons.push('EXACT_DAY_HOUR_WEATHER_BTC_SAMPLE_TOO_SMALL');
-  if (exactBtc.avgNetR < config.minBtcAvgR) btcReasons.push('EXACT_DAY_HOUR_WEATHER_BTC_AVG_R_TOO_LOW');
-  if (exactBtc.lcb95 <= config.minBtcLcb95) btcReasons.push('EXACT_DAY_HOUR_WEATHER_BTC_LCB95_TOO_LOW');
-  if (exactBtc.winrate < config.minBtcWinrate) btcReasons.push('EXACT_DAY_HOUR_WEATHER_BTC_WINRATE_TOO_LOW');
-  if (exactBtc.profitFactor < config.minBtcProfitFactor) btcReasons.push('EXACT_DAY_HOUR_WEATHER_BTC_PF_TOO_LOW');
-  if (btcBlended.avgNetR < config.minBlendedAvgR) btcReasons.push('BTC_BLENDED_AVG_R_TOO_LOW');
+  const observeBeforeReasons = observePreviewBaseWeatherReasons({
+    row,
+    projection,
+    day,
+    weatherKey,
+    weatherExact,
+    weatherBlended,
+    dayProfile,
+    sessionProfile
+  });
+  const strictBtcReasons = [];
+  if (!BTC_SELECTABLE_SET.has(btcState)) strictBtcReasons.push('BTC_DIRECTION_UNKNOWN_OR_NOT_SELECTABLE');
+  if (exactBtc.completed < config.minBtcCompleted) strictBtcReasons.push('EXACT_DAY_HOUR_WEATHER_BTC_SAMPLE_TOO_SMALL');
+  if (exactBtc.avgNetR < config.minBtcAvgR) strictBtcReasons.push('EXACT_DAY_HOUR_WEATHER_BTC_AVG_R_TOO_LOW');
+  if (exactBtc.lcb95 <= config.minBtcLcb95) strictBtcReasons.push('EXACT_DAY_HOUR_WEATHER_BTC_LCB95_TOO_LOW');
+  if (exactBtc.winrate < config.minBtcWinrate) strictBtcReasons.push('EXACT_DAY_HOUR_WEATHER_BTC_WINRATE_TOO_LOW');
+  if (exactBtc.profitFactor < config.minBtcProfitFactor) strictBtcReasons.push('EXACT_DAY_HOUR_WEATHER_BTC_PF_TOO_LOW');
+  if (btcBlended.avgNetR < config.minBlendedAvgR) strictBtcReasons.push('BTC_BLENDED_AVG_R_TOO_LOW');
   if (diversityCount(diversity, 'distinctEntryDates', 'distinctDates') < config.minDistinctDates) {
-    btcReasons.push('EXACT_BTC_DATE_DIVERSITY_TOO_LOW');
+    strictBtcReasons.push('EXACT_BTC_DATE_DIVERSITY_TOO_LOW');
   }
   if (diversityCount(diversity, 'distinctIsoWeeks') < config.minDistinctWeeks) {
-    btcReasons.push('EXACT_BTC_WEEK_DIVERSITY_TOO_LOW');
+    strictBtcReasons.push('EXACT_BTC_WEEK_DIVERSITY_TOO_LOW');
   }
   if (diversityCount(diversity, 'distinctSymbols') < config.minDistinctSymbols) {
-    btcReasons.push('EXACT_BTC_SYMBOL_DIVERSITY_TOO_LOW');
+    strictBtcReasons.push('EXACT_BTC_SYMBOL_DIVERSITY_TOO_LOW');
   }
   if (diversityCount(diversity, 'distinctMarketEventClusters') < config.minDistinctClusters) {
-    btcReasons.push('EXACT_BTC_CLUSTER_DIVERSITY_TOO_LOW');
+    strictBtcReasons.push('EXACT_BTC_CLUSTER_DIVERSITY_TOO_LOW');
   }
   if (config.requireDiversityPassed && diversity.passed !== true) {
-    btcReasons.push('EXACT_BTC_DIVERSITY_NOT_PASSED');
+    strictBtcReasons.push('EXACT_BTC_DIVERSITY_NOT_PASSED');
   }
 
   const exception = counterBtcException({ exactBtc, diversity, config, btcState });
   if (exception.required && !exception.proven) {
-    btcReasons.push(
+    strictBtcReasons.push(
       btcState === 'STRONG_BEARISH'
         ? 'BTC_STRONG_BEARISH_BLOCKS_LONG'
         : 'BTC_BEARISH_BLOCKS_LONG'
     );
-    btcReasons.push(...exception.reasons);
+    strictBtcReasons.push(...exception.reasons);
   }
+
+  const observeBtcReasons = [];
+  if (!BTC_SELECTABLE_SET.has(btcState)) {
+    observeBtcReasons.push('BTC_DIRECTION_UNKNOWN_OR_NOT_SELECTABLE');
+  }
+  if (exactBtc.completed < OBSERVE_PREVIEW_MIN_EXACT_COMPLETED) {
+    observeBtcReasons.push('OBSERVE_EXACT_BTC_EVIDENCE_MISSING');
+  }
+  if (btcBlended.avgNetR < OBSERVE_PREVIEW_MIN_BLENDED_AVG_R) {
+    observeBtcReasons.push('OBSERVE_BTC_BLENDED_AVG_R_NOT_POSITIVE');
+  }
+  if (btcState === 'NEUTRAL' && (exactBtc.completed < 2 || exactBtc.avgNetR <= 0)) {
+    observeBtcReasons.push('OBSERVE_NEUTRAL_BTC_NOT_PROVEN_POSITIVE');
+  }
+  if (exception.required && !exception.proven) {
+    observeBtcReasons.push(
+      btcState === 'STRONG_BEARISH'
+        ? 'BTC_STRONG_BEARISH_BLOCKS_LONG'
+        : 'BTC_BEARISH_BLOCKS_LONG'
+    );
+    observeBtcReasons.push(...exception.reasons);
+  }
+
+  const policyMode = compositionPolicyMode();
+  const observePreviewMode = policyMode === 'OBSERVE';
+  const beforeReasons = observePreviewMode ? observeBeforeReasons : strictBeforeReasons;
+  const btcReasons = observePreviewMode ? observeBtcReasons : strictBtcReasons;
+  const strictPublishEligible =
+    strictBeforeReasons.length === 0 && strictBtcReasons.length === 0;
 
   const distinctWeeks = Math.max(1, diversityCount(diversity, 'distinctIsoWeeks'));
   const expectedSignalsPerWeek = clamp(exactBtc.completed / distinctWeeks, 0, 4);
@@ -629,10 +734,20 @@ function candidateForSlot({
   };
 
   const taxonomy = familyTaxonomy(projection, row);
+  const globalGate = globalGateEvaluation(row);
   return {
     familyId,
     eligibleBeforeBtcRouter: beforeReasons.length === 0,
     eligible: beforeReasons.length === 0 && btcReasons.length === 0,
+    strictPublishEligible,
+    observePreviewOnly: observePreviewMode && !strictPublishEligible,
+    evidenceMode: observePreviewMode && !strictPublishEligible
+      ? 'OBSERVE_HIERARCHICAL_BACKOFF_PREVIEW'
+      : 'STRICT_EXACT_CONTEXT',
+    compositionPolicyMode: policyMode,
+    globalGate,
+    strictPreBtcRejectionReasons: strictBeforeReasons,
+    strictBtcRouterRejectionReasons: strictBtcReasons,
     preBtcRejectionReasons: beforeReasons,
     btcRouterRejectionReasons: btcReasons,
     rejectionReasons: [...beforeReasons, ...btcReasons],
@@ -682,6 +797,20 @@ function compactSelectedFamilyEvidence(candidate = {}) {
     expectedNetRPerWeek: finite(candidate.expectedNetRPerWeek, 0),
     expectedNetPnlPctPerWeek: finite(candidate.expectedNetPnlPctPerWeek, 0),
     confidenceScore: finite(candidate.confidenceScore, 0),
+    observePreviewOnly: candidate.observePreviewOnly === true,
+    strictPublishEligible: candidate.strictPublishEligible === true,
+    evidenceMode: candidate.evidenceMode || 'STRICT_EXACT_CONTEXT',
+    compositionPolicyMode: candidate.compositionPolicyMode || compositionPolicyMode(),
+    globalGate: candidate.globalGate
+      ? {
+          status: candidate.globalGate.status || null,
+          completed: finite(candidate.globalGate.completed, 0),
+          avgR: finite(candidate.globalGate.avgR, 0),
+          strictPassed: candidate.globalGate.strictPassed === true,
+          observePreviewPassed: candidate.globalGate.observePreviewPassed === true,
+          empiricalVeto: candidate.globalGate.empiricalVeto === true
+        }
+      : null,
     counterBtcException: candidate.counterBtcException
       ? {
           required: candidate.counterBtcException.required === true,
@@ -866,7 +995,14 @@ function buildSlot({
     ).length,
     counterBtcExceptionCandidateCount: candidates.filter(
       (row) => row.counterBtcException?.proven === true
-    ).length
+    ).length,
+    observePreviewCandidateCount: candidates.filter(
+      (row) => row.observePreviewOnly === true && row.eligible === true
+    ).length,
+    strictPublishEligibleCandidateCount: candidates.filter(
+      (row) => row.strictPublishEligible === true
+    ).length,
+    compositionPolicyMode: compositionPolicyMode()
   };
   if (selected.length === 0) {
     const routerBlocked = preBtcSelected.length > 0;
@@ -886,13 +1022,25 @@ function buildSlot({
   const counterBtcExceptionFamilyIds = selected
     .filter((row) => row.counterBtcException?.proven === true)
     .map((row) => row.familyId);
+  const observePreviewFamilyIds = selected
+    .filter((row) => row.observePreviewOnly === true)
+    .map((row) => row.familyId);
+  const strictPublishEligibleFamilyIds = selected
+    .filter((row) => row.strictPublishEligible === true)
+    .map((row) => row.familyId);
   return {
     ...common,
     enabled: true,
+    observePreviewOnly: observePreviewFamilyIds.length > 0,
+    publishEligible: observePreviewFamilyIds.length === 0 && strictPublishEligibleFamilyIds.length > 0,
     reason: counterBtcExceptionFamilyIds.length > 0
       ? 'QUALIFIED_WITH_PROVEN_COUNTER_BTC_EXCEPTION'
-      : 'QUALIFIED_FAMILIES_SELECTED',
+      : observePreviewFamilyIds.length > 0
+        ? 'OBSERVE_PREVIEW_HIERARCHICAL_BACKOFF'
+        : 'QUALIFIED_FAMILIES_SELECTED',
     selectedFamilyIds: selected.map((row) => row.familyId),
+    observePreviewFamilyIds,
+    strictPublishEligibleFamilyIds,
     selectedFamilies: selected.map(compactSelectedFamilyEvidence),
     counterBtcExceptionFamilyIds,
     btcRouterDecision: {
@@ -1063,6 +1211,12 @@ function aggregateSummaryFromSlots(slots = {}) {
     counterBtcExceptionSlots: enabledSlots.filter(
       (slot) => (slot.counterBtcExceptionFamilyIds || []).length > 0
     ).length,
+    observePreviewSlots: enabledSlots.filter(
+      (slot) => slot.observePreviewOnly === true
+    ).length,
+    strictPublishEligibleSlots: enabledSlots.filter(
+      (slot) => slot.publishEligible === true
+    ).length,
     daySummaries,
     weatherSummaries,
     btcSummaries
@@ -1206,6 +1360,10 @@ function buildComposition({ mode, generation, micros }) {
     title: config.title,
     description: config.description,
     status: 'PROPOSED',
+    compositionPolicyMode: compositionPolicyMode(),
+    observePreviewEnabled: compositionPolicyMode() === 'OBSERVE',
+    observePreviewDoesNotOverrideGlobalDiscordGate: true,
+    observePreviewDoesNotEnableCounterBtcWithoutProof: true,
     timezone: 'UTC',
     dimensions: {
       days: TEMPORAL_DAY_BUCKETS,
