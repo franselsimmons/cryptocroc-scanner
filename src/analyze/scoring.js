@@ -259,47 +259,77 @@ export function temporalMarketWeatherKey(value = null, trendSideValue = null) {
 
 export function resolveEntryMarketWeatherContext(row = {}) {
     const source = row && typeof row === 'object' && !Array.isArray(row) ? row : {};
-    const explicitKey = String(
-        source.entryMarketWeatherKey ||
-        source.marketWeatherProfileKey ||
-        source.currentMarketWeatherProfileKey ||
-        ''
-    ).trim().toUpperCase();
-    if (TEMPORAL_MARKET_WEATHER_KEY_SET.has(explicitKey)) {
-        const [regime, trendSide] = explicitKey === 'UNKNOWN'
-            ? ['UNKNOWN', 'UNKNOWN']
-            : explicitKey.split('|');
+    const explicitKeyValues = [
+        source.entryMarketWeatherKey,
+        source.marketWeatherProfileKey,
+        source.currentMarketWeatherProfileKey,
+        source.currentMarketWeatherKey,
+        source.marketWeatherKey,
+        source.entryMarketWeather?.currentMarketWeatherKey,
+        source.entryMarketWeather?.marketWeatherKey,
+        source.currentMarketWeather?.currentMarketWeatherKey,
+        source.currentMarketWeather?.marketWeatherKey,
+        source.marketWeather?.currentMarketWeatherKey,
+        source.marketWeather?.marketWeatherKey,
+        source.weather?.currentMarketWeatherKey,
+        source.weather?.marketWeatherKey
+    ];
+    for (const value of explicitKeyValues) {
+        const explicitKey = String(value || '').trim().toUpperCase();
+        if (!TEMPORAL_MARKET_WEATHER_KEY_SET.has(explicitKey) || explicitKey === 'UNKNOWN') continue;
+        const [regime, trendSide] = explicitKey.split('|');
         return {
             marketWeatherKey: explicitKey,
             regime,
             trendSide,
-            available: explicitKey !== 'UNKNOWN',
+            available: true,
             source: 'EXPLICIT_ENTRY_MARKET_WEATHER_KEY'
         };
     }
+
     const candidates = temporalWeatherObjectCandidates(source);
-    const regimeValue =
-        source.entryMarketWeatherRegime ??
-        source.entryCurrentRegime ??
-        source.entryMarketRegime ??
-        source.currentRegime ??
-        source.currentMarketRegime ??
-        firstTemporalWeatherValue(candidates, [
-            'currentRegime', 'regime', 'marketRegime', 'regimeBucket',
-            'breadthRegime', 'volatilityRegime'
-        ]);
-    const trendSideValue =
-        source.entryMarketWeatherTrendSide ??
-        source.entryCurrentTrendSide ??
-        source.entryMarketTrendSide ??
-        source.currentTrendSide ??
-        source.currentMarketTrendSide ??
-        firstTemporalWeatherValue(candidates, [
-            'currentTrendSide', 'trendSide', 'marketSide', 'side', 'direction',
-            'breadthSide', 'btcTrendSide'
-        ]);
-    const regime = normalizeTemporalWeatherRegime(regimeValue);
-    const trendSide = normalizeTemporalWeatherTrendSide(trendSideValue);
+    const regimeValues = [
+        source.entryMarketWeatherRegime,
+        source.entryCurrentRegime,
+        source.entryMarketRegime,
+        source.currentRegime,
+        source.currentMarketRegime,
+        ...candidates.flatMap((candidate) => [
+            candidate?.currentRegime,
+            candidate?.regime,
+            candidate?.marketRegime,
+            candidate?.regimeBucket,
+            candidate?.breadthRegime,
+            candidate?.volatilityRegime
+        ])
+    ];
+    const sideValues = [
+        source.entryMarketWeatherTrendSide,
+        source.entryCurrentTrendSide,
+        source.entryMarketTrendSide,
+        source.currentTrendSide,
+        source.currentMarketTrendSide,
+        ...candidates.flatMap((candidate) => [
+            candidate?.currentTrendSide,
+            candidate?.trendSide,
+            candidate?.marketTrendSide,
+            candidate?.marketSide,
+            candidate?.side,
+            candidate?.direction,
+            candidate?.breadthSide
+        ])
+    ];
+
+    let regime = 'UNKNOWN';
+    for (const value of regimeValues) {
+        const normalized = normalizeTemporalWeatherRegime(value);
+        if (normalized !== 'UNKNOWN') { regime = normalized; break; }
+    }
+    let trendSide = 'UNKNOWN';
+    for (const value of sideValues) {
+        const normalized = normalizeTemporalWeatherTrendSide(value);
+        if (normalized !== 'UNKNOWN') { trendSide = normalized; break; }
+    }
     const key = regime !== 'UNKNOWN' && trendSide !== 'UNKNOWN'
         ? `${regime}|${trendSide}`
         : 'UNKNOWN';
@@ -308,7 +338,7 @@ export function resolveEntryMarketWeatherContext(row = {}) {
         regime,
         trendSide,
         available: key !== 'UNKNOWN',
-        source: candidates.length > 0 || regimeValue || trendSideValue
+        source: key !== 'UNKNOWN'
             ? 'ENTRY_MARKET_WEATHER_SNAPSHOT'
             : 'MARKET_WEATHER_UNAVAILABLE'
     };
@@ -317,26 +347,42 @@ export function resolveEntryMarketWeatherContext(row = {}) {
 
 function btcContextObjectCandidates(row = {}) {
     const source = row && typeof row === 'object' && !Array.isArray(row) ? row : {};
-    return [
+    const values = [
         source.entryBtcRouterContext,
         source.entryBtcContext,
         source.btcRouterContext,
         source.btcContext,
+        source.entryBtc,
+        source.currentBtc,
+        source.btc,
         source.entryMarketWeather,
         source.currentMarketWeather,
         source.marketWeather,
         source.weather,
         source.entryMarketWeather?.btc,
         source.currentMarketWeather?.btc,
-        source.marketWeather?.btc
-    ].filter((value) => value && typeof value === 'object' && !Array.isArray(value));
+        source.marketWeather?.btc,
+        source.weather?.btc,
+        source.market?.btc,
+        source.source?.btc,
+        source.raw?.btc
+    ];
+    return values.filter((value, index) =>
+        value && typeof value === 'object' && !Array.isArray(value) && values.indexOf(value) === index
+    );
+}
+
+function usableContextValue(value) {
+    if (value === undefined || value === null || value === '') return false;
+    const text = String(value).trim().toUpperCase();
+    return !['UNKNOWN', 'UNAVAILABLE', 'NOT_AVAILABLE', 'N/A', 'NA', 'NONE', 'NULL', 'UNDEFINED'].includes(text);
 }
 
 function firstBtcContextValue(candidates = [], fields = []) {
     for (const candidate of candidates) {
         for (const field of fields) {
             const value = candidate?.[field];
-            if (value !== undefined && value !== null && value !== '') return value;
+            if (usableContextValue(value)) return value;
         }
     }
     return null;
@@ -385,6 +431,14 @@ export function normalizeBtcRouterState(value = '') {
     return 'UNKNOWN';
 }
 
+function firstKnownBtcRouterState(...values) {
+    for (const value of values) {
+        const normalized = normalizeBtcRouterState(value);
+        if (normalized !== 'UNKNOWN') return normalized;
+    }
+    return 'UNKNOWN';
+}
+
 export function btcRouterDirection(state = 'UNKNOWN') {
     const normalized = normalizeBtcRouterState(state);
     if (normalized === 'STRONG_BULLISH' || normalized === 'BULLISH') return 'LONG';
@@ -396,28 +450,29 @@ export function btcRouterDirection(state = 'UNKNOWN') {
 export function resolveEntryBtcRouterContext(row = {}) {
     const source = row && typeof row === 'object' && !Array.isArray(row) ? row : {};
     const candidates = btcContextObjectCandidates(source);
-    const explicitState = normalizeBtcRouterState(
-        source.entryBtcRouterState ??
-        source.entryBtcState ??
-        source.btcRouterState ??
-        source.btcState ??
-        source.btcRelation ??
+    const explicitState = firstKnownBtcRouterState(
+        source.entryBtcRouterState,
+        source.entryBtcState,
+        source.btcRouterState,
+        source.btcState,
+        source.btcRelation,
+        source.btc?.btcRouterState,
+        source.btc?.btcState,
+        source.btc?.state,
         firstBtcContextValue(candidates, [
             'entryBtcRouterState', 'btcRouterState', 'btcState', 'btcRelation',
             'state', 'directionState', 'trendState'
         ])
     );
-    const sideRaw =
-        source.entryBtcTrendSide ??
-        source.entryBtcDirection ??
-        source.btcTrendSide ??
-        source.btcDirection ??
-        source.btcSide ??
-        firstBtcContextValue(candidates, [
-            'entryBtcTrendSide', 'btcTrendSide', 'btcDirection', 'btcSide',
-            'trendSide', 'direction', 'side'
-        ]);
-    const sideState = normalizeBtcRouterState(sideRaw);
+    const sideRaw = firstBtcContextValue([
+        source,
+        source.btc,
+        ...candidates
+    ].filter(Boolean), [
+        'entryBtcTrendSide', 'entryBtcDirection', 'btcTrendSide', 'btcDirection',
+        'btcSide', 'trendSide', 'direction', 'side'
+    ]);
+    const sideState = firstKnownBtcRouterState(sideRaw);
     const confidence = Math.max(0, Math.min(100, finiteBtcValue(
         source.entryBtcConfidence,
         source.entryBtcDirectionConfidence,
