@@ -64,6 +64,7 @@ const NON_CRYPTO_BASE_SYMBOLS = new Set([
 'EUR','GBP','JPY','CHF','AUD','CAD','NZD'
 ]);
 const MARKET_DATA_UNIT_VERSION = 'MARKET_DATA_FUTURES_OPEN24H_RWA_FAIL_CLOSED_V3';
+const MARKET_WEATHER_NORMALIZATION_VERSION = 'LONG_MARKET_WEATHER_KNOWN_CONTEXT_FIRST_V4';
 const WEATHER_REGIME = Object.freeze({
 TREND: 'TREND',
 CHOP: 'CHOP',
@@ -1099,6 +1100,12 @@ if (normalized !== 'UNKNOWN') return normalized;
 }
 return 'UNKNOWN';
 }
+function firstKnownBtcRouterState(...values) {
+return firstKnownWeatherValue(btcRouterStateFromTrendSide, ...values);
+}
+function firstKnownBtcDirection(...values) {
+return firstKnownWeatherValue(normalizeWeatherTrendSide, ...values);
+}
 function normalizeMarketWeatherPayload(weather = {}) {
 if (!weather || typeof weather !== 'object') {
 return emptyWeather({
@@ -1167,6 +1174,7 @@ const normalized = {
 ok: weather.ok !== false && sampleSize > 0,
 available: weather.available !== false && sampleSize > 0,
 version: weather.version || MARKET_WEATHER_VERSION,
+marketWeatherNormalizationVersion: MARKET_WEATHER_NORMALIZATION_VERSION,
 currentRegime,
 regime: currentRegime,
 currentTrendSide,
@@ -1211,19 +1219,45 @@ meanChange1h: safeNumber(weather.breadth?.meanChange1h, 0),
 meanChange24h: safeNumber(weather.breadth?.meanChange24h, 0),
 change24hDispersion: safeNumber(weather.breadth?.change24hDispersion, 0)
 },
-btcRouterState: btcRouterStateFromTrendSide(
-weather.btcRouterState || weather.btcState || weather.btc?.btcRouterState ||
-weather.btc?.btcState || weather.btc?.state || weather.btc?.trendSide || weather.btcTrendSide
+btcRouterState: firstKnownBtcRouterState(
+weather.btcRouterState,
+weather.currentBtcRouterState,
+weather.btcState,
+weather.btc?.btcRouterState,
+weather.btc?.btcState,
+weather.btc?.state,
+weather.btc?.trendSide,
+weather.btc?.direction,
+weather.btcTrendSide,
+weather.btcDirection
 ),
-btcState: btcRouterStateFromTrendSide(
-weather.btcRouterState || weather.btcState || weather.btc?.btcRouterState ||
-weather.btc?.btcState || weather.btc?.state || weather.btc?.trendSide || weather.btcTrendSide
+btcState: firstKnownBtcRouterState(
+weather.btcState,
+weather.btcRouterState,
+weather.currentBtcRouterState,
+weather.btc?.btcState,
+weather.btc?.btcRouterState,
+weather.btc?.state,
+weather.btc?.trendSide,
+weather.btc?.direction,
+weather.btcTrendSide,
+weather.btcDirection
 ),
-btcDirection: normalizeWeatherTrendSide(
-weather.btcDirection || weather.btcTrendSide || weather.btc?.direction || weather.btc?.trendSide || weather.btcState
+btcDirection: firstKnownBtcDirection(
+weather.btcDirection,
+weather.btcTrendSide,
+weather.btc?.direction,
+weather.btc?.trendSide,
+weather.btcState,
+weather.btcRouterState
 ),
-btcTrendSide: normalizeWeatherTrendSide(
-weather.btcTrendSide || weather.btcDirection || weather.btc?.trendSide || weather.btc?.direction || weather.btcState
+btcTrendSide: firstKnownBtcDirection(
+weather.btcTrendSide,
+weather.btcDirection,
+weather.btc?.trendSide,
+weather.btc?.direction,
+weather.btcState,
+weather.btcRouterState
 ),
 currentMarketWeatherKey: currentRegime !== WEATHER_REGIME.UNKNOWN && currentTrendSide !== TREND_SIDE.UNKNOWN
 ? `${currentRegime}|${currentTrendSide}`
@@ -1238,11 +1272,49 @@ btc: {
 symbol: weather.btc?.symbol || 'BTCUSDT',
 change1h: safeNumber(weather.btc?.change1h ?? weather.btcChange1h, 0),
 change24h: safeNumber(weather.btc?.change24h ?? weather.btcChange24h, 0),
-trendSide: normalizeWeatherTrendSide(weather.btc?.trendSide || weather.btcTrendSide || weather.btcDirection || weather.btcState),
-direction: normalizeWeatherTrendSide(weather.btc?.direction || weather.btc?.trendSide || weather.btcTrendSide || weather.btcDirection || weather.btcState),
-state: btcRouterStateFromTrendSide(weather.btc?.state || weather.btc?.trendSide || weather.btcTrendSide || weather.btcDirection || weather.btcState),
-btcState: btcRouterStateFromTrendSide(weather.btc?.btcState || weather.btc?.state || weather.btc?.trendSide || weather.btcTrendSide || weather.btcDirection || weather.btcState),
-btcRouterState: btcRouterStateFromTrendSide(weather.btc?.btcRouterState || weather.btc?.btcState || weather.btc?.state || weather.btc?.trendSide || weather.btcTrendSide || weather.btcDirection || weather.btcState)
+trendSide: firstKnownBtcDirection(
+weather.btc?.trendSide,
+weather.btc?.direction,
+weather.btcTrendSide,
+weather.btcDirection,
+weather.btcState,
+weather.btcRouterState
+),
+direction: firstKnownBtcDirection(
+weather.btc?.direction,
+weather.btc?.trendSide,
+weather.btcDirection,
+weather.btcTrendSide,
+weather.btcState,
+weather.btcRouterState
+),
+state: firstKnownBtcRouterState(
+weather.btc?.state,
+weather.btc?.btcState,
+weather.btc?.btcRouterState,
+weather.btc?.trendSide,
+weather.btc?.direction,
+weather.btcState,
+weather.btcRouterState
+),
+btcState: firstKnownBtcRouterState(
+weather.btc?.btcState,
+weather.btc?.btcRouterState,
+weather.btc?.state,
+weather.btc?.trendSide,
+weather.btc?.direction,
+weather.btcState,
+weather.btcRouterState
+),
+btcRouterState: firstKnownBtcRouterState(
+weather.btc?.btcRouterState,
+weather.btc?.btcState,
+weather.btc?.state,
+weather.btc?.trendSide,
+weather.btc?.direction,
+weather.btcRouterState,
+weather.btcState
+)
 },
 currentFitLabels: currentFitLabels(),
 softOnly: true,
