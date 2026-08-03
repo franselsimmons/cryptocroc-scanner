@@ -285,6 +285,7 @@ const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 const MEASUREMENT_FIX_VERSION = 
 'LONG_MEASUREMENT_FIX_TRIGGER_BOUNDARY_EXIT_FILL_V2';
 const ADMIN_ROUTE_VERSION = 'LONG_ADMIN_MARKET_WEATHER_SAFE_ROUTE_V1';
+const ADMIN_TREND_SIDE_FIX_VERSION = 'LONG_ADMIN_TREND_SIDE_ASI_FIX_V1';
 function sendJson(res, statusCode, data) {
  res.statusCode = statusCode;
  res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -332,13 +333,19 @@ function normalizeRegime(value) {
 }
 function normalizeTrendSide(value) {
  const raw = upper(value);
- if (['SHORT', 'BEAR', 'BEARISH', 'SELL', 'DOWN', 'DOWNSIDE'].includes(raw)) return 
-'SHORT';
- if (['LONG', 'BULL', 'BULLISH', 'BUY', 'UP', 'UPSIDE'].includes(raw)) 
-return 'LONG';
- if (['NEUTRAL', 'MIXED', 'CHOP', 'SIDEWAYS', 'FLAT'].includes(raw)) return 
-'NEUTRAL';
- return raw || 'UNKNOWN';
+ if (!raw || ['UNKNOWN', 'UNDEFINED', 'NULL', 'NAN', 'N/A', 'NA'].includes(raw)) {
+   return 'UNKNOWN';
+ }
+ if (['SHORT', 'BEAR', 'BEARISH', 'SELL', 'DOWN', 'DOWNSIDE'].includes(raw)) {
+   return 'SHORT';
+ }
+ if (['LONG', 'BULL', 'BULLISH', 'BUY', 'UP', 'UPSIDE'].includes(raw)) {
+   return 'LONG';
+ }
+ if (['NEUTRAL', 'MIXED', 'CHOP', 'SIDEWAYS', 'FLAT'].includes(raw)) {
+   return 'NEUTRAL';
+ }
+ return 'UNKNOWN';
 }
 function dashboardTrendSide(value) {
  const side = normalizeTrendSide(value);
@@ -575,8 +582,17 @@ function resolveLongCurrentFit({
 }
 function firstKnownNormalizedValue(normalizer, values = []) {
  for (const value of values) {
-   const normalized = normalizer(value);
-   if (normalized !== 'UNKNOWN') return normalized;
+   let normalized;
+   try {
+     normalized = normalizer(value);
+   } catch {
+     continue;
+   }
+   const normalizedText = upper(normalized);
+   if (!normalizedText || ['UNKNOWN', 'UNDEFINED', 'NULL', 'NAN', 'N/A', 'NA'].includes(normalizedText)) {
+     continue;
+   }
+   return normalized;
  }
  return 'UNKNOWN';
 }
@@ -711,6 +727,7 @@ function normalizeWeatherForAdmin(weatherInput = {}) {
    ok,
    available: ok,
    adminRouteVersion: ADMIN_ROUTE_VERSION,
+   adminTrendSideFixVersion: ADMIN_TREND_SIDE_FIX_VERSION,
    file: 'src/market/marketWeather.js',
    apiRoute: '/api/admin/market-weather',
    targetTradeSide: TARGET_TRADE_SIDE,
@@ -811,6 +828,7 @@ function buildResponse(weather, extra = {}) {
    available: normalized.available,
    route: '/api/admin/market-weather',
    adminRouteVersion: ADMIN_ROUTE_VERSION,
+   adminTrendSideFixVersion: normalized.adminTrendSideFixVersion || ADMIN_TREND_SIDE_FIX_VERSION,
    file: 'src/market/marketWeather.js',
    ...extra,
    currentRegime: normalized.currentRegime,
