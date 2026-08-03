@@ -1,8 +1,5 @@
 // ================= FILE: api/admin/market-weather.js =================
-//
-// Veilige admin route voor MarketWeather.
-// Deze route mag nooit stil {} teruggeven.
-// Als import/build faalt, krijg je de echte fout in JSON.
+
 const TARGET_TRADE_SIDE = 'LONG';
 const TARGET_DASHBOARD_SIDE = 'bull';
 const TARGET_SCANNER_SIDE = 'bull';
@@ -284,8 +281,9 @@ const LEARNING_GRANULARITY =
 const PARENT_LEARNING_GRANULARITY = 'LONG_FIXED_TAXONOMY_SETUP_X_REGIME_V1';
 const MEASUREMENT_FIX_VERSION = 
 'LONG_MEASUREMENT_FIX_TRIGGER_BOUNDARY_EXIT_FILL_V2';
-const ADMIN_ROUTE_VERSION = 'LONG_ADMIN_MARKET_WEATHER_SAFE_ROUTE_V1';
-const ADMIN_TREND_SIDE_FIX_VERSION = 'LONG_ADMIN_TREND_SIDE_ASI_FIX_V1';
+const ADMIN_ROUTE_VERSION = 'LONG_ADMIN_MARKET_WEATHER_SAFE_ROUTE_V2';
+const ADMIN_TREND_SIDE_FIX_VERSION = 'LONG_ADMIN_TREND_SIDE_ASI_FIX_V2';
+const ADMIN_CONTEXT_FIX_VERSION = 'LONG_ADMIN_CONTEXT_SHORT_PARITY_V2';
 function sendJson(res, statusCode, data) {
  res.statusCode = statusCode;
  res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -606,11 +604,62 @@ function normalizeAdminBtcState(value = '') {
  if (['NEUTRAL', 'MIXED', 'FLAT', 'SIDEWAYS', 'CHOP'].some((token) => raw.includes(token))) return 'NEUTRAL';
  return 'UNKNOWN';
 }
+function canonicalMarketTrendSide({
+ regime = 'UNKNOWN',
+ trendSide = 'UNKNOWN',
+ breadth = {},
+ btcRouterState = 'UNKNOWN'
+} = {}) {
+ const normalizedRegime = normalizeRegime(regime);
+ let normalizedSide = normalizeTrendSide(trendSide);
+
+ // SHORT parity: CHOP and SQUEEZE are non-directional market states.
+ // They must never become LONG/SHORT through route identity fields.
+ if (normalizedRegime === 'CHOP' || normalizedRegime === 'SQUEEZE') {
+   return 'NEUTRAL';
+ }
+
+ if (normalizedSide !== 'UNKNOWN') return normalizedSide;
+
+ if (normalizedRegime === 'TREND') {
+   const advanceRatio = num(
+     breadth.advanceRatio ?? breadth.bullishRatio ?? breadth.longRatio,
+     0
+   );
+   const declineRatio = num(
+     breadth.declineRatio ?? breadth.bearishRatio ?? breadth.shortRatio,
+     0
+   );
+
+   if (advanceRatio > declineRatio) return 'LONG';
+   if (declineRatio > advanceRatio) return 'SHORT';
+
+   const btcState = normalizeAdminBtcState(btcRouterState);
+   if (btcState === 'BULLISH' || btcState === 'STRONG_BULLISH') return 'LONG';
+   if (btcState === 'BEARISH' || btcState === 'STRONG_BEARISH') return 'SHORT';
+   if (btcState === 'NEUTRAL') return 'NEUTRAL';
+ }
+
+ return 'UNKNOWN';
+}
+function canonicalMarketWeatherKey(regime, trendSide) {
+ const normalizedRegime = normalizeRegime(regime);
+ const normalizedSide = normalizeTrendSide(trendSide);
+ if (
+   !['TREND', 'CHOP', 'SQUEEZE'].includes(normalizedRegime) ||
+   !['LONG', 'SHORT', 'NEUTRAL'].includes(normalizedSide)
+ ) {
+   return 'UNKNOWN';
+ }
+ return `${normalizedRegime}|${normalizedSide}`;
+}
 function normalizeWeatherForAdmin(weatherInput = {}) {
  const weather = weatherInput && typeof weatherInput === 'object'
    ? weatherInput
    : makeFallbackWeather('INVALID_WEATHER');
- const breadth = weather.breadth || {};
+ const breadth = weather.breadth && typeof weather.breadth === 'object'
+   ? weather.breadth
+   : {};
  const weatherSources = [
    weather,
    weather.currentMarketWeather,
@@ -618,21 +667,65 @@ function normalizeWeatherForAdmin(weatherInput = {}) {
    weather.weather,
    weather.latest,
    weather.snapshot,
-   weather.raw,
-   weather.source
+   weather.raw
  ].filter((value) => value && typeof value === 'object' && !Array.isArray(value));
- const currentRegime = firstKnownNormalizedValue(normalizeRegime,
+
+ const currentRegime = firstKnownNormalizedValue(
+   normalizeRegime,
    weatherSources.flatMap((value) => [
-     value.currentRegime, value.regime, value.marketRegime,
-     value.breadthRegime, value.volatilityRegime
+     value.currentRegime,
+     value.regime,
+     value.marketRegime,
+     value.breadthRegime,
+     value.volatilityRegime
    ])
  );
- const currentTrendSide = firstKnownNormalizedValue(normalizeTrendSide,
+
+ const btcObjects = weatherSources
+   .flatMap((value) => [value.btc, value.btcContext, value.btcRouterContext])
+   .filter((value) => value && typeof value === 'object' && !Array.isArray(value));
+
+ const btcRouterState = firstKnownNormalizedValue(normalizeAdminBtcState, [
+   ...weatherSources.flatMap((value) => [
+     value.btcRouterState,
+     value.currentBtcRouterState,
+     value.btcState,
+     value.btcDirection,
+     value.btcTrendSide,
+     value.currentBtcRelation
+   ]),
+   ...btcObjects.flatMap((value) => [
+     value.btcRouterState,
+     value.btcState,
+     value.state,
+     value.direction,
+     value.trendSide,
+     value.side
+   ])
+ ]);
+
+ const rawTrendSide = firstKnownNormalizedValue(
+   normalizeTrendSide,
    weatherSources.flatMap((value) => [
-     value.currentTrendSide, value.trendSide, value.marketTrendSide,
-     value.marketSide, value.side, value.direction, value.breadthSide
+     value.currentTrendSide,
+     value.trendSide,
+     value.marketTrendSide,
+     value.marketSide,
+     value.breadthSide
    ])
  );
+
+ const currentTrendSide = canonicalMarketTrendSide({
+   regime: currentRegime,
+   trendSide: rawTrendSide,
+   breadth,
+   btcRouterState
+ });
+ const marketWeatherKey = canonicalMarketWeatherKey(
+   currentRegime,
+   currentTrendSide
+ );
+
  const confidence = clamp(
    weather.currentMarketFitConfidence ??
      weather.confidence ??
@@ -706,21 +799,30 @@ function normalizeWeatherForAdmin(weatherInput = {}) {
    currentRegime !== 'UNKNOWN' ||
    currentTrendSide !== 'UNKNOWN';
 
- const marketWeatherKey = currentRegime !== 'UNKNOWN' && currentTrendSide !== 'UNKNOWN'
-   ? `${currentRegime}|${currentTrendSide}`
-   : 'UNKNOWN';
- const btcObjects = weatherSources.flatMap((value) => [value.btc, value.btcContext, value.btcRouterContext])
-   .filter((value) => value && typeof value === 'object' && !Array.isArray(value));
- const btcRouterState = firstKnownNormalizedValue(normalizeAdminBtcState, [
-   ...weatherSources.flatMap((value) => [
-     value.btcRouterState, value.currentBtcRouterState, value.btcState,
-     value.btcDirection, value.btcTrendSide, value.currentBtcRelation
-   ]),
-   ...btcObjects.flatMap((value) => [
-     value.btcRouterState, value.btcState, value.state,
-     value.direction, value.trendSide, value.side
-   ])
- ]);
+ const canonicalBtc = {
+   ...(btcObjects[0] || weather.btc || {}),
+   symbol: btcObjects[0]?.symbol || weather.btc?.symbol || 'BTCUSDT',
+   trendSide:
+     btcRouterState === 'BULLISH' || btcRouterState === 'STRONG_BULLISH'
+       ? 'LONG'
+       : btcRouterState === 'BEARISH' || btcRouterState === 'STRONG_BEARISH'
+         ? 'SHORT'
+         : btcRouterState === 'NEUTRAL'
+           ? 'NEUTRAL'
+           : 'UNKNOWN',
+   direction:
+     btcRouterState === 'BULLISH' || btcRouterState === 'STRONG_BULLISH'
+       ? 'LONG'
+       : btcRouterState === 'BEARISH' || btcRouterState === 'STRONG_BEARISH'
+         ? 'SHORT'
+         : btcRouterState === 'NEUTRAL'
+           ? 'NEUTRAL'
+           : 'UNKNOWN',
+   state: btcRouterState,
+   btcState: btcRouterState,
+   btcRouterState
+ };
+
  return {
    ...temporalPolicyPayload(createdAt || Date.now()),
    ...weather,
@@ -728,6 +830,8 @@ function normalizeWeatherForAdmin(weatherInput = {}) {
    available: ok,
    adminRouteVersion: ADMIN_ROUTE_VERSION,
    adminTrendSideFixVersion: ADMIN_TREND_SIDE_FIX_VERSION,
+   adminContextFixVersion: ADMIN_CONTEXT_FIX_VERSION,
+   adminContextCanonicalized: true,
    file: 'src/market/marketWeather.js',
    apiRoute: '/api/admin/market-weather',
    targetTradeSide: TARGET_TRADE_SIDE,
@@ -758,7 +862,9 @@ function normalizeWeatherForAdmin(weatherInput = {}) {
    btcRouterState,
    currentBtcRouterState: btcRouterState,
    btcState: btcRouterState,
-   btcDirection: btcRouterState,
+   btcDirection: canonicalBtc.direction,
+   btcTrendSide: canonicalBtc.trendSide,
+   btc: canonicalBtc,
    trendSide: dashboardTrendSide(currentTrendSide),
    marketTrendSide: dashboardTrendSide(currentTrendSide),
    confidence,
@@ -777,16 +883,28 @@ function normalizeWeatherForAdmin(weatherInput = {}) {
    neutralPct,
    squeezePct,
    sampleSize,
-   universeSize: num(weather.universeSize ?? weather.universeCount ?? 
-weather.count, sampleSize),
-   universeCount: num(weather.universeCount ?? weather.universeSize ?? 
-weather.count, sampleSize),
+   universeSize: num(
+     weather.universeSize ?? weather.universeCount ?? weather.count,
+     sampleSize
+   ),
+   universeCount: num(
+     weather.universeCount ?? weather.universeSize ?? weather.count,
+     sampleSize
+   ),
    count: num(weather.count ?? sampleSize, sampleSize),
    createdAt: createdAt || null,
-   updatedAt: firstFinite(weather.updatedAt, weather.savedAt, 
-weather.generatedAt, createdAt) || null,
-   generatedAt: firstFinite(weather.generatedAt, weather.updatedAt, 
-weather.savedAt, createdAt) || null,
+   updatedAt: firstFinite(
+     weather.updatedAt,
+     weather.savedAt,
+     weather.generatedAt,
+     createdAt
+   ) || null,
+   generatedAt: firstFinite(
+     weather.generatedAt,
+     weather.updatedAt,
+     weather.savedAt,
+     createdAt
+   ) || null,
    currentFitSoftOnly: true,
    currentFitBlocksLearning: false,
    currentFitBlocksVirtualLearning: false,
@@ -822,26 +940,56 @@ function buildResponse(weather, extra = {}) {
    Array.isArray(normalized.universe) ? normalized.universe :
    Array.isArray(normalized.rows) ? normalized.rows :
    [];
+
+ // Final route invariant. This mirrors the working SHORT route pattern,
+ // but adds a hard canonical layer so undefined can never reach JSON keys.
+ const currentRegime = normalizeRegime(normalized.currentRegime);
+ const btcRouterState = firstKnownNormalizedValue(normalizeAdminBtcState, [
+   normalized.btcRouterState,
+   normalized.currentBtcRouterState,
+   normalized.btcState,
+   normalized.btcDirection,
+   normalized.btc?.btcRouterState,
+   normalized.btc?.btcState,
+   normalized.btc?.state,
+   normalized.btc?.direction,
+   normalized.btc?.trendSide
+ ]);
+ const currentTrendSide = canonicalMarketTrendSide({
+   regime: currentRegime,
+   trendSide: normalized.currentTrendSide,
+   breadth: normalized.breadth || {},
+   btcRouterState
+ });
+ const currentMarketWeatherKey = canonicalMarketWeatherKey(
+   currentRegime,
+   currentTrendSide
+ );
+ const dashboardSide = dashboardTrendSide(currentTrendSide);
+
  return {
    ...temporalPolicyPayload(normalized.generatedAt || Date.now()),
    ok: normalized.ok,
    available: normalized.available,
    route: '/api/admin/market-weather',
    adminRouteVersion: ADMIN_ROUTE_VERSION,
-   adminTrendSideFixVersion: normalized.adminTrendSideFixVersion || ADMIN_TREND_SIDE_FIX_VERSION,
+   adminTrendSideFixVersion: ADMIN_TREND_SIDE_FIX_VERSION,
+   adminContextFixVersion: ADMIN_CONTEXT_FIX_VERSION,
+   adminContextCanonicalized: true,
    file: 'src/market/marketWeather.js',
    ...extra,
-   currentRegime: normalized.currentRegime,
-   currentTrendSide: normalized.currentTrendSide,
-   currentMarketWeatherKey: normalized.currentMarketWeatherKey || normalized.marketWeatherKey || 'UNKNOWN',
-   marketWeatherKey: normalized.marketWeatherKey || normalized.currentMarketWeatherKey || 'UNKNOWN',
-   btcRouterState: normalized.btcRouterState || normalized.btcState || 'UNKNOWN',
-   currentBtcRouterState: normalized.currentBtcRouterState || normalized.btcRouterState || normalized.btcState || 'UNKNOWN',
-   btcState: normalized.btcState || normalized.btcRouterState || 'UNKNOWN',
-   btcDirection: normalized.btcDirection || normalized.btcRouterState || normalized.btcState || 'UNKNOWN',
-   regime: normalized.regime,
-   trendSide: normalized.trendSide,
-   marketTrendSide: normalized.marketTrendSide,
+   currentRegime,
+   currentTrendSide,
+   currentMarketWeatherKey,
+   marketWeatherKey: currentMarketWeatherKey,
+   btcRouterState,
+   currentBtcRouterState: btcRouterState,
+   btcState: btcRouterState,
+   btcDirection: normalized.btcDirection || normalized.btc?.direction || 'UNKNOWN',
+   btcTrendSide: normalized.btcTrendSide || normalized.btc?.trendSide || 'UNKNOWN',
+   regime: currentRegime,
+   trendSide: dashboardSide,
+   marketTrendSide: dashboardSide,
    confidence: normalized.confidence,
    weatherConfidence: normalized.weatherConfidence,
    currentMarketFitConfidence: normalized.currentMarketFitConfidence,
@@ -964,6 +1112,8 @@ export default async function handler(req, res) {
  res.setHeader('X-Session-Policy-Version', SESSION_POLICY_VERSION);
  res.setHeader('X-Weekend-Mode', WEEKEND_MODE);
  res.setHeader('X-Session-Mode', SESSION_MODE);
+ res.setHeader('X-Admin-Route-Version', ADMIN_ROUTE_VERSION);
+ res.setHeader('X-Admin-Context-Fix-Version', ADMIN_CONTEXT_FIX_VERSION);
  const method = String(req?.method || 'GET').toUpperCase();
  if (method === 'OPTIONS') {
    res.setHeader('Allow', 'GET, POST, OPTIONS');
