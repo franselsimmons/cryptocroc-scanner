@@ -64,7 +64,8 @@ const NON_CRYPTO_BASE_SYMBOLS = new Set([
 'EUR','GBP','JPY','CHF','AUD','CAD','NZD'
 ]);
 const MARKET_DATA_UNIT_VERSION = 'MARKET_DATA_FUTURES_OPEN24H_RWA_FAIL_CLOSED_V3';
-const MARKET_WEATHER_NORMALIZATION_VERSION = 'LONG_MARKET_WEATHER_KNOWN_CONTEXT_FIRST_V4';
+const MARKET_WEATHER_NORMALIZATION_VERSION = 'LONG_MARKET_WEATHER_CANONICAL_NESTED_BTC_V5';
+const BTC_CONTEXT_CANONICALIZATION_VERSION = 'LONG_BTC_CONTEXT_TOP_LEVEL_EQUALS_NESTED_V5';
 const WEATHER_REGIME = Object.freeze({
 TREND: 'TREND',
 CHOP: 'CHOP',
@@ -347,8 +348,7 @@ return 'UNKNOWN';
 }
 function normalizeWeatherRegime(value) {
 const raw = upper(value);
-if (raw.includes('SQUEEZE') || raw.includes('COMPRESSION')) return
-WEATHER_REGIME.SQUEEZE;
+if (raw.includes('SQUEEZE') || raw.includes('COMPRESSION')) return WEATHER_REGIME.SQUEEZE;
 if (raw.includes('TREND')) return WEATHER_REGIME.TREND;
 if (raw.includes('CHOP') || raw.includes('RANGE') || raw.includes('SIDEWAYS'))
 return WEATHER_REGIME.CHOP;
@@ -361,8 +361,7 @@ if (['SHORT', 'BEAR', 'BEARISH', 'SELL', 'DOWN', 'DOWNSIDE',
 'RED'].includes(raw)) return TREND_SIDE.SHORT;
 if (['LONG', 'BULL', 'BULLISH', 'BUY', 'UP', 'UPSIDE', 'GREEN'].includes(raw))
 return TREND_SIDE.LONG;
-if (['NEUTRAL', 'MIXED', 'SIDEWAYS', 'CHOP', 'FLAT'].includes(raw)) return
-TREND_SIDE.NEUTRAL;
+if (['NEUTRAL', 'MIXED', 'SIDEWAYS', 'CHOP', 'FLAT'].includes(raw)) return TREND_SIDE.NEUTRAL;
 return TREND_SIDE.UNKNOWN;
 }
 function normalizeWeatherFlow(value) {
@@ -372,16 +371,14 @@ return FLOW_STATE.FLOW_WITH_LONG;
 if (raw.includes('SHORT') || raw.includes('BEARISH') || raw.includes('BEAR'))
 return FLOW_STATE.FLOW_WITH_SHORT;
 if (raw.includes('QUIET')) return FLOW_STATE.FLOW_QUIET;
-if (raw.includes('MIXED') || raw.includes('NEUTRAL')) return
-FLOW_STATE.FLOW_MIXED;
+if (raw.includes('MIXED') || raw.includes('NEUTRAL')) return FLOW_STATE.FLOW_MIXED;
 return FLOW_STATE.FLOW_UNKNOWN;
 }
 function normalizeWeatherVolatilityState(value) {
 const raw = upper(value);
 if (raw.includes('COMPRESSION') || raw.includes('SQUEEZE') ||
 raw.includes('LOW_VOL')) return VOLATILITY_STATE.COMPRESSION;
-if (raw.includes('EXPANSION') || raw.includes('HIGH_VOL')) return
-VOLATILITY_STATE.EXPANSION;
+if (raw.includes('EXPANSION') || raw.includes('HIGH_VOL')) return VOLATILITY_STATE.EXPANSION;
 if (raw.includes('NOISY')) return VOLATILITY_STATE.NOISY;
 if (raw.includes('NORMAL')) return VOLATILITY_STATE.NORMAL;
 return VOLATILITY_STATE.UNKNOWN;
@@ -586,14 +583,10 @@ if (Array.isArray(input.universe)) return input.universe;
 if (Array.isArray(input.candidates)) return input.candidates;
 if (Array.isArray(input.markets)) return input.markets;
 if (Array.isArray(input.data)) return input.data;
-if (input.tickers && typeof input.tickers === 'object') return
-Object.values(input.tickers);
-if (input.rows && typeof input.rows === 'object') return
-Object.values(input.rows);
-if (input.universe && typeof input.universe === 'object') return
-Object.values(input.universe);
-if (input.candidates && typeof input.candidates === 'object') return
-Object.values(input.candidates);
+if (input.tickers && typeof input.tickers === 'object') return Object.values(input.tickers);
+if (input.rows && typeof input.rows === 'object') return Object.values(input.rows);
+if (input.universe && typeof input.universe === 'object') return Object.values(input.universe);
+if (input.candidates && typeof input.candidates === 'object') return Object.values(input.candidates);
 return [];
 }
 function median(values = []) {
@@ -1349,6 +1342,43 @@ learningGranularity: LEARNING_GRANULARITY,
 parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
 ...longModeFlags()
 };
+// Final invariant: every consumer must receive one identical BTC context.
+// A literal UNKNOWN in the nested object may never override a known top-level value.
+const canonicalBtcRouterState = firstKnownBtcRouterState(
+normalized.btcRouterState,
+normalized.btcState,
+normalized.currentBtcRouterState,
+normalized.btc?.btcRouterState,
+normalized.btc?.btcState,
+normalized.btc?.state,
+normalized.btc?.trendSide,
+normalized.btc?.direction
+);
+const canonicalBtcDirection = firstKnownBtcDirection(
+normalized.btcDirection,
+normalized.btcTrendSide,
+normalized.btc?.direction,
+normalized.btc?.trendSide,
+canonicalBtcRouterState
+);
+normalized.btcRouterState = canonicalBtcRouterState;
+normalized.currentBtcRouterState = canonicalBtcRouterState;
+normalized.btcState = canonicalBtcRouterState;
+normalized.btcDirection = canonicalBtcDirection;
+normalized.btcTrendSide = canonicalBtcDirection;
+normalized.btcContextCanonicalized = true;
+normalized.btcContextCanonicalizationVersion = BTC_CONTEXT_CANONICALIZATION_VERSION;
+normalized.btc = {
+...(normalized.btc || {}),
+symbol: normalized.btc?.symbol || 'BTCUSDT',
+trendSide: canonicalBtcDirection,
+direction: canonicalBtcDirection,
+state: canonicalBtcRouterState,
+btcState: canonicalBtcRouterState,
+btcRouterState: canonicalBtcRouterState,
+contextCanonicalized: true,
+contextCanonicalizationVersion: BTC_CONTEXT_CANONICALIZATION_VERSION
+};
 if (
 normalized.currentRegime === WEATHER_REGIME.UNKNOWN &&
 normalized.currentTrendSide === TREND_SIDE.UNKNOWN &&
@@ -1699,23 +1729,20 @@ if (regime === WEATHER_REGIME.CHOP) return 10;
 return -8;
 }
 if (setup === 'BREAKOUT') {
-if (regime === WEATHER_REGIME.TREND && trendSide === TREND_SIDE.LONG) return
-20;
+if (regime === WEATHER_REGIME.TREND && trendSide === TREND_SIDE.LONG) return 20;
 if (regime === WEATHER_REGIME.SQUEEZE) return 12;
 if (volState === VOLATILITY_STATE.EXPANSION) return 10;
 if (trendSide === TREND_SIDE.SHORT) return -18;
 return 0;
 }
 if (setup === 'CONTINUATION') {
-if (regime === WEATHER_REGIME.TREND && trendSide === TREND_SIDE.LONG) return
-24;
+if (regime === WEATHER_REGIME.TREND && trendSide === TREND_SIDE.LONG) return 24;
 if (trendSide === TREND_SIDE.SHORT) return -22;
 if (regime === WEATHER_REGIME.CHOP) return -4;
 return 4;
 }
 if (setup === 'RETEST') {
-if (regime === WEATHER_REGIME.TREND && trendSide === TREND_SIDE.LONG) return
-18;
+if (regime === WEATHER_REGIME.TREND && trendSide === TREND_SIDE.LONG) return 18;
 if (regime === WEATHER_REGIME.CHOP) return 8;
 if (trendSide === TREND_SIDE.SHORT) return -14;
 return 2;
@@ -1724,8 +1751,7 @@ if (setup === 'SWEEP_REVERSAL') {
 if (regime === WEATHER_REGIME.CHOP) return 15;
 if (regime === WEATHER_REGIME.SQUEEZE) return 8;
 
-if (regime === WEATHER_REGIME.TREND && trendSide === TREND_SIDE.LONG) return
-5;
+if (regime === WEATHER_REGIME.TREND && trendSide === TREND_SIDE.LONG) return 5;
 if (trendSide === TREND_SIDE.SHORT) return -8;
 return 0;
 }
@@ -1740,10 +1766,8 @@ const regime = weatherRow.currentRegime;
 const trendSide = weatherRow.currentTrendSide;
 if (!familyRegime || regime === WEATHER_REGIME.UNKNOWN) return 0;
 if (familyRegime === regime) {
-if (regime === WEATHER_REGIME.TREND && trendSide === TREND_SIDE.LONG) return
-35;
-if (regime === WEATHER_REGIME.TREND && trendSide === TREND_SIDE.SHORT) return
--35;
+if (regime === WEATHER_REGIME.TREND && trendSide === TREND_SIDE.LONG) return 35;
+if (regime === WEATHER_REGIME.TREND && trendSide === TREND_SIDE.SHORT) return -35;
 return 30;
 }
 if (familyRegime === 'TREND' && regime === WEATHER_REGIME.CHOP) return -8;
@@ -1775,10 +1799,8 @@ if (trendSide === TREND_SIDE.SHORT) return -18;
 return 2;
 }
 if (confirmationProfile === 'C_VOLUME_ALIGN') {
-if (weatherRow.currentVolatilityState === VOLATILITY_STATE.EXPANSION) return
-10;
-if (weatherRow.currentVolatilityState === VOLATILITY_STATE.COMPRESSION) return
-2;
+if (weatherRow.currentVolatilityState === VOLATILITY_STATE.EXPANSION) return 10;
+if (weatherRow.currentVolatilityState === VOLATILITY_STATE.COMPRESSION) return 2;
 return 4;
 }
 if (confirmationProfile === 'D_MIXED_OK') {
