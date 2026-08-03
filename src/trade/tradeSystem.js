@@ -3118,9 +3118,27 @@ const text = upper(value);
 if (!text) return 'UNKNOWN';
 if (text.includes('NEUTRAL') || text.includes('MIXED') || text.includes('FLAT'))
 return 'NEUTRAL';
-if (text.includes('RISK_OFF')) return OPPOSITE_TRADE_SIDE;
-if (text.includes('RISK_ON')) return TARGET_TRADE_SIDE;
+if (text.includes('RISK_OFF')) return TARGET_TRADE_SIDE;
+if (text.includes('RISK_ON')) return OPPOSITE_TRADE_SIDE;
 return 'UNKNOWN';
+}
+function firstKnownNormalizedValue(normalizer, ...values) {
+for (const value of values) {
+const normalized = normalizer(value);
+if (normalized !== 'UNKNOWN') return normalized;
+}
+return 'UNKNOWN';
+}
+function marketWeatherKeyParts(...values) {
+for (const value of values) {
+const raw = upper(value);
+if (!raw.includes('|')) continue;
+const [regimePart, sidePart] = raw.split('|');
+const regime = normalizeMarketRegime(regimePart);
+const trendSide = normalizeMarketTrendSide(sidePart);
+if (regime !== 'UNKNOWN' && trendSide !== 'UNKNOWN') return { regime, trendSide };
+}
+return { regime: 'UNKNOWN', trendSide: 'UNKNOWN' };
 }
 function firstFinite(...values) {
 for (const value of values) {
@@ -3130,75 +3148,110 @@ if (Number.isFinite(n)) return n;
 return null;
 }
 function extractMarketWeatherShape(weather = {}, universe = {}) {
-
 const source = weather && typeof weather === 'object' ? weather : {};
 const universeSource = universe && typeof universe === 'object' ? universe : {};
-const createdAt = safeNumber(
-source.createdAt ??
-source.completedAt ??
-source.updatedAt ??
-source.ts ??
-universeSource.createdAt ??
-universeSource.completedAt ??
-universeSource.updatedAt ??
-universeSource.ts,
-0
+const nestedSources = [
+source,
+source.currentMarketWeather,
+source.marketWeather,
+source.weather,
+source.latest,
+source.snapshot,
+universeSource,
+universeSource.currentMarketWeather,
+universeSource.marketWeather,
+universeSource.weather
+].filter((value) => value && typeof value === 'object' && !Array.isArray(value));
+const createdAt = firstFinite(
+...nestedSources.flatMap((value) => [
+value.generatedAt,
+value.updatedAt,
+value.savedAt,
+value.completedAt,
+value.createdAt,
+value.ts
+])
+) || 0;
+const keyParts = marketWeatherKeyParts(
+...nestedSources.flatMap((value) => [
+value.currentMarketWeatherKey,
+value.marketWeatherKey,
+value.entryMarketWeatherKey,
+value.marketWeatherProfileKey
+])
 );
-const regime = normalizeMarketRegime(
-source.currentRegime ??
-source.regime ??
-source.marketRegime ??
-source.breadthRegime ??
-source.volatilityRegime ??
-universeSource.currentRegime ??
-universeSource.regime
+const regime = keyParts.regime !== 'UNKNOWN'
+? keyParts.regime
+: firstKnownNormalizedValue(
+normalizeMarketRegime,
+...nestedSources.flatMap((value) => [
+value.currentRegime,
+value.regime,
+value.marketRegime,
+value.breadthRegime,
+value.volatilityRegime
+])
 );
-const trendSide = normalizeMarketTrendSide(
-source.currentTrendSide ??
-source.trendSide ??
-source.marketSide ??
-source.side ??
-source.direction ??
-source.breadthSide ??
-source.btcTrendSide ??
-universeSource.currentTrendSide ??
-universeSource.trendSide ??
-universeSource.marketSide
+const trendSide = keyParts.trendSide !== 'UNKNOWN'
+? keyParts.trendSide
+: firstKnownNormalizedValue(
+normalizeMarketTrendSide,
+...nestedSources.flatMap((value) => [
+value.currentTrendSide,
+value.trendSide,
+value.marketTrendSide,
+value.marketSide,
+value.side,
+value.direction,
+value.breadthSide
+])
 );
 const bullishPct = firstFinite(
-source.bullishPct,
-source.longPct,
-source.upPct,
-source.breadthBullishPct,
-source.universeBullishPct,
-universeSource.bullishPct,
-universeSource.longPct,
-universeSource.upPct
+...nestedSources.flatMap((value) => [
+value.bullishPct,
+value.longPct,
+value.upPct,
+value.breadthBullishPct,
+value.universeBullishPct,
+value.breadth?.bullishPct,
+value.breadth?.longPct,
+value.breadth?.upPct,
+value.breadth?.advancePct,
+value.breadth?.advanceRatio != null ? Number(value.breadth.advanceRatio) * 100 : null
+])
 );
 const bearishPct = firstFinite(
-source.bearishPct,
-source.shortPct,
-source.downPct,
-source.breadthBearishPct,
-source.universeBearishPct,
-universeSource.bearishPct,
-universeSource.shortPct,
-universeSource.downPct
+...nestedSources.flatMap((value) => [
+value.bearishPct,
+value.shortPct,
+value.downPct,
+value.breadthBearishPct,
+value.universeBearishPct,
+value.breadth?.bearishPct,
+value.breadth?.shortPct,
+value.breadth?.downPct,
+value.breadth?.declinePct,
+value.breadth?.declineRatio != null ? Number(value.breadth.declineRatio) * 100 : null
+])
 );
 const squeezePct = firstFinite(
-source.squeezePct,
-source.compressionPct,
-source.breadthSqueezePct,
-universeSource.squeezePct,
-universeSource.compressionPct
+...nestedSources.flatMap((value) => [
+value.squeezePct,
+value.compressionPct,
+value.breadthSqueezePct,
+value.breadth?.squeezePct,
+value.breadth?.compressionPct
+])
 );
 const confidence = clampNumber(
 firstFinite(
-source.confidence,
-source.weatherConfidence,
-source.currentTrendConfidence,
-source.breadthConfidence,
-universeSource.confidence
+...nestedSources.flatMap((value) => [
+value.currentMarketFitConfidence,
+value.confidence,
+value.weatherConfidence,
+value.currentTrendConfidence,
+value.breadthConfidence
+])
 ) ?? 50,
 0,
 100
@@ -3206,9 +3259,23 @@ universeSource.confidence
 const stale = createdAt > 0
 ? (now() - createdAt) / 1000 > currentFitMaxWeatherAgeSec()
 : true;
+const btcObjects = nestedSources.flatMap((value) => [value.btc, value.btcContext, value.btcRouterContext])
+.filter((value) => value && typeof value === 'object' && !Array.isArray(value));
 const btcRouterContext = resolveEntryBtcRouterContext({
 ...universeSource,
 ...source,
+btc: source.btc || universeSource.btc || btcObjects[0] || null,
+btcContext: source.btcContext || universeSource.btcContext || btcObjects[0] || null,
+btcRouterState: firstKnownNormalizedValue(
+(value) => resolveEntryBtcRouterContext({ btcState: value }).btcRouterState,
+...nestedSources.flatMap((value) => [value.btcRouterState, value.btcState, value.currentBtcRouterState]),
+...btcObjects.flatMap((value) => [value.btcRouterState, value.btcState, value.state])
+),
+btcTrendSide: firstKnownNormalizedValue(
+normalizeMarketTrendSide,
+...nestedSources.flatMap((value) => [value.btcTrendSide, value.btcDirection]),
+...btcObjects.flatMap((value) => [value.trendSide, value.direction, value.side])
+),
 entryMarketWeather: source,
 currentMarketWeather: source,
 currentBullishPct: bullishPct,
@@ -3216,7 +3283,7 @@ currentBearishPct: bearishPct,
 allowMarketWeatherBtcFallback: false
 });
 return {
-ok: Boolean(source && Object.keys(source).length),
+ok: Boolean(source && Object.keys(source).length) && (createdAt > 0 || regime !== 'UNKNOWN' || trendSide !== 'UNKNOWN'),
 source,
 universe: universeSource,
 createdAt,
@@ -3224,6 +3291,7 @@ ageSec: createdAt > 0 ? Math.round((now() - createdAt) / 1000) : null,
 stale,
 regime,
 trendSide,
+marketWeatherKey: regime !== 'UNKNOWN' && trendSide !== 'UNKNOWN' ? `${regime}|${trendSide}` : 'UNKNOWN',
 bearishPct,
 bullishPct,
 squeezePct,
@@ -3244,15 +3312,46 @@ key: MARKET_WEATHER_KEY,
 universeKey: MARKET_UNIVERSE_KEY
 };
 }
-async function loadMarketContext() {
-const redis = getVolatileRedis();
-
+async function readMarketContextFromRedis(redis, redisSource = 'UNKNOWN') {
+if (!redis) return { ...extractMarketWeatherShape({}, {}), redisSource };
 const [weather, universe] = await Promise.all([
 getJson(redis, MARKET_WEATHER_KEY, null).catch(() => null),
 getJson(redis, MARKET_UNIVERSE_KEY, null).catch(() => null)
 ]);
-return extractMarketWeatherShape(weather || {}, universe || {});
+return { ...extractMarketWeatherShape(weather || {}, universe || {}), redisSource };
 }
+function marketContextNeedsRefresh(context = {}) {
+return !context.ok || context.stale || context.regime === 'UNKNOWN' || context.trendSide === 'UNKNOWN';
+}
+async function loadMarketContext() {
+const durableRedis = getDurableRedis();
+let context = await readMarketContextFromRedis(durableRedis, 'DURABLE_REDIS');
+if (marketContextNeedsRefresh(context)) {
+try {
+const marketModule = await import('../market/marketWeather.js');
+if (typeof marketModule.getMarketWeather === 'function') {
+const refreshed = await marketModule.getMarketWeather({
+redis: durableRedis,
+refresh: true,
+save: true,
+allowStale: false
+});
+context = {
+...extractMarketWeatherShape(refreshed || {}, refreshed?.marketUniverse || refreshed?.universe || {}),
+redisSource: 'DURABLE_REDIS_REFRESHED'
+};
+}
+} catch (error) {
+context.refreshError = error?.message || String(error);
+}
+}
+if (marketContextNeedsRefresh(context)) {
+const volatileContext = await readMarketContextFromRedis(getVolatileRedis(), 'VOLATILE_REDIS_FALLBACK');
+if (!marketContextNeedsRefresh(volatileContext) || !context.ok) context = volatileContext;
+}
+return context;
+}
+
 function scoreMarketFit(row = {}, marketContext = {}) {
 if (!marketContext?.ok) {
 return {
