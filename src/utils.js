@@ -1348,10 +1348,10 @@ export function classifyBtcState({ change24 = 0, change1h = 0 } = {}) {
     const ch1 = safeNumber(change1h);
 
 
-    if (ch24 > 1.5 && ch1 > 0.5) return 'STRONG_BEAR';
-    if (ch24 < -1.5 && ch1 < -0.5) return 'STRONG_BULL';
-    if (ch24 > 0.6 || ch1 > 0.25) return 'BEARISH';
-    if (ch24 < -0.6 || ch1 < -0.25) return 'BULLISH';
+    if (ch24 > 1.5 && ch1 > 0.5) return 'STRONG_BULL';
+    if (ch24 < -1.5 && ch1 < -0.5) return 'STRONG_BEAR';
+    if (ch24 > 0.6 || ch1 > 0.25) return 'BULLISH';
+    if (ch24 < -0.6 || ch1 < -0.25) return 'BEARISH';
 
 
     return 'NEUTRAL';
