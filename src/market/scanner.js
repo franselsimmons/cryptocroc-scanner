@@ -77,6 +77,7 @@ const NON_CRYPTO_BASE_SYMBOLS = new Set([
 'EUR','GBP','JPY','CHF','AUD','CAD','NZD'
 ]);
 const MARKET_DATA_UNIT_VERSION = 'MARKET_DATA_FUTURES_OPEN24H_RWA_FAIL_CLOSED_V3';
+const CANONICAL_MARKET_WEATHER_WRITER_VERSION = 'LONG_SCANNER_CANONICAL_MARKET_WEATHER_WRITER_V4';
 function now() {
 return Date.now();
 }
@@ -2455,42 +2456,51 @@ completedAt,
 btcContext,
 options = {}
 }) {
-const keys = marketWeatherKeys(options);
-const payload = buildMarketWeatherPayload({
-rows,
+try {
+const marketWeatherModule = await import('./marketWeather.js');
+if (
+typeof marketWeatherModule.buildMarketWeatherFromTickers !== 'function' ||
+typeof marketWeatherModule.saveMarketWeather !== 'function'
+) {
+throw new Error('LONG_CANONICAL_MARKET_WEATHER_EXPORTS_MISSING');
+}
+const canonicalPayload = marketWeatherModule.buildMarketWeatherFromTickers(rows, {
+source: 'SCANNER_MARKET_UNIVERSE',
+sourceKey: marketUniverseKeys(options)[0] || null,
 snapshotId,
-startedAt,
-completedAt,
-btcContext
+generatedAt: completedAt,
+limit: Math.max(1, rows.length)
 });
-const ttlSec = marketWeatherTtlSec();
-const savedKeys = [];
-for (const key of keys) {
-await setMarketWeatherJson(
-redis,
-key,
-{
-...payload,
+const payload = {
+...canonicalPayload,
+scannerStartedAt: startedAt,
+scannerCompletedAt: completedAt,
+scannerBtcContext: btcContext,
+marketWeatherWriterVersion: CANONICAL_MARKET_WEATHER_WRITER_VERSION,
 redisNamespace: LONG_NAMESPACE,
 redisKeyPrefix: LONG_KEY_PREFIX
-},
-{
-ex: ttlSec
-},
-{
-allowedKeys: keys,
-role: 'LONG_MARKET_WEATHER_LATEST'
-}
-);
-
-savedKeys.push(key);
-}
+};
+const saved = await marketWeatherModule.saveMarketWeather(payload, { redis });
 return {
-ok: savedKeys.length > 0,
-savedKeys,
-payload
+ok: saved?.ok === true,
+savedKeys: Array.isArray(saved?.savedKeys) ? saved.savedKeys : [],
+payload: saved?.payload || payload,
+writerRole: 'LONG_MARKET_WEATHER_LATEST',
+marketWeatherWriterVersion: CANONICAL_MARKET_WEATHER_WRITER_VERSION
+};
+} catch (error) {
+return {
+ok: false,
+skipped: true,
+reason: 'LONG_CANONICAL_MARKET_WEATHER_WRITE_FAILED',
+error: error?.message || String(error),
+savedKeys: [],
+payload: null,
+marketWeatherWriterVersion: CANONICAL_MARKET_WEATHER_WRITER_VERSION
 };
 }
+}
+
 export async function runScanner(options = {}) {
 const redis = getVolatileRedis();
 const marketRedis = getDurableRedis();
