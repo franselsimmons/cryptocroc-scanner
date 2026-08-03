@@ -56,12 +56,14 @@ const SETUPS = new Set(SETUP_ORDER);
 const REGIMES = new Set(REGIME_ORDER);
 const CONFIRMATIONS = new Set(CONFIRMATION_PROFILE_ORDER);
 const NON_CRYPTO_BASE_SYMBOLS = new Set([
-'AAPL','AMZN','GOOG','GOOGL','META','MSFT','NVDA','TSLA','NFLX','AMD','INTC','AVGO','ORCL','CRM','COIN','MSTR','HOOD','PLTR',
-'SPY','QQQ','DIA','IWM','VOO','VTI','ARKK','GLD','SLV','TLT','EEM','VIX','DXY','USO','SOXL','SOXS','KORU','SPCX',
-'MU','SNDK','SKHY','SKHYNIX','SAMSUNG','DRAM','SNXX','NBIS','MRVL','BANK','CRC','CRCL','CLUS','XAU','XAG',
-'XAUT','PAXG','WTI','BRENT','EUR','GBP','JPY','CHF','AUD','CAD','NZD'
+'AAPL','AMZN','GOOG','GOOGL','META','MSFT','NVDA','TSLA','NFLX','AMD','INTC','AVGO',
+'ORCL','CRM','COIN','MSTR','HOOD','PLTR','SPY','QQQ','DIA','IWM','VOO','VTI',
+'ARKK','GLD','SLV','TLT','EEM','VIX','DXY','USO','SOXL','SOXS','KORU','SPCX',
+'SPX','MU','MUU','SNDK','SKHY','SKHYNIX','SAMSUNG','DRAM','SNXX','NBIS','MRVL','BANK',
+'CRC','CRCL','CBRS','BZ','CL','CLUS','XAU','XAG','XAUT','PAXG','WTI','BRENT',
+'EUR','GBP','JPY','CHF','AUD','CAD','NZD'
 ]);
-const MARKET_DATA_UNIT_VERSION = 'MARKET_DATA_PERCENT_POINTS_RWA_FILTER_V2';
+const MARKET_DATA_UNIT_VERSION = 'MARKET_DATA_FUTURES_OPEN24H_RWA_FAIL_CLOSED_V3';
 const WEATHER_REGIME = Object.freeze({
 TREND: 'TREND',
 CHOP: 'CHOP',
@@ -565,6 +567,7 @@ absChange24h: Math.abs(change24h),
 rangePct,
 atrPct,
 realizedVolPct,
+marketDataUnitVersion: MARKET_DATA_UNIT_VERSION,
 quoteVolume,
 baseVolume,
 spreadPct: safeNumber(row.spreadPct ?? row.spread ?? row.bidAskSpreadPct, 0),
