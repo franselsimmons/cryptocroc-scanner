@@ -5691,12 +5691,7 @@ ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Copy</button>
           rotation.dashboard?.activeTemporalGeneration?.weekCompositionProposals,
           rotation.activeTemporalGeneration?.weekCompositionProposals
         ];
-        const proposals = candidates.find(Array.isArray) || [];
-        return proposals.filter((proposal) => {
-          const slotCount = Object.keys(proposal?.slots || {}).length;
-          const activeSlots = Number(proposal?.summary?.activeSlots ?? slotCount);
-          return slotCount > 0 || activeSlots > 0;
-        });
+        return candidates.find(Array.isArray) || [];
     }
 
     function activeWeekComposition(rotation = state.rotation || {}) {
@@ -5806,43 +5801,111 @@ ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Copy</button>
         return "UNKNOWN";
     }
 
-    function currentCompositionWeatherKey() {
-        const market = state.market || {};
-        const source = market.currentMarketWeather || market.marketWeather || market.weather || market.raw || market;
-        const regime = normalizeCompositionRegime(
-          market.regime || market.currentRegime || market.marketRegime || source?.regime || source?.currentRegime
-        );
-        const side = normalizeCompositionTrendSide(
-          market.trendSide || market.currentTrendSide || market.marketSide || source?.trendSide || source?.currentTrendSide
-        );
-        return regime === "UNKNOWN" || side === "UNKNOWN" ? "UNKNOWN" : `${regime}|${side}`;
-    }
-
-    function currentCompositionBtcState() {
-        const market = state.market || {};
-        const source = market.currentMarketWeather || market.marketWeather || market.weather || market.raw || market;
-        const candidates = [
-          market.btcRouterState,
-          market.btcState,
-          market.btcRelation,
-          market.btcDirection,
-          market.btcTrendSide,
-          source?.btcRouterState,
-          source?.btcState,
-          source?.btcRelation,
-          source?.btcDirection,
-          source?.btcTrendSide,
-          source?.btc?.state,
-          source?.btc?.direction
-        ];
-        for (const value of candidates) {
-          const normalized = normalizeCompositionBtcState(value);
+    function firstKnownCompositionValue(normalizer, values = []) {
+        for (const value of values) {
+          const normalized = normalizer(value);
           if (normalized !== "UNKNOWN") return normalized;
         }
         return "UNKNOWN";
     }
 
-    function compositionPlanCard(proposal, active, selected) {
+    function compositionObjectCandidates(market = {}) {
+        const values = [
+          market,
+          market.source,
+          market.raw,
+          market.currentMarketWeather,
+          market.marketWeather,
+          market.weather,
+          market.latest,
+          market.snapshot,
+          market.source?.currentMarketWeather,
+          market.source?.marketWeather,
+          market.source?.weather,
+          market.raw?.currentMarketWeather,
+          market.raw?.marketWeather,
+          market.raw?.weather
+        ];
+        return values.filter((value, index) =>
+          value && typeof value === "object" && !Array.isArray(value) && values.indexOf(value) === index
+        );
+    }
+
+    function currentCompositionWeatherKey() {
+        const market = state.market || {};
+        const candidates = compositionObjectCandidates(market);
+
+        const explicitKeys = [];
+        for (const candidate of candidates) {
+          explicitKeys.push(
+            candidate?.currentMarketWeatherKey,
+            candidate?.marketWeatherKey,
+            candidate?.entryMarketWeatherKey,
+            candidate?.marketWeatherProfileKey
+          );
+        }
+        for (const value of explicitKeys) {
+          const raw = upper(value);
+          if (!raw.includes("|")) continue;
+          const [regimePart, sidePart] = raw.split("|");
+          const regime = normalizeCompositionRegime(regimePart);
+          const side = normalizeCompositionTrendSide(sidePart);
+          if (regime !== "UNKNOWN" && side !== "UNKNOWN") return `${regime}|${side}`;
+        }
+
+        const regimeValues = [];
+        const sideValues = [];
+        for (const candidate of candidates) {
+          regimeValues.push(
+            candidate?.currentRegime,
+            candidate?.regime,
+            candidate?.marketRegime,
+            candidate?.breadthRegime,
+            candidate?.volatilityRegime
+          );
+          sideValues.push(
+            candidate?.currentTrendSide,
+            candidate?.trendSide,
+            candidate?.marketTrendSide,
+            candidate?.marketSide,
+            candidate?.side,
+            candidate?.direction,
+            candidate?.breadthSide
+          );
+        }
+        const regime = firstKnownCompositionValue(normalizeCompositionRegime, regimeValues);
+        const side = firstKnownCompositionValue(normalizeCompositionTrendSide, sideValues);
+        return regime === "UNKNOWN" || side === "UNKNOWN" ? "UNKNOWN" : `${regime}|${side}`;
+    }
+
+    function currentCompositionBtcState() {
+        const market = state.market || {};
+        const candidates = compositionObjectCandidates(market);
+        const values = [];
+        for (const candidate of candidates) {
+          values.push(
+            candidate?.btcRouterState,
+            candidate?.currentBtcRouterState,
+            candidate?.btcState,
+            candidate?.btcRelation,
+            candidate?.currentBtcRelation,
+            candidate?.btcDirection,
+            candidate?.btcTrendSide,
+            candidate?.btc?.btcRouterState,
+            candidate?.btc?.btcState,
+            candidate?.btc?.state,
+            candidate?.btc?.direction,
+            candidate?.btc?.trendSide,
+            candidate?.btcContext?.btcRouterState,
+            candidate?.btcContext?.btcState,
+            candidate?.btcContext?.direction,
+            candidate?.btcContext?.trendSide
+          );
+        }
+        return firstKnownCompositionValue(normalizeCompositionBtcState, values);
+    }
+
+function compositionPlanCard(proposal, active, selected) {
         const summary = proposal?.summary || {};
         const impact = proposal?.btcRouterImpact || summary?.btcRouterImpact || {};
         const isActive = active && (
@@ -6151,7 +6214,7 @@ ${isSelectableTrueMicroId(id) ? "" : "disabled"}>Copy</button>
               selectedMode: proposal?.mode || null,
               activeCompositionId: active?.compositionId || null,
               activeBaseCompositionId: active?.baseCompositionId || null,
-              generationId: proposal?.generationId || null,
+              generationId: proposal?.generationId || active?.generationId || state.rotation?.activeTemporalGenerationId || state.rotation?.validFrom?.activeTemporalGenerationId || null,
               currentMarketWeatherKey: currentWeather,
               currentBtcRouterState: currentBtc,
               selectedMarketWeatherKey: state.compositionSelectedWeather,
