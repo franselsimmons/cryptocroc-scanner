@@ -66,17 +66,17 @@ const LONG_MARKET_WEATHER_KEY = `${LONG_KEY_PREFIX}MARKET:WEATHER:LATEST`;
 const TRUE_VALUES = new Set(['true', '1', 'yes', 'y', 'on']);
 const FALSE_VALUES = new Set(['false', '0', 'no', 'n', 'off']);
 const BLOCKED_BASE_SYMBOLS = new Set([
-'USDT',
-'USDC',
-'USD',
-'BUSD',
-'FDUSD',
-'TUSD',
-'DAI',
-'EUR',
-'TRY',
-'BRL'
+'USDT','USDC','USD','BUSD','FDUSD','TUSD','DAI','EUR','TRY','BRL'
 ]);
+const NON_CRYPTO_BASE_SYMBOLS = new Set([
+'AAPL','AMZN','GOOG','GOOGL','META','MSFT','NVDA','TSLA','NFLX','AMD','INTC','AVGO',
+'ORCL','CRM','COIN','MSTR','HOOD','PLTR','SPY','QQQ','DIA','IWM','VOO','VTI',
+'ARKK','GLD','SLV','TLT','EEM','VIX','DXY','USO','SOXL','SOXS','KORU','SPCX',
+'SPX','MU','MUU','SNDK','SKHY','SKHYNIX','SAMSUNG','DRAM','SNXX','NBIS','MRVL','BANK',
+'CRC','CRCL','CBRS','BZ','CL','CLUS','XAU','XAG','XAUT','PAXG','WTI','BRENT',
+'EUR','GBP','JPY','CHF','AUD','CAD','NZD'
+]);
+const MARKET_DATA_UNIT_VERSION = 'MARKET_DATA_FUTURES_OPEN24H_RWA_FAIL_CLOSED_V3';
 function now() {
 return Date.now();
 }
@@ -647,9 +647,9 @@ if (!value.endsWith('USDT')) return value;
 return value.slice(0, -4);
 }
 function isBlockedBaseSymbol(baseSymbol = '') {
-const base = String(baseSymbol || '').trim().toUpperCase();
+const base = normalizeBaseSymbol(baseSymbol);
 if (!base) return true;
-return BLOCKED_BASE_SYMBOLS.has(base);
+return BLOCKED_BASE_SYMBOLS.has(base) || NON_CRYPTO_BASE_SYMBOLS.has(base);
 }
 function isValidUsdtFuturesContractSymbol(symbol = '') {
 const value = String(symbol || '').trim().toUpperCase();
@@ -675,7 +675,18 @@ if (Number.isFinite(n)) return n;
 }
 return 0;
 }
+function isExplicitRwaTicker(row = {}) {
+const raw = row?.raw && typeof row.raw === 'object' ? row.raw : {};
+const flag = String(
+row.isRwa ?? row.rwa ?? row.isRWA ?? raw.isRwa ?? raw.rwa ?? raw.isRWA ?? ''
+).trim().toUpperCase();
+if (['YES','TRUE','1','RWA'].includes(flag)) return true;
+const instrumentClass = String(row.instrumentClass ?? raw.instrumentClass ?? '').trim().toUpperCase();
+if (instrumentClass.includes('NON_CRYPTO') || instrumentClass.includes('RWA') || instrumentClass.includes('STOCK')) return true;
+return row.cryptoBreadthEligible === false || raw.cryptoBreadthEligible === false;
+}
 function normalizeScannerTicker(rawTicker = {}) {
+if (isExplicitRwaTicker(rawTicker)) return null;
 const parsed = parseTicker(rawTicker);
 const contractSymbol = normalizeContractSymbol(
 parsed.contractSymbol ||
@@ -727,6 +738,16 @@ const volume24h = quoteVolumeRaw > 0
 ? quoteVolumeRaw
 : baseVolume * price;
 const parsedChange24h = Number(parsed.change24h);
+const open24h = firstPositiveNumber(
+parsed.open24h,
+rawTicker.open24h,
+rawTicker.openPrice24h,
+rawTicker.open,
+rawTicker.openUtc
+);
+const calculatedChange24h = price > 0 && open24h > 0
+? ((price - open24h) / open24h) * 100
+: Number.NaN;
 const rawChange = firstFiniteNumber(
 rawTicker.change24h,
 rawTicker.changeUtc24h,
@@ -734,10 +755,10 @@ rawTicker.priceChangePercent,
 rawTicker.priceChange24h,
 rawTicker.chgUtc
 );
-const change24h = Number.isFinite(parsedChange24h)
+const change24h = Number.isFinite(calculatedChange24h) && Math.abs(calculatedChange24h) <= 200
+? calculatedChange24h
+: Number.isFinite(parsedChange24h)
 ? parsedChange24h
-: Math.abs(rawChange) <= 1
-? rawChange * 100
 : rawChange;
 return {
 ...parsed,
@@ -750,7 +771,11 @@ volume24h,
 quoteVolume: volume24h,
 quoteVolume24h: volume24h,
 baseVolume,
+open24h,
 change24h,
+instrumentClass: 'CRYPTO',
+cryptoBreadthEligible: true,
+marketDataUnitVersion: MARKET_DATA_UNIT_VERSION,
 raw: rawTicker.raw || rawTicker,
 ...sideFlags(),
 scannerOnly: true,
@@ -1403,6 +1428,7 @@ actualScannerSide: 'market',
 marketUniverseRole: 'MARKET_WEATHER_INPUT',
 marketWeatherInput: true,
 usedForMarketWeather: true,
+marketDataUnitVersion: MARKET_DATA_UNIT_VERSION,
 ...buildTemporalContextUtc(startedAt, { snapshotId, source: 'SCANNER_MARKET_UNIVERSE' }),
 
 source: 'SCANNER_MARKET_UNIVERSE',
