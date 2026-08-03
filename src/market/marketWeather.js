@@ -64,8 +64,10 @@ const NON_CRYPTO_BASE_SYMBOLS = new Set([
 'EUR','GBP','JPY','CHF','AUD','CAD','NZD'
 ]);
 const MARKET_DATA_UNIT_VERSION = 'MARKET_DATA_FUTURES_OPEN24H_RWA_FAIL_CLOSED_V3';
-const MARKET_WEATHER_NORMALIZATION_VERSION = 'LONG_MARKET_WEATHER_CANONICAL_NESTED_BTC_V5';
-const BTC_CONTEXT_CANONICALIZATION_VERSION = 'LONG_BTC_CONTEXT_TOP_LEVEL_EQUALS_NESTED_V5';
+const MARKET_WEATHER_NORMALIZATION_VERSION = 'LONG_MARKET_WEATHER_CANONICAL_CONTEXT_V8';
+const BTC_CONTEXT_CANONICALIZATION_VERSION = 'LONG_BTC_CONTEXT_TOP_LEVEL_EQUALS_NESTED_V8';
+const MARKET_TREND_CONTEXT_CANONICALIZATION_VERSION =
+'LONG_MARKET_TREND_SIDE_NO_UNDEFINED_V8';
 const WEATHER_REGIME = Object.freeze({
 TREND: 'TREND',
 CHOP: 'CHOP',
@@ -903,8 +905,67 @@ FIT_LABEL.MISFIT,
 FIT_LABEL.UNKNOWN
 ];
 }
+const BLOCKED_LONG_MODE_MARKET_KEYS = new Set([
+'currentRegime',
+'regime',
+'marketRegime',
+'breadthRegime',
+'volatilityRegime',
+'currentTrendSide',
+'trendSide',
+'marketTrendSide',
+'marketSide',
+'breadthSide',
+'currentMarketWeatherKey',
+'marketWeatherKey',
+'btcRouterState',
+'currentBtcRouterState',
+'btcState',
+'btcDirection',
+'btcTrendSide',
+'currentBtcRelation',
+'currentFlow',
+'flow',
+'currentVolatilityState',
+'volatilityState',
+'currentMarketFitConfidence',
+'confidence',
+'weatherConfidence',
+'currentFit',
+'longCurrentFit',
+'shortCurrentFit',
+'bullCurrentFit',
+'bearCurrentFit',
+'bullishCurrentFit',
+'bearishCurrentFit',
+'bullishPct',
+'bearishPct',
+'neutralPct',
+'squeezePct',
+'sampleSize',
+'universeSize',
+'universeCount',
+'count',
+'breadth',
+'btc',
+'symbols',
+'rows',
+'universe',
+'generatedAt',
+'updatedAt',
+'createdAt',
+'savedAt',
+'loadedAt'
+]);
+function sanitizeLongModeRuntime(runtime = {}) {
+if (!runtime || typeof runtime !== 'object') return {};
+return Object.fromEntries(
+Object.entries(runtime).filter(([key]) => !BLOCKED_LONG_MODE_MARKET_KEYS.has(key))
+);
+}
 function longModeFlags() {
 const runtime = temporalRuntimeConfig();
+const safeRuntime = sanitizeLongModeRuntime(runtime);
 return {
 targetTradeSide: TARGET_TRADE_SIDE,
 targetScannerSide: TARGET_SCANNER_SIDE,
@@ -921,7 +982,7 @@ longOnly: true,
 shortDisabled: true,
 shortOnly: false,
 longDisabled: false,
-...runtime,
+...safeRuntime,
 temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
 temporalPolicyVersion: TEMPORAL_POLICY_VERSION,
 weekendPolicyVersion: WEEKEND_POLICY_VERSION,
@@ -991,6 +1052,8 @@ sourceKey = null
 } = {}) {
 const ts = now();
 return {
+...buildTemporalContextUtc(ts, { source: 'EMPTY_MARKET_WEATHER' }),
+...longModeFlags(),
 ok: false,
 available: false,
 
@@ -1074,9 +1137,7 @@ previousMeasurementFixVersion: PREVIOUS_MEASUREMENT_FIX_VERSION,
 exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
 avgCostRRequiredBeforeAdaptiveSelection: true,
 directSLRequiredBeforeAdaptiveSelection: true,
-observationDedupeRequiredBeforeAdaptiveSelection: true,
-...buildTemporalContextUtc(ts, { source: 'EMPTY_MARKET_WEATHER' }),
-...longModeFlags()
+observationDedupeRequiredBeforeAdaptiveSelection: true
 };
 }
 function btcRouterStateFromTrendSide(value = '') {
@@ -1099,6 +1160,42 @@ return firstKnownWeatherValue(btcRouterStateFromTrendSide, ...values);
 function firstKnownBtcDirection(...values) {
 return firstKnownWeatherValue(normalizeWeatherTrendSide, ...values);
 }
+function canonicalizeMarketTrendSide({
+regime,
+requestedTrendSide,
+advanceRatio = 0,
+declineRatio = 0,
+btcDirection = TREND_SIDE.UNKNOWN
+} = {}) {
+const normalizedRegime = normalizeWeatherRegime(regime);
+const requested = normalizeWeatherTrendSide(requestedTrendSide);
+
+if (
+normalizedRegime === WEATHER_REGIME.CHOP ||
+normalizedRegime === WEATHER_REGIME.SQUEEZE
+) {
+return TREND_SIDE.NEUTRAL;
+}
+
+if (normalizedRegime !== WEATHER_REGIME.TREND) {
+return TREND_SIDE.UNKNOWN;
+}
+
+if (requested === TREND_SIDE.LONG || requested === TREND_SIDE.SHORT) {
+return requested;
+}
+
+const advance = safeNumber(advanceRatio, 0);
+const decline = safeNumber(declineRatio, 0);
+
+if (advance > decline) return TREND_SIDE.LONG;
+if (decline > advance) return TREND_SIDE.SHORT;
+
+const btc = normalizeWeatherTrendSide(btcDirection);
+if (btc === TREND_SIDE.LONG || btc === TREND_SIDE.SHORT) return btc;
+
+return TREND_SIDE.NEUTRAL;
+}
 function normalizeMarketWeatherPayload(weather = {}) {
 if (!weather || typeof weather !== 'object') {
 return emptyWeather({
@@ -1115,14 +1212,11 @@ weather.marketRegime,
 weather.breadthRegime,
 weather.volatilityRegime
 );
-const currentTrendSide = firstKnownWeatherValue(
+const requestedTrendSide = firstKnownWeatherValue(
 normalizeWeatherTrendSide,
 weather.currentTrendSide,
 weather.trendSide,
 weather.marketTrendSide,
-weather.marketSide,
-weather.side,
-weather.direction,
 weather.breadthSide
 );
 const currentFlow = normalizeWeatherFlow(weather.currentFlow || weather.flow);
@@ -1162,8 +1256,27 @@ const neutralRatio = weather.breadth?.neutralRatio !== undefined
 
 ? neutralPctRaw / 100
 : 0;
+
+const preliminaryBtcDirection = firstKnownBtcDirection(
+weather.btcDirection,
+weather.btcTrendSide,
+weather.btc?.direction,
+weather.btc?.trendSide,
+weather.btcState,
+weather.btcRouterState
+);
+
+const currentTrendSide = canonicalizeMarketTrendSide({
+regime: currentRegime,
+requestedTrendSide,
+advanceRatio,
+declineRatio,
+btcDirection: preliminaryBtcDirection
+});
+
 const normalized = {
 ...weather,
+...longModeFlags(),
 ok: weather.ok !== false && sampleSize > 0,
 available: weather.available !== false && sampleSize > 0,
 version: weather.version || MARKET_WEATHER_VERSION,
@@ -1339,8 +1452,7 @@ trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
 childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
 parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
 learningGranularity: LEARNING_GRANULARITY,
-parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
-...longModeFlags()
+parentLearningGranularity: PARENT_LEARNING_GRANULARITY
 };
 // Final invariant: every consumer must receive one identical BTC context.
 // A literal UNKNOWN in the nested object may never override a known top-level value.
@@ -1379,6 +1491,32 @@ btcRouterState: canonicalBtcRouterState,
 contextCanonicalized: true,
 contextCanonicalizationVersion: BTC_CONTEXT_CANONICALIZATION_VERSION
 };
+// Final invariant: canonical market fields win over identity and temporal flags.
+const canonicalMarketTrendSide = canonicalizeMarketTrendSide({
+regime: normalized.currentRegime,
+requestedTrendSide: normalized.currentTrendSide,
+advanceRatio: normalized.breadth?.advanceRatio,
+declineRatio: normalized.breadth?.declineRatio,
+btcDirection: canonicalBtcDirection
+});
+normalized.currentTrendSide = canonicalMarketTrendSide;
+normalized.trendSide = trendSideForDashboard(canonicalMarketTrendSide);
+normalized.marketTrendSide = trendSideForDashboard(canonicalMarketTrendSide);
+normalized.currentMarketWeatherKey =
+normalized.currentRegime !== WEATHER_REGIME.UNKNOWN &&
+canonicalMarketTrendSide !== TREND_SIDE.UNKNOWN
+? `${normalized.currentRegime}|${canonicalMarketTrendSide}`
+: 'UNKNOWN';
+normalized.marketWeatherKey = normalized.currentMarketWeatherKey;
+normalized.marketTrendContextCanonicalized = true;
+normalized.marketTrendContextCanonicalizationVersion =
+MARKET_TREND_CONTEXT_CANONICALIZATION_VERSION;
+normalized.marketContextMergeOrder =
+'IDENTITY_FLAGS_FIRST_CANONICAL_MARKET_FIELDS_LAST_V8';
+normalized.longModeRuntimeSanitized = true;
+normalized.longModeRuntimeSanitizationVersion =
+'LONG_MODE_RUNTIME_MARKET_KEYS_BLOCKED_V1';
+
 if (
 normalized.currentRegime === WEATHER_REGIME.UNKNOWN &&
 normalized.currentTrendSide === TREND_SIDE.UNKNOWN &&
@@ -1637,6 +1775,7 @@ redis = getDurableRedis(),
 keys = defaultWeatherKeys()
 } = {}) {
 const payload = normalizeMarketWeatherPayload({
+...longModeFlags(),
 ...weather,
 savedAt: now(),
 version: weather.version || MARKET_WEATHER_VERSION,
@@ -1656,8 +1795,7 @@ currentFitScoreBuilt: false,
 parentDiversificationBuilt: false,
 measurementFixVersion: MEASUREMENT_FIX_VERSION,
 previousMeasurementFixVersion: PREVIOUS_MEASUREMENT_FIX_VERSION,
-exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
-...longModeFlags()
+exitFillModelVersion: EXIT_FILL_MODEL_VERSION
 });
 const savedKeys = [];
 for (const key of keys) {
@@ -1689,6 +1827,7 @@ rawWeather.updatedAt || rawWeather.savedAt || rawWeather.completedAt, 0);
 const ageMs = generatedAt > 0 ? now() - generatedAt : null;
 const stale = ageMs !== null ? ageMs > maxAgeMs : true;
 return normalizeMarketWeatherPayload({
+...longModeFlags(),
 ...rawWeather,
 loadedFromKey: namespacedLongKey(key),
 loadedAt: now(),
@@ -1700,8 +1839,7 @@ blocksLearning: false,
 currentFitSoftOnly: true,
 currentFitBlocksLearning: false,
 currentFitBlocksVirtualLearning: false,
-currentFitBlocksShadowLearning: false,
-...longModeFlags()
+currentFitBlocksShadowLearning: false
 });
 } catch {
 // Try next key.
@@ -1984,6 +2122,7 @@ const weatherRow = normalizeMarketWeatherPayload(weather);
 return {
 ...buildTemporalContextUtc(weatherRow.generatedAt || weatherRow.updatedAt ||
 now(), { snapshotId: weatherRow.snapshotId, source: 'COMPACT_MARKET_WEATHER' }),
+...longModeFlags(),
 version: weatherRow.version || MARKET_WEATHER_VERSION,
 generatedAt: weatherRow.generatedAt || weatherRow.updatedAt || null,
 currentRegime: weatherRow.currentRegime || WEATHER_REGIME.UNKNOWN,
@@ -2022,8 +2161,7 @@ currentFitBlocksVirtualLearning: false,
 currentFitBlocksShadowLearning: false,
 currentFitPolarity: 'BULLISH_POSITIVE_BEARISH_NEGATIVE',
 currentFitDefinition: 'LONG_MIRRORED_CURRENT_FIT',
-learningRemainsBroad: true,
-...longModeFlags()
+learningRemainsBroad: true
 };
 }
 export function annotateWithCurrentFit(row = {}, weather = {}) {
@@ -2032,6 +2170,7 @@ const fit = computeCurrentFit(row, weatherRow);
 const entryMarketWeather = compactMarketWeatherForEntry(weatherRow);
 return {
 ...row,
+...longModeFlags(),
 
 entryMarketWeather,
 entryCurrentRegime: entryMarketWeather.currentRegime,
@@ -2079,8 +2218,7 @@ adaptiveScore: row.adaptiveScore ?? null,
 currentFitScoreBuilt: false,
 measurementFixVersion: MEASUREMENT_FIX_VERSION,
 previousMeasurementFixVersion: PREVIOUS_MEASUREMENT_FIX_VERSION,
-exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
-...longModeFlags()
+exitFillModelVersion: EXIT_FILL_MODEL_VERSION
 };
 }
 export async function getMarketWeather({
