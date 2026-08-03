@@ -39,6 +39,15 @@ funding: 60_000,
 
 contracts: 10 * 60_000
 };
+const NON_CRYPTO_RWA_BASE_SYMBOLS = new Set([
+'AAPL','AMZN','GOOG','GOOGL','META','MSFT','NVDA','TSLA','NFLX','AMD','INTC','AVGO',
+'ORCL','CRM','COIN','MSTR','HOOD','PLTR','SPY','QQQ','DIA','IWM','VOO','VTI',
+'ARKK','GLD','SLV','TLT','EEM','VIX','DXY','USO','SOXL','SOXS','KORU','SPCX',
+'SPX','MU','MUU','SNDK','SKHY','SKHYNIX','SAMSUNG','DRAM','SNXX','NBIS','MRVL','BANK',
+'CRC','CRCL','CBRS','BZ','CL','CLUS','XAU','XAG','XAUT','PAXG','WTI','BRENT',
+'EUR','GBP','JPY','CHF','AUD','CAD','NZD'
+]);
+const MARKET_DATA_UNIT_VERSION = 'MARKET_DATA_FUTURES_OPEN24H_RWA_FAIL_CLOSED_V3';
 const MARKET_PATH_PREFIXES = [
 '/api/v2/mix/market/'
 ];
@@ -406,7 +415,9 @@ row.reality ??
 row.realityType ??
 ''
 ).trim().toUpperCase();
-return ['YES', 'TRUE', '1', 'STOCK', 'REALITY'].includes(realityFlag);
+if (['YES', 'TRUE', '1', 'STOCK', 'REALITY'].includes(realityFlag)) return true;
+const base = contractBaseSymbol(row);
+return NON_CRYPTO_RWA_BASE_SYMBOLS.has(base);
 }
 function isTradableBitgetContract(row = {}) {
 if (isRwaBitgetContract(row)) return false;
@@ -575,12 +586,12 @@ console.warn('BITGET_TICKER_CONTRACT_FILTER_SKIPPED', JSON.stringify({
 error: error?.message || String(error)
 }));
 }
-return tickers;
+return tickers.filter((row) => !isRwaBitgetContract(row));
 }
 return tickers.filter((row) => {
 const symbol = contractSymbolValue(row);
 if (!symbol) return false;
-return indexes.validSymbols.has(symbol);
+return indexes.validSymbols.has(symbol) && !isRwaBitgetContract(row);
 });
 }
 export async function fetchBitgetTickers() {
@@ -632,6 +643,16 @@ row.quoteTurnover,
 const quoteVolume = quoteVolumeRaw > 0
 ? quoteVolumeRaw
 : baseVolume * price;
+const open24h = safeNumber(
+row.open24h ??
+row.openPrice24h ??
+row.open ??
+row.openUtc,
+0
+);
+const calculatedChange24h = price > 0 && open24h > 0
+? ((price - open24h) / open24h) * 100
+: Number.NaN;
 const rawChange = safeNumber(
 row.change24h ??
 row.changeUtc24h ??
@@ -640,8 +661,10 @@ row.priceChange24h ??
 row.chgUtc,
 0
 );
-const change24h = Math.abs(rawChange) <= 1
-? rawChange * 100
+// Bitget USDT-futures ticker change24h is already expressed in percentage points.
+// Prefer the price/open24h calculation so field-unit ambiguity cannot multiply the move twice.
+const change24h = Number.isFinite(calculatedChange24h) && Math.abs(calculatedChange24h) <= 200
+? calculatedChange24h
 : rawChange;
 
 return {
@@ -650,7 +673,9 @@ contractSymbol,
 baseSymbol,
 price,
 volume24h: quoteVolume,
+open24h,
 change24h,
+marketDataUnitVersion: MARKET_DATA_UNIT_VERSION,
 source: 'BITGET_MARKET_DATA',
 marketDataOnly: true,
 ...longCandidateMeta(change24h),
