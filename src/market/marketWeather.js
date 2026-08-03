@@ -55,6 +55,13 @@ const CONFIRMATION_PROFILE_ORDER = Object.freeze([
 const SETUPS = new Set(SETUP_ORDER);
 const REGIMES = new Set(REGIME_ORDER);
 const CONFIRMATIONS = new Set(CONFIRMATION_PROFILE_ORDER);
+const NON_CRYPTO_BASE_SYMBOLS = new Set([
+'AAPL','AMZN','GOOG','GOOGL','META','MSFT','NVDA','TSLA','NFLX','AMD','INTC','AVGO','ORCL','CRM','COIN','MSTR','HOOD','PLTR',
+'SPY','QQQ','DIA','IWM','VOO','VTI','ARKK','GLD','SLV','TLT','EEM','VIX','DXY','USO','SOXL','SOXS','KORU','SPCX',
+'MU','SNDK','SKHY','SKHYNIX','SAMSUNG','DRAM','SNXX','NBIS','MRVL','BANK','CRC','CRCL','CLUS','XAU','XAG',
+'XAUT','PAXG','WTI','BRENT','EUR','GBP','JPY','CHF','AUD','CAD','NZD'
+]);
+const MARKET_DATA_UNIT_VERSION = 'MARKET_DATA_PERCENT_POINTS_RWA_FILTER_V2';
 const WEATHER_REGIME = Object.freeze({
 TREND: 'TREND',
 CHOP: 'CHOP',
@@ -511,59 +518,46 @@ return n;
 }
 function normalizeTicker(row = {}) {
 const symbol = tickerSymbol(row);
-const change1h = normalizeChangePct(
-row.change1h,
-row.change1hPct,
-row.priceChange1hPct,
-row.pctChange1h,
-row.return1h,
-row.ret1h
-);
-const change24h = normalizeChangePct(
-row.change24h,
-row.change24hPct,
-row.priceChange24hPct,
-row.priceChangePercent,
-row.pctChange24h,
-row.return24h,
-row.ret24h
-);
-const rangePct = normalizeChangePct(
-row.rangePct,
-row.range24hPct,
-row.dailyRangePct,
-row.highLowRangePct
-);
-const atrPct = normalizeChangePct(
-row.atrPct,
-row.atrPercent,
-row.atrPct14
-
-);
-const realizedVolPct = normalizeChangePct(
-row.realizedVolPct,
-row.realizedVolatilityPct,
-row.volatilityPct
-);
+const baseSymbol = normalizeSymbol(row.baseSymbol || symbol.replace(/USDT$|USDC$|USD$/g, ''));
+const percentPoint = (value, fallback = 0) => {
+if (value === undefined || value === null || value === '') return fallback;
+const parsed = Number(String(value).replace('%', '').trim());
+return Number.isFinite(parsed) ? parsed : fallback;
+};
+const ratioToPct = (value, fallback = 0) => {
+if (value === undefined || value === null || value === '') return fallback;
+const parsed = Number(String(value).replace('%', '').trim());
+if (!Number.isFinite(parsed)) return fallback;
+return String(value).includes('%') ? parsed : Math.abs(parsed) <= 1 ? parsed * 100 : parsed;
+};
+const direct1h = firstValue(row.change1h, row.change1hPct, row.priceChange1hPct, row.pctChange1h);
+const direct24h = firstValue(row.change24h, row.change24hPct, row.priceChange24hPct, row.priceChangePercent, row.pctChange24h);
+const change1h = direct1h !== null
+? percentPoint(direct1h, 0)
+: ratioToPct(firstValue(row.return1h, row.ret1h), 0);
+const change24h = direct24h !== null
+? percentPoint(direct24h, 0)
+: ratioToPct(firstValue(row.return24h, row.ret24h), 0);
+const rangePct = percentPoint(firstValue(row.rangePct, row.range24hPct, row.dailyRangePct, row.highLowRangePct), 0);
+const atrPct = percentPoint(firstValue(row.atrPct, row.atrPercent, row.atrPct14), 0);
+const realizedVolPct = percentPoint(firstValue(row.realizedVolPct, row.realizedVolatilityPct, row.volatilityPct), 0);
 const quoteVolume = safeNumber(
-row.quoteVolume ??
-row.quoteVolume24h ??
-row.turnover24h ??
-row.volumeUsd ??
-row.volumeUSDT,
+row.quoteVolume ?? row.quoteVolume24h ?? row.turnover24h ?? row.volumeUsd ?? row.volumeUSDT,
 0
 );
-const baseVolume = safeNumber(
-row.volume ??
-row.baseVolume ??
-row.volume24h,
-0
-);
+const baseVolume = safeNumber(row.volume ?? row.baseVolume ?? row.volume24h, 0);
+const raw = row.raw && typeof row.raw === 'object' ? row.raw : {};
+const explicitNonCrypto = row.cryptoBreadthEligible === false ||
+String(row.instrumentClass || '').toUpperCase().includes('NON_CRYPTO') ||
+['YES','TRUE','1','RWA'].includes(String(row.isRwa ?? raw.isRwa ?? '').trim().toUpperCase()) ||
+['YES','TRUE','1','STOCK','REALITY'].includes(String(row.isReality ?? raw.isReality ?? '').trim().toUpperCase());
+const cryptoBreadthEligible = !explicitNonCrypto && !NON_CRYPTO_BASE_SYMBOLS.has(baseSymbol);
 return {
 raw: row,
 symbol,
-baseSymbol: normalizeSymbol(row.baseSymbol ||
-symbol.replace(/USDT$|USDC$|USD$/g, '')),
+baseSymbol,
+instrumentClass: cryptoBreadthEligible ? 'CRYPTO' : 'NON_CRYPTO_TOKENIZED',
+cryptoBreadthEligible,
 change1h,
 change24h,
 absChange1h: Math.abs(change1h),
@@ -574,7 +568,8 @@ realizedVolPct,
 quoteVolume,
 baseVolume,
 spreadPct: safeNumber(row.spreadPct ?? row.spread ?? row.bidAskSpreadPct, 0),
-updatedAt: safeNumber(row.updatedAt ?? row.ts ?? row.timestamp, 0)
+updatedAt: safeNumber(row.updatedAt ?? row.ts ?? row.timestamp, 0),
+marketDataUnitVersion: MARKET_DATA_UNIT_VERSION
 };
 }
 function extractTickerRows(input) {
@@ -1298,7 +1293,7 @@ limit = universeLimit()
 } = {}) {
 const normalized = extractTickerRows(tickers)
 .map(normalizeTicker)
-.filter((row) => row.symbol);
+.filter((row) => row.symbol && row.cryptoBreadthEligible !== false);
 const universe = topByLiquidity(normalized, limit);
 const sampleSize = universe.length;
 if (sampleSize <= 0) {
