@@ -726,15 +726,17 @@ rawTicker.quoteTurnover
 const volume24h = quoteVolumeRaw > 0
 ? quoteVolumeRaw
 : baseVolume * price;
+const parsedChange24h = Number(parsed.change24h);
 const rawChange = firstFiniteNumber(
-parsed.change24h,
 rawTicker.change24h,
 rawTicker.changeUtc24h,
 rawTicker.priceChangePercent,
 rawTicker.priceChange24h,
 rawTicker.chgUtc
 );
-const change24h = Math.abs(rawChange) <= 1
+const change24h = Number.isFinite(parsedChange24h)
+? parsedChange24h
+: Math.abs(rawChange) <= 1
 ? rawChange * 100
 : rawChange;
 return {
