@@ -392,7 +392,24 @@ return Array.isArray(data) ? data : [];
 
 );
 }
+function isRwaBitgetContract(row = {}) {
+const rwaFlag = String(
+row.isRwa ??
+row.rwa ??
+row.isRWA ??
+''
+).trim().toUpperCase();
+if (['YES', 'TRUE', '1', 'RWA'].includes(rwaFlag)) return true;
+const realityFlag = String(
+row.isReality ??
+row.reality ??
+row.realityType ??
+''
+).trim().toUpperCase();
+return ['YES', 'TRUE', '1', 'STOCK', 'REALITY'].includes(realityFlag);
+}
 function isTradableBitgetContract(row = {}) {
+if (isRwaBitgetContract(row)) return false;
 const status = String(
 row.status ||
 row.symbolStatus ||
