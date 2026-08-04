@@ -42,9 +42,11 @@ const MEASUREMENT_FIX_VERSION =
 'LONG_MEASUREMENT_FIX_TRIGGER_BOUNDARY_EXIT_FILL_V2';
 const EXIT_FILL_MODEL_VERSION =
 'LONG_TRIGGER_BOUNDARY_FILL_PLUS_COST_MODEL_V1';
+const COST_PROJECTION_CONTRACT_VERSION =
+'LONG_COST_OPEN_VS_FINALIZED_PROJECTION_V2';
+
 const DEFAULT_SOURCE = 'VIRTUAL';
 const LONG_TOKENS = new Set([
-
 'LONG',
 'BULL',
 'BULLISH',
@@ -89,10 +91,10 @@ CONFIG.long?.cost?.marketImpactPct ??
 CONFIG.cost?.marketImpactPct,
 0.0003
 )
+
 ),
 fallbackSpreadPct: Math.max(
 0,
-
 safeNumber(
 CONFIG.long?.cost?.fallbackSpreadPct ??
 CONFIG.cost?.fallbackSpreadPct,
@@ -136,11 +138,11 @@ return upper(value)
 .replaceAll('LONG-ONLY', 'LONG')
 .replaceAll('SHORT_ONLY_MODE', 'SHORT')
 .replaceAll('SHORT_ONLY', 'SHORT')
+
 .replaceAll('SHORT-ONLY', 'SHORT');
 }
 function hasPattern(value = '', patterns = []) {
 const text = cleanSideText(value)
-
 .replace(/[^A-Z0-9]+/g, '_')
 .replace(/^_+|_+$/g, '');
 if (!text) return false;
@@ -183,12 +185,12 @@ return hasPattern(raw, [
 'SHORT',
 'BEAR',
 'BEARISH',
+
 'SELL',
 'SIDE_SHORT',
 'TRADE_SIDE_SHORT',
 'TRADESIDE_SHORT',
 'POSITION_SIDE_SHORT',
-
 'POSITIONSIDE_SHORT',
 'DIRECTION_SHORT',
 'SIDE_BEAR',
@@ -230,13 +232,13 @@ function normalizeSource(source = DEFAULT_SOURCE) {
 const src = upper(source || DEFAULT_SOURCE);
 if (src === 'SHADOW') return 'SHADOW';
 if (src === 'VIRTUAL') return 'VIRTUAL';
+
 return DEFAULT_SOURCE;
 }
 function normalizeLeg(leg) {
 const l = String(leg || '').toLowerCase();
 if (l === 'entry') return 'entry';
 if (l === 'exit') return 'exit';
-
 return 'unknown';
 }
 function clampSpread(spreadPct) {
@@ -277,6 +279,7 @@ const s = safeNumber(initialSl, 0);
 const x = safeNumber(exit, 0);
 if (e <= 0 || s <= 0 || x <= 0 || s >= e) return 0;
 const riskDistance = e - s;
+
 if (riskDistance <= 0) return 0;
 return (x - e) / riskDistance;
 }
@@ -284,7 +287,6 @@ function calcLongCurrentR({ entry, initialSl, currentPrice } = {}) {
 const e = safeNumber(entry, 0);
 const s = safeNumber(initialSl, 0);
 const p = safeNumber(currentPrice, 0);
-
 if (e <= 0 || s <= 0 || p <= 0 || s >= e) return 0;
 const riskDistance = e - s;
 if (riskDistance <= 0) return 0;
@@ -324,6 +326,7 @@ learningIdentitySource: 'ANALYZE_TRUE_MICRO_FAMILY',
 symbolExcludedFromFamilyId: true,
 coinNameExcludedFromFamilyId: true,
 hashesExcludedFromFamilyId: true,
+
 trueMicroOnly: true,
 exactTrueMicroOnly: true,
 exactTrueMicroFamilyRequired: true,
@@ -332,7 +335,6 @@ manualSelectionMatchMode: 'EXACT_TRUE_MICRO_FAMILY_ID',
 discordOnlyForExactTrueMicroMatch: true,
 completedDefinition: 'CLOSED_VIRTUAL_OR_SHADOW_OUTCOMES',
 completedOnlyClosedVirtualOrShadow: true,
-
 scoringRSource: 'netR',
 winsLossesFlatsSource: 'netR',
 winrateDefinition: 'netR > 0',
@@ -371,6 +373,7 @@ trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
 parentTrueMicroFamilySchema: PARENT_TRUE_MICRO_SCHEMA,
 childTrueMicroFamilySchema: CHILD_TRUE_MICRO_SCHEMA,
 parentLearningEnabled: true,
+
 childLearningEnabled: true,
 learningGranularity: LEARNING_GRANULARITY,
 parentLearningGranularity: PARENT_LEARNING_GRANULARITY,
@@ -380,7 +383,6 @@ redisNamespace: LONG_NAMESPACE,
 redisKeyPrefix: LONG_KEY_PREFIX,
 persistentLearningKey: PERSISTENT_LEARNING_KEY,
 temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
-
 weekendPolicyVersion: WEEKEND_POLICY_VERSION,
 sessionPolicyVersion: SESSION_POLICY_VERSION,
 weekendMode: WEEKEND_MODE,
@@ -418,6 +420,7 @@ targetTradeSide: TARGET_TRADE_SIDE,
 targetScannerSide: TARGET_SCANNER_SIDE,
 dashboardSide: TARGET_DASHBOARD_SIDE,
 oppositeTradeSide: OPPOSITE_TRADE_SIDE,
+
 side: TARGET_DASHBOARD_SIDE,
 tradeSide: TARGET_TRADE_SIDE,
 positionSide: TARGET_TRADE_SIDE,
@@ -434,7 +437,6 @@ realTrade: false,
 realOrder: false,
 exchangeOrder: false,
 bitgetOrderPlaced: false,
-
 realOrdersDisabled: true,
 bitgetOrdersDisabled: true,
 exchangeOrdersDisabled: true,
@@ -465,6 +467,7 @@ skipped: true,
 reason,
 source
 }),
+
 feeRatio: 0,
 slippageRatio: 0,
 costRatio: 0,
@@ -482,7 +485,6 @@ realizedGrossR: 0,
 costR: 0,
 avgCostR: 0,
 totalCostR: 0,
-
 netR: 0,
 exitR: 0,
 realizedNetR: 0,
@@ -512,6 +514,7 @@ tp: t,
 riskPct: valid
 ? calcRiskPct({
 entry: e,
+
 sl: s
 })
 : 0,
@@ -530,7 +533,6 @@ reason: valid ? null : 'INVALID_LONG_RISK_SHAPE_REQUIRES_SL_LT_ENTRY_LT_TP'
 };
 }
 export function modelFillPrice({
-
 midPrice,
 side = TARGET_TRADE_SIDE,
 leg,
@@ -559,6 +561,7 @@ const entrySlip =
 spreadForCost(entrySpreadPct) / 2 +
 cfg.marketImpactPct;
 const exitSlip =
+
 spreadForCost(exitSpreadPct) / 2 +
 cfg.marketImpactPct;
 return feeRoundTrip + entrySlip + exitSlip;
@@ -574,11 +577,11 @@ entrySpreadPct,
 exitSpreadPct,
 side = TARGET_TRADE_SIDE,
 tradeSide = side,
-source = DEFAULT_SOURCE
+source = DEFAULT_SOURCE,
+finalized = true
 } = {}) {
 const normalizedSide = normalizeTradeSide(tradeSide || side);
 if (normalizedSide === OPPOSITE_TRADE_SIDE) {
-
 return emptyCostResult('SHORT_DISABLED_LONG_ONLY_COST_MODEL', source);
 }
 if (normalizedSide !== TARGET_TRADE_SIDE) {
@@ -602,15 +605,13 @@ grossR !== null &&
 grossR !== undefined &&
 grossR !== '' &&
 Number.isFinite(explicitGrossR);
-const calculatedGrossR = hasExplicitGrossR
-? explicitGrossR
-: move / risk;
+const calculatedGrossR = hasExplicitGrossR ? explicitGrossR : move / risk;
 const costR = costRatio / risk;
 const netR = calculatedGrossR - costR;
-return {
-...baseLongOnlyMeta({
-source
-}),
+const common = {
+...baseLongOnlyMeta({ source }),
+costProjectionContractVersion: COST_PROJECTION_CONTRACT_VERSION,
+finalizedOutcome: finalized !== false,
 takerFeePct: round6(cfg.takerFeePct),
 makerFeePct: round6(cfg.makerFeePct),
 marketImpactPct: round6(cfg.marketImpactPct),
@@ -626,7 +627,36 @@ breakEvenMovePct: round6(costRatio),
 feePct: round6(feeRatio * 100),
 slippagePct: round6(slippageRatio * 100),
 costPct: round6(costRatio * 100),
-
+riskGeometryRule: 'LONG: sl < entry < tp',
+tpHitRule: 'LONG: price >= tp',
+slHitRule: 'LONG: price <= sl',
+grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
+currentRFormula: '(currentPrice - entry) / (entry - initialSl)'
+};
+if (finalized === false) {
+return {
+...common,
+projectionMode: 'OPEN_POSITION_MARK_TO_MARKET',
+outcomeFinal: false,
+realized: false,
+unrealized: true,
+estimatedCostR: round6(costR),
+markToMarketGrossR: round6(calculatedGrossR),
+markToMarketNetR: round6(netR),
+unrealizedNetR: round6(netR),
+grossPnlPctMarkToMarket: round6(grossPnlPct),
+netPnlPctMarkToMarket: round6(netPnlPct),
+win: null,
+loss: null,
+flat: null,
+isWin: null
+};
+}
+return {
+...common,
+projectionMode: 'FINALIZED_OUTCOME',
+outcomeFinal: true,
+realized: true,
 grossPnlPct: round6(grossPnlPct),
 netPnlPct: round6(netPnlPct),
 grossR: round6(calculatedGrossR),
@@ -643,12 +673,7 @@ r: round6(netR),
 win: isPositiveNetR(netR),
 loss: isNegativeNetR(netR),
 flat: !isPositiveNetR(netR) && !isNegativeNetR(netR),
-isWin: isPositiveNetR(netR),
-riskGeometryRule: 'LONG: sl < entry < tp',
-tpHitRule: 'LONG: price >= tp',
-slHitRule: 'LONG: price <= sl',
-grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
-currentRFormula: '(currentPrice - entry) / (entry - initialSl)'
+isWin: isPositiveNetR(netR)
 };
 }
 export function applyCostsFromPrices({
@@ -663,7 +688,9 @@ side = TARGET_TRADE_SIDE,
 tradeSide = side,
 source = DEFAULT_SOURCE,
 entrySpreadPct,
-exitSpreadPct
+exitSpreadPct,
+finalized = true,
+status = null
 } = {}) {
 const normalizedSide = normalizeTradeSide(tradeSide || side);
 if (normalizedSide === OPPOSITE_TRADE_SIDE) {
@@ -674,39 +701,21 @@ return emptyCostResult('UNKNOWN_OR_NON_LONG_COST_MODEL_SKIPPED', source);
 }
 const e = safeNumber(entry, 0);
 const s = safeNumber(initialSl, 0);
-
 const t = safeNumber(tp, 0);
 const x = safeNumber(exitPrice, 0);
 const p = safeNumber(currentPrice, x);
-if (!validLongRiskShape({
-entry: e,
-sl: s,
-tp: t
-})) {
-return emptyCostResult('INVALID_LONG_RISK_SHAPE_REQUIRES_SL_LT_ENTRY_LT_TP',
-source);
+const statusText = String(status || '').trim().toUpperCase();
+const isFinalized = finalized !== false && statusText !== 'OPEN';
+if (!validLongRiskShape({ entry: e, sl: s, tp: t })) {
+return emptyCostResult('INVALID_LONG_RISK_SHAPE_REQUIRES_SL_LT_ENTRY_LT_TP', source);
 }
 if (x <= 0) {
 return emptyCostResult('INVALID_LONG_EXIT_PRICE', source);
 }
-const riskPct = calcRiskPct({
-entry: e,
-sl: s
-});
-const grossMovePct = calcGrossMovePct({
-entry: e,
-exit: x
-});
-const grossR = calcLongGrossR({
-entry: e,
-initialSl: s,
-exit: x
-});
-const currentR = calcLongCurrentR({
-entry: e,
-initialSl: s,
-currentPrice: p
-});
+const riskPct = calcRiskPct({ entry: e, sl: s });
+const grossMovePct = calcGrossMovePct({ entry: e, exit: x });
+const grossR = calcLongGrossR({ entry: e, initialSl: s, exit: x });
+const currentR = calcLongCurrentR({ entry: e, initialSl: s, currentPrice: p });
 const result = applyCosts({
 grossMovePct,
 grossR,
@@ -715,17 +724,18 @@ entrySpreadPct,
 exitSpreadPct,
 side: TARGET_TRADE_SIDE,
 tradeSide: TARGET_TRADE_SIDE,
-source
+source,
+finalized: isFinalized
 });
-const netR = safeNumber(result.netR, grossR - safeNumber(result.costR, 0));
+const netR = safeNumber(
+result.netR ?? result.markToMarketNetR,
+grossR - safeNumber(result.costR ?? result.estimatedCostR, 0)
+);
 const tpHit = x >= t;
 const slHit = x <= s;
-return {
+const common = {
 ...result,
-
 entry: e,
-exit: x,
-exitPrice: x,
 currentPrice: p,
 sl: s,
 initialSl: s,
@@ -740,18 +750,48 @@ tpHitRule: 'LONG: price >= tp',
 slHitRule: 'LONG: price <= sl',
 grossRFormula: '(exitPrice - entry) / (entry - initialSl)',
 currentRFormula: '(currentPrice - entry) / (entry - initialSl)',
+riskPct: round6(riskPct),
+currentR: round6(currentR),
+longCurrentR: round6(currentR),
+costProjectionContractVersion: COST_PROJECTION_CONTRACT_VERSION
+};
+if (!isFinalized) {
+return {
+...common,
+projectionMode: 'OPEN_POSITION_MARK_TO_MARKET',
+status: 'OPEN',
+outcomeFinal: false,
+realized: false,
+unrealized: true,
+unrealizedR: round6(currentR),
+markToMarketGrossR: round6(grossR),
+markToMarketNetR: round6(netR),
+estimatedCostR: round6(result.estimatedCostR ?? result.costR),
+longTpHit: false,
+tpHit: false,
+longSlHit: false,
+slHit: false,
+win: null,
+loss: null,
+flat: null,
+isWin: null
+};
+}
+return {
+...common,
+projectionMode: 'FINALIZED_OUTCOME',
+status: statusText || 'CLOSED',
+exit: x,
+exitPrice: x,
 longTpHit: tpHit,
 tpHit,
 longSlHit: slHit,
 slHit,
-riskPct: round6(riskPct),
 grossMovePct: round6(grossMovePct),
 grossR: round6(grossR),
 rawR: round6(grossR),
 realizedGrossR: round6(grossR),
 longGrossR: round6(grossR),
-currentR: round6(currentR),
-longCurrentR: round6(currentR),
 costR: round6(result.costR),
 avgCostR: round6(result.costR),
 totalCostR: round6(result.costR),
@@ -770,9 +810,15 @@ winrateDefinition: 'netR > 0',
 avgRSource: 'netR',
 totalRSource: 'netR',
 avgCostRShown: true,
-
 avgCostRSource: 'costR'
 };
+}
+export function applyOpenPositionCostsFromPrices(params = {}) {
+return applyCostsFromPrices({
+...params,
+finalized: false,
+status: 'OPEN'
+});
 }
 export {
 calcLongGrossR,
