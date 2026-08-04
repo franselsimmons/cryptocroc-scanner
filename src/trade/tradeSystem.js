@@ -85,6 +85,10 @@ const OPEN_POSITION_CONTRACT_VERSION = 'LONG_OPEN_POSITION_UNREALIZED_ONLY_V2';
 const MARKET_CONTEXT_FALLBACK_VERSION = 'LONG_MARKET_CONTEXT_EMBEDDED_UNIVERSE_V2';
 const MARKET_EVENT_CLUSTER_CANONICALIZATION_VERSION =
 'LONG_MARKET_EVENT_CLUSTER_IDEMPOTENT_V2';
+const TRADE_RESPONSE_SOURCE_CONTRACT_VERSION =
+'LONG_TRADE_ACTION_ROWS_NON_FINAL_SANITIZED_V4';
+const EXIT_SOURCE_SEPARATION_VERSION =
+'LONG_VIRTUAL_SHADOW_EXIT_SEPARATION_V2';
 const DEFAULT_ENTRY_RUNTIME_RESERVE_MS = 20_000;
 const DEFAULT_MONITOR_STOP_BUFFER_MS = 1_500;
 const DEFAULT_MAX_POSITIONS_PER_MONITOR_INVOCATION = 40;
@@ -465,6 +469,15 @@ redisKeyPrefix: LONG_KEY_PREFIX,
 persistentLearningKey: PERSISTENT_LEARNING_KEY,
 measurementFixVersion: MEASUREMENT_FIX_VERSION,
 acceptedOutcomeMeasurementVersion: MEASUREMENT_FIX_VERSION,
+tradeRuntimeFairnessVersion: TRADE_RUNTIME_FAIRNESS_VERSION,
+snapshotContinuationVersion: SNAPSHOT_CONTINUATION_VERSION,
+openPositionContractVersion: OPEN_POSITION_CONTRACT_VERSION,
+marketEventClusterCanonicalizationVersion:
+MARKET_EVENT_CLUSTER_CANONICALIZATION_VERSION,
+tradeResponseSourceContractVersion:
+TRADE_RESPONSE_SOURCE_CONTRACT_VERSION,
+exitSourceSeparationVersion:
+EXIT_SOURCE_SEPARATION_VERSION,
 exitFillModelVersion: EXIT_FILL_MODEL_VERSION,
 outcomeMeasurementGateMode: OUTCOME_MEASUREMENT_GATE_MODE,
 empiricalVetoPolicyVersion: EMPIRICAL_VETO_POLICY_VERSION,
@@ -1626,33 +1639,79 @@ const OPEN_POSITION_OUTCOME_ONLY_FIELDS = Object.freeze([
 'slExitTriggered',
 'timeStopExitTriggered'
 ]);
-function isOpenLifecycleRow(row = {}) {
+function isFinalizedLifecycleRow(row = {}) {
 const status = String(row.status || '').trim().toUpperCase();
-const action = String(row.action || row.entryType || row.virtualAction || '').trim().toUpperCase();
+const action = String(
+row.action ||
+row.entryType ||
+row.virtualAction ||
+''
+).trim().toUpperCase();
+return (
+status === 'CLOSED' ||
+action === 'VIRTUAL_EXIT' ||
+action === 'SHADOW_EXIT' ||
+action === 'EXIT' ||
+Boolean(
+row.closedAt ||
+row.completedAt ||
+row.exitTs ||
+row.outcomeFinal === true ||
+row.realized === true
+)
+);
+}
+function isNonFinalLifecycleRow(row = {}) {
+if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
+if (isFinalizedLifecycleRow(row)) return false;
+const status = String(row.status || '').trim().toUpperCase();
+const action = String(
+row.action ||
+row.entryType ||
+row.virtualAction ||
+''
+).trim().toUpperCase();
 return (
 status === 'OPEN' ||
 action === 'ENTRY' ||
-action === 'VIRTUAL_ENTRY'
-) && !row.closedAt && !row.completedAt;
+action === 'VIRTUAL_ENTRY' ||
+action === 'WAIT'
+);
 }
 function sanitizeOpenLifecycleRow(row = {}) {
-if (!row || typeof row !== 'object' || Array.isArray(row) || !isOpenLifecycleRow(row)) {
-return row;
-}
+if (!isNonFinalLifecycleRow(row)) return row;
 const out = { ...row };
+const action = String(
+out.action ||
+out.entryType ||
+out.virtualAction ||
+''
+).trim().toUpperCase();
+const reason = String(out.reason || '').trim().toUpperCase();
+const openLike =
+action === 'ENTRY' ||
+action === 'VIRTUAL_ENTRY' ||
+String(out.status || '').trim().toUpperCase() === 'OPEN' ||
+reason.includes('ALREADY_OPEN');
 const estimatedCostR = safeNumber(
-out.estimatedCostR ?? out.costR ?? out.avgCostR,
+out.estimatedCostR ??
+out.costR ??
+out.avgCostR,
 0
 );
 for (const field of OPEN_POSITION_OUTCOME_ONLY_FIELDS) delete out[field];
-out.status = 'OPEN';
+out.status = openLike ? 'OPEN' : 'WAIT';
 out.closedAt = null;
 out.completedAt = null;
 out.outcomeFinal = false;
 out.realized = false;
-out.unrealized = true;
-out.currentR = safeNumber(out.currentR, 0);
-out.longCurrentR = safeNumber(out.longCurrentR ?? out.currentR, out.currentR);
+out.unrealized = openLike;
+out.currentR = safeNumber(out.currentR ?? out.unrealizedR, 0);
+out.longCurrentR = safeNumber(
+out.longCurrentR ??
+out.currentR,
+out.currentR
+);
 out.unrealizedR = out.currentR;
 out.estimatedCostR = estimatedCostR;
 out.openPositionContractCanonicalized = true;
@@ -1673,6 +1732,17 @@ return row;
 const out = sanitizeOpenLifecycleRow({
 ...row
 });
+out.marketEventClusterId =
+canonicalMarketEventClusterId(
+row,
+row.entryTs ??
+row.openedAt ??
+row.createdAt ??
+now()
+);
+out.marketEventClusterCanonicalized = true;
+out.marketEventClusterCanonicalizationVersion =
+MARKET_EVENT_CLUSTER_CANONICALIZATION_VERSION;
 out.currentMarketWeather =
 compactMarketWeatherForStorage(
 row.currentMarketWeather
@@ -1945,12 +2015,31 @@ Array.isArray(result.actions)
 ? result.actions
 : [];
 const virtualExits =
+(
 Array.isArray(result.virtualExits)
-
 ? result.virtualExits
-: Array.isArray(result.shadowExits)
+: []
+).filter(
+(row) =>
+String(
+row?.outcomeSource ||
+row?.source ||
+'VIRTUAL'
+).trim().toUpperCase() !== 'SHADOW'
+);
+const shadowExits =
+(
+Array.isArray(result.shadowExits)
 ? result.shadowExits
-: [];
+: []
+).filter(
+(row) =>
+String(
+row?.outcomeSource ||
+row?.source ||
+''
+).trim().toUpperCase() === 'SHADOW'
+);
 const compact = {
 ...result,
 actions:
@@ -1985,7 +2074,7 @@ DEFAULT_RUN_META_ACTION_SAMPLE_LIMIT
 compactVirtualExitForStorage
 ),
 shadowExits:
-virtualExits
+shadowExits
 .slice(
 0,
 DEFAULT_RUN_META_ACTION_SAMPLE_LIMIT
@@ -5456,17 +5545,41 @@ getDurableRedis();
 const completedAt =
 now();
 const rawVirtualExits =
+(
 Array.isArray(
 result.virtualExits
 )
 ? result.virtualExits
-: Array.isArray(
+: []
+).filter(
+(row) =>
+String(
+row?.outcomeSource ||
+row?.source ||
+'VIRTUAL'
+).trim().toUpperCase() !== 'SHADOW'
+);
+const rawShadowExits =
+(
+Array.isArray(
 result.shadowExits
 )
 ? result.shadowExits
-: [];
+: []
+).filter(
+(row) =>
+String(
+row?.outcomeSource ||
+row?.source ||
+''
+).trim().toUpperCase() === 'SHADOW'
+);
 const virtualExits =
 rawVirtualExits.map(
+compactVirtualExitForStorage
+);
+const shadowExits =
+rawShadowExits.map(
 compactVirtualExitForStorage
 );
 const rawActions =
@@ -5605,20 +5718,18 @@ result.currentMarketUniverse
 marketContext:
 compactMarketContext,
 virtualExits,
-shadowExits:
-virtualExits,
+shadowExits,
 realExits:
 [],
 virtualExitRows:
 safeNumber(
 result.virtualExitRows,
-
 virtualExits.length
 ),
 shadowExitRows:
 safeNumber(
 result.shadowExitRows,
-virtualExits.length
+shadowExits.length
 ),
 realExitRows:
 0,
@@ -5638,7 +5749,10 @@ actionCounts:
 result.actionCounts ||
 buildRunActionCounts(
 rawActions,
-rawVirtualExits
+[
+...rawVirtualExits,
+...rawShadowExits
+]
 ),
 qualityAudit:
 result.qualityAudit ||
@@ -5725,7 +5839,7 @@ realOrdersDisabled: true,
 bitgetOrdersDisabled: true,
 exchangeCallsDisabled: true
 });
-const shadowExits = virtualExits;
+const shadowExits = [];
 throwIfTradeStopped(options, 'AFTER_OPEN_POSITION_MONITORING');
 if (monitorOnly) {
 const actions = [];
