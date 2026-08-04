@@ -114,6 +114,14 @@ const SNAPSHOT_CONTINUATION_VERSION = 'LONG_SNAPSHOT_CONTINUATION_NO_FORCE_RESET
 const MARKET_UNIVERSE_PRELOAD_VERSION = 'LONG_MARKET_UNIVERSE_EMBEDDED_FALLBACK_V2';
 const SNAPSHOT_COMPLETION_PERSISTENCE_VERSION =
 'LONG_LAST_PROCESSED_ONLY_WHEN_COMPLETE_V2';
+const TRADE_RESPONSE_CONTRACT_VERSION =
+'LONG_TRADE_RESPONSE_OPEN_VS_EXIT_V4';
+const API_MARKET_EVENT_CLUSTER_CANONICALIZATION_VERSION =
+'LONG_API_MARKET_EVENT_CLUSTER_IDEMPOTENT_V3';
+const SNAPSHOT_PROGRESS_PROJECTION_VERSION =
+'LONG_SNAPSHOT_PROGRESS_DERIVED_FROM_CURSOR_V3';
+const EXIT_SOURCE_SEPARATION_VERSION =
+'LONG_VIRTUAL_SHADOW_EXIT_SEPARATION_V2';
 
 const MARKET_UNIVERSE_KEY =
 `${LONG_KEY_PREFIX}MARKET:UNIVERSE:LATEST`;
@@ -247,19 +255,36 @@ temporalConfigurationValid: temporalStatsEnabled || requestedMode ===
 'OFF'
 };
 }
+function stripRepeatedOwnEventPrefix(value = '') {
+const ownPrefix = 'LONG_EVENT_';
+let text = String(value || '').trim();
+let stripped = false;
+while (text.toUpperCase().startsWith(ownPrefix)) {
+text = text.slice(ownPrefix.length);
+stripped = true;
+}
+return { text, stripped };
+}
 function resolveMarketEventClusterId(row = {}, timestamp = now()) {
 const source = row && typeof row === 'object' ? row : {};
-const explicit = source.marketEventClusterId || source.scannerRunId ||
-source.marketSnapshotId || source.snapshotId || source.marketCycleId ||
-source.scanId || null;
+const explicit =
+source.marketEventClusterId ||
+source.scannerRunId ||
+source.marketSnapshotId ||
+source.snapshotId ||
+source.marketCycleId ||
+source.scanId ||
+null;
 if (explicit) {
-return `LONG_EVENT_${String(explicit).trim().replace(/[^A-Za-z0-9:_-]/g,
-'_')}`;
+const safe = String(explicit)
+.trim()
+.replace(/[^A-Za-z0-9:_-]/g, '_');
+const normalized = stripRepeatedOwnEventPrefix(safe);
+return `LONG_EVENT_${normalized.text || 'UNKNOWN'}`;
 }
 const ts = normalizeTimestampMs(timestamp, now());
 const hourBucket = Math.floor(ts / 3_600_000) * 3_600_000;
-return `LONG_EVENT_HOUR_${new Date(hourBucket).toISOString().slice(0,
-13)}:00Z`;
+return `LONG_EVENT_HOUR_${new Date(hourBucket).toISOString().slice(0, 13)}:00Z`;
 }
 function temporalPolicyFlags(value = now()) {
 const temporalContext = (
@@ -1520,6 +1545,97 @@ row.totalCostR,
 )
 };
 }
+function isFinalizedExitRow(row = {}, forcedAction = null) {
+const action = String(
+forcedAction ||
+row.action ||
+row.type ||
+''
+).trim().toUpperCase();
+return (
+action === 'VIRTUAL_EXIT' ||
+action === 'SHADOW_EXIT' ||
+action === 'EXIT' ||
+Boolean(
+row.closedAt ||
+row.completedAt ||
+row.exitTs ||
+row.outcomeFinal === true ||
+row.realized === true
+)
+);
+}
+function normalizeOpenMath(row = {}, forcedAction = null) {
+const entry = safeNumber(row.entry ?? row.entryPrice, 0);
+const initialSl = safeNumber(
+row.initialSl ??
+row.initialStopLoss ??
+row.sl ??
+row.stopLoss,
+0
+);
+const tp = safeNumber(row.tp ?? row.takeProfit, 0);
+const currentPrice = safeNumber(
+row.currentPrice ??
+row.lastPrice ??
+row.price ??
+entry,
+entry
+);
+const risk =
+entry > 0 &&
+initialSl > 0 &&
+tp > 0 &&
+initialSl < entry && entry < tp
+? entry - initialSl
+: 0;
+const currentR =
+risk > 0
+? (currentPrice - entry) / risk
+: safeNumber(
+row.longCurrentR ??
+row.currentR ??
+row.unrealizedR,
+0
+);
+const action = String(
+forcedAction ||
+row.action ||
+row.type ||
+''
+).trim().toUpperCase();
+const reason = String(row.reason || '').trim().toUpperCase();
+const openLike =
+action === 'VIRTUAL_ENTRY' ||
+action === 'ENTRY' ||
+String(row.status || '').trim().toUpperCase() === 'OPEN' ||
+reason.includes('ALREADY_OPEN');
+return {
+entry: round(entry, 10),
+initialSl: round(initialSl, 10),
+sl: round(row.sl ?? row.stopLoss ?? initialSl, 10),
+tp: round(tp, 10),
+currentPrice: round(currentPrice, 10),
+validLongGeometry:
+tp > 0 &&
+entry > 0 &&
+initialSl > 0 &&
+initialSl < entry && entry < tp,
+currentR: round(currentR, 4),
+longCurrentR: round(currentR, 4),
+unrealizedR: round(currentR, 4),
+estimatedCostR: round(
+row.estimatedCostR ??
+row.costR ??
+row.avgCostR,
+4
+),
+status: openLike ? 'OPEN' : 'WAIT',
+outcomeFinal: false,
+realized: false,
+unrealized: openLike
+};
+}
 function compactTradeRow(
 row = {},
 forcedAction = null
@@ -1530,24 +1646,38 @@ typeof row !== 'object'
 ) {
 return null;
 }
-const identity =
-normalizeLearningIdentity(row);
-return {
-action:
+const identity = normalizeLearningIdentity(row);
+const action =
 forcedAction ||
 row.action ||
 row.type ||
-null,
+null;
+const finalized = isFinalizedExitRow(row, action);
+const lifecycleMath = finalized
+? normalizeExitMath(row)
+: normalizeOpenMath(row, action);
+const temporalFields = finalized
+? {
+...entryTemporalFields(row),
+...exitTemporalFields(row)
+}
+: entryTemporalFields(row);
+return {
+action,
 reason:
 row.reason ||
 row.exitReason ||
 row.skipReason ||
 null,
+error:
+row.error ||
+row.createError ||
+row.persistError ||
+null,
 symbol:
 row.symbol ||
 row.contractSymbol ||
 null,
-
 contractSymbol:
 row.contractSymbol ||
 row.symbol ||
@@ -1564,9 +1694,8 @@ TARGET_TRADE_SIDE,
 direction:
 TARGET_TRADE_SIDE,
 ...identity,
-...normalizeExitMath(row),
-...entryTemporalFields(row),
-...exitTemporalFields(row),
+...lifecycleMath,
+...temporalFields,
 currentFit:
 row.currentFit ||
 row.currentFitLabel ||
@@ -1589,13 +1718,12 @@ row.selectedMicroFamilyAlert &&
 identity.trueMicroFamilyId
 ),
 source:
-'VIRTUAL',
+String(row.source || 'VIRTUAL').toUpperCase(),
 outcomeSource:
-'VIRTUAL',
+String(row.outcomeSource || row.source || 'VIRTUAL').toUpperCase(),
 virtualOnly:
 true,
 realTrade:
-
 false,
 realOrder:
 false,
@@ -1604,9 +1732,18 @@ row.createdAt ||
 row.openedAt ||
 null,
 closedAt:
+finalized
+? (
 row.closedAt ||
 row.completedAt ||
+row.exitTs ||
 null
+)
+: null,
+tradeResponseContractVersion:
+TRADE_RESPONSE_CONTRACT_VERSION,
+marketEventClusterCanonicalizationVersion:
+API_MARKET_EVENT_CLUSTER_CANONICALIZATION_VERSION
 };
 }
 function compactRows(
@@ -1891,17 +2028,20 @@ payload.actions
 )
 ? payload.actions
 : [];
-const rawExits =
+const rawVirtualExits =
 firstArray(
 payload,
 [
 'virtualExits',
-'shadowExits',
 'exits',
 'closedPositions',
 'outcomes'
 ]
 );
+const rawShadowExits =
+Array.isArray(payload.shadowExits)
+? payload.shadowExits
+: [];
 const rawEntries =
 firstArray(
 payload,
@@ -1924,9 +2064,31 @@ const longActions =
 rawActions.filter(
 isLongAction
 );
-const longExits =
-rawExits.filter(
+const longVirtualExits =
+rawVirtualExits
+.filter(
 isLongAction
+)
+.filter(
+(row) =>
+String(
+row?.outcomeSource ||
+row?.source ||
+'VIRTUAL'
+).trim().toUpperCase() !== 'SHADOW'
+);
+const longShadowExits =
+rawShadowExits
+.filter(
+isLongAction
+)
+.filter(
+(row) =>
+String(
+row?.outcomeSource ||
+row?.source ||
+''
+).trim().toUpperCase() === 'SHADOW'
 );
 const entriesSource =
 rawEntries.length
@@ -2012,9 +2174,15 @@ rowLimit,
 );
 const virtualExits =
 compactRows(
-longExits,
+longVirtualExits,
 rowLimit,
 'VIRTUAL_EXIT'
+);
+const shadowExits =
+compactRows(
+longShadowExits,
+rowLimit,
+'SHADOW_EXIT'
 );
 return {
 ok:
@@ -2054,10 +2222,16 @@ batchNumber: safeNumber(payload.batchNumber, 0),
 batchProcessingComplete: payload.batchProcessingComplete === true,
 snapshotProcessingComplete: payload.snapshotProcessingComplete === true,
 snapshotContinuation: payload.snapshotContinuation === true,
-snapshotProgressAdvanced: payload.snapshotProgressAdvanced === true,
+snapshotProgressAdvanced:
+payload.snapshotProgressAdvanced === true ||
+safeNumber(payload.nextCandidateIndex, 0) >
+safeNumber(payload.candidateStartIndex, 0),
 noProgressRetryCount: safeNumber(payload.noProgressRetryCount, 0),
 entryProcessingIncomplete: payload.entryProcessingIncomplete === true,
-entryProcessingStoppedAtIndex: safeNumber(payload.entryProcessingStoppedAtIndex, 0),
+entryProcessingStoppedAtIndex:
+payload.entryProcessingIncomplete === true
+? safeNumber(payload.entryProcessingStoppedAtIndex, 0)
+: null,
 selectedSnapshotSource:
 payload.selectedSnapshotSource ||
 null,
@@ -2191,19 +2365,20 @@ waitRowsList,
 virtualCreatedRowsList:
 entryRowsList,
 virtualExits,
-shadowExits:
-virtualExits,
+shadowExits,
 realExits:
 [],
 virtualExitRows:
-longExits.length,
+longVirtualExits.length,
 shadowExitRows:
-longExits.length,
+longShadowExits.length,
 realExitRows:
 0,
 responseExitsTruncated:
-longExits.length >
-virtualExits.length,
+longVirtualExits.length >
+virtualExits.length ||
+longShadowExits.length >
+shadowExits.length,
 actionCounts:
 mergeCounts(
 compactPrimitiveObject(
@@ -2214,13 +2389,22 @@ countActions(
 longActions
 ),
 countActions(
-longExits.map(
+[
+...longVirtualExits.map(
 (row) => ({
 ...row,
 action:
 'VIRTUAL_EXIT'
 })
+),
+...longShadowExits.map(
+(row) => ({
+...row,
+action:
+'SHADOW_EXIT'
+})
 )
+]
 )
 ),
 ignoredShortActions:
@@ -2228,7 +2412,10 @@ rawActions.filter(
 isShortAction
 ).length,
 ignoredShortExitRows:
-rawExits.filter(
+[
+...rawVirtualExits,
+...rawShadowExits
+].filter(
 isShortAction
 ).length,
 activeRotationId:
@@ -2323,10 +2510,16 @@ batchNumber: safeNumber(payload.batchNumber, 0),
 batchProcessingComplete: payload.batchProcessingComplete === true,
 snapshotProcessingComplete: payload.snapshotProcessingComplete === true,
 snapshotContinuation: payload.snapshotContinuation === true,
-snapshotProgressAdvanced: payload.snapshotProgressAdvanced === true,
+snapshotProgressAdvanced:
+payload.snapshotProgressAdvanced === true ||
+safeNumber(payload.nextCandidateIndex, 0) >
+safeNumber(payload.candidateStartIndex, 0),
 noProgressRetryCount: safeNumber(payload.noProgressRetryCount, 0),
 entryProcessingIncomplete: payload.entryProcessingIncomplete === true,
-entryProcessingStoppedAtIndex: safeNumber(payload.entryProcessingStoppedAtIndex, 0),
+entryProcessingStoppedAtIndex:
+payload.entryProcessingIncomplete === true
+? safeNumber(payload.entryProcessingStoppedAtIndex, 0)
+: null,
 selectedSnapshotSource:
 payload.selectedSnapshotSource ||
 null,
@@ -2942,6 +3135,13 @@ forceProcessSnapshot,
 restartSnapshotProgress,
 tradeRuntimeFairnessVersion: TRADE_RUNTIME_FAIRNESS_VERSION,
 snapshotContinuationVersion: SNAPSHOT_CONTINUATION_VERSION,
+tradeResponseContractVersion: TRADE_RESPONSE_CONTRACT_VERSION,
+apiMarketEventClusterCanonicalizationVersion:
+API_MARKET_EVENT_CLUSTER_CANONICALIZATION_VERSION,
+snapshotProgressProjectionVersion:
+SNAPSHOT_PROGRESS_PROJECTION_VERSION,
+exitSourceSeparationVersion:
+EXIT_SOURCE_SEPARATION_VERSION,
 monitorOnly,
 monitorOpenPositionsFirst:
 true,
@@ -3817,6 +4017,14 @@ marketUniversePreloadVersion:
 MARKET_UNIVERSE_PRELOAD_VERSION,
 snapshotCompletionPersistenceVersion:
 SNAPSHOT_COMPLETION_PERSISTENCE_VERSION,
+tradeResponseContractVersion:
+TRADE_RESPONSE_CONTRACT_VERSION,
+apiMarketEventClusterCanonicalizationVersion:
+API_MARKET_EVENT_CLUSTER_CANONICALIZATION_VERSION,
+snapshotProgressProjectionVersion:
+SNAPSHOT_PROGRESS_PROJECTION_VERSION,
+exitSourceSeparationVersion:
+EXIT_SOURCE_SEPARATION_VERSION,
 monitorOnly:
 runOptions.monitorOnly,
 monitorOpenPositionsFirst:
