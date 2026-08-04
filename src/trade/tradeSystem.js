@@ -58,6 +58,7 @@ buildRiskAndLiveMetricsForBothSides
 import {
 buildOpenPositionFromEntry,
 getOpenPositions,
+getOpenPosition,
 saveOpenPosition,
 saveExistingOpenPosition,
 monitorOpenPositions
@@ -79,7 +80,10 @@ const SNAPSHOT_SEARCH_LIMIT = 12;
 const CANDIDATE_ORDER_VERSION = 'SNAPSHOT_ID_ROTATION_V1';
 const LEGACY_CANDIDATE_ORDER_VERSION = 'LEGACY_SCANNER_ORDER_V0';
 const SNAPSHOT_SELECTION_POLICY = 'UNFINISHED_PROGRESS_FIRST_THEN_LATEST_V1';
-const TRADE_RUNTIME_FAIRNESS_VERSION = 'LONG_TRADE_RUNTIME_FAIRNESS_V3';
+const TRADE_RUNTIME_FAIRNESS_VERSION = 'LONG_TRADE_RUNTIME_FAIRNESS_ADAPTIVE_RETRY_V5';
+const ADAPTIVE_NO_PROGRESS_BATCH_VERSION = 'LONG_ADAPTIVE_NO_PROGRESS_BATCH_V1';
+const AUTHORITATIVE_OPEN_SYMBOL_CHECK_VERSION = 'LONG_AUTHORITATIVE_OPEN_SYMBOL_CHECK_V1';
+const MIN_ADAPTIVE_CANDIDATE_BATCH = 4;
 const SNAPSHOT_CONTINUATION_VERSION = 'LONG_SNAPSHOT_CONTINUATION_NO_FORCE_RESET_V2';
 const OPEN_POSITION_CONTRACT_VERSION = 'LONG_OPEN_POSITION_UNREALIZED_ONLY_V2';
 const MARKET_CONTEXT_FALLBACK_VERSION = 'LONG_MARKET_CONTEXT_EMBEDDED_UNIVERSE_V2';
@@ -470,6 +474,8 @@ persistentLearningKey: PERSISTENT_LEARNING_KEY,
 measurementFixVersion: MEASUREMENT_FIX_VERSION,
 acceptedOutcomeMeasurementVersion: MEASUREMENT_FIX_VERSION,
 tradeRuntimeFairnessVersion: TRADE_RUNTIME_FAIRNESS_VERSION,
+adaptiveNoProgressBatchVersion: ADAPTIVE_NO_PROGRESS_BATCH_VERSION,
+authoritativeOpenSymbolCheckVersion: AUTHORITATIVE_OPEN_SYMBOL_CHECK_VERSION,
 snapshotContinuationVersion: SNAPSHOT_CONTINUATION_VERSION,
 openPositionContractVersion: OPEN_POSITION_CONTRACT_VERSION,
 marketEventClusterCanonicalizationVersion:
@@ -6282,10 +6288,26 @@ Math.min(
 Math.floor(availableCandidateRuntimeMs / estimatedCandidateWaveMs)
 )
 );
+const noProgressRetryCountBeforeRun = continuationActive
+? Math.max(
+0,
+Math.floor(
+safeNumber(snapshotProgress?.noProgressRetryCount, 0)
+)
+)
+: 0;
+const adaptiveRetryDivisor = Math.pow(
+2,
+Math.min(3, noProgressRetryCountBeforeRun)
+);
+const adaptiveCandidateBatchLimit = Math.max(
+MIN_ADAPTIVE_CANDIDATE_BATCH,
+Math.floor(cfg.maxCandidatesPerInvocation / adaptiveRetryDivisor)
+);
 const runtimeSafeCandidateLimit = Math.max(
 1,
 Math.min(
-cfg.maxCandidatesPerInvocation,
+adaptiveCandidateBatchLimit,
 cfg.dataConcurrency * affordableCandidateWaves
 )
 );
@@ -6760,6 +6782,15 @@ positionSymbolKey
 
 .filter(Boolean)
 );
+async function hasAuthoritativeOpenSymbol(symbolKey) {
+if (!symbolKey) return false;
+if (openSymbolSet.has(symbolKey)) return true;
+if (noProgressRetryCountBeforeRun <= 0) return false;
+const existing = await getOpenPosition(symbolKey).catch(() => null);
+if (!existing) return false;
+openSymbolSet.add(symbolKey);
+return true;
+}
 const actions = [
 ...earlyActions.map(
 stripHeavyTradeRow
@@ -6870,12 +6901,7 @@ continue;
 const symbolKey =
 positionSymbolKey(row);
 const alreadyOpen =
-Boolean(
-symbolKey &&
-openSymbolSet.has(
-symbolKey
-)
-);
+await hasAuthoritativeOpenSymbol(symbolKey);
 if (alreadyOpen) {
 waitRows += 1;
 virtualSkippedRows += 1;
@@ -7107,18 +7133,30 @@ discordAlertSent: entryPublicationResult.sent === true,
 })
 );
 } catch (error) {
+const errorMessage = error?.message || String(error);
+const duplicateOpenDetected =
+errorMessage === 'OPEN_POSITION_SYMBOL_ALREADY_OPEN_LONG_ONLY' ||
+errorMessage.includes('OPEN_POSITION_SYMBOL_ALREADY_OPEN');
 waitRows += 1;
+if (duplicateOpenDetected) {
+virtualSkippedRows += 1;
+skippedByExistingSymbol += 1;
+if (symbolKey) openSymbolSet.add(symbolKey);
+} else {
 virtualFailedRows += 1;
+}
 actions.push(
 stripHeavyTradeRow({
 ...row,
 action:
 'WAIT',
 reason:
-'VIRTUAL_POSITION_CREATE_FAILED',
+duplicateOpenDetected
+? 'SYMBOL_ALREADY_OPEN_VIRTUAL_POSITION'
+: 'VIRTUAL_POSITION_CREATE_FAILED',
 error:
-error?.message ||
-String(error),
+duplicateOpenDetected ? null : errorMessage,
+duplicateOpenDetectedBySave: duplicateOpenDetected,
 selectedRotationId:
 alertContext.rotationId,
 activeRotationId:
@@ -7158,6 +7196,11 @@ const snapshotProcessingComplete =
 batchProcessingComplete &&
 nextCandidateIndex >=
 totalSnapshotCandidateCount;
+const snapshotProgressAdvanced =
+nextCandidateIndex > candidateStartIndex;
+const noProgressRetryCount = snapshotProgressAdvanced
+? 0
+: noProgressRetryCountBeforeRun + 1;
 const qualityAudit =
 buildQualityAudit({
 snapshot,
@@ -7206,6 +7249,13 @@ restartSnapshotProgress,
 candidateStartIndex,
 candidateEndExclusive,
 nextCandidateIndex,
+snapshotProgressAdvanced,
+noProgressRetryCountBeforeRun,
+noProgressRetryCount,
+adaptiveCandidateBatchLimit,
+adaptiveRetryDivisor,
+adaptiveNoProgressBatchVersion: ADAPTIVE_NO_PROGRESS_BATCH_VERSION,
+authoritativeOpenSymbolCheckVersion: AUTHORITATIVE_OPEN_SYMBOL_CHECK_VERSION,
 batchCandidateCount:
 candidates.length,
 totalSnapshotCandidateCount,
@@ -7243,6 +7293,13 @@ monitoringDeadlineAt,
 candidateStartIndex,
 candidateEndExclusive,
 nextCandidateIndex,
+snapshotProgressAdvanced,
+noProgressRetryCountBeforeRun,
+noProgressRetryCount,
+adaptiveCandidateBatchLimit,
+adaptiveRetryDivisor,
+adaptiveNoProgressBatchVersion: ADAPTIVE_NO_PROGRESS_BATCH_VERSION,
+authoritativeOpenSymbolCheckVersion: AUTHORITATIVE_OPEN_SYMBOL_CHECK_VERSION,
 
 snapshotCandidateCount:
 totalSnapshotCandidateCount,
@@ -7585,9 +7642,8 @@ snapshotProcessingComplete:
 false,
 completed:
 false,
-noProgressRetryCount: nextCandidateIndex > candidateStartIndex ? 0 :
-Math.max(0, safeNumber(snapshotProgress?.noProgressRetryCount, 0)) + 1,
-snapshotProgressAdvanced: nextCandidateIndex > candidateStartIndex,
+noProgressRetryCount,
+snapshotProgressAdvanced,
 entryProcessingIncomplete,
 entryProcessingStoppedAtIndex,
 analyzeError,
@@ -7695,6 +7751,13 @@ batchProcessingComplete,
 snapshotProcessingComplete,
 snapshotContinuation:
 continuationActive,
+snapshotProgressAdvanced,
+noProgressRetryCountBeforeRun,
+noProgressRetryCount,
+adaptiveCandidateBatchLimit,
+adaptiveRetryDivisor,
+adaptiveNoProgressBatchVersion: ADAPTIVE_NO_PROGRESS_BATCH_VERSION,
+authoritativeOpenSymbolCheckVersion: AUTHORITATIVE_OPEN_SYMBOL_CHECK_VERSION,
 entryProcessingIncomplete,
 entryProcessingStoppedAtIndex,
 reason:
