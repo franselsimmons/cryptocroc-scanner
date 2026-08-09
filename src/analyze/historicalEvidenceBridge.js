@@ -3,10 +3,19 @@
 // Historical evidence may create OBSERVE preview candidates only.
 // It can never manufacture a live PASSED gate and never writes live learning statistics.
 
+import zlib from 'node:zlib';
 import { getDurableRedis, getJson } from '../redis.js';
 import { safeNumber } from '../utils.js';
+import {
+  HISTORICAL_GENERATED_FILE_VERSION,
+  HISTORICAL_GENERATED_SIDE,
+  HISTORICAL_GENERATED_AT,
+  HISTORICAL_GENERATED_SELECTION_ELIGIBLE_FAMILIES,
+  HISTORICAL_EVIDENCE_GZIP_BASE64,
+  HISTORICAL_OUTCOMES_GZIP_BASE64
+} from '../historical/generatedEvidence.js';
 
-export const HISTORICAL_EVIDENCE_BRIDGE_VERSION = 'LONG_HISTORICAL_EVIDENCE_BRIDGE_V1';
+export const HISTORICAL_EVIDENCE_BRIDGE_VERSION = 'LONG_HISTORICAL_EVIDENCE_BRIDGE_FILE_FIRST_V2';
 const SIDE = 'LONG';
 const PREFIX = `${SIDE}:`;
 const EVIDENCE_VERSION = 'LONG_HISTORICAL_WALK_FORWARD_EVIDENCE_V1';
@@ -20,15 +29,57 @@ async function mapLimit(items,limit,fn){const src=Array.from(items||[]),out=new 
 function liveCompleted(row={}){return Math.max(0,Math.floor(safeNumber(row.completedCurrentMeasurement??row.completed??row.outcomesCompleted,0)));}
 function liveAvgR(row={}){return safeNumber(row.avgR??row.avgNetR,0);}
 
+function decodeGeneratedJson(base64, fallback) {
+  try {
+    if (!base64) return fallback;
+    return JSON.parse(zlib.gunzipSync(Buffer.from(String(base64), 'base64')).toString('utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function loadGeneratedFileBundle({ cutoffTs = now() } = {}) {
+  const expectedFileVersion = 'LONG_HISTORICAL_GENERATED_FILE_V1';
+  if (HISTORICAL_GENERATED_FILE_VERSION !== expectedFileVersion || HISTORICAL_GENERATED_SIDE !== SIDE) {
+    return { ok:false, reason:'HISTORICAL_GENERATED_FILE_VERSION_MISMATCH', evidence:null, outcomesByFamily:new Map(), eligibleFamilyIds:[] };
+  }
+  const evidence = decodeGeneratedJson(HISTORICAL_EVIDENCE_GZIP_BASE64, null);
+  const byFamily = decodeGeneratedJson(HISTORICAL_OUTCOMES_GZIP_BASE64, {});
+  if (!evidence || evidence.side !== SIDE || evidence.historicalEvidenceVersion !== EVIDENCE_VERSION) {
+    return { ok:false, reason:'HISTORICAL_GENERATED_FILE_EMPTY', evidence:null, outcomesByFamily:new Map(), eligibleFamilyIds:[] };
+  }
+  const generatedAt = safeNumber(evidence.generatedAt ?? HISTORICAL_GENERATED_AT, 0);
+  if (generatedAt <= 0 || Math.max(0, cutoffTs - generatedAt) > MAX_AGE_DAYS * DAY_MS) {
+    return { ok:false, reason:'HISTORICAL_GENERATED_FILE_STALE', evidence, outcomesByFamily:new Map(), eligibleFamilyIds:[] };
+  }
+  const declared = Array.isArray(HISTORICAL_GENERATED_SELECTION_ELIGIBLE_FAMILIES)
+    ? HISTORICAL_GENERATED_SELECTION_ELIGIBLE_FAMILIES : [];
+  const eligible = (Array.isArray(evidence.selectionEligibleFamilies) ? evidence.selectionEligibleFamilies : declared)
+    .map(upper).filter((id) => familyIdOf({familyId:id}));
+  const pairs = eligible.map((familyId) => [familyId, Array.isArray(byFamily?.[familyId]) ? byFamily[familyId] : []]);
+  return {
+    ok:true, reason:'HISTORICAL_EVIDENCE_READY_FROM_GENERATED_FILE',
+    source:'GENERATED_REPOSITORY_FILE', bridgeVersion:HISTORICAL_EVIDENCE_BRIDGE_VERSION,
+    evidence, outcomesByFamily:new Map(pairs), eligibleFamilyIds:eligible, redisReadRequired:false
+  };
+}
+
 export async function loadHistoricalEvidenceBundle({cutoffTs=now()}={}){
-  const redis=getDurableRedis();
-  const evidence=await getJson(redis,`${PREFIX}HISTORICAL:EVIDENCE:V1`,null).catch(()=>null);
-  if(!evidence||evidence.side!==SIDE||evidence.historicalEvidenceVersion!==EVIDENCE_VERSION){return {ok:false,reason:'HISTORICAL_EVIDENCE_MISSING_OR_VERSION_MISMATCH',evidence:null,outcomesByFamily:new Map(),eligibleFamilyIds:[]};}
-  const generatedAt=safeNumber(evidence.generatedAt,0);
-  if(generatedAt<=0||Math.max(0,cutoffTs-generatedAt)>MAX_AGE_DAYS*DAY_MS){return {ok:false,reason:'HISTORICAL_EVIDENCE_STALE',evidence,outcomesByFamily:new Map(),eligibleFamilyIds:[]};}
-  const eligible=(Array.isArray(evidence.selectionEligibleFamilies)?evidence.selectionEligibleFamilies:[]).map(upper).filter((id)=>familyIdOf({familyId:id}));
-  const pairs=await mapLimit(eligible,8,async familyId=>[familyId,await getJson(redis,`${PREFIX}HISTORICAL:OUTCOMES:V1:${familyId}`,[]).catch(()=>[])]);
-  return {ok:true,reason:'HISTORICAL_EVIDENCE_READY',bridgeVersion:HISTORICAL_EVIDENCE_BRIDGE_VERSION,evidence,outcomesByFamily:new Map(pairs.map(([id,rows])=>[id,Array.isArray(rows)?rows:[]])),eligibleFamilyIds:eligible};
+  const fileBundle = loadGeneratedFileBundle({ cutoffTs });
+  if (fileBundle.ok) return fileBundle;
+  // Backward-compatible Vercel fallback only. GitHub Actions does not need Redis secrets.
+  try {
+    const redis=getDurableRedis();
+    const evidence=await getJson(redis,`${PREFIX}HISTORICAL:EVIDENCE:V1`,null).catch(()=>null);
+    if(!evidence||evidence.side!==SIDE||evidence.historicalEvidenceVersion!==EVIDENCE_VERSION) return fileBundle;
+    const generatedAt=safeNumber(evidence.generatedAt,0);
+    if(generatedAt<=0||Math.max(0,cutoffTs-generatedAt)>MAX_AGE_DAYS*DAY_MS) return fileBundle;
+    const eligible=(Array.isArray(evidence.selectionEligibleFamilies)?evidence.selectionEligibleFamilies:[]).map(upper).filter((id)=>familyIdOf({familyId:id}));
+    const pairs=await mapLimit(eligible,8,async familyId=>[familyId,await getJson(redis,`${PREFIX}HISTORICAL:OUTCOMES:V1:${familyId}`,[]).catch(()=>[])]);
+    return {ok:true,reason:'HISTORICAL_EVIDENCE_READY_FROM_REDIS_FALLBACK',source:'REDIS_FALLBACK',bridgeVersion:HISTORICAL_EVIDENCE_BRIDGE_VERSION,evidence,outcomesByFamily:new Map(pairs.map(([id,rows])=>[id,Array.isArray(rows)?rows:[]])),eligibleFamilyIds:eligible,redisReadRequired:true};
+  } catch {
+    return fileBundle;
+  }
 }
 
 export function mergeHistoricalSelectionMicros(liveMicros={},bundle={}){
