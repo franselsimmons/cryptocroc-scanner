@@ -16,12 +16,12 @@ on:
         required: true
         default: '0'
       publish:
-        description: Publish validated evidence to isolated LONG:HISTORICAL:* Redis keys
+        description: Commit validated generated evidence file to this repository (no Redis secret required)
         required: true
         type: boolean
         default: true
       refresh_preview:
-        description: Rebuild NEXT weekly preview after publishing; never activates live rotation
+        description: Kept for UI compatibility; preview is rebuilt by the existing Vercel weekly-freeze after file deployment
         required: true
         type: boolean
         default: true
@@ -34,7 +34,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   BITGET_BASE_URL: https://api.bitget.com
@@ -52,6 +52,8 @@ jobs:
       refresh_preview: ${{ steps.params.outputs.refresh_preview }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -75,17 +77,6 @@ jobs:
             echo "max_contracts=${{ inputs.max_contracts }}" >> "$GITHUB_OUTPUT"
             echo "refresh_preview=${{ inputs.refresh_preview }}" >> "$GITHUB_OUTPUT"
           fi
-      - name: Validate Redis publish secrets
-        if: ${{ steps.params.outputs.publish == 'true' }}
-        shell: bash
-        env:
-          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
-          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
-        run: |
-          if [ -z "$UPSTASH_REDIS_REST_URL" ] || [ -z "$UPSTASH_REDIS_REST_TOKEN" ]; then
-            echo "::error::GitHub Actions Redis secrets ontbreken. Voeg UPSTASH_REDIS_REST_URL en UPSTASH_REDIS_REST_TOKEN toe onder Settings > Secrets and variables > Actions. Vercel environment variables worden niet automatisch gedeeld met GitHub Actions."
-            exit 1
-          fi
       - id: matrix
         shell: bash
         run: |
@@ -103,6 +94,8 @@ jobs:
     timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -136,6 +129,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -149,22 +144,41 @@ jobs:
           path: .historical-shards
           merge-multiple: true
       - name: Walk-forward + validation + OOS + FDR + shrinkage + correlation
-        run: node src/historical/researchEngine.js evidence --input=.historical-shards --out=.historical-evidence --include-published=true
+        run: node src/historical/researchEngine.js evidence --input=.historical-shards --out=.historical-evidence --include-published=false
       - uses: actions/upload-artifact@v4
         with:
           name: historical-evidence-long
           path: .historical-evidence/
           retention-days: 30
-      - name: Publish isolated evidence
+      - name: Export validated evidence to generated repository file
         if: ${{ needs.plan.outputs.publish == 'true' }}
-        env:
-          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
-          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
-        run: node src/historical/researchEngine.js publish --evidence=.historical-evidence/historical-evidence.json --outcomes=.historical-evidence/historical-outcomes-by-family.json
+        run: >-
+          node src/historical/researchEngine.js export-file
+          --evidence=.historical-evidence/historical-evidence.json
+          --outcomes=.historical-evidence/historical-outcomes-by-family.json
+          --target=src/historical/generatedEvidence.js
 
-      - name: Refresh NEXT weekly preview only
+      - name: Validate generated evidence module
+        if: ${{ needs.plan.outputs.publish == 'true' }}
+        run: node --check src/historical/generatedEvidence.js
+
+      - name: Commit generated evidence file
+        if: ${{ needs.plan.outputs.publish == 'true' }}
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/historical/generatedEvidence.js src/historical/generatedEvidence.js.manifest.json
+          if git diff --cached --quiet; then
+            echo "No generated evidence change to commit."
+            exit 0
+          fi
+          git commit -m "chore: refresh long historical evidence"
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"
+
+      - name: File-backed preview note
         if: ${{ needs.plan.outputs.publish == 'true' && needs.plan.outputs.refresh_preview == 'true' }}
-        env:
-          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
-          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
-        run: node src/historical/researchEngine.js refresh-preview
+        run: |
+          echo "Validated historical evidence is now committed as src/historical/generatedEvidence.js."
+          echo "Vercel will deploy the file. The existing weekly-freeze route reads it through historicalEvidenceBridge; no GitHub Redis secret is required."
