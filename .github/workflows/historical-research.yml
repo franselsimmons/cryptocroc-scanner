@@ -38,8 +38,6 @@ permissions:
 
 env:
   BITGET_BASE_URL: https://api.bitget.com
-  UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
-  UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
   HISTORICAL_API_CONCURRENCY: '8'
   HISTORICAL_MAX_DAYS: '365'
   HISTORICAL_MAX_OUTCOMES_PER_FAMILY: '600'
@@ -76,6 +74,17 @@ jobs:
             echo "publish=${{ inputs.publish }}" >> "$GITHUB_OUTPUT"
             echo "max_contracts=${{ inputs.max_contracts }}" >> "$GITHUB_OUTPUT"
             echo "refresh_preview=${{ inputs.refresh_preview }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Validate Redis publish secrets
+        if: ${{ steps.params.outputs.publish == 'true' }}
+        shell: bash
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+        run: |
+          if [ -z "$UPSTASH_REDIS_REST_URL" ] || [ -z "$UPSTASH_REDIS_REST_TOKEN" ]; then
+            echo "::error::GitHub Actions Redis secrets ontbreken. Voeg UPSTASH_REDIS_REST_URL en UPSTASH_REDIS_REST_TOKEN toe onder Settings > Secrets and variables > Actions. Vercel environment variables worden niet automatisch gedeeld met GitHub Actions."
+            exit 1
           fi
       - id: matrix
         shell: bash
@@ -148,8 +157,14 @@ jobs:
           retention-days: 30
       - name: Publish isolated evidence
         if: ${{ needs.plan.outputs.publish == 'true' }}
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
         run: node src/historical/researchEngine.js publish --evidence=.historical-evidence/historical-evidence.json --outcomes=.historical-evidence/historical-outcomes-by-family.json
 
       - name: Refresh NEXT weekly preview only
         if: ${{ needs.plan.outputs.publish == 'true' && needs.plan.outputs.refresh_preview == 'true' }}
+        env:
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
         run: node src/historical/researchEngine.js refresh-preview
