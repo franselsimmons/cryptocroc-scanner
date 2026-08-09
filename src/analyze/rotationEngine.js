@@ -80,6 +80,7 @@ import {
   validateWeekComposition,
   evaluateWeekCompositionSlot
 } from './weekCompositionEngine.js';
+import { loadHistoricalEvidenceBundle, mergeHistoricalSelectionMicros, HISTORICAL_EVIDENCE_BRIDGE_VERSION } from './historicalEvidenceBridge.js';
 import { sendWeeklyRotationReport } from '../discord/discord.js';
 
 
@@ -1162,7 +1163,9 @@ async function buildTemporalGeneration({
     micros = {},
     cutoffTs = now(),
     freezeSequence = 1,
-    previousGeneration = null
+    previousGeneration = null,
+    historicalOutcomeMap = new Map(),
+    historicalEvidenceMeta = null
 } = {}) {
     const normalizedCutoffTs = normalizeTemporalCutoffTs(cutoffTs);
     const familyIds = temporalFamilyIds();
@@ -1170,10 +1173,16 @@ async function buildTemporalGeneration({
         (previousGeneration?.familyProjections || [])
             .map((projection) => [projection.familyId, projection])
     );
-    const histories = await temporalMapLimit(familyIds, 8, async (familyId) => ({
-        familyId,
-        rows: await getMicroOutcomeHistory(familyId).catch(() => [])
-    }));
+    const histories = await temporalMapLimit(familyIds, 8, async (familyId) => {
+        const liveRows = await getMicroOutcomeHistory(familyId).catch(() => []);
+        const historicalRows = historicalOutcomeMap instanceof Map
+            ? (historicalOutcomeMap.get(familyId) || [])
+            : (historicalOutcomeMap?.[familyId] || []);
+        return {
+            familyId,
+            rows: [...(Array.isArray(historicalRows) ? historicalRows : []), ...(Array.isArray(liveRows) ? liveRows : [])]
+        };
+    });
     const duplicateCanonicalOwners = new Map();
     const duplicateCanonicalOutcomeIds = new Set();
     for (const history of histories) {
@@ -1795,6 +1804,12 @@ async function buildTemporalGeneration({
         status: 'INTEGRITY_CHECK_RUNNING',
         lifecycle,
         familyProjections: projections,
+        historicalEvidenceBridgeVersion: HISTORICAL_EVIDENCE_BRIDGE_VERSION,
+        historicalEvidenceApplied: Boolean(historicalEvidenceMeta),
+        historicalEvidenceVersion: historicalEvidenceMeta?.historicalEvidenceVersion || null,
+        historicalEvidenceGeneratedAt: historicalEvidenceMeta?.generatedAt || null,
+        historicalSelectionEligibleFamilies: historicalEvidenceMeta?.selectionEligibleFamilies || [],
+        strictDiscordRequiresLiveForward: true,
         fdrBatches: {
             negativeDaySession: {
                 direction: 'NEGATIVE',
@@ -5682,7 +5697,8 @@ export async function freezeWeeklyRotation({
     activeWeekKey = getNextIsoWeekKey(),
     mode = defaultRotationMode(),
     cutoffTs = now(),
-    freezeSequence = null
+    freezeSequence = null,
+    sendReport = true
 } = {}) {
     const redis = getDurableRedis();
     const dataWeekKey = learningDataKey(weekKey);
@@ -5693,6 +5709,14 @@ export async function freezeWeeklyRotation({
         getRotationDocument(redis, nextRotationKey(), null).catch(() => null)
     ]);
     await saveWeekMicros(dataWeekKey, micros);
+    const historicalBundle = await loadHistoricalEvidenceBundle({ cutoffTs: normalizedCutoffTs }).catch((error) => ({
+        ok: false,
+        reason: error?.message || 'HISTORICAL_EVIDENCE_BRIDGE_FAILED',
+        evidence: null,
+        outcomesByFamily: new Map(),
+        eligibleFamilyIds: []
+    }));
+    const selectionMicros = mergeHistoricalSelectionMicros(micros, historicalBundle);
     const rotation = await buildRotationFromWeek({
         weekKey: dataWeekKey,
         activeWeekKey,
@@ -5704,10 +5728,12 @@ export async function freezeWeeklyRotation({
         : Math.max(1, safeNumber(previousGeneration?.freezeSequence, 0) + 1);
     const generation = temporalStatsEnabled()
         ? await buildTemporalGeneration({
-            micros,
+            micros: selectionMicros,
             cutoffTs: normalizedCutoffTs,
             freezeSequence: resolvedFreezeSequence,
-            previousGeneration
+            previousGeneration,
+            historicalOutcomeMap: historicalBundle?.outcomesByFamily || new Map(),
+            historicalEvidenceMeta: historicalBundle?.ok ? historicalBundle.evidence : null
         })
         : null;
     const nextRotation = {
@@ -5716,7 +5742,12 @@ export async function freezeWeeklyRotation({
         temporalGenerationId: generation?.generationId || null,
         temporalGenerationStatus: generation?.status || 'DISABLED',
         temporalStatsEnabled: temporalStatsEnabled(),
-        temporalPolicyMode: temporalPolicyMode()
+        temporalPolicyMode: temporalPolicyMode(),
+        historicalEvidenceBridgeVersion: HISTORICAL_EVIDENCE_BRIDGE_VERSION,
+        historicalEvidenceApplied: historicalBundle?.ok === true,
+        historicalEvidenceReason: historicalBundle?.reason || null,
+        historicalEvidenceEligibleFamilies: historicalBundle?.eligibleFamilyIds || [],
+        strictDiscordRequiresLiveForward: true
     };
     const nextRotationStorage = await setRotationDocument(redis, nextRotationKey(), nextRotation);
     const activationWindow = generation
@@ -5769,7 +5800,7 @@ export async function freezeWeeklyRotation({
         bestShort: null
     };
     const validFromStorage = await setRotationDocument(redis, rotationValidFromKey(), validFromDocument);
-    await sendWeeklyRotationReport(
+    if (sendReport !== false) await sendWeeklyRotationReport(
         nextRotation,
         generation?.status === 'READY'
             ? 'NEXT_ROTATION_AND_TEMPORAL_GENERATION_READY'
