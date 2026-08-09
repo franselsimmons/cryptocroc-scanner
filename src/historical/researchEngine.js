@@ -412,6 +412,17 @@ export async function replayShard({ startTs, endTs, outDir, shardId = 'shard', m
     const snapshot = await runScanner({ historicalMode: true, persist: false, asOfTs: ts, startedAt: ts, snapshotIdOverride: `hist_${SIDE.toLowerCase()}_${ts}`, rawTickers, fetchCandles: store.getCandles.bind(store), source: 'HISTORICAL_POINT_IN_TIME_REPLAY' });
     const weather = weatherContext(snapshot.historicalMarketWeather || {}); const temporalEntry = entryTemporalContext(ts); const btcRouterState = normalizedBtcState(snapshot.btcState);
     const candidates = Array.isArray(snapshot.candidates) ? snapshot.candidates : []; counters.scannerCandidates += candidates.length;
+    if (counters.timestamps % 96 === 0) {
+      const elapsedSec = Math.max(1, Math.round((now() - startedWall) / 1000));
+      const completedTs = ts + FIFTEEN_MS;
+      const progress = clamp((completedTs - start) / Math.max(FIFTEEN_MS, end - start), 0, 1);
+      const etaSec = progress > 0 ? Math.max(0, Math.round(elapsedSec * (1 - progress) / progress)) : null;
+      console.log('HISTORICAL_REPLAY_PROGRESS', JSON.stringify({
+        side: SIDE, shardId, at: iso(completedTs), progressPct: Math.round(progress * 1000) / 10,
+        elapsedSec, etaSec, contractsLoaded: preparation.contractsLoaded,
+        timestamps: counters.timestamps, scannerCandidates: counters.scannerCandidates, outcomes: counters.outcomes
+      }));
+    }
     for (const candidate of candidates) {
       const symbol = normalizeSymbol(candidate.contractSymbol || candidate.symbol); if (!symbol) continue;
       if (finite(openUntil.get(symbol), 0) > ts) { counters.skippedAlreadyOpen += 1; continue; }
@@ -994,13 +1005,36 @@ export async function refreshWeeklyPreview() {
   };
 }
 
-export function planShards({ days = 180, chunkDays = 30, endTs = null } = {}) {
-  const end=floorTo(endTs||Date.UTC(new Date().getUTCFullYear(),new Date().getUTCMonth(),new Date().getUTCDate()),DAY_MS); const start=end-Math.max(7,Number(days))*DAY_MS; const chunk=Math.max(1,Number(chunkDays))*DAY_MS; const shards=[]; let i=0; for(let s=start;s<end;s+=chunk){ const e=Math.min(end,s+chunk); shards.push({id:`s${String(++i).padStart(2,'0')}_${dateKey(s)}_${dateKey(e)}`,startTs:s,endTs:e,startIso:iso(s),endIso:iso(e)}); } return shards;
+export function planShards({ days = 180, chunkDays = 5, endTs = null } = {}) {
+  const end = floorTo(endTs || Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()), DAY_MS);
+  const safeDays = Math.max(7, Number(days));
+  // A full-universe 30-day replay exceeded the GitHub job timeout in production.
+  // Clamp time shards to five days so the point-in-time replay finishes reliably
+  // without changing any scanner/risk/family/exit semantics.
+  const requestedChunkDays = Math.max(1, Number(chunkDays));
+  const effectiveChunkDays = Math.min(5, requestedChunkDays);
+  const start = end - safeDays * DAY_MS;
+  const chunk = effectiveChunkDays * DAY_MS;
+  const shards = [];
+  let i = 0;
+  for (let s = start; s < end; s += chunk) {
+    const e = Math.min(end, s + chunk);
+    shards.push({
+      id: `s${String(++i).padStart(2, '0')}_${dateKey(s)}_${dateKey(e)}`,
+      startTs: s,
+      endTs: e,
+      startIso: iso(s),
+      endIso: iso(e),
+      requestedChunkDays,
+      effectiveChunkDays
+    });
+  }
+  return shards;
 }
 
 async function cli() {
   const {command,args}=parseArgs();
-  if(command==='plan'){ const rows=planShards({days:Number(args.days||180),chunkDays:Number(args.chunk_days||30),endTs:parseTs(args.end,null)}); process.stdout.write(JSON.stringify(rows)); return; }
+  if(command==='plan'){ const rows=planShards({days:Number(args.days||180),chunkDays:Number(args.chunk_days||5),endTs:parseTs(args.end,null)}); process.stdout.write(JSON.stringify(rows)); return; }
   if(command==='replay'){ const startTs=parseTs(args.start,NaN),endTs=parseTs(args.end,NaN); if(!Number.isFinite(startTs)||!Number.isFinite(endTs)||endTs<=startTs) throw new Error('VALID_START_END_REQUIRED'); const result=await replayShard({startTs,endTs,outDir:args.out||'.historical-shard',shardId:args.shard||'shard',maxContracts:Number(args.max_contracts||0)}); console.log(JSON.stringify({ok:true,command,side:SIDE,...result})); return; }
   if(command==='evidence'){ const evidence=await buildEvidence({inputDir:args.input||'.historical-shards',outDir:args.out||'.historical-evidence',includePublished:bool(args.include_published,false)}); console.log(JSON.stringify({ok:true,command,side:SIDE,totalOutcomes:evidence.totalOutcomes,selectionEligibleFamilies:evidence.selectionEligibleFamilies})); return; }
   if(command==='export-file'){ const result=exportGeneratedEvidenceModule({evidenceFile:args.evidence||'.historical-evidence/historical-evidence.json',outcomesFile:args.outcomes||'.historical-evidence/historical-outcomes-by-family.json',targetFile:args.target||'src/historical/generatedEvidence.js'}); console.log(JSON.stringify({ok:true,command,side:SIDE,...result})); return; }
