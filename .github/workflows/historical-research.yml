@@ -8,9 +8,9 @@ on:
         required: true
         default: '180'
       chunk_days:
-        description: Days per parallel shard
+        description: Days per parallel shard (safety-clamped to max 5)
         required: true
-        default: '30'
+        default: '5'
       max_contracts:
         description: 0 = all eligible USDT perpetual contracts
         required: true
@@ -66,7 +66,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
             echo "days=35" >> "$GITHUB_OUTPUT"
-            echo "chunk_days=7" >> "$GITHUB_OUTPUT"
+            echo "chunk_days=5" >> "$GITHUB_OUTPUT"
             echo "publish=true" >> "$GITHUB_OUTPUT"
             echo "max_contracts=0" >> "$GITHUB_OUTPUT"
             echo "refresh_preview=true" >> "$GITHUB_OUTPUT"
@@ -82,12 +82,13 @@ jobs:
         run: |
           MATRIX=$(node src/historical/researchEngine.js plan --days=${{ steps.params.outputs.days }} --chunk-days=${{ steps.params.outputs.chunk_days }})
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          node -e 'const m=JSON.parse(process.argv[1]); console.log(`Historical replay plan: ${m.length} shards; effective shard days <= 5`);' "$MATRIX"
 
   replay:
     needs: plan
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: 12
       matrix:
         shard: ${{ fromJson(needs.plan.outputs.matrix) }}
     runs-on: ubuntu-latest
