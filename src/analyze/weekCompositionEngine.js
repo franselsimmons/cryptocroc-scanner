@@ -21,6 +21,8 @@ export const WEEK_COMPOSITION_VERSION =
   'LONG_WEEK_COMPOSITION_DAY_HOUR_WEATHER_BTC_V4_OBSERVE_PREVIEW';
 export const WEEK_COMPOSITION_OPTIMIZER_VERSION =
   'LONG_TOP3_DAY_HOUR_WEATHER_BTC_OPTIMIZER_V4_OBSERVE_PREVIEW';
+export const HISTORICAL_CORRELATION_DIVERSIFICATION_VERSION =
+  'LONG_HISTORICAL_CORRELATION_DIVERSIFICATION_V1';
 export const WEEK_COMPOSITION_MODES = Object.freeze([
   'CONSERVATIVE',
   'BALANCED',
@@ -779,6 +781,8 @@ function candidateForSlot({
     weatherBlended,
     diversity,
     weatherDiversity,
+    historicalCorrelationCluster: row.historicalCorrelationCluster || null,
+    maxPeerCorrelation: finite(row.maxPeerCorrelation, 0),
     ...taxonomy
   };
 }
@@ -797,6 +801,8 @@ function compactSelectedFamilyEvidence(candidate = {}) {
     expectedNetRPerWeek: finite(candidate.expectedNetRPerWeek, 0),
     expectedNetPnlPctPerWeek: finite(candidate.expectedNetPnlPctPerWeek, 0),
     confidenceScore: finite(candidate.confidenceScore, 0),
+    historicalCorrelationCluster: candidate.historicalCorrelationCluster || null,
+    maxPeerCorrelation: finite(candidate.maxPeerCorrelation, 0),
     observePreviewOnly: candidate.observePreviewOnly === true,
     strictPublishEligible: candidate.strictPublishEligible === true,
     evidenceMode: candidate.evidenceMode || 'STRICT_EXACT_CONTEXT',
@@ -864,6 +870,8 @@ function diversifiedSelection(candidates = [], config, eligibilityField = 'eligi
           candidate.confirmationProfile &&
           candidate.confirmationProfile === existing.confirmationProfile
         ) penalty += 4;
+        if (candidate.historicalCorrelationCluster && candidate.historicalCorrelationCluster === existing.historicalCorrelationCluster) penalty += 14;
+        if (Math.max(finite(candidate.maxPeerCorrelation, 0), finite(existing.maxPeerCorrelation, 0)) >= 0.85) penalty += 3;
       }
       const adjusted = candidate.score - penalty;
       if (adjusted > bestAdjusted) {
