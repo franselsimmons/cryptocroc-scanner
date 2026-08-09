@@ -1,0 +1,155 @@
+name: Historical Smart Selection LONG
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Initial/backfill lookback in days
+        required: true
+        default: '180'
+      chunk_days:
+        description: Days per parallel shard
+        required: true
+        default: '30'
+      max_contracts:
+        description: 0 = all eligible USDT perpetual contracts
+        required: true
+        default: '0'
+      publish:
+        description: Publish validated evidence to isolated LONG:HISTORICAL:* Redis keys
+        required: true
+        type: boolean
+        default: true
+      refresh_preview:
+        description: Rebuild NEXT weekly preview after publishing; never activates live rotation
+        required: true
+        type: boolean
+        default: true
+  schedule:
+    # Weekly incremental refresh well before Sunday 22:00 UTC freeze.
+    - cron: '15 3 * * 0'
+
+concurrency:
+  group: historical-smart-selection-long
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  BITGET_BASE_URL: https://api.bitget.com
+  UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+  UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+  HISTORICAL_API_CONCURRENCY: '8'
+  HISTORICAL_MAX_DAYS: '365'
+  HISTORICAL_MAX_OUTCOMES_PER_FAMILY: '600'
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      publish: ${{ steps.params.outputs.publish }}
+      max_contracts: ${{ steps.params.outputs.max_contracts }}
+      refresh_preview: ${{ steps.params.outputs.refresh_preview }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then npm ci --ignore-scripts; else npm install --ignore-scripts; fi
+      - id: params
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "days=35" >> "$GITHUB_OUTPUT"
+            echo "chunk_days=7" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "max_contracts=0" >> "$GITHUB_OUTPUT"
+            echo "refresh_preview=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "days=${{ inputs.days }}" >> "$GITHUB_OUTPUT"
+            echo "chunk_days=${{ inputs.chunk_days }}" >> "$GITHUB_OUTPUT"
+            echo "publish=${{ inputs.publish }}" >> "$GITHUB_OUTPUT"
+            echo "max_contracts=${{ inputs.max_contracts }}" >> "$GITHUB_OUTPUT"
+            echo "refresh_preview=${{ inputs.refresh_preview }}" >> "$GITHUB_OUTPUT"
+          fi
+      - id: matrix
+        shell: bash
+        run: |
+          MATRIX=$(node src/historical/researchEngine.js plan --days=${{ steps.params.outputs.days }} --chunk-days=${{ steps.params.outputs.chunk_days }})
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  replay:
+    needs: plan
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        shard: ${{ fromJson(needs.plan.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then npm ci --ignore-scripts; else npm install --ignore-scripts; fi
+      - uses: actions/cache@v4
+        with:
+          path: .historical-cache
+          key: long-hist-${{ hashFiles('src/market/scanner.js', 'src/trade/riskEngine.js', 'src/analyze/microFamilies.js', 'src/historical/researchEngine.js') }}-${{ matrix.shard.id }}
+          restore-keys: |
+            long-hist-${{ hashFiles('src/market/scanner.js', 'src/trade/riskEngine.js', 'src/analyze/microFamilies.js', 'src/historical/researchEngine.js') }}-
+      - name: Replay point-in-time shard
+        run: >-
+          node src/historical/researchEngine.js replay
+          --start=${{ matrix.shard.startTs }}
+          --end=${{ matrix.shard.endTs }}
+          --shard=${{ matrix.shard.id }}
+          --max-contracts=${{ needs.plan.outputs.max_contracts }}
+          --out=.historical-shard
+      - uses: actions/upload-artifact@v4
+        with:
+          name: historical-shard-${{ matrix.shard.id }}
+          path: .historical-shard/
+          retention-days: 7
+
+  evidence:
+    needs: [plan, replay]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then npm ci --ignore-scripts; else npm install --ignore-scripts; fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: historical-shard-*
+          path: .historical-shards
+          merge-multiple: true
+      - name: Walk-forward + validation + OOS + FDR + shrinkage + correlation
+        run: node src/historical/researchEngine.js evidence --input=.historical-shards --out=.historical-evidence --include-published=true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: historical-evidence-long
+          path: .historical-evidence/
+          retention-days: 30
+      - name: Publish isolated evidence
+        if: ${{ needs.plan.outputs.publish == 'true' }}
+        run: node src/historical/researchEngine.js publish --evidence=.historical-evidence/historical-evidence.json --outcomes=.historical-evidence/historical-outcomes-by-family.json
+
+      - name: Refresh NEXT weekly preview only
+        if: ${{ needs.plan.outputs.publish == 'true' && needs.plan.outputs.refresh_preview == 'true' }}
+        run: node src/historical/researchEngine.js refresh-preview
