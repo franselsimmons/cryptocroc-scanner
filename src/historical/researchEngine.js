@@ -20,7 +20,7 @@ import {
   buildTemporalContext
 } from '../analyze/scoring.js';
 
-export const HISTORICAL_REPLAY_VERSION = 'LONG_POINT_IN_TIME_REPLAY_V1';
+export const HISTORICAL_REPLAY_VERSION = 'LONG_POINT_IN_TIME_REPLAY_V1_1';
 export const HISTORICAL_EVIDENCE_VERSION = 'LONG_HISTORICAL_WALK_FORWARD_EVIDENCE_V1';
 export const HISTORICAL_SELECTION_VERSION = 'LONG_HISTORICAL_SELECTION_BRIDGE_V1';
 
@@ -163,7 +163,11 @@ function parseCandle(row) {
   return { ts, open, high, low, close, volume: Math.max(0, finite(row[5], 0)), quoteVolume: Math.max(0, finite(row[6], 0)) };
 }
 async function historicalCandles(symbol, granularity, startTs, endTs) {
-  const contractSymbol = normalizeSymbol(symbol); const interval = candleInterval(granularity);
+  const contractSymbol = normalizeSymbol(symbol);
+  if (contractSymbol.length <= 4 || contractSymbol === 'USDT' || !contractSymbol.endsWith('USDT') || !baseSymbol(contractSymbol)) {
+    throw new Error(`INVALID_HISTORICAL_CONTRACT_SYMBOL:${contractSymbol || 'EMPTY'}`);
+  }
+  const interval = candleInterval(granularity);
   const start = floorTo(startTs, interval), end = floorTo(endTs, interval);
   const key = `candles|${contractSymbol}|${granularity}|${start}|${end}`;
   const cached = cacheGet(key); if (Array.isArray(cached)) return cached;
@@ -188,9 +192,15 @@ async function contracts() {
   const key = `contracts|usdt-futures|v3|${weekKey(now())}`; const cached = cacheGet(key); if (Array.isArray(cached) && cached.length) return cached;
   const raw = await fetchJson('/api/v2/mix/market/contracts', { productType: PRODUCT_TYPE });
   const list = (Array.isArray(raw) ? raw : []).filter((row) => {
-    const symbol = normalizeSymbol(row?.symbol); const quote = upper(row?.quoteCoin);
+    const symbol = normalizeSymbol(row?.symbol);
+    const quote = upper(row?.quoteCoin);
+    const base = upper(row?.baseCoin || baseSymbol(symbol));
     const perpetual = !row?.symbolType || upper(row.symbolType) === 'PERPETUAL';
-    return symbol.endsWith('USDT') && quote === 'USDT' && perpetual && upper(row?.isRwa) !== 'YES';
+    // Bitget's contract catalogue can contain non-tradable/synthetic rows. A bare
+    // quote symbol such as "USDT" must never reach the candle endpoint.
+    const validContractSymbol = symbol.length > 4 && symbol !== 'USDT' && symbol.endsWith('USDT');
+    const validBase = Boolean(base) && base !== 'USDT';
+    return validContractSymbol && validBase && quote === 'USDT' && perpetual && upper(row?.isRwa) !== 'YES';
   }).map((row) => ({
     symbol: normalizeSymbol(row.symbol), baseCoin: upper(row.baseCoin || baseSymbol(row.symbol)), quoteCoin: 'USDT',
     launchTime: finite(row.launchTime, 0), offTime: finite(row.offTime, -1), symbolStatus: upper(row.symbolStatus || 'NORMAL'),
