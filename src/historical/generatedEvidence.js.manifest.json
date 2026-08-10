@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "side": "LONG",
+  "targetFile": "src/historical/generatedEvidence.js",
+  "generatedAt": 1786325977071,
+  "totalOutcomes": 0,
+  "eligibleFamilies": 0,
+  "embeddedOutcomeCount": 0,
+  "evidenceCompressedBytes": 7064,
+  "outcomesCompressedBytes": 32,
+  "sha256": "314245f0e69a4f23ad1e1b998fd4c87a165ff1fb2b261bbb84f92300ffda7c12",
+  "strictDiscordRequiresLiveForward": true,
+  "redisSecretsRequired": false
+}
