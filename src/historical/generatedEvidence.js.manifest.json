@@ -2,13 +2,13 @@
   "ok": true,
   "side": "LONG",
   "targetFile": "src/historical/generatedEvidence.js",
-  "generatedAt": 1786325977071,
-  "totalOutcomes": 0,
+  "generatedAt": 1786401691763,
+  "totalOutcomes": 557951,
   "eligibleFamilies": 0,
   "embeddedOutcomeCount": 0,
-  "evidenceCompressedBytes": 7064,
+  "evidenceCompressedBytes": 35716,
   "outcomesCompressedBytes": 32,
-  "sha256": "314245f0e69a4f23ad1e1b998fd4c87a165ff1fb2b261bbb84f92300ffda7c12",
+  "sha256": "71fc9edda455dabed385e1a12ae65be209985fe6a2e24861e356212299f8468b",
   "strictDiscordRequiresLiveForward": true,
   "redisSecretsRequired": false
 }
