@@ -20,7 +20,7 @@ import {
   buildTemporalContext
 } from '../analyze/scoring.js';
 
-export const HISTORICAL_REPLAY_VERSION = 'LONG_POINT_IN_TIME_REPLAY_V1_2_FILE_BACKED';
+export const HISTORICAL_REPLAY_VERSION = 'LONG_POINT_IN_TIME_REPLAY_V1_5_LARGE_EVIDENCE_SAFE';
 export const HISTORICAL_EVIDENCE_VERSION = 'LONG_HISTORICAL_WALK_FORWARD_EVIDENCE_V1';
 export const HISTORICAL_SELECTION_VERSION = 'LONG_HISTORICAL_SELECTION_BRIDGE_V1';
 
@@ -726,12 +726,29 @@ export async function buildEvidence({ inputDir, outDir, includePublished = true 
   const overlapResolution = removeCrossShardOverlaps(accepted);
   accepted = overlapResolution.rows;
 
-  const manifestStarts = manifests.map((m) => finite(m.startTs, NaN)).filter(Number.isFinite);
-  const manifestEnds = manifests.map((m) => finite(m.endTs, NaN)).filter(Number.isFinite);
-  const outcomeStarts = accepted.map((r) => finite(r.entryTs, NaN)).filter(Number.isFinite);
+  // Large historical runs can contain hundreds of thousands of outcomes.
+  // Never spread those timestamps into Math.min/Math.max: V8 treats every item
+  // as a function argument and can throw `Maximum call stack size exceeded`.
+  // Compute extrema incrementally instead; this is O(n), constant stack depth,
+  // and preserves the exact range semantics used by the evidence split.
   const defaultEnd = floorTo(now(), DAY_MS);
-  const rangeStart = Math.min(...manifestStarts, ...outcomeStarts, defaultEnd - Math.min(MAX_HISTORY_DAYS, 180) * DAY_MS);
-  const rangeEnd = Math.max(...manifestEnds, ...outcomeStarts, defaultEnd);
+  let rangeStart = defaultEnd - Math.min(MAX_HISTORY_DAYS, 180) * DAY_MS;
+  let rangeEnd = defaultEnd;
+
+  for (const manifest of manifests) {
+    const startTs = finite(manifest?.startTs, NaN);
+    const endTs = finite(manifest?.endTs, NaN);
+    if (Number.isFinite(startTs) && startTs < rangeStart) rangeStart = startTs;
+    if (Number.isFinite(endTs) && endTs > rangeEnd) rangeEnd = endTs;
+  }
+
+  for (const row of accepted) {
+    const entryTs = finite(row?.entryTs, NaN);
+    if (!Number.isFinite(entryTs)) continue;
+    if (entryTs < rangeStart) rangeStart = entryTs;
+    if (entryTs > rangeEnd) rangeEnd = entryTs;
+  }
+
   const safeRangeStart = Number.isFinite(rangeStart) ? rangeStart : defaultEnd - 180 * DAY_MS;
   const safeRangeEnd = Number.isFinite(rangeEnd) && rangeEnd > safeRangeStart ? rangeEnd : defaultEnd;
   const span = Math.max(DAY_MS, safeRangeEnd - safeRangeStart);
