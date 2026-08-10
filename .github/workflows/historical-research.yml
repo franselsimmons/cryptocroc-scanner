@@ -117,11 +117,12 @@ jobs:
           --end=${{ matrix.shard.endTs }}
           --shard=${{ matrix.shard.id }}
           --max-contracts=${{ needs.plan.outputs.max_contracts }}
-          --out=.historical-shard
+          --out=historical-shard
       - uses: actions/upload-artifact@v4
         with:
           name: historical-shard-${{ matrix.shard.id }}
-          path: .historical-shard/
+          path: historical-shard/
+          if-no-files-found: error
           retention-days: 7
 
   evidence:
@@ -142,21 +143,48 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: historical-shard-*
-          path: .historical-shards
+          path: historical-shards
           merge-multiple: true
+      - name: Validate downloaded replay artifacts
+        shell: bash
+        run: |
+          MANIFEST_COUNT=$(find historical-shards -type f -name '*.manifest.json' | wc -l | tr -d ' ')
+          OUTCOME_COUNT=$(find historical-shards -type f -name '*.outcomes.jsonl' | wc -l | tr -d ' ')
+          NONEMPTY_OUTCOME_FILES=$(find historical-shards -type f -name '*.outcomes.jsonl' -size +0c | wc -l | tr -d ' ')
+          echo "Replay artifacts: manifests=$MANIFEST_COUNT outcomeFiles=$OUTCOME_COUNT nonEmptyOutcomeFiles=$NONEMPTY_OUTCOME_FILES"
+          test "$MANIFEST_COUNT" -gt 0 || { echo "::error::No replay manifest artifacts were downloaded."; exit 1; }
+          test "$OUTCOME_COUNT" -gt 0 || { echo "::error::No replay outcome artifacts were downloaded."; exit 1; }
+          test "$NONEMPTY_OUTCOME_FILES" -gt 0 || { echo "::error::Replay artifacts exist but every outcome file is empty."; exit 1; }
+
       - name: Walk-forward + validation + OOS + FDR + shrinkage + correlation
-        run: node src/historical/researchEngine.js evidence --input=.historical-shards --out=.historical-evidence --include-published=false
+        run: node src/historical/researchEngine.js evidence --input=historical-shards --out=historical-evidence --include-published=false
+
+      - name: Validate evidence is non-empty
+        shell: bash
+        run: |
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs';
+          const p = 'historical-evidence/historical-evidence.json';
+          const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+          const n = Number(data.totalOutcomes || 0);
+          console.log(`Historical evidence totalOutcomes=${n} selectionEligibleFamilies=${Number(data.selectionEligibleFamilies || 0)}`);
+          if (!(n > 0)) {
+            console.error('::error::Historical evidence contains zero outcomes; refusing to publish an empty generatedEvidence.js.');
+            process.exit(1);
+          }
+          NODE
       - uses: actions/upload-artifact@v4
         with:
           name: historical-evidence-long
-          path: .historical-evidence/
+          path: historical-evidence/
+          if-no-files-found: error
           retention-days: 30
       - name: Export validated evidence to generated repository file
         if: ${{ needs.plan.outputs.publish == 'true' }}
         run: >-
           node src/historical/researchEngine.js export-file
-          --evidence=.historical-evidence/historical-evidence.json
-          --outcomes=.historical-evidence/historical-outcomes-by-family.json
+          --evidence=historical-evidence/historical-evidence.json
+          --outcomes=historical-evidence/historical-outcomes-by-family.json
           --target=src/historical/generatedEvidence.js
 
       - name: Validate generated evidence module
