@@ -4471,13 +4471,25 @@ async function ensureMicrosLoaded() {
 
 
 
-    // OVERVIEW_COMMAND_CENTER_V1 — read-only diagnostics built from existing admin APIs.
+    // OVERVIEW_COMMAND_CENTER_MOBILE_SAFE_V1_1
+    // Read-only overview. Deliberately avoids loading the very large rotation/Discord payloads
+    // and never recursively walks admin payloads. Detail tabs keep their existing full data.
     async function ccSafeCall(fn) {
         try {
             const data = await fn();
-            return { ok: true, payloadOk: data?.ok !== false, data: data || {}, error: null };
+            return {
+                ok: true,
+                payloadOk: data?.ok !== false,
+                data: data || {},
+                error: null
+            };
         } catch (error) {
-            return { ok: false, payloadOk: false, data: {}, error: friendlyApiMessage(error) };
+            return {
+                ok: false,
+                payloadOk: false,
+                data: {},
+                error: friendlyApiMessage(error)
+            };
         }
     }
 
@@ -4487,6 +4499,37 @@ async function ensureMicrosLoaded() {
 
     function ccPct(value) {
         return `${Math.round(ccClamp(value))}%`;
+    }
+
+    function ccFinite(...values) {
+        for (const value of values) {
+            const n = Number(value);
+            if (Number.isFinite(n)) return n;
+        }
+        return 0;
+    }
+
+    function ccTs(...values) {
+        for (const value of values) {
+            const n = Number(value);
+            if (!Number.isFinite(n) || n <= 0) continue;
+            return n < 10_000_000_000 ? n * 1000 : n;
+        }
+        return 0;
+    }
+
+    function ccAgeMinutes(ts) {
+        return ts > 0 ? Math.max(0, (Date.now() - ts) / 60000) : null;
+    }
+
+    function ccExplicitBool(...values) {
+        for (const value of values) {
+            if (value === true || value === false) return value;
+            const text = String(value ?? "").trim().toLowerCase();
+            if (text === "true") return true;
+            if (text === "false") return false;
+        }
+        return null;
     }
 
     function ccStatusLabel(status) {
@@ -4504,62 +4547,6 @@ async function ensureMicrosLoaded() {
 
     function ccStatusHtml(status) {
         return `<span class="cc-status ${escapeAttr(status)}">${escapeHtml(ccStatusLabel(status))}</span>`;
-    }
-
-    function ccWalk(root, visitor, maxNodes = 2200) {
-        const queue = [root];
-        const seen = new Set();
-        let count = 0;
-        while (queue.length && count < maxNodes) {
-            const value = queue.shift();
-            if (!value || typeof value !== "object" || seen.has(value)) continue;
-            seen.add(value);
-            count += 1;
-            if (visitor(value) === false) return;
-            const children = Array.isArray(value) ? value : Object.values(value);
-            for (const child of children) {
-                if (child && typeof child === "object" && !seen.has(child)) queue.push(child);
-            }
-        }
-    }
-
-    function ccFirstValue(root, keys = [], fallback = null) {
-        const wanted = new Set(keys);
-        let found = fallback;
-        ccWalk(root, (obj) => {
-            for (const key of wanted) {
-                if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
-                const value = obj[key];
-                if (value === undefined || value === null || value === "") continue;
-                found = value;
-                return false;
-            }
-            return true;
-        });
-        return found;
-    }
-
-    function ccNumber(root, keys = [], fallback = 0) {
-        const value = Number(ccFirstValue(root, keys, NaN));
-        return Number.isFinite(value) ? value : fallback;
-    }
-
-    function ccExplicitBool(root, keys = []) {
-        const value = ccFirstValue(root, keys, null);
-        if (value === true || value === false) return value;
-        if (String(value).toLowerCase() === "true") return true;
-        if (String(value).toLowerCase() === "false") return false;
-        return null;
-    }
-
-    function ccTimestamp(root, keys = []) {
-        const value = Number(ccFirstValue(root, keys, 0));
-        if (!Number.isFinite(value) || value <= 0) return 0;
-        return value < 10_000_000_000 ? value * 1000 : value;
-    }
-
-    function ccAgeMinutes(ts) {
-        return ts > 0 ? Math.max(0, (Date.now() - ts) / 60000) : null;
     }
 
     function ccLiveCompleted(row = {}) {
@@ -4587,8 +4574,7 @@ async function ensureMicrosLoaded() {
         );
     }
 
-    function ccCountArray(root, keys = []) {
-        const value = ccFirstValue(root, keys, []);
+    function ccArrayCount(value) {
         return Array.isArray(value) ? value.length : 0;
     }
 
@@ -4656,18 +4642,17 @@ async function ensureMicrosLoaded() {
         });
     }
 
-
     async function renderOverview() {
         showLoading("overview");
 
-        const [overviewResult, microResult, marketResult, scannerResult, tradeResult, rotationResult, discordResult] = await Promise.all([
+        // Keep Overview deliberately lightweight for mobile Safari. The heavy week-composition
+        // and Discord-log payloads are loaded only when their own detail tabs are opened.
+        const [overviewResult, microResult, marketResult, scannerResult, tradeResult] = await Promise.all([
             ccSafeCall(() => api(endpoints.overview)),
             ccSafeCall(() => fetchMicros()),
             ccSafeCall(() => fetchMarket()),
             ccSafeCall(() => api(endpoints.scanner)),
-            ccSafeCall(() => api(endpoints.trade)),
-            ccSafeCall(() => api(rotationApiUrl(), { timeoutMs: 22000 })),
-            ccSafeCall(() => api(endpoints.discord))
+            ccSafeCall(() => api(endpoints.trade))
         ]);
 
         const data = overviewResult.data || {};
@@ -4675,16 +4660,12 @@ async function ensureMicrosLoaded() {
         const market = marketResult.data || { ok: false, available: false, regime: "UNKNOWN", trendSide: "UNKNOWN" };
         const scannerData = scannerResult.data || {};
         const tradeData = tradeResult.data || {};
-        const rotationData = rotationResult.data || {};
-        const discordData = discordResult.data || {};
 
         state.overview = data;
         state.micros = microData;
         state.market = market;
         state.scanner = scannerData;
         state.trade = tradeData;
-        state.rotation = rotationData;
-        state.discord = discordData;
 
         const microRows = Array.isArray(microData.rows) ? microData.rows : [];
         const observing = microRows.filter((row) => learningStatus(row) === "OBSERVING").length;
@@ -4693,137 +4674,166 @@ async function ensureMicrosLoaded() {
         const gatePassed = microRows.filter((row) => activationGateStatus(row) === "PASSED").length;
         const empiricalVeto = microRows.filter((row) => isEmpiricalVeto(row)).length;
         const liveOutcomes = microRows.reduce((sum, row) => sum + ccLiveCompleted(row), 0);
-        const historicalRows = microRows.filter((row) => row.historicalStatus || row.historicalEvidenceBridgeVersion || row.forwardValidationStatus);
+
+        const historicalRows = microRows.filter((row) => (
+            row.historicalStatus ||
+            row.historicalEvidenceBridgeVersion ||
+            row.historicalSelectionProjectionOnly === true ||
+            ccHistoricalCompleted(row) > 0
+        ));
         const historicalFromRows = historicalRows.reduce((sum, row) => sum + ccHistoricalCompleted(row), 0);
-        const oosPassedFromRows = historicalRows.filter((row) => upper(row.historicalStatus) === "OOS_PASSED" || row.selectionEligible === true).length;
+        const oosPassedFromRows = historicalRows.filter((row) => (
+            upper(row.historicalStatus) === "OOS_PASSED" ||
+            row.selectionEligible === true ||
+            row.historicalSelectionEligible === true
+        )).length;
         const forwardValidating = microRows.filter((row) => upper(row.forwardValidationStatus) === "FORWARD_VALIDATING").length;
         const forwardPassed = microRows.filter((row) => upper(row.forwardValidationStatus) === "PASSED").length;
 
         const scannerSnapshot = scannerData.snapshot || scannerData.latest || scannerData.latestScan || {};
-        const scannerCandidates = ONLY_SIDE === "LONG"
-            ? longRows(scannerSnapshot.candidates || scannerData.candidates || []).length
-            : shortRows(scannerSnapshot.candidates || scannerData.candidates || []).length;
-        const scannerTs = ccTimestamp(scannerSnapshot, ["completedAt", "createdAt", "timestamp", "startedAt"]);
+        const rawCandidates = scannerSnapshot.candidates || scannerData.candidates || [];
+        const scannerCandidates = ONLY_SIDE === "LONG" ? longRows(rawCandidates).length : shortRows(rawCandidates).length;
+        const scannerTs = ccTs(scannerSnapshot.completedAt, scannerSnapshot.createdAt, scannerSnapshot.timestamp, scannerSnapshot.startedAt);
         const scannerAgeMin = ccAgeMinutes(scannerTs);
         const scannerStale = scannerAgeMin !== null && scannerAgeMin > 20;
 
         const runMeta = tradeData.runMeta || tradeData.lastRunMeta || tradeData.tradeMeta || {};
-        const tradeTs = ccTimestamp(runMeta, ["completedAt", "startedAt", "timestamp", "createdAt"]);
+        const tradeTs = ccTs(runMeta.completedAt, runMeta.startedAt, runMeta.timestamp, runMeta.createdAt);
         const tradeAgeMin = ccAgeMinutes(tradeTs);
         const tradeStale = tradeAgeMin !== null && tradeAgeMin > 15;
-        const startIndex = ccNumber(runMeta, ["candidateStartIndex"], ccNumber(tradeData, ["candidateStartIndex"], 0));
-        const nextIndex = ccNumber(runMeta, ["nextCandidateIndex"], ccNumber(tradeData, ["nextCandidateIndex"], 0));
-        const retryCount = ccNumber(runMeta, ["noProgressRetryCount"], ccNumber(tradeData, ["noProgressRetryCount"], 0));
-        const progressAdvanced = ccExplicitBool(runMeta, ["snapshotProgressAdvanced"]);
-        const entryIncomplete = ccExplicitBool(runMeta, ["entryProcessingIncomplete"]);
-        const tradeStalled = retryCount >= 2 && (progressAdvanced === false || nextIndex <= startIndex) || (entryIncomplete === true && retryCount >= 2 && nextIndex <= startIndex);
-        const tradeSync = ccExplicitBool(tradeData, ["scannerAndTradeInSync"]);
+        const startIndex = ccFinite(runMeta.candidateStartIndex, tradeData.candidateStartIndex, 0);
+        const nextIndex = ccFinite(runMeta.nextCandidateIndex, tradeData.nextCandidateIndex, 0);
+        const retryCount = ccFinite(runMeta.noProgressRetryCount, tradeData.noProgressRetryCount, 0);
+        const progressAdvanced = ccExplicitBool(runMeta.snapshotProgressAdvanced, tradeData.snapshotProgressAdvanced);
+        const entryIncomplete = ccExplicitBool(runMeta.entryProcessingIncomplete, tradeData.entryProcessingIncomplete);
+        const tradeStalled = retryCount >= 2 && nextIndex <= startIndex && (progressAdvanced === false || entryIncomplete === true);
+        const tradeSync = ccExplicitBool(tradeData.scannerAndTradeInSync);
         const openPositions = Math.max(
-            ccCountArray(tradeData, ["positions"]),
-            ccCountArray(tradeData, ["openPositions"]),
-            ccCountArray(tradeData, ["virtualPositions"]),
-            Number(data.openPositions || data.positionsCount || 0) || 0
+            ccArrayCount(tradeData.positions),
+            ccArrayCount(tradeData.openPositions),
+            ccArrayCount(tradeData.virtualPositions),
+            ccFinite(data.openPositions, data.positionsCount, 0)
         );
 
-        const activeRotation = rotationData.active || rotationData.activeRotation || {};
+        // Overview uses only compact selection fields already present in the overview/micro payloads.
+        // It does NOT fetch /api/admin/rotation here because a 10,080-slot proposal can be very large.
+        const activeRotation = data.activeRotation || microData.activeRotation || {};
         const activeIds = uniqueStrings([
+            data.activeMicroFamilyIds || [],
             activeRotation.activeMicroFamilyIds || [],
             activeRotation.microFamilyIds || [],
             activeRotation.trueMicroFamilyIds || [],
-            rotationData.activeMicroFamilyIds || [],
             microData.activeMicroFamilyIds || []
         ]).filter((id) => ONLY_SIDE === "LONG" ? idAllowedInLongOnly(id) : idAllowedInShortOnly(id));
-        const proposals = compositionProposalList(rotationData);
-        const balancedProposal = proposals.find((row) => upper(row?.mode) === "BALANCED") || proposals[0] || null;
-        const proposalSummary = balancedProposal?.summary || {};
-        const activeComposition = activeWeekComposition(rotationData);
-        const activeSlots = Number(proposalSummary.activeSlots || 0);
-        const proposalFamilies = Number(proposalSummary.familyCount || 0);
-        const proposalHistoricalOutcomes = Number(proposalSummary.historicalCompleted || 0);
 
-        const historicalEvidenceApplied = ccExplicitBool(rotationData, ["historicalEvidenceApplied"]);
-        const historicalEvidenceReason = String(ccFirstValue(rotationData, ["historicalEvidenceReason", "historicalReason", "evidenceReason"], "") || "");
+        const historicalMeta = data.historicalEvidence || data.historical || microData.historicalEvidence || {};
         const historicalOutcomes = Math.max(
             historicalFromRows,
-            proposalHistoricalOutcomes,
-            ccNumber(rotationData, ["historicalOutcomes", "historicalOutcomeCount", "historicalCompleted"], 0),
-            ccNumber(data, ["historicalOutcomes", "historicalOutcomeCount", "historicalCompleted"], 0)
+            ccFinite(data.historicalOutcomes, data.historicalOutcomeCount, data.historicalCompleted, 0),
+            ccFinite(historicalMeta.totalOutcomes, historicalMeta.historicalOutcomes, historicalMeta.completed, 0)
         );
         const oosPassed = Math.max(
             oosPassedFromRows,
-            ccNumber(rotationData, ["selectionEligibleFamilies", "historicalSelectionEligibleFamilies", "oosPassedFamilies"], 0)
+            ccFinite(data.selectionEligibleFamilies, data.historicalSelectionEligibleFamilies, data.oosPassedFamilies, 0),
+            ccFinite(historicalMeta.selectionEligibleFamilies, historicalMeta.eligibleFamilies, historicalMeta.oosPassedFamilies, 0)
+        );
+        const historicalEvidenceApplied = ccExplicitBool(
+            data.historicalEvidenceApplied,
+            historicalMeta.applied,
+            microData.historicalEvidenceApplied
+        );
+        const historicalEvidenceReason = String(
+            data.historicalEvidenceReason ||
+            historicalMeta.reason ||
+            microData.historicalEvidenceReason ||
+            ""
         );
         const historicalVisible = historicalOutcomes > 0 || historicalRows.length > 0 || historicalEvidenceApplied === true;
 
-        const overviewOk = overviewResult.ok && data?.ok !== false;
-        const marketOk = marketResult.ok && market?.ok !== false && market?.available !== false;
-        const scannerOk = scannerResult.ok && scannerData?.ok !== false && !scannerStale;
-        const tradeOk = tradeResult.ok && tradeData?.ok !== false && !tradeStalled && !tradeStale;
-        const microsOk = microResult.ok && microData?.ok !== false;
-        const rotationOk = rotationResult.ok && rotationData?.ok !== false;
-        const discordOk = discordResult.ok && discordData?.ok !== false;
+        const activeComposition = data.activeWeekComposition || activeRotation.activeWeekComposition || null;
+        const compositionSummary = activeComposition?.summary || data.weekCompositionSummary || {};
+        const activeSlots = ccFinite(compositionSummary.activeSlots, data.activeCompositionSlots, 0);
+        const proposalFamilies = ccFinite(compositionSummary.familyCount, data.weekCompositionFamilyCount, activeIds.length, 0);
+
+        const overviewOk = overviewResult.ok && overviewResult.payloadOk;
+        const marketOk = marketResult.ok && marketResult.payloadOk && market?.available !== false;
+        const scannerApiOk = scannerResult.ok && scannerResult.payloadOk;
+        const tradeApiOk = tradeResult.ok && tradeResult.payloadOk;
+        const microsOk = microResult.ok && microResult.payloadOk;
+        const scannerOk = scannerApiOk && !scannerStale;
+        const tradeOk = tradeApiOk && !tradeStalled && !tradeStale;
 
         const issues = [];
-        if (!overviewOk) issues.push(ccIssue("ERROR", "Overview API", "De hoofdstatus kon niet betrouwbaar worden geladen.", overviewResult.error || String(data.reason || data.error || "API payload meldt ok=false."), "Overview kan geen betrouwbare totaalstatus berekenen.", "Controleer /api/admin/overview en de Vercel logs.", "overview", overviewResult.error || data.reason || data.error || "OVERVIEW_NOT_OK"));
-        if (!marketResult.ok) issues.push(ccIssue("ERROR", "MarketWeather", "MarketWeather API reageert niet.", marketResult.error || "API-call faalde.", "CurrentFit en contextdiagnose zijn onvolledig.", "Open marketWeather.js en controleer de laatste admin-output.", "market", marketResult.error));
-        else if (!marketOk) issues.push(ccIssue("BLOCKED", "MarketWeather", `MarketWeather is ${market.stale ? "stale" : "niet beschikbaar"}.`, market.reason || "Geen bruikbare actuele marketWeather payload.", "Contextfilters en BTC/weather selectie kunnen niet betrouwbaar werken.", "Ververs marketWeather en controleer brondata/timestamp.", "market", market.reason || "MARKET_WEATHER_UNAVAILABLE"));
+        if (!overviewOk) {
+            issues.push(ccIssue("ERROR", "Overview API", "De hoofdstatus kon niet betrouwbaar worden geladen.", overviewResult.error || String(data.reason || data.error || "API payload meldt ok=false."), "De totaalstatus is onvolledig.", "Controleer /api/admin/overview en de Vercel logs.", "overview", overviewResult.error || data.reason || data.error || "OVERVIEW_NOT_OK"));
+        }
+        if (!marketResult.ok || !marketResult.payloadOk) {
+            issues.push(ccIssue("ERROR", "MarketWeather", "MarketWeather API reageert niet betrouwbaar.", marketResult.error || market.reason || "API-call/payload faalde.", "CurrentFit en contextdiagnose zijn onvolledig.", "Open marketWeather.js en controleer de laatste admin-output.", "market", marketResult.error || market.reason || "MARKET_WEATHER_NOT_OK"));
+        } else if (!marketOk) {
+            issues.push(ccIssue("BLOCKED", "MarketWeather", `MarketWeather is ${market.stale ? "stale" : "niet beschikbaar"}.`, market.reason || "Geen bruikbare actuele marketWeather payload.", "Contextfilters en BTC/weather selectie zijn niet volledig betrouwbaar.", "Ververs marketWeather en controleer brondata/timestamp.", "market", market.reason || "MARKET_WEATHER_UNAVAILABLE"));
+        }
 
-        if (!scannerResult.ok || scannerData?.ok === false) issues.push(ccIssue("ERROR", "Scanner", "Scanner admin-output kon niet betrouwbaar worden geladen.", scannerResult.error || String(scannerData.reason || scannerData.error || "Scanner payload meldt ok=false."), "Nieuwe kandidaten kunnen niet op Overview worden gecontroleerd.", "Open Scanner en controleer /api/admin/scanner.", "scanner", scannerResult.error || scannerData.reason || scannerData.error || "SCANNER_NOT_OK"));
-        else if (scannerStale) issues.push(ccIssue("STALLED", "Scanner", `Laatste snapshot is ongeveer ${Math.round(scannerAgeMin)} minuten oud.`, "De scannercron draait mogelijk niet of schrijft geen nieuwe latest snapshot.", "Nieuwe marktdata bereikt Analyze/Trade niet tijdig.", "Controleer de scannercron en voer één geforceerde scanner-run uit.", "scanner", scannerSnapshot.snapshotId || "STALE_SCANNER"));
+        if (!scannerApiOk) {
+            issues.push(ccIssue("ERROR", "Scanner", "Scanner admin-output kon niet betrouwbaar worden geladen.", scannerResult.error || String(scannerData.reason || scannerData.error || "Scanner payload meldt ok=false."), "Nieuwe kandidaten zijn niet controleerbaar.", "Open Scanner en controleer /api/admin/scanner.", "scanner", scannerResult.error || scannerData.reason || scannerData.error || "SCANNER_NOT_OK"));
+        } else if (scannerStale) {
+            issues.push(ccIssue("STALLED", "Scanner", `Laatste snapshot is ongeveer ${Math.round(scannerAgeMin)} minuten oud.`, "De scannercron draait mogelijk niet of schrijft geen nieuwe latest snapshot.", "Nieuwe marktdata bereikt Analyze/Trade niet tijdig.", "Controleer de scannercron en voer één geforceerde scanner-run uit.", "scanner", scannerSnapshot.snapshotId || "STALE_SCANNER"));
+        }
 
-        if (!tradeResult.ok || tradeData?.ok === false) issues.push(ccIssue("ERROR", "TradeSystem", "Trade admin-output kon niet betrouwbaar worden geladen.", tradeResult.error || String(tradeData.reason || tradeData.error || "Trade payload meldt ok=false."), "Entries, monitoring en outcomes zijn niet controleerbaar.", "Open TradeSystem en controleer /api/admin/trade.", "trade", tradeResult.error || tradeData.reason || tradeData.error || "TRADE_NOT_OK"));
-        else if (tradeStalled) issues.push(ccIssue("STALLED", "Trade cursor", `Cursor maakt geen voortgang: ${startIndex} → ${nextIndex}, retries=${retryCount}.`, "Dezelfde batch wordt herhaald; meestal runtimebudget, te grote batch of een hardnekkige candidate.", "Een scanner-snapshot kan niet volledig worden verwerkt.", "Controleer runMeta/reason. Adaptive retry hoort de batch te verkleinen en de cursor daarna vooruit te zetten.", "trade", String(ccFirstValue(runMeta, ["reason", "skipReason"], "NO_PROGRESS"))));
-        else if (tradeStale) issues.push(ccIssue("STALLED", "TradeSystem", `Laatste trade-run is ongeveer ${Math.round(tradeAgeMin)} minuten oud.`, "De tradecron draait mogelijk niet of runMeta wordt niet vernieuwd.", "Open posities worden mogelijk niet iedere 2 minuten gemonitord.", "Controleer de tradecron en laatste runMeta.", "trade", "TRADE_RUN_STALE"));
-        if (tradeSync === false && !tradeStalled) issues.push(ccIssue("WAITING", "Scanner → Trade sync", "TradeSystem heeft de nieuwste scanner-snapshot nog niet volledig verwerkt.", "Er staat nog een snapshot/batch in de continuation queue.", "Nieuwe kandidaten wachten op verwerking.", "Laat de tradecron doorlopen; bij oplopende no-progress retries wordt dit STALLED.", "trade", "scannerAndTradeInSync=false"));
+        if (!tradeApiOk) {
+            issues.push(ccIssue("ERROR", "TradeSystem", "Trade admin-output kon niet betrouwbaar worden geladen.", tradeResult.error || String(tradeData.reason || tradeData.error || "Trade payload meldt ok=false."), "Entries, monitoring en outcomes zijn niet controleerbaar.", "Open TradeSystem en controleer /api/admin/trade.", "trade", tradeResult.error || tradeData.reason || tradeData.error || "TRADE_NOT_OK"));
+        } else if (tradeStalled) {
+            issues.push(ccIssue("STALLED", "Trade cursor", `Cursor maakt geen voortgang: ${startIndex} → ${nextIndex}, retries=${retryCount}.`, "Dezelfde batch wordt herhaald; meestal runtimebudget, te grote batch of een hardnekkige candidate.", "Een scanner-snapshot kan niet volledig worden verwerkt.", "Controleer runMeta/reason. Adaptive retry hoort de batch te verkleinen en de cursor daarna vooruit te zetten.", "trade", String(runMeta.reason || runMeta.skipReason || tradeData.reason || "NO_PROGRESS")));
+        } else if (tradeStale) {
+            issues.push(ccIssue("STALLED", "TradeSystem", `Laatste trade-run is ongeveer ${Math.round(tradeAgeMin)} minuten oud.`, "De tradecron draait mogelijk niet of runMeta wordt niet vernieuwd.", "Open posities worden mogelijk niet op schema gemonitord.", "Controleer de tradecron en laatste runMeta.", "trade", "TRADE_RUN_STALE"));
+        }
+        if (tradeSync === false && !tradeStalled) {
+            issues.push(ccIssue("WAITING", "Scanner → Trade sync", "TradeSystem heeft de nieuwste scanner-snapshot nog niet volledig verwerkt.", "Er staat nog een snapshot/batch in de continuation queue.", "Nieuwe kandidaten wachten op verwerking.", "Laat de tradecron doorlopen; bij oplopende no-progress retries wordt dit STALLED.", "trade", "scannerAndTradeInSync=false"));
+        }
 
-        if (!microsOk) issues.push(ccIssue("ERROR", "75 MicroFamilies", "Micro-family API kon niet betrouwbaar worden geladen.", microResult.error || String(microData.reason || microData.error || "Micro-family payload meldt ok=false."), "Learning, gates en selectie kunnen niet worden beoordeeld.", "Open 75 MicroFamilies en controleer de API.", "micros", microResult.error || microData.reason || microData.error || "MICROS_NOT_OK"));
-        else if (microRows.length === 0 && scannerCandidates > 0) issues.push(ccIssue("BLOCKED", "Analyze 75-child", `${scannerCandidates} scanner candidates zichtbaar, maar 0 micro-family rows.`, "De keten stopt tussen Scanner en Analyze/learning persistence.", "Geen family kan sample, netR of gate-status opbouwen.", "Controleer Analyze-output en exact trueMicroFamilyId mapping.", "micros", "SCANNER_HAS_CANDIDATES_BUT_MICROS_EMPTY"));
+        if (!microsOk) {
+            issues.push(ccIssue("ERROR", "75 MicroFamilies", "Micro-family API kon niet betrouwbaar worden geladen.", microResult.error || String(microData.reason || microData.error || "Micro-family payload meldt ok=false."), "Learning, gates en selectie kunnen niet worden beoordeeld.", "Open 75 MicroFamilies en controleer de API.", "micros", microResult.error || microData.reason || microData.error || "MICROS_NOT_OK"));
+        } else if (microRows.length === 0 && scannerCandidates > 0) {
+            issues.push(ccIssue("BLOCKED", "Analyze 75-child", `${scannerCandidates} scanner candidates zichtbaar, maar 0 micro-family rows.`, "De keten stopt tussen Scanner en Analyze/learning persistence.", "Geen family kan sample, netR of gate-status opbouwen.", "Controleer Analyze-output en exact trueMicroFamilyId mapping.", "micros", "SCANNER_HAS_CANDIDATES_BUT_MICROS_EMPTY"));
+        }
 
         if (!historicalVisible) {
             const severity = historicalEvidenceApplied === false && historicalEvidenceReason ? "BLOCKED" : "WAITING";
-            issues.push(ccIssue(severity, "Historical evidence", "Nog geen geldige historische evidence zichtbaar in de live app.", historicalEvidenceReason || "De GitHub replay/evidence-export is nog niet gepubliceerd, leeg of nog niet door de selection bridge ingelezen.", "OOS, weekcompositie en automatische beste-signalenkeuze blijven zonder historisch bewijs.", "Controleer de Historical Action → evidence → generatedEvidence.js → Vercel deploy → weekly freeze/bridge keten.", "winners", historicalEvidenceReason || "NO_HISTORICAL_EVIDENCE_VISIBLE"));
-        } else if (historicalOutcomes <= 0) {
-            issues.push(ccIssue("BLOCKED", "Historical evidence", "Historical bridge is zichtbaar maar bevat 0 outcomes.", "Replay-artifacts of evidence-export zijn leeg/onvolledig.", "Geen OOS-family kan slagen.", "Controleer artifact transfer en weiger een generatedEvidence met totalOutcomes=0.", "winners", "HISTORICAL_OUTCOMES_ZERO"));
+            issues.push(ccIssue(severity, "Historical evidence", "Nog geen geldige historische evidence zichtbaar in de live app.", historicalEvidenceReason || "De historische replay/evidence-export is nog niet gepubliceerd of nog niet door de selection bridge ingelezen.", "OOS en automatische beste-signalenkeuze blijven zonder historisch bewijs.", "Controleer Historical Action → generatedEvidence.js → Vercel deploy → weekly freeze/bridge.", "winners", historicalEvidenceReason || "NO_HISTORICAL_EVIDENCE_VISIBLE"));
         }
-
-        if (historicalOutcomes > 0 && oosPassed === 0) issues.push(ccIssue("WAITING", "OOS / walk-forward", `${fmtInt(historicalOutcomes)} historische outcomes, maar nog 0 OOS_PASSED families.`, "Geen exacte family voldoet momenteel aan alle train/validation/OOS/FDR/stability-eisen.", "Weekselectie blijft streng of leeg; dit is niet automatisch een softwarefout.", "Laat evidence beoordelen; versoepel filters niet zonder statistische reden.", "winners", "NO_OOS_PASSED_FAMILY"));
-        if (oosPassed > 0 && (activeSlots === 0 || proposalFamilies === 0)) issues.push(ccIssue("BLOCKED", "Weekly selection", `${oosPassed} OOS-bewezen families, maar de weekcompositie heeft 0 actieve vakken/families.`, "Evidence bereikt de composition builder niet goed, contextbewijs is te dun of alle vakken worden door routerregels afgewezen.", "Er worden nog geen beste contextsignalen voorgesteld.", "Open Winnende signalen en controleer proposal/slot reasons en historicalEvidenceApplied.", "winners", "OOS_PASSED_BUT_NO_ACTIVE_SLOTS"));
-
-        if (!rotationOk) issues.push(ccIssue("ERROR", "Selection / Rotation API", "Rotationstatus kon niet betrouwbaar worden geladen.", rotationResult.error || String(rotationData.reason || rotationData.error || "Rotation payload meldt ok=false."), "Overview kan de actieve selectie en proposals niet vaststellen.", "Open Winnende signalen/Manual Discord Selection en controleer /api/admin/rotation.", "rotation", rotationResult.error || rotationData.reason || rotationData.error || "ROTATION_NOT_OK"));
-        if (!discordOk) issues.push(ccIssue("ERROR", "Discord logs", "Discord admin-output kon niet betrouwbaar worden geladen.", discordResult.error || String(discordData.reason || discordData.error || "Discord payload meldt ok=false."), "Publicatiestatus kan niet worden gecontroleerd.", "Open Discord Logs en controleer de admin-route.", "discord", discordResult.error || discordData.reason || discordData.error || "DISCORD_NOT_OK"));
-        if (activeIds.length === 0) {
-            issues.push(ccIssue("LOCKED", "Strict Discord", "Er zijn 0 actieve exacte 75-child IDs voor strict publicatie.", gatePassed > 0 ? "Er zijn live PASSED families, maar nog geen actieve strict selectie." : "Nog geen family heeft voldoende live-forward bewijs voor de strict PASSED gate.", "Discord blijft bewust stil; learning loopt door.", gatePassed > 0 ? "Laat de beste geldige weekcompositie/selection activeren." : "Geen reparatie nodig: verzamel live-forward outcomes tot een family PASSED is.", gatePassed > 0 ? "winners" : "micros", "STRICT_DISCORD_LOCKED"));
+        if (historicalOutcomes > 0 && oosPassed === 0) {
+            issues.push(ccIssue("WAITING", "OOS / walk-forward", `${fmtInt(historicalOutcomes)} historische outcomes zichtbaar, maar nog 0 OOS_PASSED families.`, "De statistische selectie heeft nog geen robuuste family vrijgegeven of de OOS-projectie is nog niet ververst.", "De weekselectie blijft leeg totdat bewijs slaagt.", "Controleer Winnende signalen/evidence; forceer niets als de statistiek families terecht afwijst.", "winners", "HISTORICAL_PRESENT_NO_OOS_PASSED"));
         }
-
-        issues.sort((a, b) => ccIssuePriority(a.severity) - ccIssuePriority(b.severity));
+        if (oosPassed > 0 && activeIds.length === 0 && activeSlots === 0) {
+            issues.push(ccIssue("BLOCKED", "Weekly selection", `${fmtInt(oosPassed)} OOS_PASSED families beschikbaar, maar nog geen actieve selectie zichtbaar.`, "De weekly generation/composition is nog niet opgebouwd of geactiveerd.", "Strict Discord blijft dicht ondanks bewezen historische kandidaten.", "Open Winnende signalen en controleer generation/composition.", "winners", "OOS_PASSED_BUT_NO_SELECTION"));
+        }
+        if (gatePassed === 0) {
+            issues.push(ccIssue("LOCKED", "Strict Discord", "Nog geen live PASSED family.", `Strict publicatie vereist minimaal ${EMPIRICAL_VETO_MIN_COMPLETED} actuele live outcomes en positieve avgR.`, "Geen strict Discord-signalen; dit is bewust fail-closed.", "Live forward-validatie laten doorgroeien. Niet handmatig forceren.", "discord", "LIVE_FORWARD_GATE_NOT_PASSED"));
+        } else if (activeIds.length === 0) {
+            issues.push(ccIssue("LOCKED", "Strict Discord", `${gatePassed} live PASSED families, maar 0 geselecteerde exacte IDs.`, "Er is nog geen actieve strict selectie.", "Discord blijft stil.", "Controleer Winnende signalen of Manual Discord Selection.", "rotation", "PASSED_BUT_NOT_SELECTED"));
+        }
 
         const technicalHealth = ccClamp(
+            (overviewOk ? 20 : 0) +
             (marketOk ? 20 : 0) +
             (scannerOk ? 20 : 0) +
-            (tradeOk ? 25 : 0) +
-            (microsOk ? 15 : 0) +
-            (rotationOk ? 10 : 0) +
-            (discordOk ? 10 : 0)
+            (tradeOk ? 20 : 0) +
+            (microsOk ? 20 : 0)
         );
         const learningProgress = ccClamp(
-            (scannerCandidates > 0 ? 10 : 0) +
-            (microRows.length > 0 ? 15 : 0) +
-            (liveOutcomes > 0 ? 15 : 0) +
-            (early + activeLearning + gatePassed + empiricalVeto > 0 ? 10 : 0) +
-            (activeLearning + gatePassed > 0 ? 15 : 0) +
-            (gatePassed > 0 ? 15 : 0) +
-            (historicalOutcomes > 0 ? 20 : 0)
+            (microRows.length > 0 ? 20 : 0) +
+            (liveOutcomes > 0 ? 25 : 0) +
+            (early + activeLearning + gatePassed + empiricalVeto > 0 ? 20 : 0) +
+            (historicalOutcomes > 0 ? 25 : 0) +
+            (oosPassed > 0 ? 10 : 0)
         );
         const selectionReadiness = ccClamp(
-            (historicalOutcomes > 0 ? 25 : 0) +
-            (oosPassed > 0 ? 30 : 0) +
-            (activeSlots > 0 && proposalFamilies > 0 ? 25 : 0) +
-            (activeComposition ? 20 : 0)
+            (historicalOutcomes > 0 ? 35 : 0) +
+            (oosPassed > 0 ? 35 : 0) +
+            ((activeSlots > 0 || activeIds.length > 0) ? 30 : 0)
         );
         const discordReadiness = ccClamp(
-            (discordOk ? 15 : 0) +
-            (gatePassed > 0 ? 35 : 0) +
-            (activeSlots > 0 || activeComposition ? 20 : 0) +
+            (gatePassed > 0 ? 45 : 0) +
+            ((activeSlots > 0 || activeIds.length > 0) ? 25 : 0) +
             (activeIds.length > 0 ? 30 : 0)
         );
         const overallMaturity = ccClamp(
@@ -4832,130 +4842,97 @@ async function ensureMicrosLoaded() {
 
         const stages = [
             { label: "Market data", status: marketOk ? "VERIFIED" : "BLOCKED", detail: marketOk ? `${market.regime || "UNKNOWN"} · ${market.trendSide || "UNKNOWN"}` : (market.reason || "MarketWeather niet bruikbaar"), tab: "market" },
-            { label: "Scanner", status: !scannerResult.ok ? "ERROR" : scannerStale ? "STALLED" : "VERIFIED", detail: `${fmtInt(scannerCandidates)} ${ONLY_SIDE} candidates${scannerAgeMin === null ? "" : ` · ${Math.round(scannerAgeMin)}m oud`}`, tab: "scanner" },
+            { label: "Scanner", status: !scannerApiOk ? "ERROR" : scannerStale ? "STALLED" : "VERIFIED", detail: `${fmtInt(scannerCandidates)} ${ONLY_SIDE} candidates${scannerAgeMin === null ? "" : ` · ${Math.round(scannerAgeMin)}m oud`}`, tab: "scanner" },
             { label: "Analyze 75", status: !microsOk ? "ERROR" : microRows.length ? "VERIFIED" : scannerCandidates ? "BLOCKED" : "RUNNING", detail: `${fmtInt(microRows.length)}/75 families zichtbaar`, tab: "micros" },
-            { label: "Virtual trade", status: !tradeResult.ok ? "ERROR" : tradeStalled || tradeStale ? "STALLED" : "VERIFIED", detail: `${fmtInt(openPositions)} open · cursor ${startIndex}→${nextIndex}`, tab: "trade" },
+            { label: "Virtual trade", status: !tradeApiOk ? "ERROR" : tradeStalled || tradeStale ? "STALLED" : "VERIFIED", detail: `${fmtInt(openPositions)} open · cursor ${startIndex}→${nextIndex}`, tab: "trade" },
             { label: "Net-R outcomes", status: liveOutcomes > 0 ? "VERIFIED" : "RUNNING", detail: `${fmtInt(liveOutcomes)} live finalized outcomes`, tab: "micros" },
             { label: "Historical evidence", status: historicalOutcomes > 0 ? "VERIFIED" : historicalEvidenceApplied === false && historicalEvidenceReason ? "BLOCKED" : "WAITING", detail: `${fmtInt(historicalOutcomes)} historische outcomes zichtbaar`, tab: "winners" },
             { label: "OOS / walk-forward", status: oosPassed > 0 ? "VERIFIED" : historicalOutcomes > 0 ? "RUNNING" : "WAITING", detail: `${fmtInt(oosPassed)} OOS_PASSED families`, tab: "winners" },
-            { label: "Weekly selection", status: activeSlots > 0 && proposalFamilies > 0 ? "VERIFIED" : oosPassed > 0 ? "BLOCKED" : "WAITING", detail: `${fmtInt(activeSlots)} actieve vakken · ${fmtInt(proposalFamilies)} families`, tab: "winners" },
+            { label: "Weekly selection", status: activeSlots > 0 || activeIds.length > 0 ? "VERIFIED" : oosPassed > 0 ? "BLOCKED" : "WAITING", detail: `${fmtInt(activeSlots)} actieve vakken · ${fmtInt(proposalFamilies)} families`, tab: "winners" },
             { label: "Forward validation", status: forwardPassed > 0 ? "VERIFIED" : forwardValidating > 0 ? "RUNNING" : "WAITING", detail: `${fmtInt(forwardValidating)} validating · ${fmtInt(forwardPassed)} passed`, tab: "micros" },
             { label: "Strict Discord", status: activeIds.length > 0 ? "VERIFIED" : "LOCKED", detail: `${fmtInt(activeIds.length)} actieve exacte 75-child IDs`, tab: "discord" }
         ];
 
-        const firstActionable = issues.find((row) => ["ERROR", "BLOCKED", "STALLED", "WAITING"].includes(row.severity));
+        const sortedIssues = [...issues].sort((a, b) => ccIssuePriority(a.severity) - ccIssuePriority(b.severity));
+        const firstActionable = sortedIssues.find((row) => ["ERROR", "BLOCKED", "STALLED", "WAITING"].includes(row.severity));
         const currentPhase = firstActionable?.component || (activeIds.length ? "STRICT DISCORD / LIVE FORWARD" : "LIVE LEARNING");
         const criticalCount = issues.filter((row) => row.severity === "ERROR").length;
         const blockedCount = issues.filter((row) => row.severity === "BLOCKED").length;
         const stalledCount = issues.filter((row) => row.severity === "STALLED").length;
-        const waitingCount = issues.filter((row) => row.severity === "WAITING").length;
         const lockedCount = issues.filter((row) => row.severity === "LOCKED").length;
-
-        const temporalContext = temporalContextFromPayload(data.temporalContext || data.currentTemporalContext || data.latestScan || runMeta || {});
-        const temporalPolicy = temporalPolicyForContext(temporalContext, data);
-        const temporalGeneration = temporalGenerationFromPayload(data);
+        const progressTone = overallMaturity < 45 ? "danger" : overallMaturity < 75 ? "warn" : "";
 
         $("overview").innerHTML = `
             <div class="cc-hero">
                 <div class="cc-hero-main">
                     <div class="cc-kicker">${escapeHtml(ONLY_SIDE)} SYSTEM COMMAND CENTER</div>
-                    <div class="cc-title-row">
-                        <div><h2>Systeemvoortgang</h2><div class="metric-extra">Harde statuschecks uit bestaande admin-API's — geen handmatig verzonnen percentage.</div></div>
-                        <div class="cc-big-pct">${ccPct(overallMaturity)}</div>
-                    </div>
-                    <div class="cc-progress ${overallMaturity < 45 ? "danger" : overallMaturity < 75 ? "warn" : ""}"><span style="width:${Math.round(overallMaturity)}%"></span></div>
+                    <div class="cc-title-row"><div><h2>Systeemvoortgang</h2><div class="metric-extra">Gebaseerd op actuele technische status, learning, selectie en Discord-readiness.</div></div><div class="cc-big-pct">${ccPct(overallMaturity)}</div></div>
+                    <div class="cc-progress ${progressTone}"><span style="width:${Math.round(overallMaturity)}%"></span></div>
                     <div class="cc-hero-meta">
-                        ${ccStatusHtml(criticalCount || blockedCount || stalledCount ? "BLOCKED" : "RUNNING")}
-                        <span class="pill info">Fase: ${escapeHtml(currentPhase)}</span>
-                        <span class="pill soft">${fmtInt(liveOutcomes)} live outcomes</span>
-                        <span class="pill soft">${fmtInt(historicalOutcomes)} historical outcomes</span>
+                        ${ccStatusHtml(criticalCount ? "ERROR" : stalledCount ? "STALLED" : blockedCount ? "BLOCKED" : "VERIFIED")}
+                        <span class="pill">Fase: ${escapeHtml(currentPhase)}</span>
+                        <span class="pill">${fmtInt(criticalCount)} fout · ${fmtInt(blockedCount)} geblokkeerd · ${fmtInt(stalledCount)} stalled · ${fmtInt(lockedCount)} bewust locked</span>
                     </div>
                 </div>
                 <div class="cc-next">
                     <div class="cc-kicker">VOLGENDE BELANGRIJKSTE STAP</div>
-                    <h3>${escapeHtml(firstActionable?.component || "Geen technische blokkade")}</h3>
-                    <p>${escapeHtml(firstActionable?.action || "Laat scanner, trade, learning en forward-validatie verder draaien. Overview blijft de voortgang automatisch volgen.")}</p>
+                    <h3>${escapeHtml(firstActionable?.component || "Live learning laten doorgroeien")}</h3>
+                    <p>${escapeHtml(firstActionable?.action || "Geen technische blokkade gevonden. Laat de live forward-validatie en normale crons doorlopen.")}</p>
                 </div>
             </div>
 
             <div class="cc-score-grid">
-                ${ccScoreCard("Technical health", technicalHealth, "API's, markt, scanner, trade, learning en selection endpoints")}
-                ${ccScoreCard("Learning progress", learningProgress, "75-child learning, live outcomes en historische evidence")}
-                ${ccScoreCard("Selection readiness", selectionReadiness, "OOS-bewijs, contextvakken en weekcompositie")}
-                ${ccScoreCard("Discord readiness", discordReadiness, "Live PASSED gate + actieve strict selectie")}
+                ${ccScoreCard("Technical Health", technicalHealth, "APIs, MarketWeather, Scanner, TradeSystem en learning API")}
+                ${ccScoreCard("Learning Progress", learningProgress, `${fmtInt(liveOutcomes)} live · ${fmtInt(historicalOutcomes)} historical outcomes`)}
+                ${ccScoreCard("Selection Readiness", selectionReadiness, `${fmtInt(oosPassed)} OOS passed · ${fmtInt(activeSlots)} actieve vakken`)}
+                ${ccScoreCard("Discord Readiness", discordReadiness, `${fmtInt(gatePassed)} live PASSED · ${fmtInt(activeIds.length)} geselecteerd`)}
             </div>
 
-            <div class="cc-section">
-                <div class="cc-section-head"><div><h2>Pipeline</h2><p>Klik op een blok om direct naar de detailpagina te gaan.</p></div></div>
+            <section class="cc-section">
+                <div class="cc-section-head"><div><h2>Pipeline</h2><p>Klik op een stap voor de detailpagina.</p></div></div>
                 <div class="cc-pipeline">${stages.map(ccStageCard).join("")}</div>
-            </div>
+            </section>
 
-            <div class="cc-section">
-                <div class="cc-section-head"><div><h2>Problemen & blokkades</h2><p>Overview probeert niet alleen de fout te tonen, maar ook waar de keten stopt en waarom.</p></div></div>
-                <div class="cc-issue-summary">
-                    <span class="cc-count">Fouten <strong>${criticalCount}</strong></span>
-                    <span class="cc-count">Geblokkeerd <strong>${blockedCount}</strong></span>
-                    <span class="cc-count">Blijft hangen <strong>${stalledCount}</strong></span>
-                    <span class="cc-count">Wacht <strong>${waitingCount}</strong></span>
-                    <span class="cc-count">Bewuste locks <strong>${lockedCount}</strong></span>
-                </div>
-                ${ccIssueTable(issues)}
-            </div>
+            <section class="cc-section">
+                <div class="cc-section-head"><div><h2>Problemen & blokkades</h2><p>De site legt uit waar de keten stopt, waarom en welk onderdeel je moet controleren.</p></div></div>
+                ${ccIssueTable(sortedIssues)}
+            </section>
 
-            <div class="cc-section">
-                <div class="grid-3">
-                    <div class="card">
-                        <h3>Wat moet nu gebeuren?</h3>
-                        ${ccNextSteps(issues, stages)}
-                    </div>
-                    <div class="card" style="grid-column:span 2">
-                        <h3>Wat heeft het systeem al?</h3>
-                        <div class="cc-learning-grid">
-                            <div class="cc-learning-item"><span>Scanner candidates</span><strong>${fmtInt(scannerCandidates)}</strong></div>
-                            <div class="cc-learning-item"><span>75-child families gezien</span><strong>${fmtInt(microRows.length)}/75</strong></div>
-                            <div class="cc-learning-item"><span>Live outcomes</span><strong>${fmtInt(liveOutcomes)}</strong></div>
-                            <div class="cc-learning-item"><span>Historical outcomes</span><strong>${fmtInt(historicalOutcomes)}</strong></div>
-                            <div class="cc-learning-item"><span>OOS passed</span><strong>${fmtInt(oosPassed)}</strong></div>
-                            <div class="cc-learning-item"><span>Live gate PASSED</span><strong>${fmtInt(gatePassed)}</strong></div>
-                            <div class="cc-learning-item"><span>Active week slots</span><strong>${fmtInt(activeSlots)}</strong></div>
-                            <div class="cc-learning-item"><span>Strict Discord IDs</span><strong>${fmtInt(activeIds.length)}</strong></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="cc-section">
+            <section class="cc-section cc-two-col">
                 <div class="card">
-                    <h3>Learning-status in één oogopslag</h3>
-                    <div class="grid">
-                        ${metricCard("OBSERVING", fmtInt(observing), "nog geen live outcome")}
-                        ${metricCard("EARLY_OUTCOMES", fmtInt(early), `1-${MIN_COMPLETED_ACTIVE_LEARNING - 1} live outcomes`)}
-                        ${metricCard("ACTIVE_LEARNING", fmtInt(activeLearning), `${MIN_COMPLETED_ACTIVE_LEARNING}-${EMPIRICAL_VETO_MIN_COMPLETED - 1} live outcomes`)}
-                        ${metricCard("Gate PASSED", fmtInt(gatePassed), `≥ ${EMPIRICAL_VETO_MIN_COMPLETED} en avgR > 0`)}
-                        ${metricCard("EMPIRICAL VETO", fmtInt(empiricalVeto), `≥ ${EMPIRICAL_VETO_MIN_COMPLETED} en avgR ≤ 0`)}
-                        ${metricCard("Forward validating", fmtInt(forwardValidating), "historisch sterk, live bevestiging loopt")}
-                        ${metricCard("Open virtual positions", fmtInt(openPositions), "TradeSystem monitor")}
-                        ${metricCard("Market", `${market.regime || "UNKNOWN"} · ${market.trendSide || "UNKNOWN"}`, market.ageText || "-")}
+                    <div class="cc-section-head"><div><h3>Wat moet er nog gebeuren?</h3><p>Automatisch geprioriteerd: fout → blocked → stalled → waiting.</p></div></div>
+                    ${ccNextSteps(sortedIssues, stages)}
+                </div>
+                <div class="card">
+                    <div class="cc-section-head"><div><h3>Wat heeft hij al?</h3><p>Compacte learning- en selectiestatus.</p></div></div>
+                    <div class="cc-learning-grid">
+                        <div><span>Scanner candidates</span><strong>${fmtInt(scannerCandidates)}</strong></div>
+                        <div><span>75-child families</span><strong>${fmtInt(microRows.length)}/75</strong></div>
+                        <div><span>Live outcomes</span><strong>${fmtInt(liveOutcomes)}</strong></div>
+                        <div><span>Historical outcomes</span><strong>${fmtInt(historicalOutcomes)}</strong></div>
+                        <div><span>OOS passed</span><strong>${fmtInt(oosPassed)}</strong></div>
+                        <div><span>Forward validating</span><strong>${fmtInt(forwardValidating)}</strong></div>
+                        <div><span>Live PASSED</span><strong>${fmtInt(gatePassed)}</strong></div>
+                        <div><span>Empirical veto</span><strong>${fmtInt(empiricalVeto)}</strong></div>
+                        <div><span>Actieve weekvakken</span><strong>${fmtInt(activeSlots)}</strong></div>
+                        <div><span>Strict IDs</span><strong>${fmtInt(activeIds.length)}</strong></div>
                     </div>
                 </div>
-            </div>
+            </section>
 
-            <details class="card cc-details">
-                <summary>Technische details / raw status</summary>
-                <div class="grid">
-                    ${metricCard("Learning key", PERSISTENT_LEARNING_KEY)}
-                    ${metricCard("Redis namespace", ONLY_SIDE === "LONG" ? LONG_KEY_PREFIX : SHORT_KEY_PREFIX)}
-                    ${metricCard("UTC session", temporalContext.primarySessionBucket, `${String(temporalContext.hourUtc).padStart(2, "0")}:00 UTC`)}
-                    ${metricCard("Temporal mode", temporalPolicy.temporalPolicyMode, temporalPolicy.temporalStatsEnabled ? "stats actief" : "stats uit")}
-                    ${metricCard("Active generation", temporalGeneration?.generationId || "NONE", temporalGeneration?.status || "-")}
-                    ${metricCard("Trade cursor", `${startIndex} → ${nextIndex}`, `no-progress retries ${retryCount}`)}
+            <section class="cc-section">
+                <div class="card">
+                    <h3>Overview-statusbron</h3>
+                    <div class="metric-extra">Mobile-safe: Overview laadt alleen compacte adminbronnen. De zware 10.080-slot weekcompositie en Discord-logpayload worden pas geladen wanneer je hun eigen tab opent. GitHub Actions-logs zijn niet rechtstreeks met deze Vercel-pagina verbonden.</div>
+                    <div class="toolbar" style="margin-top:12px">
+                        <span class="pill">OBSERVING ${fmtInt(observing)}</span>
+                        <span class="pill">EARLY ${fmtInt(early)}</span>
+                        <span class="pill">ACTIVE_LEARNING ${fmtInt(activeLearning)}</span>
+                        <span class="pill">PASSED ${fmtInt(gatePassed)}</span>
+                        <span class="pill">VETO ${fmtInt(empiricalVeto)}</span>
+                    </div>
                 </div>
-                <div class="grid-3" style="margin-top:12px">
-                    <div class="card"><h3>Overview raw</h3>${jsonBlock(data)}</div>
-                    <div class="card"><h3>Trade run meta</h3>${jsonBlock(runMeta)}</div>
-                    <div class="card"><h3>Rotation raw</h3>${jsonBlock(rotationData)}</div>
-                </div>
-            </details>
+            </section>
         `;
 
         ccBindNavigation();
