@@ -20,9 +20,9 @@ import {
   buildTemporalContext
 } from '../analyze/scoring.js';
 
-export const HISTORICAL_REPLAY_VERSION = 'LONG_POINT_IN_TIME_REPLAY_V1_5_LARGE_EVIDENCE_SAFE';
+export const HISTORICAL_REPLAY_VERSION = 'LONG_POINT_IN_TIME_REPLAY_V1_6_CONTEXT_DISCOVERY';
 export const HISTORICAL_EVIDENCE_VERSION = 'LONG_HISTORICAL_WALK_FORWARD_EVIDENCE_V1';
-export const HISTORICAL_SELECTION_VERSION = 'LONG_HISTORICAL_SELECTION_BRIDGE_V1';
+export const HISTORICAL_SELECTION_VERSION = 'LONG_HISTORICAL_CONTEXT_DISCOVERY_SELECTION_V2';
 
 const SIDE = 'LONG';
 const DASHBOARD_SIDE = 'bull';
@@ -605,7 +605,12 @@ function rollingWalkForward(rows = [], rangeStart, rangeEnd) {
 }
 function pearson(a, b) { if (a.length !== b.length || a.length < 3) return 0; const ma = mean(a), mb = mean(b); let num = 0, da = 0, db = 0; for (let i = 0; i < a.length; i += 1) { const x = a[i] - ma, y = b[i] - mb; num += x * y; da += x * x; db += y * y; } return da > 0 && db > 0 ? num / Math.sqrt(da * db) : 0; }
 function correlationClusters(familyRows, outcomes) {
-  const passed = familyRows.filter((r) => r.selectionEligible === true);
+  // Correlation diversification must cover the context-discovery pool as well as
+  // strict OOS-passed families. Otherwise a 0-strict-pass research run would
+  // lose all correlation information exactly when the context optimizer needs it.
+  const passed = familyRows.filter((r) =>
+    r.contextDiscoveryEligible === true || r.selectionEligible === true
+  );
   const parent = new Map(passed.map((r) => [r.familyId, r.familyId]));
   const find = (x) => { let p = parent.get(x); while (p && p !== parent.get(p)) p = parent.get(p); return p || x; };
   const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(rb, ra); };
@@ -813,6 +818,20 @@ export async function buildEvidence({ inputDir, outDir, includePublished = true 
         : trainPass && validationPass && qualityPass
           ? (recencyPass ? 'HISTORICALLY_PROMISING' : 'DEGRADED')
           : 'UNPROVEN';
+
+    // IMPORTANT: global family profitability and exact-context profitability are different questions.
+    // The strict OOS gate remains untouched for strict evidence. For OBSERVE discovery we only
+    // require that a family has enough clean point-in-time data across train/validation/OOS and
+    // adequate replay quality. The existing day/hour/weather/BTC optimizer is then responsible
+    // for proving positive exact contexts. Historical discovery can never unlock strict Discord.
+    const contextDiscoveryEligible =
+      row.all.completed >= 100 &&
+      row.train.completed >= 30 &&
+      row.validation.completed >= 10 &&
+      row.oos.completed >= 10 &&
+      row.walkForward.windowsPlanned >= 2 &&
+      qualityPass;
+
     const selectionScore = clamp(
       row.oos.shrunkAvgR * 175 +
       row.oos.lcb95 * 135 +
@@ -834,6 +853,12 @@ export async function buildEvidence({ inputDir, outDir, includePublished = true 
       historicalStatus,
       selectionScore,
       selectionEligible: historicalStatus === 'OOS_PASSED',
+      contextDiscoveryEligible,
+      contextDiscoveryTier: historicalStatus === 'OOS_PASSED'
+        ? 'STRICT_OOS_PASSED'
+        : contextDiscoveryEligible
+          ? 'CONTEXT_DISCOVERY_READY'
+          : 'INSUFFICIENT_CONTEXT_DISCOVERY_EVIDENCE',
       strictDiscordEligible: false,
       liveForwardConfirmationRequired: true
     };
@@ -850,6 +875,9 @@ export async function buildEvidence({ inputDir, outDir, includePublished = true 
       childTrueMicroFamilyId: row.familyId,
       microFamilyId: row.familyId,
       historicalSelectionGate: row.selectionEligible,
+      historicalStrictSelectionEligible: row.selectionEligible === true,
+      historicalContextDiscoveryEligible: row.contextDiscoveryEligible === true,
+      historicalContextDiscoveryTier: row.contextDiscoveryTier || null,
       historicalStatus: row.historicalStatus,
       historicalCompleted: row.all.completed,
       historicalOosCompleted: row.oos.completed,
@@ -907,6 +935,12 @@ export async function buildEvidence({ inputDir, outDir, includePublished = true 
     exactDepthOptional: true,
     totalOutcomes: accepted.length,
     selectionEligibleFamilies: familyRows.filter((r) => r.selectionEligible).map((r) => r.familyId),
+    contextDiscoveryEligibleFamilies: familyRows
+      .filter((r) => r.contextDiscoveryEligible === true)
+      .sort((a, b) => b.selectionScore - a.selectionScore)
+      .map((r) => r.familyId),
+    contextDiscoveryPolicy: 'DATA_QUALITY_AND_TIME_COVERAGE_THEN_EXACT_CONTEXT_PROOF',
+    contextDiscoveryNeverUnlocksStrictDiscord: true,
     familyRows,
     strictDiscordRequiresLiveForward: true,
     historicalEvidenceNeverDirectlyPublishesDiscord: true,
@@ -929,6 +963,7 @@ export async function buildEvidence({ inputDir, outDir, includePublished = true 
     totalOutcomes: evidence.totalOutcomes,
     crossShardOverlapsDropped: overlapResolution.dropped,
     selectionEligibleFamilies: evidence.selectionEligibleFamilies,
+    contextDiscoveryEligibleFamilies: evidence.contextDiscoveryEligibleFamilies,
     topFamilies: familyRows
       .filter((r) => r.selectionEligible)
       .sort((a, b) => b.selectionScore - a.selectionScore)
@@ -943,6 +978,21 @@ export async function buildEvidence({ inputDir, outDir, includePublished = true 
         recency: r.recency,
         driftStatus: r.driftStatus,
         correlationCluster: r.historicalCorrelationCluster
+      })),
+    topContextDiscoveryFamilies: familyRows
+      .filter((r) => r.contextDiscoveryEligible === true)
+      .sort((a, b) => b.selectionScore - a.selectionScore)
+      .slice(0, 20)
+      .map((r) => ({
+        familyId: r.familyId,
+        score: r.selectionScore,
+        historicalStatus: r.historicalStatus,
+        contextDiscoveryTier: r.contextDiscoveryTier,
+        all: r.all,
+        validation: r.validation,
+        oos: r.oos,
+        walkForward: r.walkForward,
+        recency: r.recency
       }))
   });
   return evidence;
@@ -961,10 +1011,16 @@ export function exportGeneratedEvidenceModule({ evidenceFile, outcomesFile, targ
   if (!evidence || evidence.side !== SIDE || evidence.historicalEvidenceVersion !== HISTORICAL_EVIDENCE_VERSION) {
     throw new Error('HISTORICAL_EVIDENCE_FILE_INVALID');
   }
-  const eligible = (Array.isArray(evidence.selectionEligibleFamilies) ? evidence.selectionEligibleFamilies : [])
+  const strictEligible = (Array.isArray(evidence.selectionEligibleFamilies) ? evidence.selectionEligibleFamilies : [])
     .map(upper)
     .filter((id) => FAMILY_SET.has(id));
-  const eligibleOutcomes = Object.fromEntries(eligible.map((id) => [
+  const contextDiscoveryEligible = (Array.isArray(evidence.contextDiscoveryEligibleFamilies)
+    ? evidence.contextDiscoveryEligibleFamilies
+    : strictEligible)
+    .map(upper)
+    .filter((id) => FAMILY_SET.has(id));
+  const embeddedFamilyIds = [...new Set([...strictEligible, ...contextDiscoveryEligible])];
+  const eligibleOutcomes = Object.fromEntries(embeddedFamilyIds.map((id) => [
     id,
     (Array.isArray(byFamily[id]) ? byFamily[id] : []).slice(-MAX_OUTCOMES_PER_FAMILY)
   ]));
@@ -976,18 +1032,22 @@ export function exportGeneratedEvidenceModule({ evidenceFile, outcomesFile, targ
   const outcomeChunks = chunkString(outcomesB64).map((part) => `  ${JSON.stringify(part)}`).join(',\n');
   const target = targetFile || 'src/historical/generatedEvidence.js';
   mkdir(path.dirname(target));
-  const body = `// AUTO-GENERATED by Historical Smart Selection $LONG.\n` +
+  const body = `// AUTO-GENERATED by Historical Smart Selection ${SIDE}.\n` +
     `// Do not edit manually. This file contains compressed, validated historical research evidence only.\n` +
-    `export const HISTORICAL_GENERATED_FILE_VERSION = '$LONG_HISTORICAL_GENERATED_FILE_V1';\n` +
-    `export const HISTORICAL_GENERATED_SIDE = '$LONG';\n` +
+    `export const HISTORICAL_GENERATED_FILE_VERSION = '${SIDE}_HISTORICAL_GENERATED_FILE_V1';\n` +
+    `export const HISTORICAL_GENERATED_SIDE = '${SIDE}';\n` +
     `export const HISTORICAL_GENERATED_AT = ${Math.floor(finite(evidence.generatedAt, 0))};\n` +
-    `export const HISTORICAL_GENERATED_SELECTION_ELIGIBLE_FAMILIES = Object.freeze(${JSON.stringify(eligible)});\n` +
+    `export const HISTORICAL_GENERATED_SELECTION_ELIGIBLE_FAMILIES = Object.freeze(${JSON.stringify(strictEligible)});\n` +
     `export const HISTORICAL_EVIDENCE_GZIP_BASE64 = [\n${evidenceChunks}\n].join('');\n` +
     `export const HISTORICAL_OUTCOMES_GZIP_BASE64 = [\n${outcomeChunks}\n].join('');\n`;
   fs.writeFileSync(target, body);
   const manifest = {
     ok: true, side: SIDE, targetFile: target, generatedAt: evidence.generatedAt,
-    totalOutcomes: finite(evidence.totalOutcomes, 0), eligibleFamilies: eligible.length,
+    totalOutcomes: finite(evidence.totalOutcomes, 0),
+    eligibleFamilies: strictEligible.length,
+    strictEligibleFamilies: strictEligible.length,
+    contextDiscoveryFamilies: contextDiscoveryEligible.length,
+    embeddedFamilies: embeddedFamilyIds.length,
     embeddedOutcomeCount: Object.values(eligibleOutcomes).reduce((sum, rows) => sum + rows.length, 0),
     evidenceCompressedBytes: Buffer.byteLength(evidenceB64, 'utf8'),
     outcomesCompressedBytes: Buffer.byteLength(outcomesB64, 'utf8'),
@@ -1053,7 +1113,7 @@ async function cli() {
   const {command,args}=parseArgs();
   if(command==='plan'){ const rows=planShards({days:Number(args.days||180),chunkDays:Number(args.chunk_days||5),endTs:parseTs(args.end,null)}); process.stdout.write(JSON.stringify(rows)); return; }
   if(command==='replay'){ const startTs=parseTs(args.start,NaN),endTs=parseTs(args.end,NaN); if(!Number.isFinite(startTs)||!Number.isFinite(endTs)||endTs<=startTs) throw new Error('VALID_START_END_REQUIRED'); const result=await replayShard({startTs,endTs,outDir:args.out||'.historical-shard',shardId:args.shard||'shard',maxContracts:Number(args.max_contracts||0)}); console.log(JSON.stringify({ok:true,command,side:SIDE,...result})); return; }
-  if(command==='evidence'){ const evidence=await buildEvidence({inputDir:args.input||'.historical-shards',outDir:args.out||'.historical-evidence',includePublished:bool(args.include_published,false)}); console.log(JSON.stringify({ok:true,command,side:SIDE,totalOutcomes:evidence.totalOutcomes,selectionEligibleFamilies:evidence.selectionEligibleFamilies})); return; }
+  if(command==='evidence'){ const evidence=await buildEvidence({inputDir:args.input||'.historical-shards',outDir:args.out||'.historical-evidence',includePublished:bool(args.include_published,false)}); console.log(JSON.stringify({ok:true,command,side:SIDE,totalOutcomes:evidence.totalOutcomes,selectionEligibleFamilies:evidence.selectionEligibleFamilies,contextDiscoveryEligibleFamilies:evidence.contextDiscoveryEligibleFamilies})); return; }
   if(command==='export-file'){ const result=exportGeneratedEvidenceModule({evidenceFile:args.evidence||'.historical-evidence/historical-evidence.json',outcomesFile:args.outcomes||'.historical-evidence/historical-outcomes-by-family.json',targetFile:args.target||'src/historical/generatedEvidence.js'}); console.log(JSON.stringify({ok:true,command,side:SIDE,...result})); return; }
   if(command==='publish'){ const result=await publishEvidence({evidenceFile:args.evidence||'.historical-evidence/historical-evidence.json',outcomesFile:args.outcomes||'.historical-evidence/historical-outcomes-by-family.json'}); console.log(JSON.stringify({ok:true,command,side:SIDE,...result})); return; }
   if(command==='refresh-preview'){ const result=await refreshWeeklyPreview(); console.log(JSON.stringify({ok:true,command,side:SIDE,...result})); return; }
