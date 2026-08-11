@@ -15,7 +15,7 @@ import {
   HISTORICAL_OUTCOMES_GZIP_BASE64
 } from '../historical/generatedEvidence.js';
 
-export const HISTORICAL_EVIDENCE_BRIDGE_VERSION = 'LONG_HISTORICAL_EVIDENCE_BRIDGE_FILE_FIRST_V2';
+export const HISTORICAL_EVIDENCE_BRIDGE_VERSION = 'LONG_HISTORICAL_EVIDENCE_BRIDGE_CONTEXT_DISCOVERY_V3';
 const SIDE = 'LONG';
 const PREFIX = `${SIDE}:`;
 const EVIDENCE_VERSION = 'LONG_HISTORICAL_WALK_FORWARD_EVIDENCE_V1';
@@ -54,13 +54,19 @@ function loadGeneratedFileBundle({ cutoffTs = now() } = {}) {
   }
   const declared = Array.isArray(HISTORICAL_GENERATED_SELECTION_ELIGIBLE_FAMILIES)
     ? HISTORICAL_GENERATED_SELECTION_ELIGIBLE_FAMILIES : [];
-  const eligible = (Array.isArray(evidence.selectionEligibleFamilies) ? evidence.selectionEligibleFamilies : declared)
+  const strictEligible = (Array.isArray(evidence.selectionEligibleFamilies) ? evidence.selectionEligibleFamilies : declared)
     .map(upper).filter((id) => familyIdOf({familyId:id}));
-  const pairs = eligible.map((familyId) => [familyId, Array.isArray(byFamily?.[familyId]) ? byFamily[familyId] : []]);
+  const discoveryEligible = (Array.isArray(evidence.contextDiscoveryEligibleFamilies)
+    ? evidence.contextDiscoveryEligibleFamilies
+    : strictEligible)
+    .map(upper).filter((id) => familyIdOf({familyId:id}));
+  const outcomeFamilyIds = [...new Set([...strictEligible, ...discoveryEligible])];
+  const pairs = outcomeFamilyIds.map((familyId) => [familyId, Array.isArray(byFamily?.[familyId]) ? byFamily[familyId] : []]);
   return {
     ok:true, reason:'HISTORICAL_EVIDENCE_READY_FROM_GENERATED_FILE',
     source:'GENERATED_REPOSITORY_FILE', bridgeVersion:HISTORICAL_EVIDENCE_BRIDGE_VERSION,
-    evidence, outcomesByFamily:new Map(pairs), eligibleFamilyIds:eligible, redisReadRequired:false
+    evidence, outcomesByFamily:new Map(pairs), eligibleFamilyIds:discoveryEligible,
+    strictEligibleFamilyIds:strictEligible, contextDiscoveryFamilyIds:discoveryEligible, redisReadRequired:false
   };
 }
 
@@ -74,9 +80,11 @@ export async function loadHistoricalEvidenceBundle({cutoffTs=now()}={}){
     if(!evidence||evidence.side!==SIDE||evidence.historicalEvidenceVersion!==EVIDENCE_VERSION) return fileBundle;
     const generatedAt=safeNumber(evidence.generatedAt,0);
     if(generatedAt<=0||Math.max(0,cutoffTs-generatedAt)>MAX_AGE_DAYS*DAY_MS) return fileBundle;
-    const eligible=(Array.isArray(evidence.selectionEligibleFamilies)?evidence.selectionEligibleFamilies:[]).map(upper).filter((id)=>familyIdOf({familyId:id}));
-    const pairs=await mapLimit(eligible,8,async familyId=>[familyId,await getJson(redis,`${PREFIX}HISTORICAL:OUTCOMES:V1:${familyId}`,[]).catch(()=>[])]);
-    return {ok:true,reason:'HISTORICAL_EVIDENCE_READY_FROM_REDIS_FALLBACK',source:'REDIS_FALLBACK',bridgeVersion:HISTORICAL_EVIDENCE_BRIDGE_VERSION,evidence,outcomesByFamily:new Map(pairs.map(([id,rows])=>[id,Array.isArray(rows)?rows:[]])),eligibleFamilyIds:eligible,redisReadRequired:true};
+    const strictEligible=(Array.isArray(evidence.selectionEligibleFamilies)?evidence.selectionEligibleFamilies:[]).map(upper).filter((id)=>familyIdOf({familyId:id}));
+    const discoveryEligible=(Array.isArray(evidence.contextDiscoveryEligibleFamilies)?evidence.contextDiscoveryEligibleFamilies:strictEligible).map(upper).filter((id)=>familyIdOf({familyId:id}));
+    const outcomeFamilyIds=[...new Set([...strictEligible,...discoveryEligible])];
+    const pairs=await mapLimit(outcomeFamilyIds,8,async familyId=>[familyId,await getJson(redis,`${PREFIX}HISTORICAL:OUTCOMES:V1:${familyId}`,[]).catch(()=>[])]);
+    return {ok:true,reason:'HISTORICAL_EVIDENCE_READY_FROM_REDIS_FALLBACK',source:'REDIS_FALLBACK',bridgeVersion:HISTORICAL_EVIDENCE_BRIDGE_VERSION,evidence,outcomesByFamily:new Map(pairs.map(([id,rows])=>[id,Array.isArray(rows)?rows:[]])),eligibleFamilyIds:discoveryEligible,strictEligibleFamilyIds:strictEligible,contextDiscoveryFamilyIds:discoveryEligible,redisReadRequired:true};
   } catch {
     return fileBundle;
   }
@@ -87,7 +95,9 @@ export function mergeHistoricalSelectionMicros(liveMicros={},bundle={}){
   if(!bundle?.ok||!bundle?.evidence) return result;
   const familyRows=Array.isArray(bundle.evidence.familyRows)?bundle.evidence.familyRows:[];
   for(const historical of familyRows){
-    if(historical?.selectionEligible!==true) continue;
+    const historicalStrictEligible=historical?.selectionEligible===true;
+    const historicalContextDiscoveryEligible=historical?.contextDiscoveryEligible===true||historicalStrictEligible;
+    if(!historicalContextDiscoveryEligible) continue;
     const id=upper(historical.familyId); if(!familyIdOf({familyId:id})) continue;
     const selection=historical.selectionRow||{};
     const live=result[id]||Object.values(result).find((row)=>familyIdOf(row)===id)||{};
@@ -108,6 +118,9 @@ export function mergeHistoricalSelectionMicros(liveMicros={},bundle={}){
       trueMicroFamilyId:id,childTrueMicroFamilyId:id,microFamilyId:id,
       historicalEvidenceBridgeVersion:HISTORICAL_EVIDENCE_BRIDGE_VERSION,
       historicalStatus:historical.historicalStatus,
+      historicalStrictSelectionEligible:historicalStrictEligible,
+      historicalContextDiscoveryEligible,
+      historicalContextDiscoveryTier:historical.contextDiscoveryTier||null,
       historicalSelectionAllowed:selectionAllowed,
       forwardValidationStatus:forwardStatus,
       strictDiscordEligibleFromHistorical:false,
