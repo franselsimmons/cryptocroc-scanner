@@ -18,9 +18,9 @@ import {
 } from './scoring.js';
 
 export const WEEK_COMPOSITION_VERSION =
-  'LONG_WEEK_COMPOSITION_DAY_HOUR_WEATHER_BTC_V4_OBSERVE_PREVIEW';
+  'LONG_WEEK_COMPOSITION_DAY_HOUR_WEATHER_BTC_V5_CONTEXT_DISCOVERY_PREVIEW';
 export const WEEK_COMPOSITION_OPTIMIZER_VERSION =
-  'LONG_TOP3_DAY_HOUR_WEATHER_BTC_OPTIMIZER_V4_OBSERVE_PREVIEW';
+  'LONG_TOP3_DAY_HOUR_WEATHER_BTC_OPTIMIZER_V5_CONTEXT_DISCOVERY_PREVIEW';
 export const HISTORICAL_CORRELATION_DIVERSIFICATION_VERSION =
   'LONG_HISTORICAL_CORRELATION_DIVERSIFICATION_V1';
 export const WEEK_COMPOSITION_MODES = Object.freeze([
@@ -256,6 +256,9 @@ function globalGateEvaluation(row = {}) {
     row.empiricalVeto === true ||
     row.empiricalVetoed === true ||
     status === 'EMPIRICAL_VETO';
+  const historicalContextDiscovery =
+    row.historicalContextDiscoveryEligible === true &&
+    row.strictDiscordEligibleFromHistorical !== true;
   const strictPassed =
     status === 'PASSED' ||
     (completed >= STRICT_GLOBAL_GATE_MIN_COMPLETED && avgR > 0 && !empiricalVeto);
@@ -263,13 +266,14 @@ function globalGateEvaluation(row = {}) {
     !strictPassed &&
     compositionPolicyMode() === 'OBSERVE' &&
     completed >= OBSERVE_PREVIEW_MIN_COMPLETED &&
-    avgR >= OBSERVE_PREVIEW_MIN_AVG_R &&
+    (avgR >= OBSERVE_PREVIEW_MIN_AVG_R || historicalContextDiscovery) &&
     !empiricalVeto;
   return {
     status,
     completed,
     avgR,
     empiricalVeto,
+    historicalContextDiscovery,
     strictPassed,
     observePreviewPassed,
     acceptedForComposition: strictPassed || observePreviewPassed
@@ -470,7 +474,7 @@ function observePreviewBaseWeatherReasons({
   if (weatherBlended.avgNetR < OBSERVE_PREVIEW_MIN_BLENDED_AVG_R) {
     reasons.push('OBSERVE_WEATHER_BLENDED_AVG_R_NOT_POSITIVE');
   }
-  if (global.avgNetR < OBSERVE_PREVIEW_MIN_AVG_R) {
+  if (!gate.historicalContextDiscovery && global.avgNetR < OBSERVE_PREVIEW_MIN_AVG_R) {
     reasons.push('OBSERVE_GLOBAL_AVG_R_NOT_POSITIVE');
   }
   return reasons;
@@ -814,7 +818,8 @@ function compactSelectedFamilyEvidence(candidate = {}) {
           avgR: finite(candidate.globalGate.avgR, 0),
           strictPassed: candidate.globalGate.strictPassed === true,
           observePreviewPassed: candidate.globalGate.observePreviewPassed === true,
-          empiricalVeto: candidate.globalGate.empiricalVeto === true
+          empiricalVeto: candidate.globalGate.empiricalVeto === true,
+          historicalContextDiscovery: candidate.globalGate.historicalContextDiscovery === true
         }
       : null,
     counterBtcException: candidate.counterBtcException
