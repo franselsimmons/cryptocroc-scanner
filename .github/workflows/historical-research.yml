@@ -25,10 +25,7 @@ on:
         required: true
         type: boolean
         default: true
-  schedule:
-    # Weekly incremental refresh well before Sunday 22:00 UTC freeze.
-    - cron: '15 3 * * 0'
-
+  
 concurrency:
   group: historical-smart-selection-long
   cancel-in-progress: false
