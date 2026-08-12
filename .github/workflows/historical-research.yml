@@ -6,7 +6,7 @@ on:
       days:
         description: Initial/backfill lookback in days
         required: true
-        default: '180'
+        default: '730'
       chunk_days:
         description: Days per parallel shard (safety-clamped to max 5)
         required: true
