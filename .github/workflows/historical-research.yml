@@ -25,7 +25,7 @@ on:
         required: true
         type: boolean
         default: true
-  
+
 concurrency:
   group: historical-smart-selection-long
   cancel-in-progress: false
@@ -36,8 +36,8 @@ permissions:
 env:
   BITGET_BASE_URL: https://api.bitget.com
   HISTORICAL_API_CONCURRENCY: '8'
-  HISTORICAL_MAX_DAYS: '365'
-  HISTORICAL_MAX_OUTCOMES_PER_FAMILY: '600'
+  HISTORICAL_MAX_DAYS: '730'
+  HISTORICAL_MAX_OUTCOMES_PER_FAMILY: '800'
 
 jobs:
   plan:
