@@ -1,4 +1,6 @@
 // ================= FILE: src/analyze/analyzeEngine.js =================
+import { createHash, randomUUID } from 'node:crypto';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { CONFIG } from '../config.js';
 import * as KeysApi from '../keys.js';
 
@@ -70,6 +72,17 @@ const LONG_NAMESPACE = 'LONG';
 const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 const ANALYZE_KEY_PREFIX = `${LONG_KEY_PREFIX}ANALYZE:`;
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
+
+
+// WEEK_MICROS large-document storage.
+// Mirrors the already proven NEXT_ROTATION/ROTATION_VALID_FROM Upstash pattern:
+// small documents remain normal JSON; large documents are gzip/base64 chunked.
+const WEEK_MICROS_LARGE_DOCUMENT_STORAGE_SCHEMA =
+    'LONG_WEEK_MICROS_LARGE_DOCUMENT_V1';
+const WEEK_MICROS_LARGE_DOCUMENT_ENCODING = 'gzip-base64-chunks';
+const WEEK_MICROS_LARGE_DOCUMENT_THRESHOLD_BYTES = 6_000_000;
+const WEEK_MICROS_LARGE_DOCUMENT_CHUNK_CHAR_LIMIT = 2_500_000;
+const WEEK_MICROS_LARGE_DOCUMENT_MAX_CHUNKS = 64;
 
 
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
@@ -2020,6 +2033,234 @@ async function saveAggregate(redis, key, value) {
 }
 
 
+function isWeekMicrosLargeDocumentManifest(value) {
+    return Boolean(
+         value &&
+         typeof value === 'object' &&
+         value.weekMicrosLargeDocumentStorageSchema ===
+           WEEK_MICROS_LARGE_DOCUMENT_STORAGE_SCHEMA &&
+         value.encoding === WEEK_MICROS_LARGE_DOCUMENT_ENCODING &&
+         Array.isArray(value.chunkKeys)
+    );
+}
+
+
+function weekMicrosLargeDocumentChunkKey(key, documentId, index) {
+    return `${key}:PAYLOAD:${documentId}:CHUNK:${String(index).padStart(3, '0')}`;
+}
+
+
+async function deleteWeekMicrosLargeDocumentChunks(redis, manifest) {
+    if (!isWeekMicrosLargeDocumentManifest(manifest)) return;
+
+
+    for (const chunkKey of manifest.chunkKeys) {
+         try {
+             assertAnalyzeWrite(chunkKey);
+             await redis.del(chunkKey);
+         } catch {
+             // Best effort only. The authoritative manifest/payload is already safe.
+         }
+    }
+}
+
+
+async function getWeekMicrosDocument(redis, key, fallback = {}) {
+    assertAnalyzeWrite(key);
+
+
+    const stored = await getJson(redis, key, fallback);
+
+
+    // Backward compatibility: existing single-key WEEK_MICROS JSON is returned unchanged.
+    if (!isWeekMicrosLargeDocumentManifest(stored)) return stored;
+
+
+    if (stored.chunkKeys.length !== Number(stored.chunkCount)) {
+         throw new Error('WEEK_MICROS_CHUNK_MANIFEST_INVALID');
+    }
+
+
+    if (
+         stored.chunkCount < 1 ||
+         stored.chunkCount > WEEK_MICROS_LARGE_DOCUMENT_MAX_CHUNKS
+    ) {
+         throw new Error('WEEK_MICROS_CHUNK_COUNT_INVALID');
+    }
+
+
+    const chunks = [];
+
+
+    for (const chunkKey of stored.chunkKeys) {
+         assertAnalyzeWrite(chunkKey);
+         const chunk = await redis.get(chunkKey);
+
+
+         if (typeof chunk !== 'string' || chunk.length === 0) {
+             throw new Error(`WEEK_MICROS_CHUNK_MISSING:${chunkKey}`);
+         }
+
+
+         chunks.push(chunk);
+    }
+
+
+    const base64 = chunks.join('');
+
+
+    if (
+         Number.isFinite(Number(stored.base64Chars)) &&
+         base64.length !== Number(stored.base64Chars)
+    ) {
+         throw new Error('WEEK_MICROS_BASE64_SIZE_MISMATCH');
+    }
+
+
+    const compressed = Buffer.from(base64, 'base64');
+
+
+    if (
+         Number.isFinite(Number(stored.compressedBytes)) &&
+         compressed.length !== Number(stored.compressedBytes)
+    ) {
+         throw new Error('WEEK_MICROS_COMPRESSED_SIZE_MISMATCH');
+    }
+
+
+    const json = gunzipSync(compressed).toString('utf8');
+
+
+    if (
+         Number.isFinite(Number(stored.uncompressedBytes)) &&
+         Buffer.byteLength(json) !== Number(stored.uncompressedBytes)
+    ) {
+         throw new Error('WEEK_MICROS_UNCOMPRESSED_SIZE_MISMATCH');
+    }
+
+
+    const checksum = createHash('sha256')
+         .update(json)
+         .digest('hex');
+
+
+    if (stored.jsonSha256 && checksum !== stored.jsonSha256) {
+         throw new Error('WEEK_MICROS_CHECKSUM_MISMATCH');
+    }
+
+
+    return JSON.parse(json);
+}
+
+
+async function setWeekMicrosDocument(redis, key, value) {
+    assertAnalyzeWrite(key);
+
+
+    const compactValue = compactAggregateValue(value);
+    const json = JSON.stringify(compactValue);
+    const uncompressedBytes = Buffer.byteLength(json);
+    const previous = await getJson(redis, key, null).catch(() => null);
+
+
+    // Keep small payloads on the original single-key contract.
+    if (uncompressedBytes <= WEEK_MICROS_LARGE_DOCUMENT_THRESHOLD_BYTES) {
+         await setJson(redis, key, compactValue);
+         await deleteWeekMicrosLargeDocumentChunks(redis, previous);
+         return compactValue;
+    }
+
+
+    const compressed = gzipSync(Buffer.from(json, 'utf8'), { level: 6 });
+    const base64 = compressed.toString('base64');
+    const chunks = [];
+
+
+    for (
+         let offset = 0;
+         offset < base64.length;
+         offset += WEEK_MICROS_LARGE_DOCUMENT_CHUNK_CHAR_LIMIT
+    ) {
+         chunks.push(
+              base64.slice(
+                   offset,
+                   offset + WEEK_MICROS_LARGE_DOCUMENT_CHUNK_CHAR_LIMIT
+              )
+         );
+    }
+
+
+    if (
+         chunks.length < 1 ||
+         chunks.length > WEEK_MICROS_LARGE_DOCUMENT_MAX_CHUNKS
+    ) {
+         throw new Error('WEEK_MICROS_CHUNK_COUNT_EXCEEDED');
+    }
+
+
+    const documentId = `${Date.now()}_${randomUUID()}`;
+    const chunkKeys = chunks.map((_, index) =>
+         weekMicrosLargeDocumentChunkKey(key, documentId, index)
+    );
+
+
+    try {
+         // Write new immutable chunks first. The old base key remains authoritative
+         // until the manifest swap below succeeds.
+         for (let index = 0; index < chunks.length; index += 1) {
+             assertAnalyzeWrite(chunkKeys[index]);
+             await redis.set(chunkKeys[index], chunks[index]);
+         }
+
+
+         const manifest = {
+             weekMicrosLargeDocumentStorageSchema:
+               WEEK_MICROS_LARGE_DOCUMENT_STORAGE_SCHEMA,
+             encoding: WEEK_MICROS_LARGE_DOCUMENT_ENCODING,
+             documentId,
+             chunkCount: chunks.length,
+             chunkKeys,
+             uncompressedBytes,
+             compressedBytes: compressed.length,
+             base64Chars: base64.length,
+             jsonSha256: createHash('sha256')
+                  .update(json)
+                  .digest('hex'),
+             writtenAt: Date.now(),
+             familyCount: Object.keys(asObject(compactValue)).length,
+             targetTradeSide: TARGET_TRADE_SIDE,
+             redisNamespace: 'LONG',
+             persistentLearningKey: PERSISTENT_LEARNING_KEY
+         };
+
+
+         // Atomic pointer-style swap: only now replace the original oversized key.
+         await setJson(redis, key, manifest);
+
+
+         // Old chunk generation is deleted only after the new manifest is safe.
+         await deleteWeekMicrosLargeDocumentChunks(redis, previous);
+
+
+         return compactValue;
+    } catch (error) {
+         // Failed new generation must not leave orphan chunks. If this was a
+         // migration from legacy single-key JSON, that old key is still intact.
+         for (const chunkKey of chunkKeys) {
+             try {
+                  assertAnalyzeWrite(chunkKey);
+                  await redis.del(chunkKey);
+             } catch {
+                  // Best effort only.
+             }
+         }
+
+
+         throw error;
+    }
+}
+
+
 
 function normalizeStoredChildStatsMap(value = {}) {
     const input = asObject(value);
@@ -2155,7 +2396,7 @@ async function readWeekMaps(redis, weekKeys = []) {
 
 
               const [micros, parents] = await Promise.all([
-                   getJson(redis, microsKey, {}).catch(() => ({})),
+                   getWeekMicrosDocument(redis, microsKey, {}),
                    getJson(redis, parentsKey, {}).catch(() => ({}))
               ]);
 
@@ -2182,7 +2423,7 @@ async function saveWeekMaps(redis, weekMaps) {
 
 
     for (const data of weekMaps.values()) {
-         writes.push(saveAggregate(redis, data.microsKey, data.micros));
+         writes.push(setWeekMicrosDocument(redis, data.microsKey, data.micros));
          writes.push(saveAggregate(redis, data.parentsKey, data.parents));
     }
     await Promise.all(writes);
@@ -2206,7 +2447,7 @@ export async function getWeekMicros(
 ) {
     const redis = getDurableRedis();
     const key = ANALYZE_KEYS.weekMicros(resolveWeekKey(weekKey));
-    const value = await getJson(redis, key, {});
+    const value = await getWeekMicrosDocument(redis, key, {});
     return normalizeStoredChildStatsMap(value);
 }
 
@@ -2219,7 +2460,7 @@ export async function saveWeekMicros(
     const key = ANALYZE_KEYS.weekMicros(resolveWeekKey(weekKey));
 
 
-    return saveAggregate(
+    return setWeekMicrosDocument(
          redis,
          key,
          normalizeStoredChildStatsMap(micros)
