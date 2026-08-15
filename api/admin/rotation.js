@@ -2805,215 +2805,158 @@ async function resolveSelectedIdsForActivation({
 }
 
 
-async function handleGet(req, res) {
+async function handleGet(_req, res) {
     const startedAt = now();
 
+    // V3 admin read path is deliberately minimal.
+    // It does not parse request query parameters and does not load the heavy
+    // rotation dashboard, WEEK_MICROS rows, or temporal generation payloads.
+    let activeRotation = null;
+    let activeLoadError = null;
 
-    // Parse the querystring with the WHATWG URL API instead of relying on
-    // the runtime's legacy query getter. This avoids url.parse() entirely.
-    const requestHost = String(req?.headers?.host || 'localhost').trim() || 'localhost';
-    const requestUrl = new URL(
-         String(req?.url || '/api/admin/rotation'),
-         `https://${requestHost}`
+    try {
+        activeRotation = await getActiveRotation({
+            tradeSide: TARGET_TRADE_SIDE,
+            side: TARGET_DASHBOARD_SIDE,
+            weekKey: PERSISTENT_LEARNING_KEY,
+            namespace: LONG_NAMESPACE,
+            keyPrefix: LONG_KEY_PREFIX,
+            trueMicroOnly: true,
+            exactTrueMicroOnly: true,
+            trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+            learningGranularity: LEARNING_GRANULARITY
+        });
+    } catch (error) {
+        // Read-only admin GET fails soft: keep the page alive and expose the
+        // exact active-rotation read error to the UI.
+        activeLoadError = error?.message || String(error);
+        activeRotation = null;
+    }
+
+    const activeMicroFamilyIds = activeRotation
+        ? extractIdsFromRotation(activeRotation).filter(isSelectableTrueMicroId)
+        : [];
+
+    const activeMacroFamilyIds = activeRotation
+        ? extractMacroIdsFromRotation(activeRotation)
+        : [];
+
+    const active = activeRotation
+        ? {
+            rotationId: activeRotation.rotationId || null,
+            source: activeRotation.source || null,
+            mode: activeRotation.mode || null,
+            sourceWeekKey:
+                activeRotation.sourceWeekKey || PERSISTENT_LEARNING_KEY,
+            activeWeekKey:
+                activeRotation.activeWeekKey || PERSISTENT_LEARNING_KEY,
+            generatedAt: activeRotation.generatedAt || null,
+            activatedAt: activeRotation.activatedAt || null,
+
+            ...modeFlags(),
+
+            manualOnly: true,
+            adminSelected: true,
+            autoRotation: false,
+            liveSelectable: activeMicroFamilyIds.length > 0,
+
+            microFamilyIds: activeMicroFamilyIds,
+            activeMicroFamilyIds,
+            trueMicroFamilyIds: activeMicroFamilyIds,
+            childTrueMicroFamilyIds: activeMicroFamilyIds,
+
+            macroFamilyIds: activeMacroFamilyIds,
+            activeMacroFamilyIds,
+
+            // Intentionally omitted on this mobile-safe GET.
+            microFamilies: [],
+
+            count: activeMicroFamilyIds.length,
+            activeCount: activeMicroFamilyIds.length,
+            empty: activeMicroFamilyIds.length === 0,
+            emptyReason: activeMicroFamilyIds.length === 0
+                ? 'NO_ACTIVE_LONG_75_CHILD_SELECTION_VISIBLE'
+                : null
+        }
+        : null;
+
+    res.setHeader(
+        'X-Admin-Rotation-Read-Mode',
+        'COMPACT_ACTIVE_IDS_FAILSOFT_V3'
     );
-    const queryValue = (name, fallback = null) => {
-         const value = requestUrl.searchParams.get(String(name));
-         return value === null || value === undefined || value === ''
-              ? fallback
-              : value;
-    };
 
+    return res.status(200).json({
+        ok: true,
+        compact: true,
+        degraded: Boolean(activeLoadError),
+        activeLoadError,
 
-    const requestedWeekKey = String(
-         firstValue(queryValue('weekKey', PERSISTENT_LEARNING_KEY), PERSISTENT_LEARNING_KEY)
-    ).trim();
-const availableLimit = toLimit(
-     firstValue(queryValue('availableLimit', DEFAULT_AVAILABLE_LIMIT), DEFAULT_AVAILABLE_LIMIT),
-     DEFAULT_AVAILABLE_LIMIT,
-     MAX_AVAILABLE_LIMIT
-);
+        ...modeFlags(),
 
+        taxonomy: taxonomyMeta(),
+        currentWeekKey: PERSISTENT_LEARNING_KEY,
+        previousWeekKey: PERSISTENT_LEARNING_KEY,
+        requestedWeekKey: PERSISTENT_LEARNING_KEY,
+        persistentLearningKey: PERSISTENT_LEARNING_KEY,
 
-const activeRowsLimit = toLimit(
-     firstValue(queryValue('activeRowsLimit', DEFAULT_ACTIVE_ROWS_LIMIT), DEFAULT_ACTIVE_ROWS_LIMIT),
-     DEFAULT_ACTIVE_ROWS_LIMIT,
-     MAX_ACTIVE_ROWS_LIMIT
-);
+        activeRowsLimit: 0,
+        availableLimit: 0,
+        includeAvailable: false,
+        includePrevious: false,
 
+        activeRotation: active,
+        active,
 
-const includeAvailable = isTrue(
-     firstValue(queryValue('includeAvailable', true), true),
-     true
-);
+        activeRotationId: active?.rotationId || null,
+        activeMicroFamilyIds,
+        activeMacroFamilyIds,
 
+        activeRows: [],
+        activeCount: activeMicroFamilyIds.length,
 
-const includePrevious = isTrue(
-     firstValue(queryValue('includePrevious', true), true),
-     true
-);
+        dashboard: null,
+        nextRotation: null,
+        nextRotationStoredOnly: true,
+        nextRotationAutoActivationDisabled: true,
 
+        availableMicroFamilies: [],
+        availableRows: [],
+        availableCount: 0,
+        availableTierSummary: {
+            PASSED: 0,
+            SOFT: 0,
+            OBSERVATION: 0,
+            RAW: 0,
+            EMPIRICAL_VETO: 0
+        },
+        availableEmpiricalVetoCount: 0,
+        availableEmpiricalVetoMicroFamilyIds: [],
 
-// Mobile/admin compact mode intentionally skips the heavy rotation dashboard.
-// Default GET behaviour remains unchanged for existing callers.
-const compact = isTrue(
-     firstValue(queryValue('compact', false), false),
-     false
-);
-
-
-const [dashboard, activeRotation, availableResult] = await Promise.all([
-     compact
-       ? Promise.resolve(null)
-       : getRotationDashboard({
-           tradeSide: TARGET_TRADE_SIDE,
-           side: TARGET_DASHBOARD_SIDE,
-           weekKey: PERSISTENT_LEARNING_KEY,
-           namespace: LONG_NAMESPACE,
-           keyPrefix: LONG_KEY_PREFIX,
-           trueMicroOnly: true,
-           exactTrueMicroOnly: true,
-           trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
-           learningGranularity: LEARNING_GRANULARITY
-         }).catch(() => null),
-
-
-     getActiveRotation({
-       tradeSide: TARGET_TRADE_SIDE,
-       side: TARGET_DASHBOARD_SIDE,
-       weekKey: PERSISTENT_LEARNING_KEY,
-       namespace: LONG_NAMESPACE,
-       keyPrefix: LONG_KEY_PREFIX,
-       trueMicroOnly: true,
-       exactTrueMicroOnly: true,
-       trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
-       learningGranularity: LEARNING_GRANULARITY
-     }).catch(() => null),
-  (!compact && includeAvailable)
-      ? loadAvailableRows({
-           weekKey: requestedWeekKey,
-           includePrevious,
-           limit: availableLimit
-      }).catch((error) => ({
-           requestedWeekKey,
-           currentWeekKey: PERSISTENT_LEARNING_KEY,
-           previousWeekKey: PERSISTENT_LEARNING_KEY,
-           queryWeekKeyIgnored: requestedWeekKey !== PERSISTENT_LEARNING_KEY
-             ? requestedWeekKey
-             : null,
-           currentRows: 0,
-           previousRows: 0,
-           mergedRows: 0,
-           rows: [],
-           warning: error?.message || String(error)
-      }))
-      : Promise.resolve({
-           requestedWeekKey,
-           currentWeekKey: PERSISTENT_LEARNING_KEY,
-           previousWeekKey: PERSISTENT_LEARNING_KEY,
-           queryWeekKeyIgnored: requestedWeekKey !== PERSISTENT_LEARNING_KEY
-             ? requestedWeekKey
-             : null,
-           currentRows: 0,
-           previousRows: 0,
-           mergedRows: 0,
-           rows: []
-      })
-]);
-
-
-const active = compactActiveRotation(activeRotation);
-const availableRows = availableResult.rows || [];
-
-
-return res.status(200).json({
-  ok: true,
-  compact,
-
-
-  ...modeFlags(),
-
-
-  taxonomy: taxonomyMeta(),
-
-
-  currentWeekKey: PERSISTENT_LEARNING_KEY,
-  previousWeekKey: PERSISTENT_LEARNING_KEY,
-  requestedWeekKey,
-  queryWeekKeyIgnored: availableResult.queryWeekKeyIgnored || null,
-persistentLearningKey: PERSISTENT_LEARNING_KEY,
-
-
-activeRowsLimit,
-availableLimit,
-includeAvailable: compact ? false : includeAvailable,
-includePrevious: compact ? false : includePrevious,
-
-
-activeRotation: active,
-active,
-
-
-activeRotationId: active?.rotationId || null,
-activeMicroFamilyIds: active?.activeMicroFamilyIds || [],
-activeMacroFamilyIds: active?.activeMacroFamilyIds || [],
-
-
-activeRows: (active?.microFamilies || []).slice(0, activeRowsLimit),
-activeCount: active?.activeMicroFamilyIds?.length || 0,
-
-
-dashboard: compact ? null : (dashboard || null),
-nextRotation: compact ? null : (dashboard?.next || dashboard?.nextRotation || null),
-nextRotationStoredOnly: true,
-nextRotationAutoActivationDisabled: true,
-
-
-availableMicroFamilies: availableRows,
-availableRows,
-availableCount: availableRows.length,
-
-
-availableTierSummary: buildTierSummary(availableRows),
-availableEmpiricalVetoCount: availableRows.filter(
-     (row) => row.empiricalVeto === true
-).length,
-availableEmpiricalVetoMicroFamilyIds: availableRows
-     .filter((row) => row.empiricalVeto === true)
-     .map((row) => row.trueMicroFamilyId)
-     .filter(Boolean),
-
-
-sourceRows: {
-     currentWeekRows: availableResult.currentRows,
-     previousWeekRows: availableResult.previousRows,
-     mergedRows: availableResult.mergedRows,
-     warning: availableResult.warning || null
-},
-
-
-allowedActions: ALLOWED_ACTIONS,
-blockedAutoActions: [...BLOCKED_AUTO_ACTIONS],
-
-
-buttons: {
-     selectExact75Child: true,
-             selectParent15Disabled: true,
-             copy: true,
-             activateVisibleIdsForDiscord: true
+        sourceRows: {
+            currentWeekRows: null,
+            previousWeekRows: null,
+            mergedRows: null,
+            warning: activeLoadError
         },
 
+        allowedActions: ALLOWED_ACTIONS,
+        blockedAutoActions: [...BLOCKED_AUTO_ACTIONS],
+
+        buttons: {
+            selectExact75Child: true,
+            selectParent15Disabled: true,
+            copy: true,
+            activateVisibleIdsForDiscord: true
+        },
 
         perf: {
-             durationMs: now() - startedAt,
-             source:
-'long_manual_selection_only_exact_75_child_true_micro_rotation_dashboard'
+            durationMs: now() - startedAt,
+            source: 'long_rotation_compact_active_ids_failsafe_v3'
         },
-
 
         serverTs: Date.now()
     });
 }
-
 
 async function handlePost(req, res) {
     const startedAt = now();
