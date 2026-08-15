@@ -3791,15 +3791,13 @@ function rotationApiUrl() {
     params.set("trueMicroFamilySchema", TRUE_MICRO_SCHEMA);
     params.set("parentTrueMicroFamilySchema", PARENT_TRUE_MICRO_SCHEMA);
     params.set("selectionGranularity", "EXACT_75_CHILD");
-    params.set("includeAvailable", "1");
-    params.set("includeAdaptive", "1");
-    params.set("includeCurrentFit", "1");
-    params.set("includeTemporal", "1");
-    params.set("includeTemporalProfiles", "1");
-    params.set("includeTemporalGeneration", "1");
-    params.set("includeActiveTemporalGeneration", "1");
-    params.set("activeRowsLimit", "160");
-    params.set("availableLimit", "240");
+    // Mobile-safe rotation read: only the active manual selection is needed here.
+    // The full WEEK_MICROS / temporal dashboard can exceed mobile Safari memory.
+    params.set("compact", "1");
+    params.set("includeAvailable", "0");
+    params.set("includePrevious", "0");
+    params.set("activeRowsLimit", "40");
+    params.set("availableLimit", "1");
 
 
     return `${endpoints.rotation}?${params.toString()}`;
@@ -7021,8 +7019,18 @@ blijven stil leren.</p>
 
 
            <div class="card">
-             <h3>Raw rotation dashboard</h3>
-             ${jsonBlock(data)}
+             <h3>Rotation status</h3>
+             ${jsonBlock({
+               ok: data.ok === true,
+               compact: data.compact === true,
+               activeRotationId: data.activeRotationId || active.rotationId || null,
+               activeMicroFamilyIds: activeIds,
+               activeMacroFamilyIds: parentIds,
+               activeCount: activeIds.length,
+               sourceRows: data.sourceRows || null,
+               perf: data.perf || null,
+               serverTs: data.serverTs || null
+             })}
            </div>
       `;
 
