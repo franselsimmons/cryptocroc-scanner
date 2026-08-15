@@ -2809,31 +2809,46 @@ async function handleGet(req, res) {
     const startedAt = now();
 
 
+    // Parse the querystring with the WHATWG URL API instead of relying on
+    // the runtime's legacy query getter. This avoids url.parse() entirely.
+    const requestHost = String(req?.headers?.host || 'localhost').trim() || 'localhost';
+    const requestUrl = new URL(
+         String(req?.url || '/api/admin/rotation'),
+         `https://${requestHost}`
+    );
+    const queryValue = (name, fallback = null) => {
+         const value = requestUrl.searchParams.get(String(name));
+         return value === null || value === undefined || value === ''
+              ? fallback
+              : value;
+    };
+
+
     const requestedWeekKey = String(
-         firstValue(req.query?.weekKey, PERSISTENT_LEARNING_KEY)
+         firstValue(queryValue('weekKey', PERSISTENT_LEARNING_KEY), PERSISTENT_LEARNING_KEY)
     ).trim();
 const availableLimit = toLimit(
-     firstValue(req.query?.availableLimit, DEFAULT_AVAILABLE_LIMIT),
+     firstValue(queryValue('availableLimit', DEFAULT_AVAILABLE_LIMIT), DEFAULT_AVAILABLE_LIMIT),
      DEFAULT_AVAILABLE_LIMIT,
      MAX_AVAILABLE_LIMIT
 );
 
 
 const activeRowsLimit = toLimit(
-     firstValue(req.query?.activeRowsLimit, DEFAULT_ACTIVE_ROWS_LIMIT),
+     firstValue(queryValue('activeRowsLimit', DEFAULT_ACTIVE_ROWS_LIMIT), DEFAULT_ACTIVE_ROWS_LIMIT),
      DEFAULT_ACTIVE_ROWS_LIMIT,
      MAX_ACTIVE_ROWS_LIMIT
 );
 
 
 const includeAvailable = isTrue(
-     firstValue(req.query?.includeAvailable, true),
+     firstValue(queryValue('includeAvailable', true), true),
      true
 );
 
 
 const includePrevious = isTrue(
-     firstValue(req.query?.includePrevious, true),
+     firstValue(queryValue('includePrevious', true), true),
      true
 );
 
@@ -2841,7 +2856,7 @@ const includePrevious = isTrue(
 // Mobile/admin compact mode intentionally skips the heavy rotation dashboard.
 // Default GET behaviour remains unchanged for existing callers.
 const compact = isTrue(
-     firstValue(req.query?.compact, false),
+     firstValue(queryValue('compact', false), false),
      false
 );
 
