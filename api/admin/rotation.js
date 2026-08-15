@@ -8,8 +8,6 @@ import {
 import { getWeekMicros } from '../../src/analyze/analyzeEngine.js';
 import {
   activateSelectedMicroFamilies,
-  activateWeekComposition,
-  getActiveWeekComposition,
   getActiveRotation,
   getRotationDashboard
 } from '../../src/analyze/rotationEngine.js';
@@ -26,6 +24,35 @@ const LONG_KEY_PREFIX = `${LONG_NAMESPACE}:`;
 
 
 const PERSISTENT_LEARNING_KEY = 'LONG_LIVE';
+
+const TEMPORAL_CONTEXT_VERSION =
+'LONG_TEMPORAL_CONTEXT_UTC_V1';
+const WEEKEND_POLICY_VERSION =
+'LONG_WEEKEND_OBSERVE_DISCORD_BLOCK_V1';
+const SESSION_POLICY_VERSION =
+'LONG_SESSION_OBSERVE_V1';
+const WEEKEND_MODE = 'OBSERVE';
+const SESSION_MODE = 'OBSERVE';
+
+const DAY_NAMES_UTC = Object.freeze([
+  'SUNDAY',
+  'MONDAY',
+  'TUESDAY',
+  'WEDNESDAY',
+  'THURSDAY',
+  'FRIDAY',
+  'SATURDAY'
+]);
+
+const PRIMARY_SESSION_BUCKETS = Object.freeze([
+  'ASIA',
+  'EUROPE',
+  'US',
+  'ASIA_EU_OVERLAP',
+  'EU_US_OVERLAP',
+  'OFF_HOURS'
+]);
+
 const MIN_COMPLETED_ACTIVE_LEARNING = 20;
 const EMPIRICAL_VETO_MIN_COMPLETED = 35;
 const EMPIRICAL_VETO_MAX_AVG_R = 0;
@@ -42,14 +69,6 @@ const EXIT_FILL_MODEL_VERSION =
 
 const EMPIRICAL_VETO_POLICY_VERSION =
   'LONG_EXACT_75_CHILD_NET_EDGE_VETO_V1';
-const BTC_DIRECTION_ROUTER_PROFILE_VERSION =
-  'LONG_BTC_DIRECTION_ROUTER_PROFILE_V1';
-const BTC_DIRECTION_ROUTER_POLICY_VERSION =
-  'LONG_BTC_DIRECTION_ROUTER_COUNTER_SIDE_PROOF_V1';
-const BTC_ROUTER_STATES = Object.freeze([
-  'STRONG_BULLISH', 'BULLISH', 'NEUTRAL',
-  'BEARISH', 'STRONG_BEARISH', 'UNKNOWN'
-]);
 
 
 const TRUE_MICRO_SCHEMA = 'FIXED_TAXONOMY_75';
@@ -111,8 +130,7 @@ const CONFIRMATION_PROFILE_ORDER = [
 const ALLOWED_ACTIONS = [
      'activateSelected',
      'activateSelectedMicroFamilies',
-     'activateSelectedMacroFamilies',
-     'activateWeekComposition'
+     'activateSelectedMacroFamilies'
 ];
 const BLOCKED_AUTO_ACTIONS = new Set([
     'activateBestBalanced',
@@ -156,20 +174,313 @@ function now() {
     return Date.now();
 }
 
-function requestQuery(req = {}) {
-    const rawUrl = String(req?.url || '/').trim() || '/';
-    try {
-        const parsedUrl = new URL(rawUrl, 'http://localhost');
-        return Object.fromEntries(parsedUrl.searchParams.entries());
-    } catch {
-        return {};
+function normalizeTemporalTimestamp(value, fallback = Date.now()) {
+  const n = Number(value);
+
+  if (!Number.isFinite(n) || n <= 0) {
+    return Number.isFinite(Number(fallback))
+      ? Number(fallback)
+      : Date.now();
+  }
+
+  return n < 10_000_000_000
+    ? Math.floor(n * 1000)
+    : Math.floor(n);
+}
+
+function buildTemporalContext(value = Date.now()) {
+  const contextTs = normalizeTemporalTimestamp(value, Date.now());
+  const date = new Date(contextTs);
+  const hourUtc = date.getUTCHours();
+  const dayIndexUtc = date.getUTCDay();
+  const dayOfWeekUtc = DAY_NAMES_UTC[dayIndexUtc] || 'UNKNOWN';
+  const isWeekend = dayIndexUtc === 0 || dayIndexUtc === 6;
+
+  const asiaActive = hourUtc >= 0 && hourUtc < 8;
+  const europeActive = hourUtc >= 7 && hourUtc < 16;
+  const usActive = hourUtc >= 13 && hourUtc < 22;
+
+  const sessionTags = [];
+  if (asiaActive) sessionTags.push('ASIA');
+  if (europeActive) sessionTags.push('EUROPE');
+  if (usActive) sessionTags.push('US');
+
+  let primarySessionBucket = 'OFF_HOURS';
+
+  if (europeActive && usActive) {
+    primarySessionBucket = 'EU_US_OVERLAP';
+  } else if (asiaActive && europeActive) {
+    primarySessionBucket = 'ASIA_EU_OVERLAP';
+  } else if (asiaActive) {
+    primarySessionBucket = 'ASIA';
+  } else if (europeActive) {
+    primarySessionBucket = 'EUROPE';
+  } else if (usActive) {
+    primarySessionBucket = 'US';
+  }
+
+  return {
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    contextTs,
+    hourUtc,
+    dayOfWeekUtc,
+    dayType: isWeekend ? 'WEEKEND' : 'WEEKDAY',
+    isWeekend,
+    sessionTags,
+    primarySessionBucket,
+    sessionOverlap: sessionTags.length > 1,
+    offHours: primarySessionBucket === 'OFF_HOURS'
+  };
+}
+
+function resolveRecordTemporalContext(record = {}, fallbackTs = Date.now()) {
+  const source = record && typeof record === 'object'
+    ? record
+    : {};
+
+  const rawTs =
+    source.contextTs ??
+    source.entryTs ??
+    source.createdAt ??
+    source.completedAt ??
+    source.ts ??
+    source.scannerTs ??
+    source.updatedAt ??
+    fallbackTs;
+
+  const computed = buildTemporalContext(rawTs);
+  const explicitBucket = String(
+    source.primarySessionBucket ||
+    source.sessionBucket ||
+    ''
+  ).trim().toUpperCase();
+
+  const explicitTags = Array.isArray(source.sessionTags)
+    ? source.sessionTags
+        .map((value) => String(value || '').trim().toUpperCase())
+        .filter((value) => ['ASIA', 'EUROPE', 'US'].includes(value))
+    : computed.sessionTags;
+
+  const primarySessionBucket = PRIMARY_SESSION_BUCKETS.includes(explicitBucket)
+    ? explicitBucket
+    : computed.primarySessionBucket;
+
+  const isWeekend = typeof source.isWeekend === 'boolean'
+    ? source.isWeekend
+    : computed.isWeekend;
+
+  return {
+    temporalContextVersion:
+      source.temporalContextVersion ||
+      TEMPORAL_CONTEXT_VERSION,
+    contextTs: normalizeTemporalTimestamp(
+      source.contextTs ?? rawTs,
+      computed.contextTs
+    ),
+    hourUtc: Number.isFinite(Number(source.hourUtc))
+      ? Number(source.hourUtc)
+      : computed.hourUtc,
+    dayOfWeekUtc:
+      source.dayOfWeekUtc ||
+      computed.dayOfWeekUtc,
+    dayType:
+      source.dayType ||
+      (isWeekend ? 'WEEKEND' : 'WEEKDAY'),
+    isWeekend,
+    sessionTags: explicitTags,
+    primarySessionBucket,
+    sessionOverlap: typeof source.sessionOverlap === 'boolean'
+      ? source.sessionOverlap
+      : explicitTags.length > 1,
+    offHours: typeof source.offHours === 'boolean'
+      ? source.offHours
+      : primarySessionBucket === 'OFF_HOURS'
+  };
+}
+
+function buildEntryExitTemporalMetadata(record = {}) {
+  const source = record && typeof record === 'object'
+    ? record
+    : {};
+
+  const entryTsRaw =
+    source.entryTs ??
+    source.openedAt ??
+    source.openTs ??
+    source.positionOpenedAt ??
+    source.createdAt ??
+    null;
+
+  const exitTsRaw =
+    source.exitTs ??
+    source.closedAt ??
+    source.closeTs ??
+    source.positionClosedAt ??
+    null;
+
+  const output = {};
+
+  if (entryTsRaw !== null && entryTsRaw !== undefined && entryTsRaw !== '') {
+    const entry = buildTemporalContext(entryTsRaw);
+
+    output.entryTs = normalizeTemporalTimestamp(entryTsRaw, entry.contextTs);
+    output.entryHourUtc = Number.isFinite(Number(source.entryHourUtc))
+      ? Number(source.entryHourUtc)
+      : entry.hourUtc;
+    output.entryDayOfWeekUtc =
+      source.entryDayOfWeekUtc ||
+      entry.dayOfWeekUtc;
+    output.entryDayType =
+      source.entryDayType ||
+      entry.dayType;
+    output.entryIsWeekend = typeof source.entryIsWeekend === 'boolean'
+      ? source.entryIsWeekend
+      : entry.isWeekend;
+    output.entrySessionTags = Array.isArray(source.entrySessionTags)
+      ? source.entrySessionTags
+      : entry.sessionTags;
+    output.entrySessionBucket =
+      source.entrySessionBucket ||
+      entry.primarySessionBucket;
+    output.entrySessionOverlap =
+      typeof source.entrySessionOverlap === 'boolean'
+        ? source.entrySessionOverlap
+        : entry.sessionOverlap;
+    output.entryOffHours = typeof source.entryOffHours === 'boolean'
+      ? source.entryOffHours
+      : entry.offHours;
+  }
+
+  if (exitTsRaw !== null && exitTsRaw !== undefined && exitTsRaw !== '') {
+    const exit = buildTemporalContext(exitTsRaw);
+
+    output.exitTs = normalizeTemporalTimestamp(exitTsRaw, exit.contextTs);
+    output.exitHourUtc = Number.isFinite(Number(source.exitHourUtc))
+      ? Number(source.exitHourUtc)
+      : exit.hourUtc;
+    output.exitDayOfWeekUtc =
+      source.exitDayOfWeekUtc ||
+      exit.dayOfWeekUtc;
+    output.exitDayType =
+      source.exitDayType ||
+      exit.dayType;
+    output.exitIsWeekend = typeof source.exitIsWeekend === 'boolean'
+      ? source.exitIsWeekend
+      : exit.isWeekend;
+    output.exitSessionTags = Array.isArray(source.exitSessionTags)
+      ? source.exitSessionTags
+      : exit.sessionTags;
+    output.exitSessionBucket =
+      source.exitSessionBucket ||
+      exit.primarySessionBucket;
+    output.exitSessionOverlap =
+      typeof source.exitSessionOverlap === 'boolean'
+        ? source.exitSessionOverlap
+        : exit.sessionOverlap;
+    output.exitOffHours = typeof source.exitOffHours === 'boolean'
+      ? source.exitOffHours
+      : exit.offHours;
+  }
+
+  return output;
+}
+
+function temporalPolicyFlags(context = buildTemporalContext()) {
+  const resolved = context && typeof context === 'object'
+    ? context
+    : buildTemporalContext();
+
+  return {
+    temporalContextVersion: TEMPORAL_CONTEXT_VERSION,
+    weekendPolicyVersion: WEEKEND_POLICY_VERSION,
+    sessionPolicyVersion: SESSION_POLICY_VERSION,
+    weekendMode: WEEKEND_MODE,
+    sessionMode: SESSION_MODE,
+
+    weekendLearningAllowed: true,
+    weekendVirtualEntryAllowed: true,
+    weekendDiscordEntryAllowed: resolved.isWeekend !== true,
+    weekendDiscordEntryBlocked: resolved.isWeekend === true,
+    weekendExitMonitoringAllowed: true,
+    weekendOutcomeRecordingAllowed: true,
+
+    sessionLearningAllowed: true,
+    sessionVirtualEntryAllowed: true,
+    sessionDiscordEntryAllowed: true,
+    sessionPolicyObservedOnly: true,
+
+    temporalContextDoesNotSplitMicroFamily: true,
+    dayTypeExcludedFromFamilyId: true,
+    sessionExcludedFromFamilyId: true,
+    primarySessionBucketCountedOnce: true,
+    sessionTagsMetadataOnly: true,
+    familyGateStillRequired: true,
+    currentFitCannotOverrideFamilyGate: true
+  };
+}
+
+function emptyTemporalStats() {
+  const emptyBucket = () => ({
+    seen: 0,
+    observations: 0,
+    completed: 0,
+    wins: 0,
+    losses: 0,
+    flats: 0,
+    totalR: 0,
+    avgR: 0,
+    grossWinR: 0,
+    grossLossR: 0,
+    profitFactor: 0,
+    directSLCount: 0,
+    directSLPct: 0,
+    totalCostR: 0,
+    avgCostR: 0
+  });
+
+  return {
+    contextStats: {
+      WEEKDAY: emptyBucket(),
+      WEEKEND: emptyBucket()
+    },
+    sessionStats: {
+      ASIA: emptyBucket(),
+      EUROPE: emptyBucket(),
+      US: emptyBucket(),
+      ASIA_EU_OVERLAP: emptyBucket(),
+      EU_US_OVERLAP: emptyBucket(),
+      OFF_HOURS: emptyBucket()
     }
+  };
+}
+
+function temporalStatsFields(record = {}) {
+  const defaults = emptyTemporalStats();
+  const source = record && typeof record === 'object'
+    ? record
+    : {};
+
+  return {
+    contextStats:
+      source.contextStats &&
+      typeof source.contextStats === 'object' &&
+      !Array.isArray(source.contextStats)
+        ? source.contextStats
+        : defaults.contextStats,
+    sessionStats:
+      source.sessionStats &&
+      typeof source.sessionStats === 'object' &&
+      !Array.isArray(source.sessionStats)
+        ? source.sessionStats
+        : defaults.sessionStats
+  };
 }
 
 
 
 function modeFlags() {
     return {
+         ...temporalPolicyFlags(),
       targetTradeSide: TARGET_TRADE_SIDE,
       dashboardSide: TARGET_DASHBOARD_SIDE,
       scannerSide: TARGET_SCANNER_SIDE,
@@ -321,9 +632,14 @@ exactTrueMicroFamilyRequired: true,
     minCompletedForActiveLearning: MIN_COMPLETED_ACTIVE_LEARNING,
     statusRules: {
          OBSERVING: 'completed == 0',
-         EARLY_OUTCOMES: `completed > 0 && completed <
-${MIN_COMPLETED_ACTIVE_LEARNING}`,
-         ACTIVE_LEARNING: `completed >= ${MIN_COMPLETED_ACTIVE_LEARNING}`
+         EARLY_OUTCOMES:
+           `completed >= 1 && completed < ${MIN_COMPLETED_ACTIVE_LEARNING}`,
+         ACTIVE_LEARNING:
+           `completed >= ${MIN_COMPLETED_ACTIVE_LEARNING} && completed < ${EMPIRICAL_VETO_MIN_COMPLETED}`,
+         PASSED:
+           `completed >= ${EMPIRICAL_VETO_MIN_COMPLETED} && avgR > ${EMPIRICAL_VETO_MAX_AVG_R}`,
+         EMPIRICAL_VETO:
+           `completed >= ${EMPIRICAL_VETO_MIN_COMPLETED} && avgR <= ${EMPIRICAL_VETO_MAX_AVG_R}`
     },
 
 
@@ -1643,8 +1959,14 @@ if (rawFit === null) {
 
 function learningStatus(row = {}) {
     const completed = completedSample(row);
+    const avgR = getLearningAvgR(row);
 
 
+    if (completed >= EMPIRICAL_VETO_MIN_COMPLETED) {
+         return avgR > EMPIRICAL_VETO_MAX_AVG_R
+           ? 'PASSED'
+           : 'EMPIRICAL_VETO';
+    }
     if (completed >= MIN_COMPLETED_ACTIVE_LEARNING) return 'ACTIVE_LEARNING';
     if (completed > 0) return 'EARLY_OUTCOMES';
 
@@ -1656,10 +1978,16 @@ function learningStatus(row = {}) {
 function eligibilityTier(row = {}) {
     const completed = completedSample(row);
     const observed = observationSample(row);
+    const avgR = getLearningAvgR(row);
 
 
-    if (isEmpiricallyVetoed(row)) return 'EMPIRICAL_VETO';
-    if (completed >= MIN_COMPLETED_ACTIVE_LEARNING) return 'HARD';
+    if (completed >= EMPIRICAL_VETO_MIN_COMPLETED && avgR <= EMPIRICAL_VETO_MAX_AVG_R) {
+         return 'EMPIRICAL_VETO';
+    }
+    if (completed >= EMPIRICAL_VETO_MIN_COMPLETED && avgR > EMPIRICAL_VETO_MAX_AVG_R) {
+         return 'HARD';
+    }
+    if (completed >= MIN_COMPLETED_ACTIVE_LEARNING) return 'SOFT';
     if (completed > 0) return 'SOFT';
     if (observed > 0) return 'OBSERVATION';
 
@@ -1712,9 +2040,14 @@ function normalizeRotationRow(row = {}, index = 0) {
       : row.selectedTier || row.rotationEligibilityTier || computedTier;
     const risk = getLongRiskGeometry(row);
 const fit = getLongCurrentFit(row);
+const temporalContext = resolveRecordTemporalContext(row, now());
 
 
 return {
+  ...temporalContext,
+  ...buildEntryExitTemporalMetadata(row),
+  ...temporalStatsFields(row),
+  ...temporalPolicyFlags(temporalContext),
   rank: index + 1,
 
 
@@ -1785,6 +2118,9 @@ exitFillPolicy:
 activationGateStatus: gate.status,
 activationGateReason: gate.reason,
 activationGatePassed: gate.status === 'PASSED',
+activationGateStillRequiredDuringWeekend: true,
+activationGateStillRequiredInEverySession: true,
+weekendAndSessionCannotPromoteFamilyGate: true,
 empiricalVeto: gate.blocked,
 empiricalVetoed: gate.blocked,
 empiricalVetoPolicyVersion: EMPIRICAL_VETO_POLICY_VERSION,
@@ -2471,50 +2807,59 @@ async function resolveSelectedIdsForActivation({
 
 async function handleGet(req, res) {
     const startedAt = now();
-    const query = requestQuery(req);
 
 
     const requestedWeekKey = String(
-         firstValue(query.weekKey, PERSISTENT_LEARNING_KEY)
+         firstValue(req.query?.weekKey, PERSISTENT_LEARNING_KEY)
     ).trim();
 const availableLimit = toLimit(
-     firstValue(query.availableLimit, DEFAULT_AVAILABLE_LIMIT),
+     firstValue(req.query?.availableLimit, DEFAULT_AVAILABLE_LIMIT),
      DEFAULT_AVAILABLE_LIMIT,
      MAX_AVAILABLE_LIMIT
 );
 
 
 const activeRowsLimit = toLimit(
-     firstValue(query.activeRowsLimit, DEFAULT_ACTIVE_ROWS_LIMIT),
+     firstValue(req.query?.activeRowsLimit, DEFAULT_ACTIVE_ROWS_LIMIT),
      DEFAULT_ACTIVE_ROWS_LIMIT,
      MAX_ACTIVE_ROWS_LIMIT
 );
 
 
 const includeAvailable = isTrue(
-     firstValue(query.includeAvailable, true),
+     firstValue(req.query?.includeAvailable, true),
      true
 );
 
 
 const includePrevious = isTrue(
-     firstValue(query.includePrevious, true),
+     firstValue(req.query?.includePrevious, true),
      true
 );
 
 
-const [dashboard, activeRotation, activeWeekCompositionResult, availableResult] = await Promise.all([
-     getRotationDashboard({
-       tradeSide: TARGET_TRADE_SIDE,
-       side: TARGET_DASHBOARD_SIDE,
-       weekKey: PERSISTENT_LEARNING_KEY,
-       namespace: LONG_NAMESPACE,
-       keyPrefix: LONG_KEY_PREFIX,
-       trueMicroOnly: true,
-       exactTrueMicroOnly: true,
-       trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
-       learningGranularity: LEARNING_GRANULARITY
-     }).catch(() => null),
+// Mobile/admin compact mode intentionally skips the heavy rotation dashboard.
+// Default GET behaviour remains unchanged for existing callers.
+const compact = isTrue(
+     firstValue(req.query?.compact, false),
+     false
+);
+
+
+const [dashboard, activeRotation, availableResult] = await Promise.all([
+     compact
+       ? Promise.resolve(null)
+       : getRotationDashboard({
+           tradeSide: TARGET_TRADE_SIDE,
+           side: TARGET_DASHBOARD_SIDE,
+           weekKey: PERSISTENT_LEARNING_KEY,
+           namespace: LONG_NAMESPACE,
+           keyPrefix: LONG_KEY_PREFIX,
+           trueMicroOnly: true,
+           exactTrueMicroOnly: true,
+           trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
+           learningGranularity: LEARNING_GRANULARITY
+         }).catch(() => null),
 
 
      getActiveRotation({
@@ -2528,10 +2873,7 @@ const [dashboard, activeRotation, activeWeekCompositionResult, availableResult] 
        trueMicroFamilySchema: TRUE_MICRO_SCHEMA,
        learningGranularity: LEARNING_GRANULARITY
      }).catch(() => null),
-
-     getActiveWeekComposition().catch(() => null),
-
-  includeAvailable
+  (!compact && includeAvailable)
       ? loadAvailableRows({
            weekKey: requestedWeekKey,
            includePrevious,
@@ -2570,6 +2912,7 @@ const availableRows = availableResult.rows || [];
 
 return res.status(200).json({
   ok: true,
+  compact,
 
 
   ...modeFlags(),
@@ -2587,8 +2930,8 @@ persistentLearningKey: PERSISTENT_LEARNING_KEY,
 
 activeRowsLimit,
 availableLimit,
-includeAvailable,
-includePrevious,
+includeAvailable: compact ? false : includeAvailable,
+includePrevious: compact ? false : includePrevious,
 
 
 activeRotation: active,
@@ -2603,42 +2946,9 @@ activeMacroFamilyIds: active?.activeMacroFamilyIds || [],
 activeRows: (active?.microFamilies || []).slice(0, activeRowsLimit),
 activeCount: active?.activeMicroFamilyIds?.length || 0,
 
-weekCompositionProposals: dashboard?.weekCompositionProposals ||
-  dashboard?.activeTemporalGeneration?.weekCompositionProposals || [],
-weekCompositionVersion: dashboard?.weekCompositionVersion || null,
-weekCompositionOptimizerVersion: dashboard?.weekCompositionOptimizerVersion || null,
-temporalHourlyProfileVersion: dashboard?.temporalHourlyProfileVersion || null,
-temporalMarketWeatherProfileVersion: dashboard?.temporalMarketWeatherProfileVersion || null,
-btcDirectionRouterProfileVersion:
-  dashboard?.btcDirectionRouterProfileVersion || BTC_DIRECTION_ROUTER_PROFILE_VERSION,
-btcDirectionRouterPolicyVersion:
-  dashboard?.btcDirectionRouterPolicyVersion || BTC_DIRECTION_ROUTER_POLICY_VERSION,
-btcRouterStates: dashboard?.btcRouterStates || BTC_ROUTER_STATES,
-activeWeekCompositionId:
-  activeWeekCompositionResult?.compositionId || dashboard?.activeWeekCompositionId || null,
-activeWeekComposition:
-  activeWeekCompositionResult?.composition || dashboard?.activeWeekComposition || null,
-activeWeekCompositionValidation:
-  activeWeekCompositionResult?.validation || dashboard?.activeWeekCompositionValidation || null,
-weekCompositionGenerationId:
-  activeWeekCompositionResult?.generationId || dashboard?.activeTemporalGenerationId || null,
-weekCompositionDimensions: {
-  days: ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'],
-  hoursUtc: Array.from({ length: 24 }, (_, hour) => `H${String(hour).padStart(2, '0')}`),
-  marketWeatherKeys: [
-    'TREND|LONG', 'TREND|NEUTRAL', 'TREND|SHORT',
-    'CHOP|LONG', 'CHOP|NEUTRAL', 'CHOP|SHORT',
-    'SQUEEZE|LONG', 'SQUEEZE|NEUTRAL', 'SQUEEZE|SHORT',
-    'UNKNOWN'
-  ],
-  btcRouterStates: BTC_ROUTER_STATES,
-  totalPossibleSlots: 7 * 24 * 10 * BTC_ROUTER_STATES.length,
-  slotKeyFormat: 'DAY:HOUR|MARKET_WEATHER|BTC:STATE'
-},
 
-
-dashboard: dashboard || null,
-nextRotation: dashboard?.next || dashboard?.nextRotation || null,
+dashboard: compact ? null : (dashboard || null),
+nextRotation: compact ? null : (dashboard?.next || dashboard?.nextRotation || null),
 nextRotationStoredOnly: true,
 nextRotationAutoActivationDisabled: true,
 
@@ -2728,93 +3038,6 @@ async function handlePost(req, res) {
          blockedAutoActions: [...BLOCKED_AUTO_ACTIONS],
          ...modeFlags()
        });
-  }
-
-  if (action === 'activateWeekComposition') {
-       const compositionId = String(
-            firstValue(body.compositionId, body.mode || '')
-       ).trim();
-       if (!compositionId) {
-            return res.status(400).json({
-                 ok: false,
-                 reason: 'WEEK_COMPOSITION_ID_REQUIRED',
-                 acceptedModes: ['CONSERVATIVE', 'BALANCED', 'PERFORMANCE'],
-                 allowedActions: ALLOWED_ACTIONS,
-                 ...modeFlags()
-            });
-       }
-       const disabledDays = uniqueStrings(body.disabledDays || body.daysDisabled || [])
-            .map(upper);
-       const disabledHours = uniqueStrings(body.disabledHours || body.hoursDisabledGlobally || [])
-            .map(upper);
-       const disabledWeatherKeys = uniqueStrings(
-            body.disabledWeatherKeys || body.marketWeatherDisabled || []
-       ).map(upper);
-       const disabledBtcStates = uniqueStrings(
-            body.disabledBtcStates || body.btcStatesDisabled || body.btcRouterDisabled || []
-       ).map(upper);
-       const disabledWeatherBtcKeys = uniqueStrings(
-            body.disabledWeatherBtcKeys || body.marketWeatherBtcDisabled || []
-       ).map(upper);
-       const disabledDayHours = uniqueStrings(
-            body.disabledDayHours || body.disabledSlots || body.hoursDisabled || []
-       ).map((value) => upper(value).replace('|', ':'));
-       const disabledSlotWeatherKeys = uniqueStrings(
-            body.disabledSlotWeatherKeys ||
-            body.disabledDayHourWeatherSlots ||
-            body.exactWeatherSlotsDisabled ||
-            []
-       ).map(upper);
-       const disabledDayHourWeatherBtcKeys = uniqueStrings(
-            body.disabledDayHourWeatherBtcKeys ||
-            body.disabledExactBtcSlots ||
-            body.exactDayHourWeatherBtcSlotsDisabled ||
-            disabledSlotWeatherKeys ||
-            []
-       ).map(upper);
-       try {
-            const activation = await activateWeekComposition({
-                 compositionId,
-                 disabledDays,
-                 disabledHours,
-                 disabledWeatherKeys,
-                 disabledBtcStates,
-                 disabledWeatherBtcKeys,
-                 disabledDayHours,
-                 disabledSlots: disabledDayHours,
-                 disabledSlotWeatherKeys,
-                 disabledDayHourWeatherBtcKeys,
-                 activatedBy: 'ADMIN_PAGE_WEEK_COMPOSITION',
-                 nowTs: now()
-            });
-            return res.status(200).json({
-                 ok: true,
-                 action,
-                 compositionId,
-                 disabledDays,
-                 disabledHours,
-                 disabledWeatherKeys,
-                 disabledBtcStates,
-                 disabledWeatherBtcKeys,
-                 disabledDayHours,
-                 disabledSlotWeatherKeys,
-                 disabledDayHourWeatherBtcKeys,
-                 activation,
-                 activeWeekComposition: activation.activeWeekComposition || null,
-                 activeWeekCompositionId: activation.activeWeekCompositionId || null,
-                 ...modeFlags(),
-                 perf: { durationMs: now() - startedAt }
-            });
-       } catch (error) {
-            return res.status(409).json({
-                 ok: false,
-                 action,
-                 reason: error?.message || String(error),
-                 details: error?.details || null,
-                 ...modeFlags(),
-                 perf: { durationMs: now() - startedAt }
-            });
-       }
   }
 
 
