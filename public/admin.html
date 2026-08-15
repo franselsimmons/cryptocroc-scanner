@@ -3144,7 +3144,15 @@ ${escapeHtml(fmt(completed(row), 0))}/${EMPIRICAL_VETO_MIN_COMPLETED}</span>`;
 
         if (status === 409 || raw.includes("LOCK")) return "Lock actief. Vorige run is nog bezig.";
         if (status === 504 || raw.includes("504")) return "Backend timeout op deze admin-route.";
-        if (status === 500) return "Backend error op deze admin-route. Check server logs.";
+        if (status === 500) {
+            const backendError = String(
+                error?.data?.error ||
+                error?.data?.reason ||
+                raw ||
+                "UNKNOWN_BACKEND_ERROR"
+            );
+            return `Backend error: ${backendError}`;
+        }
         if (status === 404) return "Endpoint niet gevonden.";
 
 
@@ -3780,27 +3788,8 @@ b.apiRank;
 
 
 function rotationApiUrl() {
-    const params = new URLSearchParams();
-
-
-    params.set("side", ONLY_SIDE);
-    params.set("tradeSide", ONLY_SIDE);
-    params.set("targetTradeSide", ONLY_SIDE);
-    params.set("dashboardSide", DASHBOARD_SIDE);
-    params.set("weekKey", PERSISTENT_LEARNING_KEY);
-    params.set("trueMicroFamilySchema", TRUE_MICRO_SCHEMA);
-    params.set("parentTrueMicroFamilySchema", PARENT_TRUE_MICRO_SCHEMA);
-    params.set("selectionGranularity", "EXACT_75_CHILD");
-    // Mobile-safe rotation read: only the active manual selection is needed here.
-    // The full WEEK_MICROS / temporal dashboard can exceed mobile Safari memory.
-    params.set("compact", "1");
-    params.set("includeAvailable", "0");
-    params.set("includePrevious", "0");
-    params.set("activeRowsLimit", "40");
-    params.set("availableLimit", "1");
-
-
-    return `${endpoints.rotation}?${params.toString()}`;
+    // V3: only the active exact 75-child IDs are requested.
+    return `${endpoints.rotation}?compact=1`;
 }
 
 
@@ -6918,6 +6907,10 @@ uniqueStrings(rows.filter(discordSelectionAllowed).map(microId)).filter(idAllowe
 
            state.rotation = data;
 
+           const rotationReadWarning = data?.degraded
+             ? String(data?.activeLoadError || "ACTIVE_ROTATION_READ_DEGRADED")
+             : "";
+
 
            const active = data.active || data.activeRotation || {};
            const activeIds = uniqueStrings([
@@ -6959,6 +6952,12 @@ microId(candidate) === microId(row)) === index);
 
 
       $("rotation").innerHTML = `
+        ${rotationReadWarning ? `
+          <div class="card">
+            <h3>Rotation read warning</h3>
+            <div class="empty">${escapeHtml(rotationReadWarning)}</div>
+          </div>
+        ` : ""}
         <div class="section-title">
             <div>
               <h2>Manual Discord selection</h2>
@@ -7615,19 +7614,28 @@ tab.classList.remove("active"));
 
     function renderSoftError(tab, error) {
         const message = friendlyApiMessage(error);
-
+        const backendDetail = String(
+            error?.data?.error ||
+            error?.data?.reason ||
+            ""
+        );
+        const status = Number(error?.status || 0);
 
         setMessage(message, "warn");
-
 
         $(tab).innerHTML = `
              <div class="card">
                <h3>Niet geladen</h3>
                <div class="empty">${escapeHtml(message)}</div>
+               ${(status || backendDetail) ? `
+                 <div class="metric-extra" style="margin-top:12px">
+                   HTTP ${escapeHtml(status || "-")}
+                   ${backendDetail ? ` · ${escapeHtml(backendDetail)}` : ""}
+                 </div>
+               ` : ""}
              </div>
         `;
     }
-
 
     async function refresh(tab = state.activeTab) {
         setMessage("");
