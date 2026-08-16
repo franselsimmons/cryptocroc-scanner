@@ -41,7 +41,8 @@ const FIFTEEN_MS = 15 * MINUTE_MS;
 const CACHE_DIR = process.env.HISTORICAL_CACHE_DIR || '.historical-cache';
 const DEPTH_DIR = process.env.HISTORICAL_DEPTH_DIR || '.historical-depth';
 const MAX_HISTORY_DAYS = Math.max(90, Number(process.env.HISTORICAL_MAX_DAYS || 365));
-const MAX_OUTCOMES_PER_FAMILY = Math.max(200, Math.min(800, Number(process.env.HISTORICAL_MAX_OUTCOMES_PER_FAMILY || 600)));
+const MAX_OUTCOMES_PER_FAMILY = Math.max(200, Math.min(2000, Number(process.env.HISTORICAL_MAX_OUTCOMES_PER_FAMILY || 2000)));
+const CONTEXT_HISTORY_RECENT_SHARE = Math.max(0.25, Math.min(0.75, Number(process.env.HISTORICAL_CONTEXT_RECENT_SHARE || 0.50)));
 const API_CONCURRENCY = Math.max(1, Math.min(12, Number(process.env.HISTORICAL_API_CONCURRENCY || 8)));
 const API_RETRIES = Math.max(2, Math.min(8, Number(process.env.HISTORICAL_API_RETRIES || 5)));
 const WARMUP_DAYS = Math.max(2, Number(process.env.HISTORICAL_WARMUP_DAYS || 3));
@@ -68,6 +69,48 @@ function baseSymbol(value = '') { return normalizeSymbol(value).replace(/USDT$/u
 function iso(ts) { return new Date(ts).toISOString(); }
 function floorTo(ts, interval) { return Math.floor(finite(ts, 0) / interval) * interval; }
 function ceilTo(ts, interval) { return Math.ceil(finite(ts, 0) / interval) * interval; }
+
+function contextHistoryTs(row = {}) {
+  return finite(row.entryTs ?? row.entryTimestamp ?? row.openTs ?? row.exitTs ?? row.closedAt, 0);
+}
+
+function selectContextHistory(rows = [], maxCount = MAX_OUTCOMES_PER_FAMILY) {
+  const ordered = (Array.isArray(rows) ? rows : [])
+    .filter(Boolean)
+    .slice()
+    .sort((a, b) => contextHistoryTs(a) - contextHistoryTs(b));
+
+  const limit = Math.max(1, Math.floor(finite(maxCount, MAX_OUTCOMES_PER_FAMILY)));
+  if (ordered.length <= limit) return ordered;
+
+  // Keep a dense recent block for current-regime relevance, while using the
+  // remaining capacity as deterministic time-stratified coverage of the full
+  // available history. This prevents a 3-year replay from collapsing back to
+  // only the latest outcomes when the compact context file is built.
+  const recentCount = Math.max(1, Math.min(limit, Math.round(limit * CONTEXT_HISTORY_RECENT_SHARE)));
+  const olderTarget = Math.max(0, limit - recentCount);
+  const recentRows = ordered.slice(-recentCount);
+  const olderRows = ordered.slice(0, Math.max(0, ordered.length - recentCount));
+
+  if (olderTarget <= 0 || olderRows.length === 0) return recentRows.slice(-limit);
+  if (olderRows.length <= olderTarget) return [...olderRows, ...recentRows].slice(-limit);
+
+  const sampledOlder = [];
+  const used = new Set();
+  for (let i = 0; i < olderTarget; i += 1) {
+    const index = olderTarget === 1
+      ? Math.floor((olderRows.length - 1) / 2)
+      : Math.round((i * (olderRows.length - 1)) / (olderTarget - 1));
+    if (used.has(index)) continue;
+    used.add(index);
+    sampledOlder.push(olderRows[index]);
+  }
+
+  return [...sampledOlder, ...recentRows]
+    .sort((a, b) => contextHistoryTs(a) - contextHistoryTs(b))
+    .slice(-limit);
+}
+
 function dateKey(ts) { return new Date(ts).toISOString().slice(0, 10); }
 function weekKey(ts) {
   const d = new Date(ts); const day = d.getUTCDay() || 7;
@@ -929,6 +972,9 @@ export async function buildEvidence({ inputDir, outDir, includePublished = true 
     fdrPolicy: 'BENJAMINI_HOCHBERG_ONE_SIDED_OOS_Q_LE_0_05',
     shrinkagePolicy: 'EMPIRICAL_BAYES_ZERO_MEAN_PRIOR_STRENGTH_20',
     recencyPolicy: 'EXPONENTIAL_HALF_LIFE_90D_PLUS_30D_90D_DRIFT_GATES',
+    contextHistoryExportPolicy: 'FULL_RANGE_TIME_STRATIFIED_PLUS_DENSE_RECENT_V1',
+    contextHistoryMaxOutcomesPerFamily: MAX_OUTCOMES_PER_FAMILY,
+    contextHistoryRecentShare: CONTEXT_HISTORY_RECENT_SHARE,
     crossShardOverlapPolicy: 'EARLIEST_POSITION_WINS_MAX_ONE_OPEN_PER_SYMBOL',
     crossShardOverlapsDropped: overlapResolution.dropped,
     universeQuality: 'CURRENT_CONTRACT_CATALOG_WITH_LAUNCH_OFF_FILTER_SURVIVORSHIP_PENALTY',
@@ -951,10 +997,10 @@ export async function buildEvidence({ inputDir, outDir, includePublished = true 
   jsonWrite(path.join(dir, 'historical-evidence.json'), evidence);
   const byFamily = Object.fromEntries(ALL_FAMILY_IDS.map((id) => [
     id,
-    accepted
-      .filter((r) => familyIdOf(r) === id)
-      .slice(-MAX_OUTCOMES_PER_FAMILY)
-      .map(compactHistoricalOutcome)
+    selectContextHistory(
+      accepted.filter((r) => familyIdOf(r) === id),
+      MAX_OUTCOMES_PER_FAMILY
+    ).map(compactHistoricalOutcome)
   ]));
   jsonWrite(path.join(dir, 'historical-outcomes-by-family.json'), byFamily);
   jsonWrite(path.join(dir, 'historical-evidence-summary.json'), {
@@ -1022,7 +1068,7 @@ export function exportGeneratedEvidenceModule({ evidenceFile, outcomesFile, targ
   const embeddedFamilyIds = [...new Set([...strictEligible, ...contextDiscoveryEligible])];
   const eligibleOutcomes = Object.fromEntries(embeddedFamilyIds.map((id) => [
     id,
-    (Array.isArray(byFamily[id]) ? byFamily[id] : []).slice(-MAX_OUTCOMES_PER_FAMILY)
+    selectContextHistory(Array.isArray(byFamily[id]) ? byFamily[id] : [], MAX_OUTCOMES_PER_FAMILY)
   ]));
   const evidenceJson = JSON.stringify(evidence);
   const outcomesJson = JSON.stringify(eligibleOutcomes);
