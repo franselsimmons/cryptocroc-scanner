@@ -6,7 +6,7 @@ on:
       days:
         description: Initial/backfill lookback in days
         required: true
-        default: '730'
+        default: '1095'
       chunk_days:
         description: Days per parallel shard (safety-clamped to max 5)
         required: true
@@ -36,8 +36,9 @@ permissions:
 env:
   BITGET_BASE_URL: https://api.bitget.com
   HISTORICAL_API_CONCURRENCY: '8'
-  HISTORICAL_MAX_DAYS: '730'
-  HISTORICAL_MAX_OUTCOMES_PER_FAMILY: '800'
+  HISTORICAL_MAX_DAYS: '1095'
+  HISTORICAL_MAX_OUTCOMES_PER_FAMILY: '2000'
+  HISTORICAL_CONTEXT_RECENT_SHARE: '0.50'
 
 jobs:
   plan:
