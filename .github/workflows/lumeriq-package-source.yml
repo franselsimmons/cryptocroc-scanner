@@ -1,8 +1,7 @@
 name: Lumeriq package source
 on:
-  push:
-    branches:
-      - repair/lumeriq-integrity-20260919
+  pull_request:
+    branches: [main]
 permissions:
   contents: read
 jobs:
