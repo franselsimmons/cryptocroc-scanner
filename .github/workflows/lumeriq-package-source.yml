@@ -12,11 +12,15 @@ jobs:
         with:
           persist-credentials: false
       - run: |
-          mkdir -p /tmp/lumeriq-package
-          tar --exclude=.git -cf /tmp/lumeriq-package/source.tar .
-          git rev-parse HEAD > /tmp/lumeriq-package/source-commit.txt
+          mkdir -p package
+          cp src/analyze/microFamilies.js package/microFamilies.js
+          cp src/historical/researchEngine.js package/researchEngine.js
+          cp src/trade/riskEngine.js package/riskEngine.js
+          cp src/analyze/historicalEvidenceBridge.js package/historicalEvidenceBridge.js
+          cp package.json package/package.json
+          git rev-parse HEAD > package/source-commit.txt
       - uses: actions/upload-artifact@v4
         with:
           name: lumeriq-source
-          path: /tmp/lumeriq-package
+          path: package
           retention-days: 3
