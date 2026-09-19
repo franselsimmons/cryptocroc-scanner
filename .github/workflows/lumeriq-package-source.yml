@@ -12,12 +12,11 @@ jobs:
         with:
           persist-credentials: false
       - run: |
-          tar --exclude=.git --exclude=source.tar --exclude=source-commit.txt -cf source.tar .
-          git rev-parse HEAD > source-commit.txt
+          mkdir -p /tmp/lumeriq-package
+          tar --exclude=.git -cf /tmp/lumeriq-package/source.tar .
+          git rev-parse HEAD > /tmp/lumeriq-package/source-commit.txt
       - uses: actions/upload-artifact@v4
         with:
           name: lumeriq-source
-          path: |
-            source.tar
-            source-commit.txt
+          path: /tmp/lumeriq-package
           retention-days: 3
