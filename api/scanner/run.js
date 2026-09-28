@@ -1468,6 +1468,17 @@ async function persistLongScannerPayload(redis, payload = {}) {
     };
 }
 export default async function handler(req, res) {
+  // Temporary operational pause: preserve all existing Redis learning/state,
+  // but block every new write/run while RANGENEST is stabilized.
+  return res.status(200).json({
+    ok: true,
+    paused: true,
+    skipped: true,
+    reason: "LUMERIQ_PAUSED_FOR_RANGENEST",
+    writesDisabled: true,
+    existingLearningPreserved: true
+  });
+
     res.setHeader('Cache-Control', 'no-store, max-age=0');
     res.setHeader('X-Scanner-Target-Side', TARGET_TRADE_SIDE);
     res.setHeader('X-Target-Trade-Side', TARGET_TRADE_SIDE);
