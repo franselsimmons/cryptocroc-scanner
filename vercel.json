@@ -21,22 +21,5 @@
       "destination": "/admin.html"
     }
   ],
-  "crons": [
-    {
-      "path": "/api/scanner/run",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/trade/run",
-      "schedule": "*/2 * * * *"
-    },
-    {
-      "path": "/api/analyze/weekly-freeze",
-      "schedule": "0 22 * * 0"
-    },
-    {
-      "path": "/api/analyze/activate-rotation",
-      "schedule": "0 0 * * 1"
-    }
-  ]
+  "crons": []
 }
